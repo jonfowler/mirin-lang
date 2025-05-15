@@ -1,0 +1,7 @@
+[package]
+name = "tree-sitter-polar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tree-sitter = "0.25.4"
