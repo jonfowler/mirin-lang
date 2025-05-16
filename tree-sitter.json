@@ -1,0 +1,45 @@
+{
+  "grammars": [
+    {
+      "name": "polar",
+      "camelcase": "Polar",
+      "scope": "source.polar",
+      "path": ".",
+      "file-types": [
+        "pl"
+      ],
+      "highlights": [
+        "queries/highlights.scm"
+      ],
+      "injections": [
+        "queries/injections.scm"
+      ],
+      "tags": [
+        "queries/tags.scm"
+      ],
+      "injection-regex": "rust"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Rust grammar for tree-sitter",
+    "authors": [
+      {
+        "name": "Jonathan Fowler",
+        "email": "fowler.js@gmail.com:"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/jonfowler/polar"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": true,
+    "node": true,
+    "python": true,
+    "rust": true,
+    "swift": true
+  }
+}
