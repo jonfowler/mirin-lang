@@ -1,6 +1,6 @@
 {
   "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/grammar.schema.json",
-  "name": "myhdl",
+  "name": "polar",
   "rules": {
     "source_file": {
       "type": "REPEAT1",
@@ -154,7 +154,7 @@
           "name": "base_type",
           "content": {
             "type": "SYMBOL",
-            "name": "identifier"
+            "name": "_type_identifier"
           }
         },
         {
@@ -330,8 +330,8 @@
             "type": "FIELD",
             "name": "operator",
             "content": {
-              "type": "STRING",
-              "value": "+"
+              "type": "SYMBOL",
+              "name": "operator_identifier"
             }
           },
           {
@@ -344,6 +344,10 @@
           }
         ]
       }
+    },
+    "operator_identifier": {
+      "type": "PATTERN",
+      "value": "[+\\-%<>*&|^~!]+"
     },
     "field_expression": {
       "type": "PREC",
@@ -401,7 +405,25 @@
     },
     "identifier": {
       "type": "PATTERN",
-      "value": "[a-zA-Z_][a-zA-Z0-9_]*"
+      "value": "[_\\p{XID_Start}][_\\p{XID_Continue}]*"
+    },
+    "_type_identifier": {
+      "type": "ALIAS",
+      "content": {
+        "type": "SYMBOL",
+        "name": "identifier"
+      },
+      "named": true,
+      "value": "type_identifier"
+    },
+    "_field_identifier": {
+      "type": "ALIAS",
+      "content": {
+        "type": "SYMBOL",
+        "name": "identifier"
+      },
+      "named": true,
+      "value": "field_identifier"
     },
     "line_comment": {
       "type": "TOKEN",

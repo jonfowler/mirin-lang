@@ -1,6 +1,6 @@
 
 module.exports = grammar({
-  name: 'myhdl', // Name of your language
+  name: 'polar',
 
   extras: $ => [
     /\s/, // Whitespace (spaces, tabs, newlines)
@@ -92,9 +92,11 @@ module.exports = grammar({
     // `prec.left(1, ...)` means left-associative with precedence 1.
     binary_expression: $ => prec.left(1, seq(
       field('left', $._expression),
-      field('operator', '+'), // For now, only supporting '+'
+      field('operator', $.operator_identifier), // For now, only supporting ' + '
       field('right', $._expression)
     )),
+
+    operator_identifier: $ => /[+\-%<>*&|^~!]+/,
 
     // Field expression: object.field
     // e.g., `c.flipflop` (this is the field access part)
@@ -116,7 +118,7 @@ module.exports = grammar({
     )),
 
     // Identifier: typical programming language identifier
-    identifier: _ => /[_\p{ XID_Start }][_\p{ XID_Continue }]*/,
+    identifier: _ => /[_\p{XID_Start}][_\p{XID_Continue}]*/,
 
     _type_identifier: $ => alias($.identifier, $.type_identifier),
     _field_identifier: $ => alias($.identifier, $.field_identifier),

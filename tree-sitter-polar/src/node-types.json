@@ -30,8 +30,8 @@
         "required": true,
         "types": [
           {
-            "type": "+",
-            "named": false
+            "type": "operator_identifier",
+            "named": true
           }
         ]
       },
@@ -348,7 +348,7 @@
         "required": true,
         "types": [
           {
-            "type": "identifier",
+            "type": "type_identifier",
             "named": true
           }
         ]
@@ -371,10 +371,6 @@
   },
   {
     "type": ")",
-    "named": false
-  },
-  {
-    "type": "+",
     "named": false
   },
   {
@@ -422,8 +418,16 @@
     "named": true
   },
   {
+    "type": "operator_identifier",
+    "named": true
+  },
+  {
     "type": "return",
     "named": false
+  },
+  {
+    "type": "type_identifier",
+    "named": true
   },
   {
     "type": "{",
