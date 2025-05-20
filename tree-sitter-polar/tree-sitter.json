@@ -1,0 +1,36 @@
+{
+  "grammars": [
+    {
+      "name": "polar",
+      "camelcase": "Polar",
+      "scope": "source.polar",
+      "file-types": [
+        ".polar",
+        ".plr"
+      ],
+      "injection-regex": "^polar$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Polar HDL",
+    "authors": [
+      {
+        "name": "Jon Fowler",
+        "email": "fowler.js@gmail.com"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/tree-sitter/tree-sitter-polar"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": true,
+    "node": true,
+    "python": true,
+    "rust": true,
+    "swift": true
+  }
+}

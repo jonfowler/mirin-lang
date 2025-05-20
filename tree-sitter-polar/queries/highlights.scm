@@ -1,6 +1,6 @@
 ; Identifiers
 
-; (type_identifier) @type
+(type_identifier) @type
 ; (primitive_type) @type.builtin
 ; (field_identifier) @property
 
@@ -108,7 +108,7 @@
 ; "else" @keyword
 ; "enum" @keyword
 ; "extern" @keyword
-; "fn" @keyword
+"fn" @keyword
 ; "for" @keyword
 ; "gen" @keyword
 ; "if" @keyword

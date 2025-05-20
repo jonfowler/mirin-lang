@@ -1,0 +1,7 @@
+fn test (
+    clk: clock,
+    a: u8 @ clk
+) -> u8 @ clk {
+    let c : u8 @ clk = a + b;
+    return c.flipflop();
+}

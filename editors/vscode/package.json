@@ -1,0 +1,25 @@
+{
+  "name": "polar",
+  "displayName": "polar",
+  "description": "Polar hardware description language",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [{
+      "id": "polar",
+      "aliases": ["polar", "polar"],
+      "extensions": [".plr",".polar"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "polar",
+      "scopeName": "source.polar",
+      "path": "./syntaxes/polar.tmLanguage.json"
+    }]
+  }
+}
