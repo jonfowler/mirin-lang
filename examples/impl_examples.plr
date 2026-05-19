@@ -1,0 +1,45 @@
+struct Packet {
+  valid: bool,
+  payload: uint[8],
+}
+
+impl Packet {
+  fn idle() -> Packet {
+    return Packet {
+      valid: false,
+      payload: 0,
+    };
+  }
+
+  fn clear_valid(self: Packet) -> Packet {
+    return Packet {
+      valid: false,
+      payload: self.payload,
+    };
+  }
+
+  fn register(self: Packet @clk, rstn: Reset @clk) -> Packet @clk {
+    return self.reg{
+      rstn,
+      reset_val = Packet::idle(),
+    }();
+  }
+}
+
+port Stream8
+  { #clk: Clock }
+  {
+    out valid: bool @clk,
+    out data: uint[8] @clk,
+    in ready: bool @clk,
+  }
+
+impl Stream8
+  { #clk: Clock }
+  {
+    fn connect(self: Stream8{clk}, out downstream: Stream8{clk}) {
+      downstream.valid = self.valid;
+      downstream.data = self.data;
+      self.ready = downstream.ready;
+    }
+  }

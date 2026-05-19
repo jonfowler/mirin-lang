@@ -105,9 +105,12 @@ rec count = {
 }
 ```
 
+## `impl` blocks
+
+`impl` syntax is part of the current surface-language direction, but it is not required in the first parser slice. The current proposal is documented in `planning/impl.md`.
+
 ## Open questions kept out of the first parser slice
 
 - exact inference rules for `#clk`
 - generics and const generics beyond simple examples
 - generalized metadata syntax
-- full method and `impl` design
