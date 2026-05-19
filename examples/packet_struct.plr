@@ -1,0 +1,20 @@
+struct Packet {
+  valid: bool,
+  payload: uint[8],
+}
+
+cmp registerPacket
+  { #clk: Clock, rstn: Reset @clk = high }
+  ( input: Packet @clk )
+  -> Packet @clk
+  {
+    let output = input.reg{
+      rstn,
+      reset_val = Packet {
+        valid: false,
+        payload: 0,
+      },
+    }();
+
+    return output;
+  }

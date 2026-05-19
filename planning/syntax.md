@@ -1,0 +1,113 @@
+# First-pass syntax subset
+
+This document defines the small Polar surface syntax subset that current examples, tooling, and parser work should target.
+
+## Scope
+
+- `cmp` declarations
+- `struct` declarations
+- `port` declarations
+- named argument sections
+- positional argument sections
+- clocked types with `@clk`
+- clock-associated resets with `Reset @clk`
+- `rec` blocks for explicit cyclic definitions
+- method-style calls such as `value.reg{...}()`
+
+## Conventions
+
+- Use Rust-like spacing for bindings and fields: `name: Type`
+- Use trailing commas inside braced lists and record literals
+- Keep named interface arguments in braces and ordinary value arguments in parentheses
+- Use `#` only for arguments that may be omitted because they are inferred at instantiation
+- Use ordinary defaults for optional arguments with fallback values; defaults do not imply inference
+
+## Domains
+
+- For now, only clock domains are in scope as part of the type system
+- Write clocked values as `T @clk`
+- Write resets as `Reset @clk`
+- Treat generalized metadata as deferred design work, not part of the initial syntax subset
+
+## Components
+
+Components use:
+
+- an optional named argument section
+- an optional positional argument section
+- an optional return type
+- a block body
+
+```rust
+cmp multAdd
+  { #clk: Clock, rstn: Reset @clk = high, c: uint[8] @clk = 0, }
+  ( a: uint[8] @clk, b: uint[8] @clk )
+  -> uint[8] @clk
+  {
+    let mult = a * b;
+    let mult = mult[8:0];
+    let mult = mult.reg{rstn}();
+    let add = mult + c;
+    return add;
+  }
+```
+
+## Structs
+
+Structs are positive data types and use Rust-like field syntax.
+
+```rust
+struct Packet {
+  valid: bool,
+  payload: uint[8],
+}
+```
+
+## Ports
+
+Ports can carry directions on individual fields and may themselves take named parameters.
+
+```rust
+port Stream8
+  { #clk: Clock }
+  {
+    out valid: bool @clk,
+    out data: uint[8] @clk,
+    in ready: bool @clk,
+  }
+```
+
+### Port position rule
+
+- Keep data in positive positions where sensible
+- A write input is an explicit exception
+- If a port appears in an argument position but is being driven by the callee, mark that argument direction explicitly
+
+```rust
+cmp connectStream
+  { #clk: Clock }
+  ( upstream: Stream8{clk}, out downstream: Stream8{clk} )
+  {
+    downstream.valid = upstream.valid;
+    downstream.data = upstream.data;
+    upstream.ready = downstream.ready;
+  }
+```
+
+## Explicit cycles
+
+Use `rec` when a definition is cyclic. Do not rely on implicit self-reference outside `rec`.
+
+```rust
+rec count = {
+  let next = count + 1;
+  return next.reg{rstn, reset_val = 0}();
+}
+```
+
+## Open questions kept out of the first parser slice
+
+- exact inference rules for `#clk`
+- generics and const generics beyond simple examples
+- generalized metadata syntax
+- full method and `impl` design

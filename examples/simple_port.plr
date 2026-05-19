@@ -1,0 +1,16 @@
+port Stream8
+  { #clk: Clock }
+  {
+    out valid: bool @clk,
+    out data: uint[8] @clk,
+    in ready: bool @clk,
+  }
+
+cmp connectStream
+  { #clk: Clock }
+  ( upstream: Stream8{clk}, out downstream: Stream8{clk} )
+  {
+    downstream.valid = upstream.valid;
+    downstream.data = upstream.data;
+    upstream.ready = downstream.ready;
+  }
