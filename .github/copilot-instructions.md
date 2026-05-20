@@ -5,6 +5,12 @@
 - This repository is currently in a restart/planning state. Treat `planning/top.md` as the source of truth for language goals, and `planning/syntax.md` as the source of truth for the first-pass concrete syntax subset used by examples and tooling work.
 - Until more implementation files land, treat code changes as greenfield work rather than assuming an existing compiler, parser, or runtime architecture.
 
+## Build, test, and formatting commands
+
+- `cargo test` runs the current Rust parser prototype test suite.
+- `cargo test parses_add_constant_example -- --exact` runs a single parser test; replace the test name as needed.
+- `cargo fmt` formats the Rust code.
+
 ## High-level architecture
 
 - **Polar** is intended to be a hardware description language focused on register-transfer-level correctness, readability, and high-quality generated Verilog.
