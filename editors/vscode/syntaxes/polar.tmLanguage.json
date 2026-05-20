@@ -52,7 +52,7 @@
           "match": "\\b(cmp|struct|port|impl)\\b\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": {
-              "name": "keyword.declaration.polar"
+              "name": "storage.type.polar"
             },
             "2": {
               "name": "entity.name.type.polar"
@@ -63,7 +63,7 @@
           "match": "\\b(fn)\\b\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*(?:\\{|\\())",
           "captures": {
             "1": {
-              "name": "keyword.declaration.function.polar"
+              "name": "storage.type.function.polar"
             },
             "2": {
               "name": "entity.name.function.polar"
@@ -125,6 +125,14 @@
         {
           "name": "variable.language.self.polar",
           "match": "\\bself\\b"
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\b(?=\\s*(?:,|=)\\s*(?:[^:]|$))",
+          "captures": {
+            "1": {
+              "name": "variable.parameter.polar"
+            }
+          }
         },
         {
           "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\b(?=\\s*:)",
