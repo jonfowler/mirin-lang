@@ -1,18 +1,18 @@
-struct Packet = packet {
+struct Bus(A: Type) = bus {
   valid: bool,
-  payload: uint[8],
+  data: A,
 }
 
-cmp registerPacket
+cmp registerBus
   { #clk: Clock, rstn: Reset @clk = high }
-  ( input: Packet @clk )
-  -> Packet @clk
+  ( input: Bus(uint[8]) @clk )
+  -> Bus(uint[8]) @clk
   {
     let output = input.reg{
       rstn,
-      reset_val = packet {
+      reset_val = bus {
         valid: false,
-        payload: 0,
+        data: 0,
       },
     }();
 

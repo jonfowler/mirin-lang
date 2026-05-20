@@ -1,14 +1,15 @@
-port Stream8
+port DF
   { #clk: Clock }
-  = stream8 {
-    out valid: bool @clk,
-    out data: uint[8] @clk,
+  ( A: Type )
+  = df {
     in ready: bool @clk,
+    out valid: bool @clk,
+    out data: A @clk,
   }
 
-cmp connectStream
+cmp connectDf
   { #clk: Clock }
-  ( upstream: Stream8{clk}, out downstream: Stream8{clk} )
+  ( upstream: DF{clk}(uint[8]), out downstream: DF{clk}(uint[8]) )
   {
     downstream.valid = upstream.valid;
     downstream.data = upstream.data;

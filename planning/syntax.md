@@ -56,6 +56,8 @@ cmp multAdd
 
 Structs are positive data types and use Rust-like field syntax.
 
+The more detailed current design for parameterized structs and ports is documented in `planning/structs_and_ports.md`.
+
 ```rust
 struct Packet {
   valid: bool,
