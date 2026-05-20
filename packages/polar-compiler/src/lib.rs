@@ -289,7 +289,7 @@ fn collect_syntax_diagnostics(root: tree_sitter::Node<'_>, source: &str) -> Vec<
     let mut diagnostics = Vec::new();
     let mut ancestors = Vec::new();
     walk_syntax_errors(root, source, &mut ancestors, &mut diagnostics);
-    diagnostics
+    deduplicate_syntax_diagnostics(diagnostics)
 }
 
 fn walk_syntax_errors(
@@ -357,6 +357,35 @@ fn missing_diagnostic(
         excerpt: excerpt_for_span(source, &span),
         note: note_from_ancestors(ancestors),
     }
+}
+
+fn deduplicate_syntax_diagnostics(diagnostics: Vec<SyntaxDiagnostic>) -> Vec<SyntaxDiagnostic> {
+    let mut deduplicated = Vec::new();
+    let mut pending = diagnostics.into_iter().peekable();
+
+    while let Some(current) = pending.next() {
+        if let Some(next) = pending.peek()
+            && should_prefer_missing_diagnostic(&current, next)
+        {
+            deduplicated.push(pending.next().expect("peeked diagnostic must exist"));
+            continue;
+        }
+
+        deduplicated.push(current);
+    }
+
+    deduplicated
+}
+
+fn should_prefer_missing_diagnostic(
+    current: &SyntaxDiagnostic,
+    next: &SyntaxDiagnostic,
+) -> bool {
+    current.message.starts_with("unexpected ")
+        && next.message.starts_with("expected ")
+        && current.note == next.note
+        && current.span.start.row == next.span.start.row
+        && current.span.end_byte <= next.span.start_byte
 }
 
 fn span_for_error_node(node: tree_sitter::Node<'_>) -> SourceSpan {
@@ -493,15 +522,16 @@ mod tests {
     }
 
     #[test]
-    fn reports_missing_named_section_closer() {
-        let source = include_str!("../../../fail-examples/no-close-bracket.plr");
+    fn reports_missing_named_section_closer_once() {
+        let source = include_str!("../../../fail-examples/missing-parenthesis.plr");
         let error = parse_source(source).unwrap_err();
         let ParseError::Syntax(diagnostics) = error else {
             panic!("expected syntax diagnostics");
         };
 
-        assert!(!diagnostics.is_empty());
+        assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].message.contains("named parameter section"));
+        assert!(diagnostics[0].message.contains("expected `}`"));
         assert!(
             diagnostics[0]
                 .note
@@ -514,7 +544,7 @@ mod tests {
     #[test]
     fn rejects_all_failure_examples() {
         for source in [
-            include_str!("../../../fail-examples/no-close-bracket.plr"),
+            include_str!("../../../fail-examples/missing-parenthesis.plr"),
             include_str!("../../../fail-examples/missing-semicolon.plr"),
             include_str!("../../../fail-examples/missing-struct-colon.plr"),
             include_str!("../../../fail-examples/missing-port-comma.plr"),
