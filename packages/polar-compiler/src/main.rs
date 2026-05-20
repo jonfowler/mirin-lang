@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf, process};
 
-use polar_compiler::{parse_file, render_parse_error};
+use polar_compiler::{ParseError, parse_file_with_diagnostics, render_parse_error};
 
 fn main() {
     let mut args = env::args_os();
@@ -21,9 +21,20 @@ fn main() {
 
     let path = PathBuf::from(path);
 
-    match parse_file(&path) {
-        Ok(cst) => {
-            print!("{cst}");
+    match parse_file_with_diagnostics(&path) {
+        Ok(parsed) if parsed.diagnostics.is_empty() => {
+            print!("{}", parsed.cst);
+        }
+        Ok(parsed) => {
+            let mut rendered = String::new();
+            render_parse_error(
+                &ParseError::Syntax(parsed.diagnostics),
+                Some(&path),
+                &mut rendered,
+            )
+            .expect("rendering parse diagnostics should not fail");
+            eprintln!("{rendered}");
+            process::exit(1);
         }
         Err(err) => {
             let mut rendered = String::new();

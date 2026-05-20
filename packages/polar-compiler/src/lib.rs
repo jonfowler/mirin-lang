@@ -70,6 +70,12 @@ pub struct Cst {
     pub root: CstNode,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedSource {
+    pub cst: Cst,
+    pub diagnostics: Vec<SyntaxDiagnostic>,
+}
+
 #[derive(Debug)]
 pub enum ParseError {
     Io(std::io::Error),
@@ -110,20 +116,32 @@ pub fn language() -> Language {
 }
 
 pub fn parse_source(source: &str) -> Result<Cst, ParseError> {
-    let tree = parse_tree(source)?;
-    let diagnostics = collect_syntax_diagnostics(tree.root_node(), source);
-    if !diagnostics.is_empty() {
-        return Err(ParseError::Syntax(diagnostics));
+    let parsed = parse_source_with_diagnostics(source)?;
+    if !parsed.diagnostics.is_empty() {
+        return Err(ParseError::Syntax(parsed.diagnostics));
     }
 
-    Ok(Cst {
-        root: CstNode::from_node(tree.root_node()),
+    Ok(parsed.cst)
+}
+
+pub fn parse_source_with_diagnostics(source: &str) -> Result<ParsedSource, ParseError> {
+    let tree = parse_tree(source)?;
+    Ok(ParsedSource {
+        cst: Cst {
+            root: CstNode::from_node(tree.root_node()),
+        },
+        diagnostics: collect_syntax_diagnostics(tree.root_node(), source),
     })
 }
 
 pub fn parse_file(path: impl AsRef<Path>) -> Result<Cst, ParseError> {
     let source = fs::read_to_string(path)?;
     parse_source(&source)
+}
+
+pub fn parse_file_with_diagnostics(path: impl AsRef<Path>) -> Result<ParsedSource, ParseError> {
+    let source = fs::read_to_string(path)?;
+    parse_source_with_diagnostics(&source)
 }
 
 pub fn render_parse_error(
@@ -507,5 +525,14 @@ mod tests {
             };
             assert!(!diagnostics.is_empty());
         }
+    }
+
+    #[test]
+    fn preserves_cst_when_reporting_diagnostics() {
+        let source = include_str!("../../../fail-examples/missing-semicolon.plr");
+        let parsed = parse_source_with_diagnostics(source).unwrap();
+
+        assert_eq!(parsed.cst.root.kind, "source_file");
+        assert!(!parsed.diagnostics.is_empty());
     }
 }
