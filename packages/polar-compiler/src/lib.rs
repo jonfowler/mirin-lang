@@ -1,6 +1,6 @@
 use std::{fmt, fs, path::Path};
 
-use tree_sitter::{Language, Parser, Point};
+use tree_sitter::{Language, Parser, Point, Tree};
 use tree_sitter_language::LanguageFn;
 
 unsafe extern "C" {
@@ -33,6 +33,22 @@ pub struct SourceSpan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceExcerpt {
+    pub line_number: usize,
+    pub line_text: String,
+    pub highlight_start: usize,
+    pub highlight_end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxDiagnostic {
+    pub message: String,
+    pub span: SourceSpan,
+    pub excerpt: Option<SourceExcerpt>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CstChild {
     pub field_name: Option<String>,
     pub node: CstNode,
@@ -43,6 +59,8 @@ pub struct CstNode {
     pub kind: String,
     pub named: bool,
     pub extra: bool,
+    pub missing: bool,
+    pub error: bool,
     pub span: SourceSpan,
     pub children: Vec<CstChild>,
 }
@@ -57,6 +75,7 @@ pub enum ParseError {
     Io(std::io::Error),
     Language(tree_sitter::LanguageError),
     ParseFailed,
+    Syntax(Vec<SyntaxDiagnostic>),
 }
 
 impl fmt::Display for ParseError {
@@ -65,6 +84,9 @@ impl fmt::Display for ParseError {
             Self::Io(err) => write!(f, "failed to read source: {err}"),
             Self::Language(err) => write!(f, "failed to configure parser language: {err}"),
             Self::ParseFailed => f.write_str("tree-sitter returned no parse tree"),
+            Self::Syntax(diagnostics) => {
+                write!(f, "found {} syntax error(s)", diagnostics.len())
+            }
         }
     }
 }
@@ -88,9 +110,12 @@ pub fn language() -> Language {
 }
 
 pub fn parse_source(source: &str) -> Result<Cst, ParseError> {
-    let mut parser = Parser::new();
-    parser.set_language(&language())?;
-    let tree = parser.parse(source, None).ok_or(ParseError::ParseFailed)?;
+    let tree = parse_tree(source)?;
+    let diagnostics = collect_syntax_diagnostics(tree.root_node(), source);
+    if !diagnostics.is_empty() {
+        return Err(ParseError::Syntax(diagnostics));
+    }
+
     Ok(Cst {
         root: CstNode::from_node(tree.root_node()),
     })
@@ -99,6 +124,67 @@ pub fn parse_source(source: &str) -> Result<Cst, ParseError> {
 pub fn parse_file(path: impl AsRef<Path>) -> Result<Cst, ParseError> {
     let source = fs::read_to_string(path)?;
     parse_source(&source)
+}
+
+pub fn render_parse_error(
+    error: &ParseError,
+    path: Option<&Path>,
+    f: &mut impl fmt::Write,
+) -> fmt::Result {
+    match error {
+        ParseError::Syntax(diagnostics) => {
+            for (index, diagnostic) in diagnostics.iter().enumerate() {
+                if index > 0 {
+                    writeln!(f)?;
+                }
+
+                writeln!(f, "error: {}", diagnostic.message)?;
+                if let Some(path) = path {
+                    writeln!(
+                        f,
+                        " --> {}:{}:{}",
+                        path.display(),
+                        diagnostic.span.start.row + 1,
+                        diagnostic.span.start.column + 1
+                    )?;
+                } else {
+                    writeln!(
+                        f,
+                        " --> {}:{}",
+                        diagnostic.span.start.row + 1,
+                        diagnostic.span.start.column + 1
+                    )?;
+                }
+
+                if let Some(excerpt) = &diagnostic.excerpt {
+                    writeln!(f, "  |")?;
+                    writeln!(f, "{:>2} | {}", excerpt.line_number, excerpt.line_text)?;
+                    writeln!(
+                        f,
+                        "  | {}{}",
+                        " ".repeat(excerpt.highlight_start),
+                        "^".repeat(
+                            excerpt
+                                .highlight_end
+                                .saturating_sub(excerpt.highlight_start)
+                        ),
+                    )?;
+                }
+
+                if let Some(note) = &diagnostic.note {
+                    writeln!(f, "  = note: {note}")?;
+                }
+            }
+            Ok(())
+        }
+        other => write!(f, "{other}"),
+    }
+}
+
+fn parse_tree(source: &str) -> Result<Tree, ParseError> {
+    let mut parser = Parser::new();
+    parser.set_language(&language())?;
+    parser.parse(source, None).ok_or(ParseError::ParseFailed)
 }
 
 impl SourceSpan {
@@ -128,6 +214,8 @@ impl CstNode {
             kind: node.kind().to_owned(),
             named: node.is_named(),
             extra: node.is_extra(),
+            missing: node.is_missing(),
+            error: node.is_error(),
             span: SourceSpan::from_node(node),
             children,
         }
@@ -149,7 +237,7 @@ impl CstNode {
 
         writeln!(
             f,
-            "{} [{}:{}-{}:{} | bytes {}..{}{}{}]",
+            "{} [{}:{}-{}:{} | bytes {}..{}{}{}{}{}]",
             self.kind,
             self.span.start.row,
             self.span.start.column,
@@ -159,10 +247,13 @@ impl CstNode {
             self.span.end_byte,
             if self.named { ", named" } else { "" },
             if self.extra { ", extra" } else { "" },
+            if self.missing { ", missing" } else { "" },
+            if self.error { ", error" } else { "" },
         )?;
 
         for child in &self.children {
-            child.node
+            child
+                .node
                 .fmt_with_indent(f, indent + 1, child.field_name.as_deref())?;
         }
 
@@ -173,6 +264,170 @@ impl CstNode {
 impl fmt::Display for Cst {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.root.fmt_with_indent(f, 0, None)
+    }
+}
+
+fn collect_syntax_diagnostics(root: tree_sitter::Node<'_>, source: &str) -> Vec<SyntaxDiagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut ancestors = Vec::new();
+    walk_syntax_errors(root, source, &mut ancestors, &mut diagnostics);
+    diagnostics
+}
+
+fn walk_syntax_errors(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    ancestors: &mut Vec<String>,
+    diagnostics: &mut Vec<SyntaxDiagnostic>,
+) {
+    if node.is_error() {
+        diagnostics.push(error_diagnostic(node, source, ancestors));
+        return;
+    }
+
+    if node.is_missing() {
+        diagnostics.push(missing_diagnostic(node, source, ancestors));
+    }
+
+    ancestors.push(node.kind().to_owned());
+    for index in 0..node.child_count() {
+        if let Some(child) = node.child(index) {
+            walk_syntax_errors(child, source, ancestors, diagnostics);
+        }
+    }
+    ancestors.pop();
+}
+
+fn error_diagnostic(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    ancestors: &[String],
+) -> SyntaxDiagnostic {
+    let span = span_for_error_node(node);
+    let excerpt = excerpt_for_span(source, &span);
+    let context = context_from_ancestors(ancestors);
+    let unexpected = node_text(node, source)
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| compact_snippet(&text));
+
+    let message = match unexpected {
+        Some(text) => format!("unexpected `{text}` while parsing {context}"),
+        None => format!("unexpected end of input while parsing {context}"),
+    };
+
+    SyntaxDiagnostic {
+        message,
+        span,
+        excerpt,
+        note: note_from_ancestors(ancestors),
+    }
+}
+
+fn missing_diagnostic(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    ancestors: &[String],
+) -> SyntaxDiagnostic {
+    let span = SourceSpan::from_node(node);
+    let kind = node.kind().trim_matches('"');
+    SyntaxDiagnostic {
+        message: format!(
+            "expected `{kind}` while parsing {}",
+            context_from_ancestors(ancestors)
+        ),
+        span: span.clone(),
+        excerpt: excerpt_for_span(source, &span),
+        note: note_from_ancestors(ancestors),
+    }
+}
+
+fn span_for_error_node(node: tree_sitter::Node<'_>) -> SourceSpan {
+    let span = SourceSpan::from_node(node);
+    if span.start_byte != span.end_byte {
+        return span;
+    }
+
+    SourceSpan {
+        start_byte: span.start_byte,
+        end_byte: span.end_byte + 1,
+        start: span.start,
+        end: SourcePosition {
+            row: span.end.row,
+            column: span.end.column + 1,
+        },
+    }
+}
+
+fn excerpt_for_span(source: &str, span: &SourceSpan) -> Option<SourceExcerpt> {
+    let line_text = source.lines().nth(span.start.row)?.to_owned();
+    let start = span.start.column.min(line_text.len());
+    let end = if span.start.row == span.end.row {
+        span.end
+            .column
+            .max(start + 1)
+            .min(line_text.len().max(start + 1))
+    } else {
+        line_text.len().max(start + 1)
+    };
+
+    Some(SourceExcerpt {
+        line_number: span.start.row + 1,
+        line_text,
+        highlight_start: start,
+        highlight_end: end,
+    })
+}
+
+fn node_text(node: tree_sitter::Node<'_>, source: &str) -> Option<String> {
+    node.utf8_text(source.as_bytes()).ok().map(str::to_owned)
+}
+
+fn compact_snippet(text: &str) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() <= 32 {
+        compact
+    } else {
+        format!("{}…", &compact[..32])
+    }
+}
+
+fn context_from_ancestors(ancestors: &[String]) -> &'static str {
+    if ancestors
+        .iter()
+        .any(|kind| kind == "named_parameter_section")
+    {
+        "named parameter section"
+    } else if ancestors.iter().any(|kind| kind == "parameter_section") {
+        "parameter list"
+    } else if ancestors.iter().any(|kind| kind == "port_body") {
+        "port body"
+    } else if ancestors.iter().any(|kind| kind == "record_type_body") {
+        "struct body"
+    } else if ancestors.iter().any(|kind| kind == "block") {
+        "block"
+    } else if ancestors.iter().any(|kind| kind == "type_arguments") {
+        "type arguments"
+    } else {
+        "source file"
+    }
+}
+
+fn note_from_ancestors(ancestors: &[String]) -> Option<String> {
+    if ancestors
+        .iter()
+        .any(|kind| kind == "named_parameter_section")
+    {
+        Some("check for a missing `}` or `,` in the named parameter section".to_owned())
+    } else if ancestors.iter().any(|kind| kind == "parameter_section") {
+        Some("check for a missing `)` or `,` in the parameter list".to_owned())
+    } else if ancestors.iter().any(|kind| kind == "port_body") {
+        Some("check for a missing `,` or `}` in the port body".to_owned())
+    } else if ancestors.iter().any(|kind| kind == "record_type_body") {
+        Some("check for a missing `:` or `}` in the struct body".to_owned())
+    } else if ancestors.iter().any(|kind| kind == "block") {
+        Some("check for a missing `;` or `}` in the block".to_owned())
+    } else {
+        None
     }
 }
 
@@ -217,5 +472,40 @@ mod tests {
         let cst = parse_source(source).unwrap();
         assert_eq!(cst.root.span.start_byte, 0);
         assert_eq!(cst.root.span.end_byte, source.len());
+    }
+
+    #[test]
+    fn reports_missing_named_section_closer() {
+        let source = include_str!("../../../fail-examples/no-close-bracket.plr");
+        let error = parse_source(source).unwrap_err();
+        let ParseError::Syntax(diagnostics) = error else {
+            panic!("expected syntax diagnostics");
+        };
+
+        assert!(!diagnostics.is_empty());
+        assert!(diagnostics[0].message.contains("named parameter section"));
+        assert!(
+            diagnostics[0]
+                .note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("missing `}`")
+        );
+    }
+
+    #[test]
+    fn rejects_all_failure_examples() {
+        for source in [
+            include_str!("../../../fail-examples/no-close-bracket.plr"),
+            include_str!("../../../fail-examples/missing-semicolon.plr"),
+            include_str!("../../../fail-examples/missing-struct-colon.plr"),
+            include_str!("../../../fail-examples/missing-port-comma.plr"),
+        ] {
+            let error = parse_source(source).unwrap_err();
+            let ParseError::Syntax(diagnostics) = error else {
+                panic!("expected syntax diagnostics");
+            };
+            assert!(!diagnostics.is_empty());
+        }
     }
 }
