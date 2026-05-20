@@ -10,6 +10,7 @@
 
 - `cargo test -p polar-compiler` runs the current Rust compiler/parser prototype test suite.
 - `cargo test -p polar-compiler parses_add_constant_example -- --exact` runs a single Rust parser test; replace the test name as needed.
+- `cargo run -p polar-compiler -- examples/mult_add.plr` parses a `.plr` file and prints the current CST with source spans.
 - `cargo fmt --all` formats the Rust workspace.
 - `cd packages/tree-sitter-polar && tree-sitter generate` regenerates the tree-sitter parser sources.
 - `cd packages/tree-sitter-polar && tree-sitter test` runs the tree-sitter grammar corpus tests.
@@ -44,3 +45,4 @@
   - examples rely on local `let` bindings and inference-heavy syntax
 - For current tooling and parser work, prefer the narrower rules in `planning/syntax.md`: only clock domains are in scope, resets are written as `Reset @clk`, and `#` is reserved for inferable arguments such as clocks.
 - Prefer tree-sitter as the concrete-syntax frontend for parsing, highlighting, and future LSP work. Keep Rust code responsible for CST-to-AST lowering, elaboration, and semantic analysis.
+- `packages/polar-compiler` now uses tree-sitter to parse source files and build a CST that preserves byte and row/column spans.
