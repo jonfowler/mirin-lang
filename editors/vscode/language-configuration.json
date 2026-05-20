@@ -12,6 +12,10 @@
     ["[", "]"],
     ["(", ")"]
   ],
+  "indentationRules": {
+    "increaseIndentPattern": "^.*\\{[^}\"']*$",
+    "decreaseIndentPattern": "^\\s*[\\}]"
+  },
   "surroundingPairs": [
     ["{", "}"],
     ["[", "]"],

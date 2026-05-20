@@ -1,12 +1,15 @@
 {
   "name": "polar-syntax",
   "displayName": "Polar Syntax",
-  "description": "Basic syntax highlighting for the Polar HDL",
-  "version": "0.0.1",
+  "description": "Syntax highlighting for the Polar HDL",
+  "version": "0.0.2",
   "publisher": "jonfowler",
   "engines": {
     "vscode": "^1.90.0"
   },
+  "activationEvents": [
+    "onLanguage:polar"
+  ],
   "categories": [
     "Programming Languages"
   ],

@@ -10,6 +10,7 @@
 - `cargo test` runs the current Rust parser prototype test suite.
 - `cargo test parses_add_constant_example -- --exact` runs a single parser test; replace the test name as needed.
 - `cargo fmt` formats the Rust code.
+- The VS Code syntax extension lives in `editors/vscode/`.
 
 ## High-level architecture
 
