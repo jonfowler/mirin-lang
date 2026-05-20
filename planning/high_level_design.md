@@ -98,11 +98,16 @@ Important conventions:
 - a write input is an explicit exception
 - when a port is passed in argument position but will be driven by the callee, that should be written explicitly, for example `out downstream: Stream8{clk}`
 
-### 5. Explicit cycles
+### 5. Cycles and rebinding
 
-Stateful or cyclic definitions should be marked with `rec`.
+The earlier `rec` proposal made cycles explicit, but this is now an open design area again.
 
-This keeps feedback structure explicit instead of relying on implicit recursive meaning in ordinary local bindings.
+The core issue is that Polar likely wants both:
+
+- declarative structural code where wiring can naturally form cycles
+- ordinary lexical local code with shadowing/rebinding, for example `let x = ...; let x = stage2(x);`
+
+The current direction is therefore to keep local rebinding distinct from explicit cyclic structure, rather than giving ordinary local bindings implicit recursive meaning. `rec` remains one candidate syntax, but not a settled one; see `planning/cycles_and_scoping.md`.
 
 ### 6. `impl`
 
@@ -125,7 +130,7 @@ The initial parser and editor tooling should target a small, consistent subset:
 - named and positional argument sections
 - `@clk`
 - `Reset @clk`
-- blocks with `let`, `return`, and `rec`
+- blocks with `let`, `return`, and a still-open cyclic form
 - method-style calls such as `value.reg{...}()`
 
 `impl` is designed, but does not need to be part of the first parser slice.

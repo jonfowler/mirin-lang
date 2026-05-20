@@ -11,7 +11,7 @@ This document defines the small Polar surface syntax subset that current example
 - positional argument sections
 - clocked types with `@clk`
 - clock-associated resets with `Reset @clk`
-- `rec` blocks for explicit cyclic definitions
+- a still-open explicit syntax for cyclic definitions
 - method-style calls such as `value.reg{...}()`
 
 ## Conventions
@@ -96,9 +96,11 @@ cmp connectStream
   }
 ```
 
-## Explicit cycles
+## Cycles and local rebinding
 
-Use `rec` when a definition is cyclic. Do not rely on implicit self-reference outside `rec`.
+Cycle syntax is now back to being an active design question.
+
+The earlier proposal was to use `rec` for explicit cyclic definitions:
 
 ```rust
 rec count = {
@@ -106,6 +108,14 @@ rec count = {
   return next.reg{rstn, reset_val = 0}();
 }
 ```
+
+That remains a candidate, but it is no longer treated as settled. The current discussion is whether Polar should distinguish:
+
+- ordinary lexical `let` bindings with shadowing/rebinding
+- explicit cyclic equations for state feedback
+- structural interconnect that may itself form cycles
+
+See `planning/cycles_and_scoping.md` for the current write-up.
 
 ## `impl` blocks
 
@@ -116,3 +126,4 @@ rec count = {
 - exact inference rules for `#clk`
 - generics and const generics beyond simple examples
 - generalized metadata syntax
+- final syntax for cyclic definitions and mutual interconnect
