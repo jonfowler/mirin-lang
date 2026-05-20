@@ -3,13 +3,16 @@
 ## Current repository shape
 
 - This repository is currently in a restart/planning state. Treat `planning/top.md` as the source of truth for language goals, and `planning/syntax.md` as the source of truth for the first-pass concrete syntax subset used by examples and tooling work.
-- Until more implementation files land, treat code changes as greenfield work rather than assuming an existing compiler, parser, or runtime architecture.
+- The repository is now organized as a small monorepo. The Rust compiler crate lives in `packages/polar-compiler/`, and the tree-sitter grammar lives in `packages/tree-sitter-polar/`.
+- Until more implementation files land, treat code changes as greenfield work rather than assuming a stable compiler, parser, or runtime architecture.
 
 ## Build, test, and formatting commands
 
-- `cargo test` runs the current Rust parser prototype test suite.
-- `cargo test parses_add_constant_example -- --exact` runs a single parser test; replace the test name as needed.
-- `cargo fmt` formats the Rust code.
+- `cargo test -p polar-compiler` runs the current Rust compiler/parser prototype test suite.
+- `cargo test -p polar-compiler parses_add_constant_example -- --exact` runs a single Rust parser test; replace the test name as needed.
+- `cargo fmt --all` formats the Rust workspace.
+- `cd packages/tree-sitter-polar && tree-sitter generate` regenerates the tree-sitter parser sources.
+- `cd packages/tree-sitter-polar && tree-sitter test` runs the tree-sitter grammar corpus tests.
 - The VS Code syntax extension lives in `editors/vscode/`.
 
 ## High-level architecture
@@ -40,3 +43,4 @@
   - `@domain` attaches domain information to values and types
   - examples rely on local `let` bindings and inference-heavy syntax
 - For current tooling and parser work, prefer the narrower rules in `planning/syntax.md`: only clock domains are in scope, resets are written as `Reset @clk`, and `#` is reserved for inferable arguments such as clocks.
+- Prefer tree-sitter as the concrete-syntax frontend for parsing, highlighting, and future LSP work. Keep Rust code responsible for CST-to-AST lowering, elaboration, and semantic analysis.

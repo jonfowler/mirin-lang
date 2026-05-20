@@ -519,9 +519,7 @@ impl Parser {
                 TokenKind::Dot => {
                     self.bump();
                     let field_or_method = self.expect_ident()?;
-                    if self.peek_kind() == TokenKind::LBrace
-                        || self.peek_kind() == TokenKind::LParen
-                    {
+                    if self.peek_kind() == TokenKind::LBrace || self.peek_kind() == TokenKind::LParen {
                         let named_args = if self.peek_kind() == TokenKind::LBrace {
                             self.parse_named_call_args()?
                         } else {
@@ -637,7 +635,7 @@ mod tests {
 
     #[test]
     fn parses_add_constant_example() {
-        let component = parse_component(include_str!("../examples/add_constant.plr")).unwrap();
+        let component = parse_component(include_str!("../../../examples/add_constant.plr")).unwrap();
         assert_eq!(component.name, "addConstant");
         assert_eq!(component.named_params.len(), 1);
         assert_eq!(component.positional_params.len(), 1);
@@ -646,7 +644,7 @@ mod tests {
 
     #[test]
     fn parses_mult_add_example() {
-        let component = parse_component(include_str!("../examples/mult_add.plr")).unwrap();
+        let component = parse_component(include_str!("../../../examples/mult_add.plr")).unwrap();
         assert_eq!(component.name, "multAdd");
         assert_eq!(component.named_params.len(), 3);
         assert_eq!(component.positional_params.len(), 2);
@@ -668,14 +666,14 @@ mod tests {
 
     #[test]
     fn parses_shift_register_example() {
-        let component = parse_component(include_str!("../examples/shift_register.plr")).unwrap();
+        let component = parse_component(include_str!("../../../examples/shift_register.plr")).unwrap();
         assert_eq!(component.name, "shiftRegister");
         assert_eq!(component.body.statements.len(), 3);
     }
 
     #[test]
     fn parses_counter_rec_block() {
-        let component = parse_component(include_str!("../examples/counter.plr")).unwrap();
+        let component = parse_component(include_str!("../../../examples/counter.plr")).unwrap();
         assert_eq!(component.name, "counter");
         assert!(matches!(component.body.statements[0], Stmt::Rec { .. }));
     }

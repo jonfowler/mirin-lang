@@ -51,7 +51,7 @@ Tree-sitter is a good fit for the concrete syntax layer and for editor tooling.
 Recommended role:
 
 - use tree-sitter for syntax highlighting, editor integration, and incremental parsing
-- optionally use the same grammar to produce the compiler CST
+- use the same grammar to produce the compiler CST consumed by the Rust compiler frontend
 - keep a separate Rust AST-lowering layer so semantic decisions do not leak into the grammar
 
 Why this is a good first fit:
@@ -69,6 +69,15 @@ So the recommended boundary is:
 
 - tree-sitter owns concrete syntax
 - Rust code owns AST construction, name resolution, elaboration, and typing
+
+### Current implementation direction
+
+The repository currently contains:
+
+- `packages/tree-sitter-polar/` as the starting point for the concrete syntax grammar
+- `packages/polar-compiler/` as the Rust compiler crate
+
+The handwritten Rust parser in the compiler crate should now be treated as a temporary AST/front-end experiment rather than the long-term concrete-syntax strategy.
 
 ## 2. AST
 
@@ -227,16 +236,22 @@ The emitter should preserve user intent where practical, especially around exter
 This can stay in one crate at first, but should be organized in layers:
 
 ```text
-src/
-  syntax/        # tree-sitter integration, CST adapters
-  ast/           # AST node definitions
-  resolve/       # name resolution
-  elaborate/     # defaults, inference, desugaring
-  typeck/        # type and clock checking
-  core_ir/       # typed semantic IR
-  rtl_ir/        # lowering target for Verilog emission
-  emit/          # Verilog backend
-  diagnostics/   # spans, messages, labels
+packages/
+  polar-compiler/
+    src/
+      syntax/        # tree-sitter integration, CST adapters
+      ast/           # AST node definitions
+      resolve/       # name resolution
+      elaborate/     # defaults, inference, desugaring
+      typeck/        # type and clock checking
+      core_ir/       # typed semantic IR
+      rtl_ir/        # lowering target for Verilog emission
+      emit/          # Verilog backend
+      diagnostics/   # spans, messages, labels
+  tree-sitter-polar/
+    grammar.js
+    queries/
+    test/corpus/
 ```
 
 If tree-sitter lives as a separate grammar package for editor support, keep the Rust compiler crate consuming generated parser artifacts rather than mixing grammar source into semantic code.

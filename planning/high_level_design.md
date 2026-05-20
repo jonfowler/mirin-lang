@@ -158,6 +158,11 @@ Recommended use:
 
 Tree-sitter should own syntax recognition, while Rust code should own semantic interpretation.
 
+The repository layout should reflect that split:
+
+- `packages/tree-sitter-polar/` for the concrete syntax grammar
+- `packages/polar-compiler/` for the Rust compiler and semantic pipeline
+
 ### AST
 
 The AST should remain close to source syntax while removing trivia and normalizing obvious syntax details.
