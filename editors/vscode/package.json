@@ -7,9 +7,6 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "activationEvents": [
-    "onLanguage:polar"
-  ],
   "categories": [
     "Programming Languages"
   ],
