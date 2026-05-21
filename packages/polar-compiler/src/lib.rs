@@ -1,10 +1,15 @@
 pub mod parser;
+pub mod resolve;
 pub mod surface_ir;
 
 pub use parser::tree_sitter::{
     Cst, CstChild, CstNode, ParseError, ParsedSource, SourceExcerpt, SourcePosition, SourceSpan,
     SyntaxDiagnostic, language, parse_file, parse_file_with_diagnostics, parse_source,
     parse_source_with_diagnostics, render_parse_error,
+};
+pub use resolve::{
+    BindingId, BindingInfo, BindingKind, DefId, DefInfo, DefKind, ParamId, ParamInfo, Res,
+    ResolveError, ResolveErrorKind, ResolveResult, resolve_file,
 };
 pub use surface_ir::{
     ArgumentList, AssignmentStatement, BinaryExpression, BinaryOperator, Block,

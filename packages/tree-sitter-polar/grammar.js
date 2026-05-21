@@ -33,9 +33,16 @@ module.exports = grammar({
       seq(
         "fn",
         field("name", $.identifier),
-        optional(field("named_parameters", $.named_parameter_section)),
-        optional(field("parameters", $.parameter_section)),
-        optional(seq("->", field("return_type", $.type_expression))),
+        optional(
+          choice(
+            seq(
+              field("named_parameters", $.named_parameter_section),
+              field("parameters", $.parameter_section),
+            ),
+            field("parameters", $.parameter_section),
+          ),
+        ),
+        optional(seq("->", field("return_type", $.return_type_expression))),
         field("body", $.block),
       ),
 
@@ -75,7 +82,7 @@ module.exports = grammar({
         field("name", $.identifier),
         optional(field("named_parameters", $.named_parameter_section)),
         field("parameters", $.parameter_section),
-        optional(seq("->", field("return_type", $.type_expression))),
+        optional(seq("->", field("return_type", $.return_type_expression))),
         field("body", $.block),
       ),
 
@@ -154,9 +161,31 @@ module.exports = grammar({
     type_expression: ($) =>
       prec.right(
         seq(
-        field("name", $.identifier),
-        repeat(choice($.type_index, $.type_named_arguments, $.type_arguments)),
-        optional(seq("@", field("domain", $.identifier))),
+          field("name", $.identifier),
+          repeat(
+            choice(
+              $.type_index,
+              seq($.type_named_arguments, $.type_arguments),
+              $.type_arguments,
+            ),
+          ),
+          optional(seq("@", field("domain", $.identifier))),
+        ),
+      ),
+
+    // Return type positions exclude type_named_arguments to resolve the
+    // shift-reduce conflict between `-> T { named_args }` and `-> T { body }`.
+    return_type_expression: ($) =>
+      prec.right(
+        seq(
+          field("name", $.identifier),
+          repeat(
+            choice(
+              $.type_index,
+              $.type_arguments,
+            ),
+          ),
+          optional(seq("@", field("domain", $.identifier))),
         ),
       ),
 
@@ -198,7 +227,14 @@ module.exports = grammar({
             "receiver",
             choice($.path_expression, $.identifier, $.number, $.parenthesized_expression),
           ),
-          repeat1(choice($.field_access, $.named_argument_list, $.argument_list, $.slice_expression)),
+          repeat1(
+            choice(
+              $.field_access,
+              seq($.named_argument_list, $.argument_list),
+              $.argument_list,
+              $.slice_expression,
+            ),
+          ),
         ),
       ),
 

@@ -39,7 +39,7 @@ impl Stream8
   { #clk: Clock }
   {
 
-    fn connect(self: Stream8{clk}, out downstream: Stream8{clk}) {
+    fn connect(self: Stream8{clk}(), out downstream: Stream8{clk}()) {
       downstream.valid = self.valid;
       downstream.data = self.data;
       self.ready = downstream.ready;

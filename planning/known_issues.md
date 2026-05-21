@@ -66,15 +66,13 @@ b. A `var` inside a conditional is hoisted to the enclosing block, and the
 Neither is currently specified. The language needs an explicit rule before any
 implementation of `if`/`match` can proceed.
 
-### 4. Multiple drivers via `=>` — resolved by issue 2
+### 4. Multiple drivers via `=>` — resolved
 
-The desugaring model from issue 2 covers this case. `comp_a { output => x }()`
-introduces an implicit `var x`. A second `comp_b { output => x }()` would
-introduce `var x` again — which is a duplicate `var` declaration in the same
-scope (see issue 13), and therefore an error.
-
-Connecting a second `=>` to a *pre-declared* `var x` is a multiple-driver error:
-the signal already has a driver, and `=>` would be a second one.
+`=>` always counts as the single assignment for its target (explicit `var` or
+implicitly introduced). A second `=> x` in the same block is always a
+multiple-driver error, regardless of whether `x` was pre-declared or implicitly
+introduced. An explicit equation `x = expr` also counts as an assignment, so
+`var x; x = a; comp { output => x }()` is also a multiple-driver error.
 
 ---
 
@@ -194,6 +192,18 @@ caught at the connection site during type checking: the type of the port field
 (which carries its clock domain) is unified with the type of the `var` binding.
 The type checker must apply this check against every connection that references
 the `var`, not just the first.
+
+### 16. Grammar ambiguity: return type `{ ... }` vs block `{ ... }` — resolved
+
+`fn f(x: T) -> ReturnType { body }` was ambiguous in the tree-sitter grammar because
+`type_named_arguments` used `{ }` as delimiters, matching the block opener.
+
+**Fix**: a separate `return_type_expression` rule was introduced that excludes
+`type_named_arguments`. `component_definition` and `function_definition` use
+`return_type_expression` for their return type field. Since `{` is never a valid suffix
+in a return type position, the parser unambiguously treats `{` after the return type as
+the block opener. Named type arguments (e.g. `DF{clk}()`) are still available in
+parameter type positions via the full `type_expression` rule.
 
 ---
 

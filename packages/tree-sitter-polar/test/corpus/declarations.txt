@@ -58,7 +58,7 @@ fn multAdd
             index: (expression
               (number)))
           domain: (identifier))))
-    return_type: (type_expression
+    return_type: (return_type_expression
       name: (identifier)
       (type_index
         index: (expression

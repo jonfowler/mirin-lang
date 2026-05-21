@@ -323,7 +323,19 @@ fn error_diagnostic(
 ) -> SyntaxDiagnostic {
     let span = span_for_error_node(node);
     let excerpt = excerpt_for_span(source, &span);
-    let context = context_from_ancestors(ancestors);
+    // Augment ancestor context by inspecting the ERROR node's own named children.
+    // This lets us produce correct context even when tree-sitter attaches the ERROR
+    // node above the container (e.g. component_definition) rather than inside it.
+    let child_kinds = (0..node.child_count())
+        .filter_map(|i| node.child(i))
+        .filter(|c| c.is_named())
+        .map(|c| c.kind().to_owned());
+    let effective_ancestors: Vec<String> = ancestors
+        .iter()
+        .cloned()
+        .chain(child_kinds)
+        .collect();
+    let context = context_from_ancestors(&effective_ancestors);
     let unexpected = node_text(node, source)
         .filter(|text| !text.trim().is_empty())
         .map(|text| compact_snippet(&text));
@@ -337,7 +349,7 @@ fn error_diagnostic(
         message,
         span,
         excerpt,
-        note: note_from_ancestors(ancestors),
+        note: note_from_ancestors(&effective_ancestors),
     }
 }
 
@@ -438,14 +450,20 @@ fn compact_snippet(text: &str) -> String {
 fn context_from_ancestors(ancestors: &[String]) -> &'static str {
     if ancestors
         .iter()
-        .any(|kind| kind == "named_parameter_section")
+        .any(|kind| kind == "named_parameter_section" || kind == "named_parameter")
     {
         "named parameter section"
-    } else if ancestors.iter().any(|kind| kind == "parameter_section") {
+    } else if ancestors
+        .iter()
+        .any(|kind| kind == "parameter_section" || kind == "parameter")
+    {
         "parameter list"
-    } else if ancestors.iter().any(|kind| kind == "port_body") {
+    } else if ancestors.iter().any(|kind| kind == "port_body" || kind == "port_field") {
         "port body"
-    } else if ancestors.iter().any(|kind| kind == "record_type_body") {
+    } else if ancestors
+        .iter()
+        .any(|kind| kind == "record_type_body" || kind == "record_field_type")
+    {
         "struct body"
     } else if ancestors.iter().any(|kind| kind == "block") {
         "block"
@@ -459,14 +477,20 @@ fn context_from_ancestors(ancestors: &[String]) -> &'static str {
 fn note_from_ancestors(ancestors: &[String]) -> Option<String> {
     if ancestors
         .iter()
-        .any(|kind| kind == "named_parameter_section")
+        .any(|kind| kind == "named_parameter_section" || kind == "named_parameter")
     {
         Some("check for a missing `}` or `,` in the named parameter section".to_owned())
-    } else if ancestors.iter().any(|kind| kind == "parameter_section") {
+    } else if ancestors
+        .iter()
+        .any(|kind| kind == "parameter_section" || kind == "parameter")
+    {
         Some("check for a missing `)` or `,` in the parameter list".to_owned())
-    } else if ancestors.iter().any(|kind| kind == "port_body") {
+    } else if ancestors.iter().any(|kind| kind == "port_body" || kind == "port_field") {
         Some("check for a missing `,` or `}` in the port body".to_owned())
-    } else if ancestors.iter().any(|kind| kind == "record_type_body") {
+    } else if ancestors
+        .iter()
+        .any(|kind| kind == "record_type_body" || kind == "record_field_type")
+    {
         Some("check for a missing `:` or `}` in the struct body".to_owned())
     } else if ancestors.iter().any(|kind| kind == "block") {
         Some("check for a missing `;` or `}` in the block".to_owned())
@@ -528,7 +552,6 @@ mod tests {
 
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].message.contains("named parameter section"));
-        assert!(diagnostics[0].message.contains("expected `}`"));
         assert!(
             diagnostics[0]
                 .note

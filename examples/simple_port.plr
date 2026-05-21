@@ -8,7 +8,7 @@ port Stream8
 
 fn connectStream
   { #clk: Clock }
-  ( upstream: Stream8{clk}, out downstream: Stream8{clk} )
+  ( upstream: Stream8{clk}(), out downstream: Stream8{clk}() )
   {
     downstream.valid = upstream.valid;
     downstream.data = upstream.data;

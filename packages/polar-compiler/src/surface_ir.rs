@@ -801,7 +801,12 @@ fn lower_connection_direction(node: &CstNode) -> Result<ConnectionDirection, Low
 }
 
 fn lower_type_expression(node: &CstNode, source: &str) -> Result<TypeExpression, LowerError> {
-    expect_kind(node, "type_expression")?;
+    if node.kind != "type_expression" && node.kind != "return_type_expression" {
+        return Err(LowerError {
+            message: format!("expected type_expression, found {}", node.kind),
+            span: Some(node.span.clone()),
+        });
+    }
     let mut suffixes = Vec::new();
     let mut domain = None;
 

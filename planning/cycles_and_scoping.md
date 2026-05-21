@@ -22,7 +22,7 @@ Each line is unambiguous: the RHS `x` refers to the binding from the previous li
 
 ### `var` — block-scoped signal declaration
 
-`var x: T` declares a named signal node that is in scope for the remainder of the enclosing block. Unlike `let`, `var` bindings can appear in equations that reference the name on both sides, enabling feedback.
+`var x: T` declares a named signal node that is in scope for the **entire enclosing block**, regardless of where the declaration appears. A pre-scan collects all `var` declarations before the forward pass begins, giving them block-wide scope. This means a `var` may appear after statements that already reference the name.
 
 The signal is given its value by a separate assignment equation:
 
@@ -30,6 +30,8 @@ The signal is given its value by a separate assignment equation:
 var count: uint[8] @clk;
 count = (count + 1).reg{rstn}(0);
 ```
+
+**Single-assignment rule:** every `var` must have exactly one assignment in the block. An assignment is either an explicit equation (`x = expr`) or a source connection (`output => x`). Zero assignments is an undriven-signal error. Two assignments is a multiple-driver error. Both checks are enforced at structural checking time.
 
 ## Why the two forms are different
 
@@ -93,6 +95,10 @@ The scoping rule for `=>` is conditional:
   the component call, not before.
 - If the name is **already in scope** (as `var` or `let`), `=>` connects to
   that existing binding. No new declaration is inserted.
+
+`=>` always counts as the single assignment for its target. A second `=> x` in
+the same block (whether `x` was implicitly introduced or pre-declared as `var`)
+is a multiple-driver error.
 
 ```rust
 // implicit introduction — out_df visible from here on

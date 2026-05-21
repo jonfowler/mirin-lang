@@ -123,11 +123,11 @@ check can run without waiting for type inference to complete.
 Checks include:
 
 - connection-block direction agreement: `=` must be used with `in` fields, `=>` with `out` fields
-- `var` equation completeness: every `var` in a block must have exactly one equation
+- `var` single-assignment rule: every `var` must have exactly one assignment; both explicit equations (`x = expr`) and source connections (`output => x`) count; zero assignments = undriven error, two = multiple-driver error
 - duplicate `var` declarations in the same scope (hard error)
 - `var`-after-`let` shadowing (hard error)
 - `=>` used with a `let` binding (hard error — tailored message, not exposed as a `var`/`let` conflict)
-- multiple drivers: two `=>` connections to the same signal
+- multiple drivers: two assignments (equations or `=>`) to the same `var`
 
 ## 5. Surface elaboration
 
@@ -280,7 +280,7 @@ The smallest useful end-to-end path is:
 
 1. parse `fn` declarations with named and positional arguments
 2. parse simple types including `uint[N] @clk` and `Reset @clk`
-3. parse blocks with `let`, `loc`, `return`, and simple operators
+3. parse blocks with `let`, `var`, `return`, and simple operators
 4. build a small AST
 5. run basic name and clock checks
 6. lower to a tiny typed core
