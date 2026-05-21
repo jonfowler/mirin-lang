@@ -6,7 +6,7 @@ port Stream8
     in ready: bool @clk,
   }
 
-cmp connectStream
+fn connectStream
   { #clk: Clock }
   ( upstream: Stream8{clk}, out downstream: Stream8{clk} )
   {

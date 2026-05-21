@@ -1,4 +1,4 @@
-cmp multAdd
+fn multAdd
   { #clk: Clock,
     rstn: Reset @clk = high,
     c: uint[8] @clk = 0,

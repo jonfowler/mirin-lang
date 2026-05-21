@@ -1,12 +1,9 @@
-cmp counter
+fn counter
   { #clk: Clock, rstn: Reset @clk = high }
   ( const bits: usize )
   -> uint[bits] @clk
   {
-    rec count = {
-      let next = count + 1;
-      return next.reg{rstn, reset_val = 0}();
-    }
-
+    var count: uint[bits] @clk;
+    count = (count + 1).reg{rstn, reset_val = 0}();
     return count;
   }

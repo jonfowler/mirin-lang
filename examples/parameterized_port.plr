@@ -7,7 +7,7 @@ port DF
     out data: A @clk,
   }
 
-cmp connectDf
+fn connectDf
   { #clk: Clock }
   ( upstream: DF{clk}(uint[8]), out downstream: DF{clk}(uint[8]) )
   {

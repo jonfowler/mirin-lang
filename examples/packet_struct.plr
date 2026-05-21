@@ -3,7 +3,7 @@ struct Packet = packet {
   payload: uint[8],
 }
 
-cmp registerPacket
+fn registerPacket
   { #clk: Clock, rstn: Reset @clk = high }
   ( input: Packet @clk )
   -> Packet @clk

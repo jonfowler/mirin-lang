@@ -3,7 +3,7 @@ struct Bus(A: Type) = bus {
   data: A,
 }
 
-cmp registerBus
+fn registerBus
   { #clk: Clock, rstn: Reset @clk = high }
   ( input: Bus(uint[8]) @clk )
   -> Bus(uint[8]) @clk
