@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fmt;
+use std::path::Path;
 
 use crate::surface_ir::{
     Block, ComponentDefinition, Expression, FunctionDefinition, ImplBlock, Item, LetStatement,
@@ -6,7 +8,7 @@ use crate::surface_ir::{
     SourceArgument, SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix,
     VarStatement,
 };
-use crate::{Identifier, SourceSpan};
+use crate::{Identifier, SourceExcerpt, SourceSpan};
 
 /// Unique ID for a top-level definition (component, struct, port, impl).
 ///
@@ -88,6 +90,107 @@ pub enum ResolveErrorKind {
     SourceOnLetBinding(String),
     /// A `=>` source connection targets a name that is not a valid signal node (e.g. a parameter or def).
     InvalidSourceTarget(String),
+}
+
+impl fmt::Display for ResolveErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ResolveErrorKind::UndefinedName(name) => {
+                write!(f, "undefined name `{name}`")
+            }
+            ResolveErrorKind::DuplicateDef(name) => {
+                write!(f, "`{name}` is defined more than once in this file")
+            }
+            ResolveErrorKind::DuplicateVar(name) => {
+                write!(
+                    f,
+                    "`{name}` is declared more than once as `var` in this block"
+                )
+            }
+            ResolveErrorKind::VarAfterLet(name) => {
+                write!(
+                    f,
+                    "cannot declare `var {name}` after a `let {name}` binding in the same block"
+                )
+            }
+            ResolveErrorKind::SourceOnLetBinding(name) => {
+                write!(
+                    f,
+                    "`{name}` is a `let` binding; source arrows (`=>`) require a `var` signal"
+                )
+            }
+            ResolveErrorKind::InvalidSourceTarget(name) => {
+                write!(
+                    f,
+                    "`{name}` is not a valid source arrow target; only `var` signals may be wired this way"
+                )
+            }
+        }
+    }
+}
+
+pub fn render_resolve_errors(
+    errors: &[ResolveError],
+    source: &str,
+    path: Option<&Path>,
+    f: &mut impl fmt::Write,
+) -> fmt::Result {
+    for (index, error) in errors.iter().enumerate() {
+        if index > 0 {
+            writeln!(f)?;
+        }
+        writeln!(f, "error: {}", error.kind)?;
+        if let Some(path) = path {
+            writeln!(
+                f,
+                " --> {}:{}:{}",
+                path.display(),
+                error.span.start.row + 1,
+                error.span.start.column + 1
+            )?;
+        } else {
+            writeln!(
+                f,
+                " --> {}:{}",
+                error.span.start.row + 1,
+                error.span.start.column + 1
+            )?;
+        }
+        if let Some(excerpt) = excerpt_for_span(source, &error.span) {
+            writeln!(f, "  |")?;
+            writeln!(f, "{:>2} | {}", excerpt.line_number, excerpt.line_text)?;
+            writeln!(
+                f,
+                "  | {}{}",
+                " ".repeat(excerpt.highlight_start),
+                "^".repeat(
+                    excerpt
+                        .highlight_end
+                        .saturating_sub(excerpt.highlight_start)
+                )
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn excerpt_for_span(source: &str, span: &SourceSpan) -> Option<SourceExcerpt> {
+    let line_text = source.lines().nth(span.start.row)?.to_owned();
+    let start = span.start.column.min(line_text.len());
+    let end = if span.start.row == span.end.row {
+        span.end
+            .column
+            .max(start + 1)
+            .min(line_text.len().max(start + 1))
+    } else {
+        line_text.len().max(start + 1)
+    };
+    Some(SourceExcerpt {
+        line_number: span.start.row + 1,
+        line_text,
+        highlight_start: start,
+        highlight_end: end,
+    })
 }
 
 /// The output of name resolution.
@@ -748,11 +851,175 @@ mod tests {
         assert!(r.errors.is_empty());
     }
 
+    // --- error message text ---
+
+    #[test]
+    fn error_message_undefined_name() {
+        let r = resolve("fn f() { let x = y; }");
+        assert_eq!(r.errors.len(), 1);
+        assert_eq!(r.errors[0].kind.to_string(), "undefined name `y`");
+    }
+
+    #[test]
+    fn error_message_duplicate_def() {
+        let r = resolve(
+            "fn foo(a: uint[8]) { let r = a; }\n\
+             fn foo(b: uint[8]) { let r = b; }",
+        );
+        assert_eq!(r.errors.len(), 1);
+        assert_eq!(
+            r.errors[0].kind.to_string(),
+            "`foo` is defined more than once in this file"
+        );
+    }
+
+    #[test]
+    fn error_message_duplicate_var() {
+        let r = resolve("fn f() { var x: uint[8]; var x: uint[8]; }");
+        assert_eq!(r.errors.len(), 1);
+        assert_eq!(
+            r.errors[0].kind.to_string(),
+            "`x` is declared more than once as `var` in this block"
+        );
+    }
+
+    #[test]
+    fn error_message_var_after_let() {
+        let r = resolve("fn f(x: uint[8]) { let y = x; var y; }");
+        assert_eq!(r.errors.len(), 1);
+        assert_eq!(
+            r.errors[0].kind.to_string(),
+            "cannot declare `var y` after a `let y` binding in the same block"
+        );
+    }
+
+    #[test]
+    fn error_message_source_on_let_binding() {
+        let r = resolve(
+            "fn producer() { }\n\
+             fn consumer(inp: uint[8]) { let x = inp; producer { output => x }(); }",
+        );
+        assert_eq!(r.errors.len(), 1);
+        assert_eq!(
+            r.errors[0].kind.to_string(),
+            "`x` is a `let` binding; source arrows (`=>`) require a `var` signal"
+        );
+    }
+
+    #[test]
+    fn error_message_invalid_source_target() {
+        let r = resolve(
+            "fn producer() { }\n\
+             fn consumer(inp: uint[8]) { producer { output => inp }(); }",
+        );
+        assert_eq!(r.errors.len(), 1);
+        assert_eq!(
+            r.errors[0].kind.to_string(),
+            "`inp` is not a valid source arrow target; only `var` signals may be wired this way"
+        );
+    }
+
+    // --- example file integration tests ---
+
+    fn resolve_file_source(source: &str) -> ResolveResult {
+        let file = parse_surface_source(source).expect("parse failed");
+        resolve_file(&file)
+    }
+
     #[test]
     fn resolves_example_file() {
         let source = include_str!("../../../examples/mult_add.plr");
-        let file = parse_surface_source(source).unwrap();
-        let r = resolve_file(&file);
+        let r = resolve_file_source(source);
         assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn resolves_success_examples() {
+        let examples: &[(&str, &str)] = &[
+            (
+                "add_constant",
+                include_str!("../../../examples/add_constant.plr"),
+            ),
+            (
+                "accumulator",
+                include_str!("../../../examples/accumulator.plr"),
+            ),
+            ("counter", include_str!("../../../examples/counter.plr")),
+            ("mult_add", include_str!("../../../examples/mult_add.plr")),
+            ("pipeline", include_str!("../../../examples/pipeline.plr")),
+            (
+                "shift_register",
+                include_str!("../../../examples/shift_register.plr"),
+            ),
+        ];
+        for (name, source) in examples {
+            let r = resolve_file_source(source);
+            assert!(
+                r.errors.is_empty(),
+                "example `{name}` had unexpected resolve errors: {:?}",
+                r.errors
+            );
+        }
+    }
+
+    #[test]
+    fn name_resolution_fail_undefined_name() {
+        let source = include_str!("../../../fail-examples/undefined-name.plr");
+        let r = resolve_file_source(source);
+        assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
+        assert!(
+            matches!(&r.errors[0].kind, ResolveErrorKind::UndefinedName(n) if n == "offset"),
+            "got: {}",
+            r.errors[0].kind
+        );
+        assert_eq!(r.errors[0].kind.to_string(), "undefined name `offset`");
+    }
+
+    #[test]
+    fn name_resolution_fail_duplicate_def() {
+        let source = include_str!("../../../fail-examples/duplicate-def.plr");
+        let r = resolve_file_source(source);
+        assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
+        assert!(
+            matches!(&r.errors[0].kind, ResolveErrorKind::DuplicateDef(n) if n == "process"),
+            "got: {}",
+            r.errors[0].kind
+        );
+        assert_eq!(
+            r.errors[0].kind.to_string(),
+            "`process` is defined more than once in this file"
+        );
+    }
+
+    #[test]
+    fn name_resolution_fail_duplicate_var() {
+        let source = include_str!("../../../fail-examples/duplicate-var.plr");
+        let r = resolve_file_source(source);
+        assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
+        assert!(
+            matches!(&r.errors[0].kind, ResolveErrorKind::DuplicateVar(n) if n == "count"),
+            "got: {}",
+            r.errors[0].kind
+        );
+        assert_eq!(
+            r.errors[0].kind.to_string(),
+            "`count` is declared more than once as `var` in this block"
+        );
+    }
+
+    #[test]
+    fn name_resolution_fail_var_after_let() {
+        let source = include_str!("../../../fail-examples/var-after-let.plr");
+        let r = resolve_file_source(source);
+        assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
+        assert!(
+            matches!(&r.errors[0].kind, ResolveErrorKind::VarAfterLet(n) if n == "acc"),
+            "got: {}",
+            r.errors[0].kind
+        );
+        assert_eq!(
+            r.errors[0].kind.to_string(),
+            "cannot declare `var acc` after a `let acc` binding in the same block"
+        );
     }
 }

@@ -1,0 +1,9 @@
+fn accumulator
+  { #clk: Clock, rstn: Reset @clk = high }
+  ( data: uint[8] @clk )
+  -> uint[8] @clk
+  {
+    var acc: uint[8] @clk;
+    acc = (acc + data).reg{rstn, reset_val = 0}();
+    return acc;
+  }

@@ -1,7 +1,10 @@
 use std::path::PathBuf;
-use std::{env, process};
+use std::{env, fs, process};
 
-use polar_compiler::{ParseError, parse_file_with_diagnostics, render_parse_error};
+use polar_compiler::{
+    ParseError, lower_cst, parse_source_with_diagnostics, render_parse_error,
+    render_resolve_errors, resolve_file,
+};
 
 fn main() {
     let mut args = env::args_os();
@@ -22,27 +25,53 @@ fn main() {
 
     let path = PathBuf::from(path);
 
-    match parse_file_with_diagnostics(&path) {
-        Ok(parsed) if parsed.diagnostics.is_empty() => {
-            print!("{}", parsed.cst);
+    let source = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: failed to read {}: {e}", path.display());
+            process::exit(2);
         }
-        Ok(parsed) => {
-            let mut rendered = String::new();
-            render_parse_error(
-                &ParseError::Syntax(parsed.diagnostics),
-                Some(&path),
-                &mut rendered,
-            )
-            .expect("rendering parse diagnostics should not fail");
-            eprintln!("{rendered}");
-            process::exit(1);
-        }
+    };
+
+    let parsed = match parse_source_with_diagnostics(&source) {
+        Ok(p) => p,
         Err(err) => {
             let mut rendered = String::new();
             render_parse_error(&err, Some(&path), &mut rendered)
-                .expect("rendering parse diagnostics should not fail");
+                .expect("rendering parse error should not fail");
             eprintln!("{rendered}");
             process::exit(1);
         }
+    };
+
+    if !parsed.diagnostics.is_empty() {
+        let mut rendered = String::new();
+        render_parse_error(
+            &ParseError::Syntax(parsed.diagnostics),
+            Some(&path),
+            &mut rendered,
+        )
+        .expect("rendering parse diagnostics should not fail");
+        eprintln!("{rendered}");
+        process::exit(1);
     }
+
+    let file = match lower_cst(&parsed.cst, &source) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+
+    let result = resolve_file(&file);
+    if !result.errors.is_empty() {
+        let mut rendered = String::new();
+        render_resolve_errors(&result.errors, &source, Some(&path), &mut rendered)
+            .expect("rendering resolve errors should not fail");
+        eprintln!("{rendered}");
+        process::exit(1);
+    }
+
+    print!("{}", parsed.cst);
 }

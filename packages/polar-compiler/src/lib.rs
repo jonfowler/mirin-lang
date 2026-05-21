@@ -9,7 +9,7 @@ pub use parser::tree_sitter::{
 };
 pub use resolve::{
     DefId, DefInfo, DefKind, LocalInfo, LocalKind, Res, ResolveError, ResolveErrorKind,
-    ResolveResult, resolve_file,
+    ResolveResult, render_resolve_errors, resolve_file,
 };
 pub use surface_ir::{
     ArgumentList, AssignmentStatement, BinaryExpression, BinaryOperator, Block,
@@ -19,5 +19,6 @@ pub use surface_ir::{
     PortDefinition, PortField, PostfixExpression, PostfixOperation, RecordConstructorExpression,
     RecordFieldType, RecordFieldValue, ReturnStatement, SinkArgument, SliceExpression,
     SourceArgument, SourceFile, Statement, StructDefinition, SurfaceIrError, TypeArgumentList,
-    TypeExpression, TypeIndex, TypeSuffix, VarStatement, parse_surface_file, parse_surface_source,
+    TypeExpression, TypeIndex, TypeSuffix, VarStatement, lower_cst, parse_surface_file,
+    parse_surface_source,
 };

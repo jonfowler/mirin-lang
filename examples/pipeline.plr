@@ -1,0 +1,9 @@
+fn pipeline
+  { #clk: Clock, rstn: Reset @clk = high }
+  ( data: uint[8] @clk )
+  -> uint[8] @clk
+  {
+    let data = (data + 1).reg{rstn}();
+    let data = (data * 2).reg{rstn}();
+    return data;
+  }
