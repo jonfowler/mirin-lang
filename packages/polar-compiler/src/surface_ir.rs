@@ -1,4 +1,5 @@
-use std::{fmt, fs, path::Path};
+use std::path::Path;
+use std::{fmt, fs};
 
 use crate::{Cst, CstNode, ParseError, SourceSpan, parse_source};
 
@@ -576,8 +577,11 @@ impl<'a> Lowerer<'a> {
             inferable: child_by_field(node, "inferable").is_some(),
             is_const: child_by_field(node, "const").is_some(),
             name: self.lower_required_identifier(node, "name")?,
-            ty: self
-                .lower_type_expression(lower_required_child(node, "type", "type_expression")?)?,
+            ty: self.lower_type_expression(lower_required_child(
+                node,
+                "type",
+                "type_expression",
+            )?)?,
             default: child_by_field(node, "default")
                 .map(|child| self.lower_expression(child))
                 .transpose()?,
@@ -589,8 +593,11 @@ impl<'a> Lowerer<'a> {
         Ok(RecordFieldType {
             span: node.span.clone(),
             name: self.lower_required_identifier(node, "name")?,
-            ty: self
-                .lower_type_expression(lower_required_child(node, "type", "type_expression")?)?,
+            ty: self.lower_type_expression(lower_required_child(
+                node,
+                "type",
+                "type_expression",
+            )?)?,
         })
     }
 
@@ -600,8 +607,11 @@ impl<'a> Lowerer<'a> {
             span: node.span.clone(),
             direction: lower_direction(lower_required_field(node, "direction")?)?,
             name: self.lower_required_identifier(node, "name")?,
-            ty: self
-                .lower_type_expression(lower_required_child(node, "type", "type_expression")?)?,
+            ty: self.lower_type_expression(lower_required_child(
+                node,
+                "type",
+                "type_expression",
+            )?)?,
         })
     }
 
@@ -717,10 +727,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_postfix_operation(
-        &mut self,
-        node: &CstNode,
-    ) -> Result<PostfixOperation, LowerError> {
+    fn lower_postfix_operation(&mut self, node: &CstNode) -> Result<PostfixOperation, LowerError> {
         match node.kind.as_str() {
             "field_access" => Ok(PostfixOperation::Field(FieldAccess {
                 span: node.span.clone(),
@@ -755,10 +762,7 @@ impl<'a> Lowerer<'a> {
             .collect()
     }
 
-    fn lower_record_field_value(
-        &mut self,
-        node: &CstNode,
-    ) -> Result<RecordFieldValue, LowerError> {
+    fn lower_record_field_value(&mut self, node: &CstNode) -> Result<RecordFieldValue, LowerError> {
         expect_kind(node, "record_field_value")?;
         Ok(RecordFieldValue {
             span: node.span.clone(),
@@ -767,10 +771,7 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    fn lower_named_arguments(
-        &mut self,
-        node: &CstNode,
-    ) -> Result<Vec<NamedArgument>, LowerError> {
+    fn lower_named_arguments(&mut self, node: &CstNode) -> Result<Vec<NamedArgument>, LowerError> {
         named_children(node)
             .map(|child| self.lower_named_argument(child))
             .collect()

@@ -1,4 +1,5 @@
-use std::{env, path::PathBuf, process};
+use std::path::PathBuf;
+use std::{env, process};
 
 use polar_compiler::{ParseError, parse_file_with_diagnostics, render_parse_error};
 

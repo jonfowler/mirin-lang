@@ -242,12 +242,16 @@ impl Ctx {
         for np in &func.named_parameters {
             self.alloc_local(LocalKind::Param { owner }, &np.name);
             params.insert(np.name.text.clone(), np.name.id);
-            self.result.resolutions.insert(np.name.id, Res::Local(np.name.id));
+            self.result
+                .resolutions
+                .insert(np.name.id, Res::Local(np.name.id));
         }
         for p in &func.parameters {
             self.alloc_local(LocalKind::Param { owner }, &p.name);
             params.insert(p.name.text.clone(), p.name.id);
-            self.result.resolutions.insert(p.name.id, Res::Local(p.name.id));
+            self.result
+                .resolutions
+                .insert(p.name.id, Res::Local(p.name.id));
         }
         if let Some(ty) = &func.return_type {
             self.resolve_type_expr(ty, &params);
@@ -265,7 +269,9 @@ impl Ctx {
         for np in named {
             self.alloc_local(LocalKind::Param { owner }, &np.name);
             scope.insert(np.name.text.clone(), np.name.id);
-            self.result.resolutions.insert(np.name.id, Res::Local(np.name.id));
+            self.result
+                .resolutions
+                .insert(np.name.id, Res::Local(np.name.id));
             if let Some(ty) = &np.ty {
                 self.resolve_type_expr(ty, &scope);
             }
@@ -276,7 +282,9 @@ impl Ctx {
         for p in positional {
             self.alloc_local(LocalKind::Param { owner }, &p.name);
             scope.insert(p.name.text.clone(), p.name.id);
-            self.result.resolutions.insert(p.name.id, Res::Local(p.name.id));
+            self.result
+                .resolutions
+                .insert(p.name.id, Res::Local(p.name.id));
             self.resolve_type_expr(&p.ty, &scope);
             if let Some(default) = &p.default {
                 self.resolve_expr_in_params(default, &scope);
@@ -290,7 +298,9 @@ impl Ctx {
         if let Some(&id) = params.get(&ty.name.text) {
             self.result.resolutions.insert(ty.name.id, Res::Local(id));
         } else if let Some(&(kind, id)) = self.global_defs.get(&ty.name.text) {
-            self.result.resolutions.insert(ty.name.id, Res::Def(kind, id));
+            self.result
+                .resolutions
+                .insert(ty.name.id, Res::Def(kind, id));
         }
         // else: built-in type (uint, bool, Reset, …) — not in the def table
         if let Some(domain) = &ty.domain {
@@ -372,7 +382,10 @@ impl BlockCtx<'_> {
                 } else {
                     self.ctx.alloc_local(LocalKind::Var, ident);
                     self.var_bindings.insert(ident.text.clone(), ident.id);
-                    self.ctx.result.resolutions.insert(ident.id, Res::Local(ident.id));
+                    self.ctx
+                        .result
+                        .resolutions
+                        .insert(ident.id, Res::Local(ident.id));
                 }
             }
         }
@@ -410,7 +423,10 @@ impl BlockCtx<'_> {
         // Resolve RHS before introducing the new binding (so `let x = x + 1` sees the old x).
         self.resolve_expr(&l.value);
         self.ctx.alloc_local(LocalKind::Let, &l.name);
-        self.ctx.result.resolutions.insert(l.name.id, Res::Local(l.name.id));
+        self.ctx
+            .result
+            .resolutions
+            .insert(l.name.id, Res::Local(l.name.id));
         self.let_scope.push((l.name.text.clone(), l.name.id));
     }
 
@@ -421,7 +437,10 @@ impl BlockCtx<'_> {
             Expression::Path(p) => {
                 // Resolve the type part; the member is a field name (deferred to type checking).
                 if let Some(&(kind, id)) = self.ctx.global_defs.get(&p.ty.text) {
-                    self.ctx.result.resolutions.insert(p.ty.id, Res::Def(kind, id));
+                    self.ctx
+                        .result
+                        .resolutions
+                        .insert(p.ty.id, Res::Def(kind, id));
                 }
             }
             Expression::Binary(b) => {
@@ -538,9 +557,15 @@ impl BlockCtx<'_> {
 
     fn resolve_type(&mut self, ty: &TypeExpression) {
         if let Some(&id) = self.params.get(&ty.name.text) {
-            self.ctx.result.resolutions.insert(ty.name.id, Res::Local(id));
+            self.ctx
+                .result
+                .resolutions
+                .insert(ty.name.id, Res::Local(id));
         } else if let Some(&(kind, id)) = self.ctx.global_defs.get(&ty.name.text) {
-            self.ctx.result.resolutions.insert(ty.name.id, Res::Def(kind, id));
+            self.ctx
+                .result
+                .resolutions
+                .insert(ty.name.id, Res::Def(kind, id));
         }
         if let Some(domain) = &ty.domain {
             if let Some(&id) = self.params.get(&domain.text) {
@@ -626,7 +651,10 @@ mod tests {
             Res::Local(id) => matches!(r.locals[id].kind, LocalKind::Param { .. }),
             _ => false,
         });
-        assert!(param_res.is_some(), "expected at least one param resolution");
+        assert!(
+            param_res.is_some(),
+            "expected at least one param resolution"
+        );
     }
 
     #[test]
@@ -655,9 +683,7 @@ mod tests {
     #[test]
     fn resolves_var_with_block_wide_scope() {
         // var is used in the assignment before the var declaration appears in source
-        let r = resolve(
-            "fn f() { count = count; var count: uint[8]; }",
-        );
+        let r = resolve("fn f() { count = count; var count: uint[8]; }");
         assert!(r.errors.is_empty());
         assert!(
             r.locals
@@ -668,18 +694,14 @@ mod tests {
 
     #[test]
     fn reports_var_after_let() {
-        let r = resolve(
-            "fn f(x: uint[8]) { let y = x; var y; }",
-        );
+        let r = resolve("fn f(x: uint[8]) { let y = x; var y; }");
         assert_eq!(r.errors.len(), 1);
         assert!(matches!(&r.errors[0].kind, ResolveErrorKind::VarAfterLet(n) if n == "y"));
     }
 
     #[test]
     fn reports_duplicate_var() {
-        let r = resolve(
-            "fn f() { var x: uint[8]; var x: uint[8]; }",
-        );
+        let r = resolve("fn f() { var x: uint[8]; var x: uint[8]; }");
         assert_eq!(r.errors.len(), 1);
         assert!(matches!(&r.errors[0].kind, ResolveErrorKind::DuplicateVar(n) if n == "x"));
     }
@@ -714,9 +736,7 @@ mod tests {
              fn consumer(inp: uint[8]) { let x = inp; producer { output => x }(); }",
         );
         assert_eq!(r.errors.len(), 1);
-        assert!(
-            matches!(&r.errors[0].kind, ResolveErrorKind::SourceOnLetBinding(n) if n == "x")
-        );
+        assert!(matches!(&r.errors[0].kind, ResolveErrorKind::SourceOnLetBinding(n) if n == "x"));
     }
 
     #[test]

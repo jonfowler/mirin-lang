@@ -1,4 +1,5 @@
-use std::{fmt, fs, path::Path};
+use std::path::Path;
+use std::{fmt, fs};
 
 use tree_sitter::{Language, Parser, Point, Tree};
 use tree_sitter_language::LanguageFn;
@@ -330,11 +331,7 @@ fn error_diagnostic(
         .filter_map(|i| node.child(i))
         .filter(|c| c.is_named())
         .map(|c| c.kind().to_owned());
-    let effective_ancestors: Vec<String> = ancestors
-        .iter()
-        .cloned()
-        .chain(child_kinds)
-        .collect();
+    let effective_ancestors: Vec<String> = ancestors.iter().cloned().chain(child_kinds).collect();
     let context = context_from_ancestors(&effective_ancestors);
     let unexpected = node_text(node, source)
         .filter(|text| !text.trim().is_empty())
@@ -458,7 +455,10 @@ fn context_from_ancestors(ancestors: &[String]) -> &'static str {
         .any(|kind| kind == "parameter_section" || kind == "parameter")
     {
         "parameter list"
-    } else if ancestors.iter().any(|kind| kind == "port_body" || kind == "port_field") {
+    } else if ancestors
+        .iter()
+        .any(|kind| kind == "port_body" || kind == "port_field")
+    {
         "port body"
     } else if ancestors
         .iter()
@@ -485,7 +485,10 @@ fn note_from_ancestors(ancestors: &[String]) -> Option<String> {
         .any(|kind| kind == "parameter_section" || kind == "parameter")
     {
         Some("check for a missing `)` or `,` in the parameter list".to_owned())
-    } else if ancestors.iter().any(|kind| kind == "port_body" || kind == "port_field") {
+    } else if ancestors
+        .iter()
+        .any(|kind| kind == "port_body" || kind == "port_field")
+    {
         Some("check for a missing `,` or `}` in the port body".to_owned())
     } else if ancestors
         .iter()
