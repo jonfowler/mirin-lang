@@ -520,6 +520,11 @@ impl BlockCtx<'_> {
         if let Some(ty) = &v.ty {
             self.resolve_type(ty);
         }
+        // The var name is already in scope from the prescan, so the init
+        // expression may reference the var itself (register feedback pattern).
+        if let Some(init) = &v.init {
+            self.resolve_expr(init);
+        }
     }
 
     fn resolve_let_stmt(&mut self, l: &LetStatement) {
@@ -849,6 +854,32 @@ mod tests {
              fn consumer() { var x: uint[8]; producer { output => x }(); }",
         );
         assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn resolves_var_with_inline_initializer() {
+        // var acc = acc + 1; — the init may reference the var itself (feedback)
+        let r = resolve("fn f(x: uint[8]) { var acc = acc + x; }");
+        assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
+        assert!(
+            r.locals
+                .values()
+                .any(|b| b.name == "acc" && matches!(b.kind, LocalKind::Var))
+        );
+    }
+
+    #[test]
+    fn var_initializer_resolves_names_in_scope() {
+        // The init expression sees params and other vars.
+        let r = resolve("fn f(x: uint[8]) { var a: uint[8]; var b = a + x; }");
+        assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn var_initializer_reports_undefined_name() {
+        let r = resolve("fn f() { var acc = acc + missing; }");
+        assert_eq!(r.errors.len(), 1);
+        assert!(matches!(&r.errors[0].kind, ResolveErrorKind::UndefinedName(n) if n == "missing"));
     }
 
     // --- error message text ---

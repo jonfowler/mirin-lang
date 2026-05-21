@@ -31,7 +31,15 @@ var count: uint[8] @clk;
 count = (count + 1).reg{rstn}(0);
 ```
 
-**Single-assignment rule:** every `var` must have exactly one assignment in the block. An assignment is either an explicit equation (`x = expr`) or a source connection (`output => x`). Zero assignments is an undriven-signal error. Two assignments is a multiple-driver error. Both checks are enforced at structural checking time.
+When the equation immediately follows the declaration — the common case for self-contained feedback — the two can be written as a single combined form:
+
+```rust
+var count: uint[8] @clk = (count + 1).reg{rstn}(0);
+```
+
+The combined form is purely syntactic sugar: it desugars to the declaration followed by the equation, with the same block-wide scope for the name. The RHS may reference the declared name itself, just as in the two-statement form.
+
+**Single-assignment rule:** every `var` must have exactly one assignment in the block. An assignment is either an explicit equation (`x = expr`), a source connection (`output => x`), or the initializer in a combined `var x = expr` declaration. Zero assignments is an undriven-signal error. Two assignments is a multiple-driver error. Both checks are enforced at structural checking time.
 
 ## Why the two forms are different
 
@@ -44,20 +52,27 @@ Making ordinary `let` recursive by default would break the simple sequential men
 
 ## State feedback
 
-Register feedback is the common case for `var`. The counter pattern:
+Register feedback is the common case for `var`. The counter pattern in two-statement form:
 
 ```rust
 var count: uint[8] @clk;
 count = (count + 1).reg{rstn}(0);
 ```
 
-The `var` declaration says "there is a signal called `count`." The equation says how it is connected. The cycle through `.reg` is what makes this well-formed — the register separates the current and next values in time.
-
-Type annotation on `var` can often be inferred from the equation:
+Or equivalently, using the combined form:
 
 ```rust
-var count;
-count = (count + 1).reg{rstn}(0);
+var count: uint[8] @clk = (count + 1).reg{rstn}(0);
+```
+
+The `var` declaration says "there is a signal called `count`." The equation says how it is connected. The cycle through `.reg` is what makes this well-formed — the register separates the current and next values in time.
+
+The two-statement form is required when `count` must be visible before its equation — for example, when the equation appears inside a component instantiation block that precedes the assignment in source order. The combined form is preferred when declaration and equation are naturally adjacent and no forward reference is needed.
+
+Type annotation on `var` can be omitted when it can be inferred from the equation:
+
+```rust
+var count = (count + 1).reg{rstn}(0);
 ```
 
 ## Structural feedback
@@ -165,7 +180,7 @@ SystemVerilog is useful background but not a model to copy directly.
 ## Open questions
 
 - Should there be a lint warning when a `let` shadows a `var`, given the readability risk?
-- Should `var` require an explicit type annotation, or is full inference always acceptable?
+- Type annotation on `var` is always optional; the type is inferred from the equation. This applies to both the two-statement form and the combined `var x = expr` form.
 - Can `var` be used inside `impl` method bodies, or only in component bodies? The safest initial rule is to disallow it and require stateful logic to live in a sub-component, but this needs an explicit decision before `impl` bodies are elaborated.
 - How do `var` declarations interact with explicit block scoping if Polar adds named or anonymous block forms later?
 - Is `var` legal inside `if`/`match` branches? Hardware signals do not conditionally exist, so the likely rule is that `var` is illegal in conditional branches and must be hoisted to the nearest component body. This must be decided before `if`/`match` is implemented.

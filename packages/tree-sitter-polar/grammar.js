@@ -150,6 +150,7 @@ module.exports = grammar({
         "var",
         commaSep1(field("name", $.identifier)),
         optional(seq(":", field("type", $.type_expression))),
+        optional(seq("=", field("value", $.expression))),
         ";",
       ),
 

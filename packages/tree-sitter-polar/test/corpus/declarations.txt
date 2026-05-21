@@ -258,3 +258,33 @@ fn connectDf
               receiver: (identifier)
               (field_access
                 field: (identifier)))))))))
+
+========================================
+var with combined initializer
+========================================
+
+fn f() {
+  var count: uint[8] = count + 1;
+}
+
+---
+
+(source_file
+  (component_definition
+    name: (identifier)
+    parameters: (parameter_section)
+    body: (block
+      (statement
+        (var_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              index: (expression
+                (number))))
+          value: (expression
+            (binary_expression
+              left: (expression
+                (identifier))
+              right: (expression
+                (number)))))))))

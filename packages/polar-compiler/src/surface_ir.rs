@@ -154,6 +154,7 @@ pub struct VarStatement {
     pub span: SourceSpan,
     pub names: Vec<Identifier>,
     pub ty: Option<TypeExpression>,
+    pub init: Option<Expression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -653,6 +654,9 @@ impl<'a> Lowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?,
                 ty: child_by_field(node, "type")
                     .map(|child| self.lower_type_expression(child))
+                    .transpose()?,
+                init: child_by_field(node, "value")
+                    .map(|child| self.lower_expression(child))
                     .transpose()?,
             })),
             "assignment_statement" => Ok(Statement::Assignment(AssignmentStatement {
