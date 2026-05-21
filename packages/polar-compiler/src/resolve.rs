@@ -9,26 +9,27 @@ use crate::surface_ir::{
 use crate::{Identifier, SourceSpan};
 
 /// Unique ID for a top-level definition (component, struct, port, impl).
+///
+/// Modeled on rustc's `DefId`: an index into the `defs` table, separate from
+/// `NodeId`. The separation makes the def-vs-local distinction explicit in the
+/// type system and leaves room for cross-file/cross-crate identity later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DefId(pub u32);
 
-/// Unique ID for a parameter (named or positional) within a definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ParamId(pub u32);
-
-/// Unique ID for a local binding (let, var, or implicit var) within a block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BindingId(pub u32);
-
-/// What an identifier resolves to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What an identifier resolves to. Mirrors rustc's `Res<Id>`: the category
+/// (`Def` vs `Local`) is encoded in the variant, with the kind for definitions
+/// carried inline so callers don't need a second lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Res {
-    Def(DefId),
-    Param(ParamId),
-    Local(BindingId),
+    /// A top-level definition. `DefKind` identifies the flavor.
+    Def(DefKind, DefId),
+    /// A local binding: parameter, `let`, `var`, or implicit `var` from `=>`.
+    /// The `NodeId` points to the binding name's identifier node, which is
+    /// also the key into `ResolveResult::locals` for full info.
+    Local(NodeId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefKind {
     Component,
     Struct,
@@ -37,32 +38,32 @@ pub enum DefKind {
 }
 
 /// How a local binding was introduced.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BindingKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalKind {
+    /// Parameter (named or positional) of the owning def.
+    Param { owner: DefId },
+    /// `let x = ...` — sequential, forward-only scope, supports shadowing.
     Let,
-    /// Explicit `var x` declaration — block-wide scope via pre-scan.
+    /// `var x` — block-wide scope via pre-scan; participates in equations.
     Var,
-    /// Introduced by `output => x` when `x` was not already in scope — forward-only scope.
+    /// Introduced by `output => x` when `x` was not already in scope —
+    /// forward-only scope.
     ImplicitVar,
 }
 
 #[derive(Debug, Clone)]
 pub struct DefInfo {
+    /// Duplicated with `Res::Def(DefKind, _)` for ergonomics: lets callers
+    /// query a def's kind from a `DefId` alone, the way rustc exposes
+    /// `tcx.def_kind(def_id)`.
     pub kind: DefKind,
     pub name: String,
     pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
-pub struct ParamInfo {
-    pub name: String,
-    pub span: SourceSpan,
-    pub owner: DefId,
-}
-
-#[derive(Debug, Clone)]
-pub struct BindingInfo {
-    pub kind: BindingKind,
+pub struct LocalInfo {
+    pub kind: LocalKind,
     pub name: String,
     pub span: SourceSpan,
 }
@@ -95,12 +96,11 @@ pub struct ResolveResult {
     /// Maps each identifier use-site (by its `NodeId`) to what it resolves to.
     pub resolutions: HashMap<NodeId, Res>,
     pub errors: Vec<ResolveError>,
-    /// Info for each top-level definition, indexed by DefId.0.
+    /// Info for each top-level definition, indexed by `DefId.0`.
     pub defs: Vec<DefInfo>,
-    /// Info for each parameter, indexed by ParamId.0.
-    pub params: Vec<ParamInfo>,
-    /// Info for each local binding, indexed by BindingId.0.
-    pub bindings: Vec<BindingInfo>,
+    /// Info for each local binding (param, let, var, implicit var),
+    /// keyed by the binding name identifier's `NodeId`.
+    pub locals: HashMap<NodeId, LocalInfo>,
 }
 
 impl ResolveResult {
@@ -108,12 +108,8 @@ impl ResolveResult {
         &self.defs[id.0 as usize]
     }
 
-    pub fn param_info(&self, id: ParamId) -> &ParamInfo {
-        &self.params[id.0 as usize]
-    }
-
-    pub fn binding_info(&self, id: BindingId) -> &BindingInfo {
-        &self.bindings[id.0 as usize]
+    pub fn local_info(&self, id: NodeId) -> &LocalInfo {
+        &self.locals[&id]
     }
 }
 
@@ -138,7 +134,10 @@ pub fn resolve_file(file: &SourceFile) -> ResolveResult {
 #[derive(Default)]
 struct Ctx {
     result: ResolveResult,
-    global_defs: HashMap<String, DefId>,
+    /// Top-level definitions in scope, mapped by name to their `DefId` and kind.
+    /// The kind is duplicated here (also in `DefInfo`) so resolution sites can
+    /// build `Res::Def(kind, id)` without a second lookup.
+    global_defs: HashMap<String, (DefKind, DefId)>,
 }
 
 impl Ctx {
@@ -152,24 +151,15 @@ impl Ctx {
         id
     }
 
-    fn alloc_param(&mut self, name: &Identifier, owner: DefId) -> ParamId {
-        let id = ParamId(self.result.params.len() as u32);
-        self.result.params.push(ParamInfo {
-            name: name.text.clone(),
-            span: name.span.clone(),
-            owner,
-        });
-        id
-    }
-
-    fn alloc_binding(&mut self, kind: BindingKind, name: &Identifier) -> BindingId {
-        let id = BindingId(self.result.bindings.len() as u32);
-        self.result.bindings.push(BindingInfo {
-            kind,
-            name: name.text.clone(),
-            span: name.span.clone(),
-        });
-        id
+    fn alloc_local(&mut self, kind: LocalKind, name: &Identifier) {
+        self.result.locals.insert(
+            name.id,
+            LocalInfo {
+                kind,
+                name: name.text.clone(),
+                span: name.span.clone(),
+            },
+        );
     }
 
     fn collect_item(&mut self, item: &Item) {
@@ -186,8 +176,8 @@ impl Ctx {
             });
         } else {
             let id = self.alloc_def(kind, ident);
-            self.global_defs.insert(ident.text.clone(), id);
-            self.result.resolutions.insert(ident.id, Res::Def(id));
+            self.global_defs.insert(ident.text.clone(), (kind, id));
+            self.result.resolutions.insert(ident.id, Res::Def(kind, id));
         }
     }
 
@@ -201,7 +191,7 @@ impl Ctx {
     }
 
     fn resolve_component(&mut self, comp: &ComponentDefinition) {
-        let Some(&def_id) = self.global_defs.get(&comp.name.text) else {
+        let Some(&(_, def_id)) = self.global_defs.get(&comp.name.text) else {
             return;
         };
         let params = self.collect_params(def_id, &comp.named_parameters, &comp.parameters);
@@ -212,7 +202,7 @@ impl Ctx {
     }
 
     fn resolve_struct(&mut self, s: &StructDefinition) {
-        let Some(&def_id) = self.global_defs.get(&s.name.text) else {
+        let Some(&(_, def_id)) = self.global_defs.get(&s.name.text) else {
             return;
         };
         let params = self.collect_params(def_id, &[], &s.parameters);
@@ -222,7 +212,7 @@ impl Ctx {
     }
 
     fn resolve_port(&mut self, p: &PortDefinition) {
-        let Some(&def_id) = self.global_defs.get(&p.name.text) else {
+        let Some(&(_, def_id)) = self.global_defs.get(&p.name.text) else {
             return;
         };
         let params = self.collect_params(def_id, &p.named_parameters, &p.parameters);
@@ -232,7 +222,7 @@ impl Ctx {
     }
 
     fn resolve_impl(&mut self, impl_block: &ImplBlock) {
-        let Some(&def_id) = self.global_defs.get(&impl_block.name.text) else {
+        let Some(&(_, def_id)) = self.global_defs.get(&impl_block.name.text) else {
             return;
         };
         let impl_params =
@@ -246,18 +236,18 @@ impl Ctx {
         &mut self,
         func: &FunctionDefinition,
         owner: DefId,
-        outer_params: &HashMap<String, ParamId>,
+        outer_params: &HashMap<String, NodeId>,
     ) {
         let mut params = outer_params.clone();
         for np in &func.named_parameters {
-            let id = self.alloc_param(&np.name, owner);
-            params.insert(np.name.text.clone(), id);
-            self.result.resolutions.insert(np.name.id, Res::Param(id));
+            self.alloc_local(LocalKind::Param { owner }, &np.name);
+            params.insert(np.name.text.clone(), np.name.id);
+            self.result.resolutions.insert(np.name.id, Res::Local(np.name.id));
         }
         for p in &func.parameters {
-            let id = self.alloc_param(&p.name, owner);
-            params.insert(p.name.text.clone(), id);
-            self.result.resolutions.insert(p.name.id, Res::Param(id));
+            self.alloc_local(LocalKind::Param { owner }, &p.name);
+            params.insert(p.name.text.clone(), p.name.id);
+            self.result.resolutions.insert(p.name.id, Res::Local(p.name.id));
         }
         if let Some(ty) = &func.return_type {
             self.resolve_type_expr(ty, &params);
@@ -270,12 +260,12 @@ impl Ctx {
         owner: DefId,
         named: &[NamedParameter],
         positional: &[Parameter],
-    ) -> HashMap<String, ParamId> {
+    ) -> HashMap<String, NodeId> {
         let mut scope = HashMap::new();
         for np in named {
-            let id = self.alloc_param(&np.name, owner);
-            scope.insert(np.name.text.clone(), id);
-            self.result.resolutions.insert(np.name.id, Res::Param(id));
+            self.alloc_local(LocalKind::Param { owner }, &np.name);
+            scope.insert(np.name.text.clone(), np.name.id);
+            self.result.resolutions.insert(np.name.id, Res::Local(np.name.id));
             if let Some(ty) = &np.ty {
                 self.resolve_type_expr(ty, &scope);
             }
@@ -284,9 +274,9 @@ impl Ctx {
             }
         }
         for p in positional {
-            let id = self.alloc_param(&p.name, owner);
-            scope.insert(p.name.text.clone(), id);
-            self.result.resolutions.insert(p.name.id, Res::Param(id));
+            self.alloc_local(LocalKind::Param { owner }, &p.name);
+            scope.insert(p.name.text.clone(), p.name.id);
+            self.result.resolutions.insert(p.name.id, Res::Local(p.name.id));
             self.resolve_type_expr(&p.ty, &scope);
             if let Some(default) = &p.default {
                 self.resolve_expr_in_params(default, &scope);
@@ -295,17 +285,17 @@ impl Ctx {
         scope
     }
 
-    fn resolve_type_expr(&mut self, ty: &TypeExpression, params: &HashMap<String, ParamId>) {
+    fn resolve_type_expr(&mut self, ty: &TypeExpression, params: &HashMap<String, NodeId>) {
         // Type head: check params first (for type-level parameters), then global defs.
         if let Some(&id) = params.get(&ty.name.text) {
-            self.result.resolutions.insert(ty.name.id, Res::Param(id));
-        } else if let Some(&id) = self.global_defs.get(&ty.name.text) {
-            self.result.resolutions.insert(ty.name.id, Res::Def(id));
+            self.result.resolutions.insert(ty.name.id, Res::Local(id));
+        } else if let Some(&(kind, id)) = self.global_defs.get(&ty.name.text) {
+            self.result.resolutions.insert(ty.name.id, Res::Def(kind, id));
         }
         // else: built-in type (uint, bool, Reset, …) — not in the def table
         if let Some(domain) = &ty.domain {
             if let Some(&id) = params.get(&domain.text) {
-                self.result.resolutions.insert(domain.id, Res::Param(id));
+                self.result.resolutions.insert(domain.id, Res::Local(id));
             }
             // else: builtin domain name — leave for later
         }
@@ -322,13 +312,13 @@ impl Ctx {
         }
     }
 
-    fn resolve_expr_in_params(&mut self, expr: &Expression, params: &HashMap<String, ParamId>) {
+    fn resolve_expr_in_params(&mut self, expr: &Expression, params: &HashMap<String, NodeId>) {
         match expr {
             Expression::Identifier(ident) => {
                 if let Some(&id) = params.get(&ident.text) {
-                    self.result.resolutions.insert(ident.id, Res::Param(id));
-                } else if let Some(&id) = self.global_defs.get(&ident.text) {
-                    self.result.resolutions.insert(ident.id, Res::Def(id));
+                    self.result.resolutions.insert(ident.id, Res::Local(id));
+                } else if let Some(&(kind, id)) = self.global_defs.get(&ident.text) {
+                    self.result.resolutions.insert(ident.id, Res::Def(kind, id));
                 }
             }
             Expression::Binary(b) => {
@@ -340,7 +330,7 @@ impl Ctx {
         }
     }
 
-    fn resolve_block(&mut self, block: &Block, params: HashMap<String, ParamId>) {
+    fn resolve_block(&mut self, block: &Block, params: HashMap<String, NodeId>) {
         let mut bctx = BlockCtx {
             ctx: self,
             params,
@@ -353,12 +343,13 @@ impl Ctx {
 
 struct BlockCtx<'a> {
     ctx: &'a mut Ctx,
-    params: HashMap<String, ParamId>,
+    /// Parameters in scope: name → NodeId of the parameter's name identifier.
+    params: HashMap<String, NodeId>,
     /// Block-wide var declarations, collected by the pre-scan.
-    var_bindings: HashMap<String, BindingId>,
+    var_bindings: HashMap<String, NodeId>,
     /// Forward-only bindings (let and implicit var from `=>`), accumulated in source order.
     /// Searched from back to front so the most recent binding wins on shadowing.
-    let_scope: Vec<(String, BindingId)>,
+    let_scope: Vec<(String, NodeId)>,
 }
 
 impl BlockCtx<'_> {
@@ -379,9 +370,9 @@ impl BlockCtx<'_> {
                         span: ident.span.clone(),
                     });
                 } else {
-                    let id = self.ctx.alloc_binding(BindingKind::Var, ident);
-                    self.var_bindings.insert(ident.text.clone(), id);
-                    self.ctx.result.resolutions.insert(ident.id, Res::Local(id));
+                    self.ctx.alloc_local(LocalKind::Var, ident);
+                    self.var_bindings.insert(ident.text.clone(), ident.id);
+                    self.ctx.result.resolutions.insert(ident.id, Res::Local(ident.id));
                 }
             }
         }
@@ -418,9 +409,9 @@ impl BlockCtx<'_> {
     fn resolve_let_stmt(&mut self, l: &LetStatement) {
         // Resolve RHS before introducing the new binding (so `let x = x + 1` sees the old x).
         self.resolve_expr(&l.value);
-        let id = self.ctx.alloc_binding(BindingKind::Let, &l.name);
-        self.ctx.result.resolutions.insert(l.name.id, Res::Local(id));
-        self.let_scope.push((l.name.text.clone(), id));
+        self.ctx.alloc_local(LocalKind::Let, &l.name);
+        self.ctx.result.resolutions.insert(l.name.id, Res::Local(l.name.id));
+        self.let_scope.push((l.name.text.clone(), l.name.id));
     }
 
     fn resolve_expr(&mut self, expr: &Expression) {
@@ -429,8 +420,8 @@ impl BlockCtx<'_> {
             Expression::Number(_) => {}
             Expression::Path(p) => {
                 // Resolve the type part; the member is a field name (deferred to type checking).
-                if let Some(&id) = self.ctx.global_defs.get(&p.ty.text) {
-                    self.ctx.result.resolutions.insert(p.ty.id, Res::Def(id));
+                if let Some(&(kind, id)) = self.ctx.global_defs.get(&p.ty.text) {
+                    self.ctx.result.resolutions.insert(p.ty.id, Res::Def(kind, id));
                 }
             }
             Expression::Binary(b) => {
@@ -444,11 +435,11 @@ impl BlockCtx<'_> {
                 }
             }
             Expression::RecordConstructor(r) => {
-                if let Some(&id) = self.ctx.global_defs.get(&r.constructor.text) {
+                if let Some(&(kind, id)) = self.ctx.global_defs.get(&r.constructor.text) {
                     self.ctx
                         .result
                         .resolutions
-                        .insert(r.constructor.id, Res::Def(id));
+                        .insert(r.constructor.id, Res::Def(kind, id));
                 }
                 for field in &r.fields {
                     // field.name is a struct field name — deferred to type checking
@@ -491,23 +482,29 @@ impl BlockCtx<'_> {
     fn resolve_source_target(&mut self, s: &SourceArgument) {
         match self.lookup_name(&s.target.text) {
             Some(Res::Local(id)) => {
-                let kind = self.ctx.result.bindings[id.0 as usize].kind.clone();
+                let kind = self.ctx.result.locals[&id].kind;
                 match kind {
-                    BindingKind::Let => {
+                    LocalKind::Let => {
                         self.ctx.result.errors.push(ResolveError {
                             kind: ResolveErrorKind::SourceOnLetBinding(s.target.text.clone()),
                             span: s.target.span.clone(),
                         });
                     }
-                    BindingKind::Var | BindingKind::ImplicitVar => {
+                    LocalKind::Var | LocalKind::ImplicitVar => {
                         self.ctx
                             .result
                             .resolutions
                             .insert(s.target.id, Res::Local(id));
                     }
+                    LocalKind::Param { .. } => {
+                        self.ctx.result.errors.push(ResolveError {
+                            kind: ResolveErrorKind::InvalidSourceTarget(s.target.text.clone()),
+                            span: s.target.span.clone(),
+                        });
+                    }
                 }
             }
-            Some(Res::Param(_) | Res::Def(_)) => {
+            Some(Res::Def(..)) => {
                 self.ctx.result.errors.push(ResolveError {
                     kind: ResolveErrorKind::InvalidSourceTarget(s.target.text.clone()),
                     span: s.target.span.clone(),
@@ -515,12 +512,12 @@ impl BlockCtx<'_> {
             }
             None => {
                 // Not in scope: introduce a forward-only implicit var binding.
-                let id = self.ctx.alloc_binding(BindingKind::ImplicitVar, &s.target);
+                self.ctx.alloc_local(LocalKind::ImplicitVar, &s.target);
                 self.ctx
                     .result
                     .resolutions
-                    .insert(s.target.id, Res::Local(id));
-                self.let_scope.push((s.target.text.clone(), id));
+                    .insert(s.target.id, Res::Local(s.target.id));
+                self.let_scope.push((s.target.text.clone(), s.target.id));
             }
         }
     }
@@ -541,16 +538,16 @@ impl BlockCtx<'_> {
 
     fn resolve_type(&mut self, ty: &TypeExpression) {
         if let Some(&id) = self.params.get(&ty.name.text) {
-            self.ctx.result.resolutions.insert(ty.name.id, Res::Param(id));
-        } else if let Some(&id) = self.ctx.global_defs.get(&ty.name.text) {
-            self.ctx.result.resolutions.insert(ty.name.id, Res::Def(id));
+            self.ctx.result.resolutions.insert(ty.name.id, Res::Local(id));
+        } else if let Some(&(kind, id)) = self.ctx.global_defs.get(&ty.name.text) {
+            self.ctx.result.resolutions.insert(ty.name.id, Res::Def(kind, id));
         }
         if let Some(domain) = &ty.domain {
             if let Some(&id) = self.params.get(&domain.text) {
                 self.ctx
                     .result
                     .resolutions
-                    .insert(domain.id, Res::Param(id));
+                    .insert(domain.id, Res::Local(id));
             }
         }
         for suffix in &ty.suffixes {
@@ -576,10 +573,10 @@ impl BlockCtx<'_> {
             return Some(Res::Local(id));
         }
         if let Some(&id) = self.params.get(name) {
-            return Some(Res::Param(id));
+            return Some(Res::Local(id));
         }
-        if let Some(&id) = self.ctx.global_defs.get(name) {
-            return Some(Res::Def(id));
+        if let Some(&(kind, id)) = self.ctx.global_defs.get(name) {
+            return Some(Res::Def(kind, id));
         }
         None
     }
@@ -625,7 +622,10 @@ mod tests {
     fn resolves_parameter_use() {
         let r = resolve("fn add(a: uint[8], b: uint[8]) { let r = a; }");
         assert!(r.errors.is_empty());
-        let param_res = r.resolutions.values().find(|res| matches!(res, Res::Param(_)));
+        let param_res = r.resolutions.values().find(|res| match res {
+            Res::Local(id) => matches!(r.locals[id].kind, LocalKind::Param { .. }),
+            _ => false,
+        });
         assert!(param_res.is_some(), "expected at least one param resolution");
     }
 
@@ -633,7 +633,11 @@ mod tests {
     fn resolves_let_binding() {
         let r = resolve("fn f(x: uint[8]) { let y = x; }");
         assert!(r.errors.is_empty());
-        assert!(r.bindings.iter().any(|b| b.name == "y" && matches!(b.kind, BindingKind::Let)));
+        assert!(
+            r.locals
+                .values()
+                .any(|b| b.name == "y" && matches!(b.kind, LocalKind::Let))
+        );
     }
 
     #[test]
@@ -641,9 +645,9 @@ mod tests {
         let r = resolve("fn f(x: uint[8]) { let x = x; }");
         assert!(r.errors.is_empty());
         let let_xs: Vec<_> = r
-            .bindings
-            .iter()
-            .filter(|b| b.name == "x" && matches!(b.kind, BindingKind::Let))
+            .locals
+            .values()
+            .filter(|b| b.name == "x" && matches!(b.kind, LocalKind::Let))
             .collect();
         assert_eq!(let_xs.len(), 1);
     }
@@ -655,7 +659,11 @@ mod tests {
             "fn f() { count = count; var count: uint[8]; }",
         );
         assert!(r.errors.is_empty());
-        assert!(r.bindings.iter().any(|b| b.name == "count" && matches!(b.kind, BindingKind::Var)));
+        assert!(
+            r.locals
+                .values()
+                .any(|b| b.name == "count" && matches!(b.kind, LocalKind::Var))
+        );
     }
 
     #[test]
@@ -693,9 +701,9 @@ mod tests {
         // out_df should be introduced as ImplicitVar and be resolvable by the subsequent let
         assert!(r.errors.is_empty());
         assert!(
-            r.bindings
-                .iter()
-                .any(|b| b.name == "out_df" && matches!(b.kind, BindingKind::ImplicitVar))
+            r.locals
+                .values()
+                .any(|b| b.name == "out_df" && matches!(b.kind, LocalKind::ImplicitVar))
         );
     }
 

@@ -8,8 +8,8 @@ pub use parser::tree_sitter::{
     parse_source_with_diagnostics, render_parse_error,
 };
 pub use resolve::{
-    BindingId, BindingInfo, BindingKind, DefId, DefInfo, DefKind, ParamId, ParamInfo, Res,
-    ResolveError, ResolveErrorKind, ResolveResult, resolve_file,
+    DefId, DefInfo, DefKind, LocalInfo, LocalKind, Res, ResolveError, ResolveErrorKind,
+    ResolveResult, resolve_file,
 };
 pub use surface_ir::{
     ArgumentList, AssignmentStatement, BinaryExpression, BinaryOperator, Block,
