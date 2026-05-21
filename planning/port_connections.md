@@ -51,27 +51,38 @@ This mirrors how `out` is used consistently elsewhere in the language: in port f
 
 ## Name introduction with `=>`
 
-`field => x` behaves *as if* `var x;` is inserted before the component statement,
-then the connection binds to that `var`. This is a specification model — the
-compiler does not literally rewrite `=>` to explicit `var` statements, but the
-scoping rules are defined by what that expansion would mean.
+The scoping rule for `=>` follows from a conditional as-if model:
 
-All cases follow from the model:
-
-- **`x` not yet declared:** `x` is introduced as a block-scoped signal.
-- **`x` already declared as `var`:** the connection binds to the existing signal.
-- **`x` in scope as `let`:** error — the as-if `var x;` would shadow a `let`,
-  which is prohibited. The compiler reports this as "`=>` cannot bind to a name
-  that is already a `let` binding" rather than exposing the internal rule.
+- If `x` is **not already in scope**, `=>` introduces `x` with **forward-only
+  (let-like) scope** from this statement forward. The compiler does not literally
+  insert a declaration; it models the scoping *as if* a new name were introduced
+  at this point.
+- If `x` is **already in scope as `var`**, `=>` connects to the existing
+  block-wide signal. No new declaration is introduced.
+- If `x` is **already in scope as `let`**, `=>` connects to the existing
+  binding, using whatever scope the `let` established.
 
 ```
+// common case: x not in scope — implicitly introduced, visible from here forward
 component { in_dat = x, output => out_df }();
-// as if:
+// out_df is in scope from this point
+
+// pre-declared var — for structural feedback between components
 var out_df;
 component { in_dat = x, output => out_df }();
+
+// pre-declared let — also valid; scope follows the let
+let out_df;
+component { in_dat = x, output => out_df }();
 ```
 
-Type is inferred from the port field when the `var` is introduced implicitly.
+Type is inferred from the port field when the name is introduced implicitly.
+
+The distinction between implicit introduction and pre-declared `var` matters for
+structural feedback: if two components need to share a signal, it must be
+pre-declared with `var` (block-wide scope) so both instantiation blocks can reach
+it. An implicitly introduced name from `=>` is only visible after the component
+statement and cannot be referenced by earlier code.
 
 ## Pre-declared names in structural feedback
 

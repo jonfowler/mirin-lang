@@ -86,21 +86,27 @@ Both components share the same `vld`, `dat`, and `rdy` signals. The `var` declar
 ## Port connections and `=>`
 
 Source fields (component outputs) use `=>` rather than `=` in connection blocks.
-`field => x` behaves *as if* `var x;` is inserted before the component statement.
-This is a specification model — the compiler doesn't literally rewrite `=>`, but
-all scoping rules are defined by what that expansion would mean:
+The scoping rule for `=>` is conditional:
+
+- If the name on the RHS is **not in scope**, `=>` introduces it with
+  **forward-only (let-like) scope** from this statement forward — visible after
+  the component call, not before.
+- If the name is **already in scope** (as `var` or `let`), `=>` connects to
+  that existing binding. No new declaration is inserted.
 
 ```rust
+// implicit introduction — out_df visible from here on
 reg_df { input = inp_df, output => out_df }();
-// as if:
+
+// pre-declared var — needed when out_df must be visible before this statement
 var out_df;
 reg_df { input = inp_df, output => out_df }();
 ```
 
-If `out_df` is already declared as a `var`, the connection binds to the existing
-signal. If `out_df` is in scope as a `let`, the as-if `var out_df;` would violate
-the rule that `var` cannot shadow `let` — this is an error, reported as "`=>`
-cannot bind to a name that is already a `let` binding."
+For structural feedback between multiple components, the shared signals must be
+pre-declared with `var` so both instantiation blocks can reach them (see
+"Structural feedback" above). An implicitly introduced name from `=>` only has
+forward scope and cannot serve this role.
 
 For whole-port bindings where no single `=>` connection point exists, `var` is still declared directly:
 

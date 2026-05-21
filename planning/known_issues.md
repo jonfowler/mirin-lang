@@ -24,24 +24,24 @@ check is needed.
 
 ## Serious issues — need resolution before implementation
 
-### 2. `=>` scoping — as-if desugaring rule
+### 2. `=>` scoping — conditional introduction rule
 
-`field => x` behaves *as if* `var x;` is inserted before the component statement,
-and the connection then binds to that `var`. This is a specification model, not a
-literal implementation: the compiler should track `=>` as its own AST node and
-produce tailored error messages rather than rewriting to explicit `var` statements
-first.
+The scoping rule for `=>` is conditional on whether the name is already in scope:
 
-The scoping cases that follow from this model:
+- **`x` not in scope:** `=>` introduces `x` with forward-only (let-like) scope
+  from this statement forward. Not block-wide — the name is visible after the
+  component call, not before.
+- **`x` already in scope as `var`:** the connection binds to the existing
+  block-wide signal. No new declaration is inserted.
+- **`x` already in scope as `let`:** the connection binds to the existing
+  binding, with whatever scope the `let` established.
 
-- **`x` not yet declared:** a `var x` is introduced; `x` is in scope as a
-  block-scoped signal from this point forward.
-- **`x` already declared as `var`:** the connection binds to the existing signal.
-  No new declaration is inserted.
-- **`x` in scope as `let`:** the as-if insertion of `var x;` would violate the
-  rule that `var` cannot shadow `let`. This is an error. The compiler should
-  report it as "`=>` cannot bind to a name that is already a `let` binding" rather
-  than the more confusing "`var` shadows `let`."
+The compiler should track `=>` as its own AST node rather than literally
+inserting declarations. This allows it to produce tailored error messages.
+
+Key consequence: implicit introduction from `=>` gives forward-only scope. For
+structural feedback (where a signal must be reachable by multiple component
+statements), an explicit `var` pre-declaration is required.
 
 These rules are now documented in `port_connections.md` and `cycles_and_scoping.md`.
 
