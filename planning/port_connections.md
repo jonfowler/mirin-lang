@@ -51,20 +51,27 @@ This mirrors how `out` is used consistently elsewhere in the language: in port f
 
 ## Name introduction with `=>`
 
-`field => x` desugars to: insert `var x;` before the component statement, then connect to that `var`. All scoping behavior follows from this expansion:
+`field => x` behaves *as if* `var x;` is inserted before the component statement,
+then the connection binds to that `var`. This is a specification model — the
+compiler does not literally rewrite `=>` to explicit `var` statements, but the
+scoping rules are defined by what that expansion would mean.
 
-- If `x` is **not yet declared**: `var x;` is inserted and `x` comes into scope as a block-scoped signal.
-- If `x` is **already declared as `var`**: the connection binds to the existing signal. No new declaration is inserted.
-- If `x` is **in scope as a `let`**: error — the inserted `var x;` would shadow a `let`, which is prohibited.
+All cases follow from the model:
+
+- **`x` not yet declared:** `x` is introduced as a block-scoped signal.
+- **`x` already declared as `var`:** the connection binds to the existing signal.
+- **`x` in scope as `let`:** error — the as-if `var x;` would shadow a `let`,
+  which is prohibited. The compiler reports this as "`=>` cannot bind to a name
+  that is already a `let` binding" rather than exposing the internal rule.
 
 ```
 component { in_dat = x, output => out_df }();
-// desugars to:
+// as if:
 var out_df;
 component { in_dat = x, output => out_df }();
 ```
 
-Type is inferred from the port field when `var out_df` is introduced implicitly.
+Type is inferred from the port field when the `var` is introduced implicitly.
 
 ## Pre-declared names in structural feedback
 

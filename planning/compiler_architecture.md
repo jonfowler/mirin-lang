@@ -110,11 +110,26 @@ Resolve:
 This stage should also establish scopes for:
 
 - declaration parameters
-- block-local `let` bindings
+- block-local `let` and `var` bindings (including implicit `var` from `=>`)
 - record fields
 - port field access
 
-## 4. Surface elaboration
+## 4. Structural checking
+
+A dedicated pass between name resolution and type inference. Port field directions
+are explicit in port declarations and are never polymorphic or inferred, so this
+check can run without waiting for type inference to complete.
+
+Checks include:
+
+- connection-block direction agreement: `=` must be used with `in` fields, `=>` with `out` fields
+- `var` equation completeness: every `var` in a block must have exactly one equation
+- duplicate `var` declarations in the same scope (hard error)
+- `var`-after-`let` shadowing (hard error)
+- `=>` used with a `let` binding (hard error — tailored message, not exposed as a `var`/`let` conflict)
+- multiple drivers: two `=>` connections to the same signal
+
+## 5. Surface elaboration
 
 This is where Polar surface syntax is simplified into a smaller semantic form.
 
@@ -122,13 +137,15 @@ Responsibilities:
 
 - apply defaulted named arguments
 - solve inferable arguments such as `#clk` when there is a unique solution
+  (try to anchor from explicit `Reset @clk` arguments before falling back to
+  a fixpoint pass over cyclic `var` equations)
 - desugar method syntax into ordinary intrinsic or function calls
 - normalize record literals and field access
 - make cyclic binding boundaries (`var`) explicit in the lowered representation
 
 This stage should reject ambiguous inference instead of inventing fallback behavior.
 
-## 5. Type and clock checking
+## 6. Type and clock checking
 
 This stage enforces the language semantics that matter for correct RTL construction.
 
@@ -137,18 +154,15 @@ Checks include:
 - type compatibility
 - width compatibility
 - clock-domain compatibility
-- legality of port-direction use
 - validity of cyclic `var` definitions
-- completeness of `var` equation systems (every `var` must have exactly one equation)
-- connection-block direction agreement (the `in`/`out` field direction from the port type must match the `=`/`=>` operator used at the call site)
+- clock domain consistency across `var`-declared shared wires (checked at every
+  connection site, not just the first)
 
 The current first-pass design assumes:
 
 - only clock domains are in scope as typed domain information
 - resets are clock-associated values
 - no implicit clock crossing
-
-Note: direction checking for connection blocks (`=` vs `=>` vs the declared field direction) **cannot be done at parse time or during name resolution** because it requires knowing the port type of the called component. It must be deferred to this stage once the callee type is resolved. Do not attempt to check field directions during parsing or basic name binding.
 
 ## Minimal core language
 
@@ -182,7 +196,7 @@ The rule of thumb is:
 - the core language should be easy to type check
 - the RTL IR should be easy to emit as Verilog
 
-## 6. Typed core IR
+## 7. Typed core IR
 
 This IR should be close to the semantic meaning of the program and far less convenient than the surface syntax.
 

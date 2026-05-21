@@ -85,16 +85,22 @@ Both components share the same `vld`, `dat`, and `rdy` signals. The `var` declar
 
 ## Port connections and `=>`
 
-Source fields (component outputs) use `=>` rather than `=` in connection blocks. `field => x` desugars to inserting `var x;` before the component statement. All scoping rules follow from that expansion:
+Source fields (component outputs) use `=>` rather than `=` in connection blocks.
+`field => x` behaves *as if* `var x;` is inserted before the component statement.
+This is a specification model — the compiler doesn't literally rewrite `=>`, but
+all scoping rules are defined by what that expansion would mean:
 
 ```rust
 reg_df { input = inp_df, output => out_df }();
-// desugars to:
+// as if:
 var out_df;
 reg_df { input = inp_df, output => out_df }();
 ```
 
-If `out_df` is already declared as a `var`, the connection binds to the existing signal with no new declaration. If `out_df` is in scope as a `let`, the implicit `var out_df;` would shadow it — which is prohibited (see shadowing rules below), so this is an error.
+If `out_df` is already declared as a `var`, the connection binds to the existing
+signal. If `out_df` is in scope as a `let`, the as-if `var out_df;` would violate
+the rule that `var` cannot shadow `let` — this is an error, reported as "`=>`
+cannot bind to a name that is already a `let` binding."
 
 For whole-port bindings where no single `=>` connection point exists, `var` is still declared directly:
 

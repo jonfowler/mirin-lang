@@ -5,25 +5,45 @@ the planned Polar surface syntax. Items are grouped by severity.
 
 ---
 
+## Resolved
+
+### 1. `fn` context disambiguation — not an issue
+
+`fn` is used uniformly at the top level and inside `impl` bodies. There is no
+deep distinction between a component and a function: a component has temporal
+semantics (it does not necessarily produce a direct result), whereas a function
+is pure. `impl` methods are syntactic sugar for functions with an explicit `self`
+argument. The `self` parameter naturally identifies a method without requiring a
+special grammar rule.
+
+The parser already distinguishes the two forms by context (`_item` vs
+`impl_body`). This is not a grammatical ambiguity and no special elaboration
+check is needed.
+
+---
+
 ## Serious issues — need resolution before implementation
 
-### 1. `fn` context disambiguation — resolved
+### 2. `=>` scoping — as-if desugaring rule
 
-`fn` is used uniformly at the top level and inside `impl` bodies. There is no deep distinction between a component and a function: a component has temporal semantics (it does not necessarily produce a direct result), whereas a function is pure and compositional. `impl` methods are syntactic sugar for functions with an explicit `self` argument.
+`field => x` behaves *as if* `var x;` is inserted before the component statement,
+and the connection then binds to that `var`. This is a specification model, not a
+literal implementation: the compiler should track `=>` as its own AST node and
+produce tailored error messages rather than rewriting to explicit `var` statements
+first.
 
-The parser already distinguishes the two forms by context: `_item` vs `impl_body`. This is not a grammatical ambiguity. The `self` parameter naturally identifies a method body without requiring a special rule.
+The scoping cases that follow from this model:
 
-**Status: not an issue.** The grammar uses `fn` for both forms and context is sufficient.
+- **`x` not yet declared:** a `var x` is introduced; `x` is in scope as a
+  block-scoped signal from this point forward.
+- **`x` already declared as `var`:** the connection binds to the existing signal.
+  No new declaration is inserted.
+- **`x` in scope as `let`:** the as-if insertion of `var x;` would violate the
+  rule that `var` cannot shadow `let`. This is an error. The compiler should
+  report it as "`=>` cannot bind to a name that is already a `let` binding" rather
+  than the more confusing "`var` shadows `let`."
 
-### 2. `=>` desugaring rule — needs doc update
-
-The scoping rule for `=>` follows from a simple desugaring: `field => x` in a connection block is syntactic sugar for inserting `var x;` before the component statement, then binding to that `var`. All cases flow from this expansion:
-
-- **`x` not yet declared:** `var x;` is inserted; `x` comes into scope as a block-scoped signal.
-- **`x` already declared as `var`:** the connection binds to the existing `var` — no new declaration is inserted.
-- **`x` currently in scope as a `let` binding:** error. A `let` binding is a value, not a signal node. The desugaring would insert `var x;` which conflicts with the existing `let x` under the rule that `var` cannot shadow `let`.
-
-The docs (`port_connections.md`, `cycles_and_scoping.md`) need to state the desugaring rule explicitly and use it as the source of truth for all `=>` scoping behavior. The current docs describe the cases correctly but do not state the unifying desugaring rule.
+These rules are now documented in `port_connections.md` and `cycles_and_scoping.md`.
 
 ### 3. `var` declared inside `if`/`match` — scope is unresolved
 
@@ -36,8 +56,8 @@ exist.
 Two plausible positions:
 
 a. `var` is illegal inside `if`/`match` bodies. It may only appear at the top
-   level of a component or `rec` block. This is the safe position and matches
-   how Verilog `wire` declarations work.
+   level of a component body. This is the safe position and matches how Verilog
+   `wire` declarations work.
 
 b. A `var` inside a conditional is hoisted to the enclosing block, and the
    equation is guarded by the condition. This is what SystemVerilog allows with
@@ -46,164 +66,103 @@ b. A `var` inside a conditional is hoisted to the enclosing block, and the
 Neither is currently specified. The language needs an explicit rule before any
 implementation of `if`/`match` can proceed.
 
-### 4. Multiple drivers via `=>` — no stated conflict rule
+### 4. Multiple drivers via `=>` — resolved by issue 2
 
-`port_connections.md` establishes that `=>` binds a component output to a name.
-For structural feedback, multiple components may each drive a different signal in
-the same `var`-declared set. But the doc does not state what happens if two
-`=>` connections in the same block both bind to the same name:
+The desugaring model from issue 2 covers this case. `comp_a { output => x }()`
+introduces an implicit `var x`. A second `comp_b { output => x }()` would
+introduce `var x` again — which is a duplicate `var` declaration in the same
+scope (see issue 13), and therefore an error.
 
-```
-comp_a { output => x }();
-comp_b { output => x }();   // is this a double-drive error or a redefinition?
-```
-
-If the second `=>` silently introduces a new `var` that shadows the first, `x`
-at that point no longer refers to `comp_a`'s output — which is confusing. If
-both bind to the same signal node, that is a multiple-driver error.
-
-The rule should be: a `=>` that introduces an implicit `var` is legal only once
-per name per block. A second `=>` to the same undeclared name is an error.
-Connecting a second `=>` to a *pre-declared* `var` should also be an error
-(multiple drivers). This rule needs to be stated explicitly.
-
-### 5. Direction checking when `in`/`out` are elided requires type information at parse/name-resolution time
-
-`port_connections.md` says `in`/`out` keywords are optional because `=` implies
-sink and `=>` implies source. However, the compiler still needs to verify that
-the field name on the LHS of `=` actually corresponds to an `in` field of the
-component being instantiated, and the field name on the LHS of `=>` corresponds
-to an `out` field.
-
-This check requires knowing the type of the component being called — it cannot
-be done during parsing or basic name resolution without the type definition in
-scope. For a simple single-file program this is fine. For a component defined in
-another module, the field directions come from its port type.
-
-No current planning doc describes the order in which component types are resolved
-relative to connection-block checking. If connection checking happens before type
-resolution is complete (e.g. in a top-down single-pass elaboration), direction
-checking may silently pass on an unresolved call and produce a wrong-direction
-error only during code generation.
-
-Recommend adding an explicit note to `compiler_architecture.md` that direction
-checking in connection blocks is a type-check-phase responsibility, not a
-parse-phase responsibility.
+Connecting a second `=>` to a *pre-declared* `var x` is a multiple-driver error:
+the signal already has a driver, and `=>` would be a second one.
 
 ---
 
 ## Moderate issues — need a decision, may not block first pass
 
-### 6. `var` with no equation — what is the error?
+### 5. Direction checking belongs before type inference, after name resolution
 
-`cycles_and_scoping.md` shows the counter pattern where `var count;` is followed
-by `count = ...;`. It does not specify what happens if the equation is never
-written:
+`port_connections.md` says `in`/`out` keywords are optional because `=` implies
+sink and `=>` implies source. The compiler still needs to verify that the field
+name on the LHS of `=` corresponds to an `in` field and the LHS of `=>` to an
+`out` field.
 
-```
-var x: uint[8] @clk;
-// no assignment to x anywhere in the block
-return x;
-```
+Port field directions are **structural**: they are declared explicitly in the port
+definition and are never polymorphic or inferred. Once the component name is
+resolved (name resolution), its port field directions are known. Direction checking
+therefore belongs in a dedicated structural pass **after name resolution but before
+type inference**.
 
-In RTL terms `x` is an undriven wire — a synthesis error if passed to output.
-The compiler should report this. The question is *when*: at elaboration (as a
-completeness check on the equation system) or during type/clock checking.
+This is distinct from type checking, which may involve constraint solving for
+width compatibility and clock domains. Direction checking is simpler: look up the
+declared field direction, compare to the operator used, emit an error if they
+disagree. The two passes should be kept separate.
 
-Given that `var` is intended precisely as a signal node in an equation system,
-checking completeness at the end of name resolution or elaboration is more useful
-than waiting until RTL lowering. Flag as a required elaboration-phase check.
+Update needed in `compiler_architecture.md`: change the current note that places
+direction checking in the type-checking stage.
 
-### 7. `var` cannot shadow `let` — but the rule is hard to enforce without a two-pass scope
+### 6. `var` with no equation — hard error at elaboration
+
+A `var` that is declared but never assigned an equation is an undriven signal.
+This is a hard error that should be caught at the end of the elaboration pass
+(the completeness check on the equation system). Waiting until RTL lowering is
+too late. The rule: every `var` in a block must have exactly one equation whose
+LHS resolves to that signal node.
+
+### 7. `var`-after-`let` detection in a single forward pass
 
 `cycles_and_scoping.md` states: "`var` cannot shadow an earlier `let` binding in
-the same block." This is a good rule but it creates a practical constraint: the
-name resolver must have already seen the `let` binding at the point it processes
-the `var` declaration.
+the same block." Since `var` has block-wide scope and `let` has forward-only
+scope, a single forward pass is sufficient to detect `var`-after-`let`.
 
-Since `var` has *block-wide* scope and `let` has *forward-only* scope, a single
-forward pass through the block is sufficient to detect `var`-after-`let` for the
-same name. However, the combination interacts with `=>` implicit introduction: if
-`output => x` implicitly introduces `var x`, and `x` was previously bound by
-`let`, this is the same prohibited pattern. The name resolver must treat implicit
-`var` introduction via `=>` under the same rule.
+The implicit `var` introduction from `=>` is subject to the same rule (see issue
+2). The name resolver must apply the check uniformly whether the `var` is explicit
+or implicit.
 
 ### 8. `var` inside `impl` method bodies — unresolved
 
 `cycles_and_scoping.md` lists this as an open question. It needs a decision
 before `impl` bodies are semantically checked.
 
-Arguments for allowing it: methods on port types (e.g. `Stream8::connect`) may
-need to introduce local signal names. Arguments against: methods lower to
-ordinary functions with `self` as an argument; within the lowered form the
-cyclic signal semantics of `var` do not make sense if there is no enclosing
-component body to attach the signal to.
-
 The safest initial rule: `var` is only legal in component bodies, not in `impl`
-method bodies. Methods that need stateful local signals
-should be expressed as sub-components. This can be relaxed later.
+method bodies. Methods that need stateful local signals should be expressed as
+sub-components.
 
 ### 9. `#clk` inference through cyclic `var` equations
 
-`syntax.md` notes that `#clk` inference is not yet specified. For the common
-pattern:
+For the common counter pattern:
 
 ```
 var count;
 count = (count + 1).reg{rstn}(0);
 ```
 
-the type of `count` must be inferred from the equation. The equation contains
-`.reg{rstn}()` which should establish the clock domain. But the equation also
-references `count` itself — so inference has to traverse a cycle.
+the clock domain is inferrable from `rstn`: if `rstn: Reset @clk`, then `.reg{rstn}()`
+constrains the output to be `@clk`, and `count` is inferred to be `@clk`. The
+constraint chain runs through `rstn`, not through `count` itself, so a forward
+walk that processes the reset argument first can resolve this case.
 
-If inference is done as constraint solving this is fine (the register introduces
-a constraint that links `count`'s clock domain to `rstn`'s clock domain). If
-inference is done as a simple forward walk it will fail to see the clock
-constraint on the first pass over `count`.
+The general fixpoint concern applies when inference truly depends on a cycle
+through the `var` itself, without an external anchoring constraint like a typed
+reset. That case requires constraint solving, not a simple forward walk.
 
-This is not a blocker for the first parser slice, but it must be resolved before
-`#clk` inference is implemented. The elaboration spec should note that clock
-inference for `var` bindings requires a fixpoint pass, not a single forward
-traversal.
+The elaboration spec should note: try to resolve clock domains from explicit
+arguments first (resets, explicit `@clk` annotations); only fall back to a
+fixpoint pass when no such anchor exists.
 
-### 10. `inline fn` — `inline` as a keyword vs identifier
+### 10. `inline fn` — deferred
 
-The planning docs mention `inline fn` as a modifier form. `inline` is currently
-treated as a plain identifier by the grammar (the `identifier` rule is
-`/[A-Za-z_][A-Za-z0-9_]*/`). If `inline` is added as a keyword it will become
-reserved, which may silently break any code that uses `inline` as a signal or
-variable name.
-
-The word: `($) => $.identifier` declaration in tree-sitter means `inline` would
-become a reserved keyword competing with the general identifier rule. In
-tree-sitter, the `word` rule controls which keyword is treated as the "main"
-identifier-like terminal for error recovery purposes; adding `inline` as a
-keyword does not require changing `word`, but it does require reserving the
-string.
-
-If `inline` is made a keyword before any code exists that uses it as an
-identifier the breakage is low. Do it early, or choose a less collision-prone
-spelling such as `#[inline]` attribute syntax.
+`inline fn` as a modifier form is not part of the current design scope. The
+keyword `inline` is not reserved. This can be revisited when the function/component
+hierarchy question is more settled.
 
 ### 11. Port connection completeness — `in` fields vs `out` fields
 
-`port_connections.md` and the other connection docs do not state whether all `in`
-fields must be connected when instantiating a component. The footnote in the
-"future: let-port-patterns" section mentions that leaving an `in` field unwired
-is "a hard error" in the pattern context, but no equivalent rule is stated for
-ordinary connection blocks.
+The compiler should require that all `in` fields are connected unless a default
+value is provided in the port declaration. Missing `in` connections are a hard error.
 
-For RTL correctness, unconnected `in` fields would produce undriven inputs —
-likely a synthesis warning or error. The compiler should require that all `in`
-fields are connected unless a default value is provided in the port declaration.
-
-`out` fields that are not bound (i.e. no `=>` connection and no pre-declared
-`var`) are less problematic: the output is simply discarded. Whether this should
-be a warning (unused output) or silently allowed needs a policy decision.
-
-Recommend: missing `in` field connection is an error; unbound `out` field is a
-lint warning.
+`out` fields that are not bound (no `=>` and no pre-declared `var`) should be a
+lint warning. The output is simply discarded, which is legal but often unintentional.
 
 ---
 
@@ -211,77 +170,43 @@ lint warning.
 
 ### 12. `=>` RHS must be a bare name — not a field access
 
-`port_connections.md` correctly states that `output => raw_df + 1` is an error.
-What the doc does not cover is whether `output => p.valid` (a field access) is
-legal.
-
-If `p` is a pre-declared `var` of a port type, binding a component output
-directly to a field of `p` would be useful. However, it complicates the
-"introduce a new `var`" shorthand because `p.valid` is not a bare name — it is
-an lvalue projection. The grammar would need to distinguish bare names from field
-paths on the RHS of `=>`.
-
-For the initial implementation, restrict `=>` RHS to bare identifiers only.
-Field-path targets on `=>` can be added later once the lvalue semantics are
-defined.
+`port_connections.md` correctly restricts `=>` RHS to bare identifiers for the
+initial implementation. Field-path targets (`output => p.valid`) complicate the
+as-if `var` introduction rule and should be deferred.
 
 ### 13. `var` duplicate declarations in the same block
 
-`cycles_and_scoping.md` states "`var` cannot shadow `let`" but does not state
-whether two `var` declarations with the same name in the same block are
-permitted.
+Two `var` declarations with the same name in the same block are a hard error.
+`var` declares a signal node for the equation system — unlike `let`, which is
+explicitly designed for shadowing. Redeclaring the same node is ambiguous.
 
-```
-var x: uint[8] @clk;
-var x: bool @clk;   // redeclaration — error or shadow?
-```
+### 14. `let` shadowing `var` — equation system is indexed by identity
 
-Based on the principle that `var` declares a signal node for the equation system,
-two `var` declarations with the same name in the same block should be an error
-(unlike `let`, which is explicitly designed for shadowing/rebinding). Add this
-rule explicitly.
-
-### 14. `let` shadowing `var` — potential confusion with equation system
-
-`cycles_and_scoping.md` documents this correctly: once a `var count` is shadowed
-by `let count = count + offset`, the equation on the original `var` is still
-live. The feedback signal still exists; only the name is shadowed.
-
-There is no double-drive risk here because `let` is a forward-only value binding
-and cannot appear on the LHS of an equation. The shadowing is safe by
-construction. However the docs should clarify that the equation system is indexed
-by the *signal node identity*, not by the name — so shadow-then-equation is
-impossible, not just detected.
+`cycles_and_scoping.md` documents this correctly. Once `var count` is shadowed by
+`let count = count + offset`, the original `var` signal still has its equation.
+The equation system is indexed by signal node identity, not by name — so the
+shadowing does not affect the `var`'s equation.
 
 ### 15. Structural feedback — clock domain mismatch detection point
 
-When two components share `var`-declared wires and are in different clock
-domains, the clock domain mismatch is caught during type checking when the port
-field types are checked against the `var` type annotation. The `var` declaration
-forces an explicit type (or an inferred one), and the clock domain is part of
-that type.
-
-The detection point is therefore: at the connection site, when the type of the
-port field (carrying its clock domain) is unified with the type of the `var`
-binding. This is the right place. No separate rule is needed, but the type
-checker must ensure that the `@clk` annotation on a `var` is checked against
-every connection that references it, not just the first one.
+When two components share `var`-declared wires, clock domain mismatches are
+caught at the connection site during type checking: the type of the port field
+(which carries its clock domain) is unified with the type of the `var` binding.
+The type checker must apply this check against every connection that references
+the `var`, not just the first.
 
 ---
 
-## Summary of items needing doc updates
+## Summary of open items
 
-| Issue                                   | Target doc                                     | Action                                                        |
-| --------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------- |
-| `fn` keyword transition                 | `syntax.md`, `compiler_architecture.md`        | Add note about `cmp` → `fn` migration and parser context rule |
-| `=>` with pre-existing `let` binding    | `port_connections.md`, `cycles_and_scoping.md` | Add explicit error rule                                       |
-| `var` in conditional branches           | `cycles_and_scoping.md`                        | Add explicit legality rule                                    |
-| Multiple `=>` to same name              | `port_connections.md`                          | Add multiple-driver rule                                      |
-| Direction checking is type-phase work   | `compiler_architecture.md`                     | Add note to stage 5                                           |
-| Undriven `var`                          | `cycles_and_scoping.md`                        | Add completeness rule                                         |
-| `var` in `impl` methods                 | `cycles_and_scoping.md`, `impl.md`             | Resolve open question                                         |
-| Clock inference through cyclic `var`    | `syntax.md`, `compiler_architecture.md`        | Note fixpoint requirement                                     |
-| `inline` keyword reservation            | `syntax.md`                                    | Add note                                                      |
-| Connection completeness for `in` fields | `port_connections.md`                          | Add explicit rule                                             |
-| `=>` RHS field access                   | `port_connections.md`                          | Restrict to bare names for now                                |
-| Duplicate `var` declarations            | `cycles_and_scoping.md`                        | Add error rule                                                |
+| Issue | Target doc | Action |
+|---|---|---|
+| `=>` with pre-existing `let` binding | `port_connections.md`, `cycles_and_scoping.md` | Document as-if rule and tailored error |
+| `var` in conditional branches | `cycles_and_scoping.md` | Add explicit legality rule |
+| Direction checking is a structural pass | `compiler_architecture.md` | Move before type inference |
+| Undriven `var` | `cycles_and_scoping.md` | Add completeness rule |
+| `var` in `impl` methods | `cycles_and_scoping.md`, `impl.md` | Resolve open question |
+| Clock inference through cyclic `var` | `compiler_architecture.md` | Note anchor-first approach |
+| Connection completeness for `in` fields | `port_connections.md` | Add explicit rule |
+| `=>` RHS field access | `port_connections.md` | Restrict to bare names for now |
+| Duplicate `var` declarations | `cycles_and_scoping.md` | Add error rule |
