@@ -42,7 +42,7 @@ We are creating a HDL language, currently named polar.
 
 Example multAdd
 ``` rust
-cmp multAdd // short for component
+fn multAdd // fn introduces a component
   // keyword named section (optional):
   { #clk: Clock, // # indicates this can be elided when instantiating
     rstn: Reset @clk = high, // reset associated with clk, default active value
@@ -65,7 +65,7 @@ cmp multAdd // short for component
 
 Example counter
 ``` rust
-cmp counter
+fn counter
   { #clk: Clock, rstn: Reset @clk = high }
   ( const bits: usize )
   -> uint[bits] @clk
@@ -77,13 +77,12 @@ cmp counter
     count = count + 1; // type inference, count is inferred to be uint[bits] @clk
     count = count.reg{rstn, reset_val = 0}(); // register, automatically use associated clk
 
-    // possible solution
-    rec count = {
-      let count = count + 1;
-      let count = next.reg{rstn, reset_val = 0}();
-      return next;
-    }
+    // current direction: use var for block-scoped feedback signals
+    var count: uint[bits] @clk;
+    count = (count + 1).reg{rstn, reset_val = 0}();
     return count;
+    // Note: an earlier candidate used `rec count = { ... }` for cyclic definitions.
+    // That has been superseded by `var`. See planning/cycles_and_scoping.md.
   }
 
   Metadata questions:

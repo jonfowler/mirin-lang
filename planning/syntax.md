@@ -4,14 +4,15 @@ This document defines the small Polar surface syntax subset that current example
 
 ## Scope
 
-- `cmp` declarations
+- `fn` declarations
 - `struct` declarations
 - `port` declarations
 - named argument sections
 - positional argument sections
 - clocked types with `@clk`
 - clock-associated resets with `Reset @clk`
-- a still-open explicit syntax for cyclic definitions
+- `let` bindings (sequential, forward-only) and `var` signal declarations (block-scoped, supports cyclic equations)
+- component connection blocks: `=` for sinks (inputs), `=>` for sources (outputs, introduces a `var`-scoped name)
 - method-style calls such as `value.reg{...}()`
 
 ## Conventions
@@ -39,7 +40,7 @@ Components use:
 - a block body
 
 ```rust
-cmp multAdd
+fn multAdd
   { #clk: Clock, rstn: Reset @clk = high, c: uint[8] @clk = 0, }
   ( a: uint[8] @clk, b: uint[8] @clk )
   -> uint[8] @clk
@@ -86,7 +87,7 @@ port Stream8
 - If a port appears in an argument position but is being driven by the callee, mark that argument direction explicitly
 
 ```rust
-cmp connectStream
+fn connectStream
   { #clk: Clock }
   ( upstream: Stream8{clk}, out downstream: Stream8{clk} )
   {
@@ -96,26 +97,37 @@ cmp connectStream
   }
 ```
 
-## Cycles and local rebinding
+## Bindings and cycles
 
-Cycle syntax is now back to being an active design question.
+Polar uses two distinct binding forms:
 
-The earlier proposal was to use `rec` for explicit cyclic definitions:
+- `let x = expr` — sequential lexical binding. Forward-only scope. Supports shadowing for pipeline-style code.
+- `var x: T` — block-scoped signal declaration. Participates in cyclic equations for register feedback and mutual structural wiring.
+
+State feedback example:
 
 ```rust
-rec count = {
-  let next = count + 1;
-  return next.reg{rstn, reset_val = 0}();
-}
+var count: uint[8] @clk;
+count = (count + 1).reg{rstn}(0);
 ```
 
-That remains a candidate, but it is no longer treated as settled. The current discussion is whether Polar should distinguish:
+See `planning/cycles_and_scoping.md` for full scoping rules.
 
-- ordinary lexical `let` bindings with shadowing/rebinding
-- explicit cyclic equations for state feedback
-- structural interconnect that may itself form cycles
+## Component connection blocks
 
-See `planning/cycles_and_scoping.md` for the current write-up.
+When instantiating a component, fields are connected using a braced argument block. The operator encodes direction:
+
+- `field = expr` — sink: the component reads from this expression (input)
+- `field => name` — source: the component drives this signal; `name` is introduced as a block-scoped signal if not already declared
+
+```rust
+reg_df {
+  in_dat  = x * 4,
+  output => out_df,
+}();
+```
+
+The `in`/`out` direction keywords are optional and checked for consistency when present. See `planning/port_connections.md` for the full connection syntax.
 
 ## `impl` blocks
 
@@ -126,4 +138,5 @@ See `planning/cycles_and_scoping.md` for the current write-up.
 - exact inference rules for `#clk`
 - generics and const generics beyond simple examples
 - generalized metadata syntax
-- final syntax for cyclic definitions and mutual interconnect
+- clock inference for cyclic `var` equations: inferring the clock domain of a `var` from its own equation requires a fixpoint pass, not a simple forward walk. See `planning/known_issues.md`.
+- `inline fn` as a modifier and keyword reservation.

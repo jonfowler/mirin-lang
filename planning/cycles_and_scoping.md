@@ -1,10 +1,16 @@
-# Cycles, shadowing, and scoping
+# Bindings, cycles, and scoping
 
-This note records the current discussion around cyclic definitions, local rebinding, and what Polar should learn from SystemVerilog scoping rules.
+This document records the design decisions around local bindings, cyclic definitions, and structural wiring in Polar.
 
-## Terminology
+## The two binding forms
 
-The desired pattern
+Polar has two distinct ways to introduce a local name:
+
+### `let` — sequential lexical binding
+
+`let x = expr` introduces `x` into scope from that point forward. The name is not visible before the binding. This is the default form for local computation.
+
+The key property is **shadowing**: each `let x = ...` introduces a fresh binding and shadows the previous one. This keeps the number of visible names low and supports readable pipeline-style code:
 
 ```rust
 let x = stage1(a);
@@ -12,182 +18,139 @@ let x = stage2(x);
 let x = stage3(x);
 ```
 
-is best described as **shadowing** or **rebinding**, not variable capture.
+Each line is unambiguous: the RHS `x` refers to the binding from the previous line. This is not mutation — each `let x` is a distinct signal with a distinct name that happens to reuse the identifier.
 
-In this style, each `let x = ...` introduces a fresh local binding and the later one shadows the earlier one. This is useful because it keeps the number of names in scope low while preserving a readable dataflow-style pipeline.
+### `var` — block-scoped signal declaration
 
-## Why the cycle question became harder
+`var x: T` declares a named signal node that is in scope for the remainder of the enclosing block. Unlike `let`, `var` bindings can appear in equations that reference the name on both sides, enabling feedback.
 
-The earlier `rec` discussion collapsed two rather different problems into one syntax question:
-
-1. **State feedback**
-   - A register next-state computation depends on the current state.
-   - Example: a small Mealy-like machine or counter where `count_next` depends on `count`.
-
-2. **Structural feedback**
-   - Two or more components are connected through ports that may point in both directions.
-   - The resulting wiring graph may contain cycles even if no single local expression looks recursive.
-
-These do not necessarily want the same surface syntax.
-
-## The design pressure
-
-There are two competing goals:
-
-- **Declarative wiring by default**
-  - desirable for hardware structure
-  - makes simultaneous connections feel natural
-- **Sequential local code with shadowing**
-  - desirable for readable elaboration-style code
-  - keeps the number of local names small
-
-The difficulty is that both modes feel fundamental rather than niche.
-
-## Candidate directions
-
-### 1. Explicit recursive form everywhere
-
-The earlier proposal was:
+The signal is given its value by a separate assignment equation:
 
 ```rust
-rec count = {
-  let next = count + 1;
-  return next.reg{rstn, reset_val = 0}();
-}
-```
-
-This makes feedback explicit, but it does not fit local shadowing very naturally, and it is not obviously the right model for mutually connected components.
-
-### 2. Cyclic meaning by default
-
-Another possible direction would be to make ordinary local definitions part of a declarative equation system and add a separate procedural form for ordered code.
-
-That may fit hardware structure better, but it makes ordinary local code harder to read, and it weakens the simple mental model of `let` as lexical binding.
-
-### 3. Declaration first, equation later
-
-One compromise is to allow a name to be declared before it is defined:
-
-```rust
-let count: uint[8] @clk;
+var count: uint[8] @clk;
 count = (count + 1).reg{rstn}(0);
 ```
 
-This is attractive because it can express feedback without making ordinary `let` recursive by default.
+## Why the two forms are different
 
-However, it has two real drawbacks:
+`let` and `var` are not interchangeable:
 
-- `let x = expr;` and `let x: T; x = expr;` would have importantly different semantics
-- mutual component wiring becomes more verbose if every cyclic edge requires a prior declaration
+- `let` produces a value. It is sequential and forward-only. The RHS is fully known before the name comes into scope.
+- `var` declares a signal node. It participates in an equation system. The equation for a `var` binding can refer to the name itself, or to other `var` names in the same block.
 
-The syntax may still be viable, but only if Polar makes the distinction very obvious and keeps declarations cheap.
+Making ordinary `let` recursive by default would break the simple sequential mental model and make pipeline-style shadowing ambiguous. Keeping `var` distinct preserves both modes without compromise.
 
-## Current direction
+## State feedback
 
-The most promising current split is:
-
-- ordinary `let` keeps **lexical scope** and **shadowing**
-- cyclic structure uses a separate concept closer to a **declared node** or **equation**
-- structural interconnect and local rebinding are not forced into the same construct
-
-That means the language can still support:
+Register feedback is the common case for `var`. The counter pattern:
 
 ```rust
-let x = stage1(a);
-let x = stage2(x);
-let x = stage3(x);
+var count: uint[8] @clk;
+count = (count + 1).reg{rstn}(0);
 ```
 
-without also implying that every `let` participates in a recursive system of equations.
+The `var` declaration says "there is a signal called `count`." The equation says how it is connected. The cycle through `.reg` is what makes this well-formed — the register separates the current and next values in time.
 
-The open question is whether the cyclic form should remain something like `rec`, or whether declaration-plus-equation is the better primitive.
+Type annotation on `var` can often be inferred from the equation:
 
-## SystemVerilog scoping rules
-
-SystemVerilog is useful here because it cleanly separates local procedural scope from structural hierarchy.
-
-### Declaration before use
-
-The 1800-2017 LRM states:
-
-- "Data shall be declared before they are used, apart from implicit nets" (Clause 6, extracted text around line 5441 of the PDF text)
-
-This is an important point of comparison for Polar: ordinary names are not implicitly hoisted into scope.
-
-### Multiple namespaces
-
-The LRM defines multiple namespaces, including local block-related namespaces (Clause 3.13, extracted text around lines 3425-3429 of the PDF text).
-
-In particular:
-
-- blocks introduce their own namespace
-- redeclaration is illegal **within a namespace**
-- nested scopes therefore give a clean way to shadow outer bindings
-
-This suggests that lexical rebinding in Polar should be treated as an ordinary scope rule, not as a special cyclic feature.
-
-### Block-local scope and lifetime
-
-Clause 6.21 says:
-
-- compilation-unit and module-level variables have static lifetime
-- variables declared inside a static task, function, or block are local in scope and default to static lifetime
-- individual variables can be marked `automatic`, in which case they have call or block lifetime
-
-For Polar, the important lesson is not the static/automatic split itself, but that **scope** and **lifetime** are treated as distinct concerns.
-
-### Named and unnamed blocks
-
-Clause 9.3.4 says:
-
-- a named `begin : name` or `fork : name` block creates a new hierarchy scope
-- an unnamed block creates a new hierarchy scope only if it directly contains a block item declaration
-- items in such unnamed scopes cannot be referenced hierarchically
-
-This is a strong hint that Polar should keep local names local, and not rely on every intermediate binding being externally visible.
-
-### Parallel blocks
-
-The syntax for parallel blocks is:
-
-```text
-fork [ : block_identifier ] { block_item_declaration } { statement_or_null } join_keyword [ : block_identifier ]
+```rust
+var count;
+count = (count + 1).reg{rstn}(0);
 ```
 
-This matters because SystemVerilog allows declarations inside `fork` blocks while still keeping the fork semantics clearly distinct from ordinary sequential `begin ... end` execution.
+## Structural feedback
 
-For Polar, that supports the idea that local scoping and simultaneous structure can coexist, as long as the syntax makes the mode clear.
+Mutual component wiring also uses `var`. When two components are connected bidirectionally, the wires between them must be declared before either component is instantiated:
 
-### Generate blocks
+```rust
+var vld, rdy : bool @clk;
+var dat : uint[8] @clk;
 
-The LRM gives unnamed generate blocks synthesized names such as `genblk<n>`.
+const_df {
+  out vld = vld,
+  out dat = dat,
+  in  rdy = rdy,
+  const_val = 42,
+}();
 
-That is useful as a warning sign: if unnamed structural scopes exist, tools will still need some internal naming scheme. Polar should avoid making user-facing semantics depend on such generated names.
+reg_df {
+  in  in_vld = vld,
+  in  in_dat = dat,
+  out in_rdy = rdy,
+  ...
+}();
+```
 
-## Lessons for Polar
+Both components share the same `vld`, `dat`, and `rdy` signals. The `var` declarations give those signals block-wide scope so they can appear in both instantiation blocks.
 
-The SystemVerilog comparison suggests the following:
+## Port connections and `=>`
 
-1. **Keep lexical local bindings simple**
-   - ordinary local names should be declared before use
-   - shadowing should be an ordinary scope rule
+Source fields (component outputs) use `=>` rather than `=` in connection blocks. `field => x` desugars to inserting `var x;` before the component statement. All scoping rules follow from that expansion:
 
-2. **Do not overload ordinary local binding with recursive meaning**
-   - rebinding and cycles are different concerns
+```rust
+reg_df { input = inp_df, output => out_df }();
+// desugars to:
+var out_df;
+reg_df { input = inp_df, output => out_df }();
+```
 
-3. **Make structural equations explicit**
-   - whether via `rec` or declaration-plus-equation, feedback should be visible in the syntax
+If `out_df` is already declared as a `var`, the connection binds to the existing signal with no new declaration. If `out_df` is in scope as a `let`, the implicit `var out_df;` would shadow it — which is prohibited (see shadowing rules below), so this is an error.
 
-4. **Treat local scope separately from structural hierarchy**
-   - local temporary names do not need to be part of the externally visible structure
+For whole-port bindings where no single `=>` connection point exists, `var` is still declared directly:
 
-5. **Keep room for both modes**
-   - declarative structural code
-   - local ordered code with shadowing
+```rust
+var p: DF{clk};
+```
+
+The full connection syntax — including the optional `in`/`out` keywords, pre-declared `var` names for structural feedback, and the source/sink asymmetry — is covered in `planning/port_connections.md`.
+
+## Shadowing rules
+
+### `let` can shadow `var`
+
+A `let` binding may shadow an earlier `var` declaration. This is useful when a `var` defines the feedback core of a computation and further sequential processing follows:
+
+```rust
+var count: uint[8] @clk;
+count = (count + 1).reg{rstn}(0);
+
+let count = count + offset;   // RHS sees var count; new let count shadows it
+let count = count.clip(max);  // RHS sees the previous let count
+```
+
+The semantics are consistent with `let`-shadowing-`let`: the RHS of the shadowing binding sees the name as it was before the new binding takes effect.
+
+**Important consequence:** once a `var` is shadowed by `let`, the original signal is no longer accessible by that name. If both the feedback signal and the transformed version are needed downstream, use distinct names:
+
+```rust
+var count_r: uint[8] @clk;
+count_r = (count_r + 1).reg{rstn}(0);
+
+let count = count_r + offset;  // count_r remains accessible
+```
+
+Shadowing a `var` is a statement: "I no longer need the feedback signal by this name." It is intentional, but a reader skimming from the bottom up may not notice the shadowing — this is a known readability cost.
+
+### `var` cannot shadow `let`
+
+Declaring a `var` that shadows an earlier `let` binding in the same block is an error. `var` has wider scope than `let` and allowing it to retroactively shadow earlier sequential bindings would make code hard to reason about.
+
+## Lessons from SystemVerilog
+
+SystemVerilog is useful background but not a model to copy directly.
+
+- The LRM requires declaration before use for ordinary names (Clause 6). Polar follows this: `var` must be declared before it is used, even if the equation referencing it may be written later.
+- Redeclaration within the same namespace is illegal in SV. Polar instead allows shadowing across forms (`let` shadows `var`) but not within the same form in the same scope.
+- SV separates scope from lifetime. Polar follows this principle: `var` scope is the enclosing block; lifetime is determined by the elaboration and register structure, not the declaration form.
+- SV's unnamed generate blocks receive synthesized names. Polar should avoid user-facing semantics that depend on generated names.
 
 ## Open questions
 
-- Should Polar keep `rec` as the explicit cyclic form?
-- Should declared-node syntax replace or complement `rec`?
-- Can mutual component wiring be expressed ergonomically without forcing verbose forward declarations?
-- Should there be an explicit sequential sub-block for local shadowing-heavy code, or is ordinary lexical `let` already enough?
+- Should there be a lint warning when a `let` shadows a `var`, given the readability risk?
+- Should `var` require an explicit type annotation, or is full inference always acceptable?
+- Can `var` be used inside `impl` method bodies, or only in component bodies? The safest initial rule is to disallow it and require stateful logic to live in a sub-component, but this needs an explicit decision before `impl` bodies are elaborated.
+- How do `var` declarations interact with explicit block scoping if Polar adds named or anonymous block forms later?
+- Is `var` legal inside `if`/`match` branches? Hardware signals do not conditionally exist, so the likely rule is that `var` is illegal in conditional branches and must be hoisted to the nearest component body. This must be decided before `if`/`match` is implemented.
+- What is the error when a `var` is declared but never assigned an equation? The compiler should catch this at elaboration time (undriven signal), not at RTL lowering. The check should be: every `var` in a block must have exactly one equation whose LHS resolves to that signal node.
+- Are two `var` declarations with the same name in the same block an error? Based on the principle that `var` declares a node in an equation system (unlike `let` which shadows), duplicate `var` declarations in the same scope should be a hard error.
+- What happens when `=>` is used with a name that already resolves to a `let` binding? A `let` binding is a value, not a signal node, so it cannot be a connection target. This should be an error distinct from the `var`-shadows-`let` rule.

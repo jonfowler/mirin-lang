@@ -34,7 +34,7 @@ The current surface-language direction has six main pieces.
 
 ### 1. Components
 
-Top-level hardware-building declarations use `cmp`.
+Top-level hardware-building declarations use `fn`.
 
 Components can have:
 
@@ -51,7 +51,7 @@ Named arguments split into two kinds:
 Example:
 
 ```rust
-cmp multAdd
+fn multAdd
   { #clk: Clock, rstn: Reset @clk = high, c: uint[8] @clk = 0, }
   ( a: uint[8] @clk, b: uint[8] @clk )
   -> uint[8] @clk
@@ -124,7 +124,7 @@ Current direction:
 
 The initial parser and editor tooling should target a small, consistent subset:
 
-- `cmp`
+- `fn`
 - `struct`
 - `port`
 - named and positional argument sections
@@ -198,7 +198,7 @@ Key responsibilities:
 - solve inferable arguments like `#clk` when uniquely determined
 - lower method syntax
 - normalize record construction and field access
-- preserve explicit `rec` structure
+- preserve explicit cyclic binding structure (`var`; see `planning/cycles_and_scoping.md`)
 
 ### Type and clock checking
 
@@ -252,7 +252,7 @@ Properties:
 - clock information is explicit
 - defaults and inference are already resolved
 - methods are already lowered
-- `rec` has an explicit form
+- cyclic `var` bindings have an explicit form
 
 ### RTL IR
 

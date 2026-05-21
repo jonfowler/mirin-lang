@@ -34,7 +34,7 @@ impl Stream8
 
 ### 1. `fn` inside `impl`
 
-Use `fn` for methods and associated functions rather than `cmp`.
+Use `fn` for methods and associated functions.
 
 Reason:
 
@@ -172,3 +172,8 @@ This gives the surface language method ergonomics without complicating later IRs
 - method overloading
 - specialization by generic constraints
 - visibility rules beyond basic namespacing
+
+## Open questions
+
+- Can `var` be used inside an `impl` method body? Methods lower to namespaced functions with `self` as an explicit argument. In the lowered form there is no enclosing component body that gives a `var` signal its RTL lifetime. The safest initial rule is to disallow `var` in `impl` method bodies: stateful logic must live in a component. This can be revisited if a coherent semantics for method-local signal nodes is later designed.
+- The `fn register{#clk}(...)` example in `impl_examples.plr` uses a named-parameter section on a method. This is syntactically identical to a top-level component declaration. While it is distinguishable by context (inside `impl` body vs top-level), the elaboration pass should emit a clear error if a function that looks like a component appears outside an `impl` block or a top-level `fn` with `self` appears at the top level.
