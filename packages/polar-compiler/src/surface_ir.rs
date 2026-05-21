@@ -122,7 +122,7 @@ pub struct Block {
 pub enum Statement {
     Let(LetStatement),
     Return(ReturnStatement),
-    Rec(RecStatement),
+    Var(VarStatement),
     Assignment(AssignmentStatement),
     Expression(ExpressionStatement),
 }
@@ -141,10 +141,10 @@ pub struct ReturnStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecStatement {
+pub struct VarStatement {
     pub span: SourceSpan,
-    pub name: Identifier,
-    pub body: Block,
+    pub names: Vec<Identifier>,
+    pub ty: Option<TypeExpression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,11 +245,43 @@ pub struct RecordFieldValue {
     pub value: Expression,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionDirection {
+    In,
+    Out,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NamedArgument {
+pub enum NamedArgument {
+    Sink(SinkArgument),
+    Source(SourceArgument),
+}
+
+impl NamedArgument {
+    pub fn span(&self) -> &SourceSpan {
+        match self {
+            Self::Sink(a) => &a.span,
+            Self::Source(a) => &a.span,
+        }
+    }
+}
+
+/// A sink connection: `[in] field = expr`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SinkArgument {
     pub span: SourceSpan,
+    pub direction: Option<ConnectionDirection>,
     pub name: Identifier,
     pub value: Expression,
+}
+
+/// A source connection: `[out] field => name`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceArgument {
+    pub span: SourceSpan,
+    pub direction: Option<ConnectionDirection>,
+    pub name: Identifier,
+    pub target: Identifier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -587,10 +619,15 @@ fn lower_statement(node: &CstNode, source: &str) -> Result<Statement, LowerError
             span: node.span.clone(),
             value: lower_expression(lower_required_field(node, "value")?, source)?,
         })),
-        "rec_statement" => Ok(Statement::Rec(RecStatement {
+        "var_statement" => Ok(Statement::Var(VarStatement {
             span: node.span.clone(),
-            name: lower_required_identifier(node, "name", source)?,
-            body: lower_required_block(node, "body", source)?,
+            names: named_children(node)
+                .filter(|child| child.kind == "identifier")
+                .map(|child| lower_identifier(child, source))
+                .collect::<Result<Vec<_>, _>>()?,
+            ty: child_by_field(node, "type")
+                .map(|child| lower_type_expression(child, source))
+                .transpose()?,
         })),
         "assignment_statement" => Ok(Statement::Assignment(AssignmentStatement {
             span: node.span.clone(),
@@ -727,17 +764,40 @@ fn lower_named_arguments(node: &CstNode, source: &str) -> Result<Vec<NamedArgume
 
 fn lower_named_argument(node: &CstNode, source: &str) -> Result<NamedArgument, LowerError> {
     expect_kind(node, "named_or_shorthand_argument")?;
+    let direction = child_by_field(node, "direction")
+        .map(lower_connection_direction)
+        .transpose()?;
     let name = lower_required_identifier(node, "name", source)?;
+
+    if let Some(target_node) = child_by_field(node, "target") {
+        let target = lower_identifier(target_node, source)?;
+        return Ok(NamedArgument::Source(SourceArgument {
+            span: node.span.clone(),
+            direction,
+            name,
+            target,
+        }));
+    }
+
     let value = if let Some(value) = child_by_field(node, "value") {
         lower_expression(value, source)?
     } else {
         Expression::Identifier(name.clone())
     };
-    Ok(NamedArgument {
+    Ok(NamedArgument::Sink(SinkArgument {
         span: node.span.clone(),
+        direction,
         name,
         value,
-    })
+    }))
+}
+
+fn lower_connection_direction(node: &CstNode) -> Result<ConnectionDirection, LowerError> {
+    match node.kind.as_str() {
+        "in" => Ok(ConnectionDirection::In),
+        "out" => Ok(ConnectionDirection::Out),
+        _ => Err(unexpected_node(node, "connection direction")),
+    }
 }
 
 fn lower_type_expression(node: &CstNode, source: &str) -> Result<TypeExpression, LowerError> {
@@ -936,8 +996,11 @@ mod tests {
             panic!("expected named arguments");
         };
         assert_eq!(args.arguments.len(), 1);
-        assert_eq!(args.arguments[0].name.text, "rstn");
-        let Expression::Identifier(value) = &args.arguments[0].value else {
+        let NamedArgument::Sink(arg) = &args.arguments[0] else {
+            panic!("expected sink argument");
+        };
+        assert_eq!(arg.name.text, "rstn");
+        let Expression::Identifier(value) = &arg.value else {
             panic!("expected shorthand identifier value");
         };
         assert_eq!(value.text, "rstn");

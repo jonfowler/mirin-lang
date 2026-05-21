@@ -383,9 +383,33 @@
     "type": "named_or_shorthand_argument",
     "named": true,
     "fields": {
+      "direction": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "in",
+            "named": false
+          },
+          {
+            "type": "out",
+            "named": false
+          }
+        ]
+      },
       "name": {
         "multiple": false,
         "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "target": {
+        "multiple": false,
+        "required": false,
         "types": [
           {
             "type": "identifier",
@@ -764,32 +788,6 @@
     }
   },
   {
-    "type": "rec_statement",
-    "named": true,
-    "fields": {
-      "body": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "block",
-            "named": true
-          }
-        ]
-      },
-      "name": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "identifier",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
     "type": "record_constructor_expression",
     "named": true,
     "fields": {
@@ -988,11 +986,11 @@
           "named": true
         },
         {
-          "type": "rec_statement",
+          "type": "return_statement",
           "named": true
         },
         {
-          "type": "return_statement",
+          "type": "var_statement",
           "named": true
         }
       ]
@@ -1135,6 +1133,32 @@
     }
   },
   {
+    "type": "var_statement",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "#",
     "named": false
   },
@@ -1183,6 +1207,10 @@
     "named": false
   },
   {
+    "type": "=>",
+    "named": false
+  },
+  {
     "type": "@",
     "named": false
   },
@@ -1195,12 +1223,9 @@
     "named": false
   },
   {
-    "type": "cmp",
-    "named": false
-  },
-  {
     "type": "comment",
-    "named": true
+    "named": true,
+    "extra": true
   },
   {
     "type": "const",
@@ -1239,15 +1264,15 @@
     "named": false
   },
   {
-    "type": "rec",
-    "named": false
-  },
-  {
     "type": "return",
     "named": false
   },
   {
     "type": "struct",
+    "named": false
+  },
+  {
+    "type": "var",
     "named": false
   },
   {

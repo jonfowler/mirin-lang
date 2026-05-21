@@ -8,11 +8,11 @@ pub use parser::tree_sitter::{
 };
 pub use surface_ir::{
     ArgumentList, AssignmentStatement, BinaryExpression, BinaryOperator, Block,
-    ComponentDefinition, Expression, ExpressionStatement, FieldAccess, FunctionDefinition,
-    Identifier, ImplBlock, Item, LetStatement, LowerError, NamedArgument, NamedArgumentList,
-    NamedParameter, NumberLiteral, Parameter, PathExpression, PortDefinition, PortField,
-    PostfixExpression, PostfixOperation, RecStatement, RecordConstructorExpression,
-    RecordFieldType, RecordFieldValue, ReturnStatement, SliceExpression, SourceFile, Statement,
-    StructDefinition, SurfaceIrError, TypeArgumentList, TypeExpression, TypeIndex, TypeSuffix,
-    parse_surface_file, parse_surface_source,
+    ComponentDefinition, ConnectionDirection, Expression, ExpressionStatement, FieldAccess,
+    FunctionDefinition, Identifier, ImplBlock, Item, LetStatement, LowerError,
+    NamedArgument, NamedArgumentList, NamedParameter, NumberLiteral, Parameter, PathExpression,
+    PortDefinition, PortField, PostfixExpression, PostfixOperation, RecordConstructorExpression,
+    RecordFieldType, RecordFieldValue, ReturnStatement, SinkArgument, SliceExpression, SourceFile,
+    SourceArgument, Statement, StructDefinition, SurfaceIrError, TypeArgumentList, TypeExpression,
+    TypeIndex, TypeSuffix, VarStatement, parse_surface_file, parse_surface_source,
 };

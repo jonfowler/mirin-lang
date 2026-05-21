@@ -2,7 +2,7 @@
 component with named and positional args
 ========================================
 
-cmp multAdd
+fn multAdd
   { #clk: Clock, rstn: Reset @clk = high, c: uint[8] @clk = 0, }
   ( a: uint[8] @clk, b: uint[8] @clk )
   -> uint[8] @clk
@@ -129,7 +129,7 @@ port DF
     out data: A @clk,
   }
 
-cmp connectDf
+fn connectDf
   { #clk: Clock }
   ( upstream: DF{clk}(uint[8]), out downstream: DF{clk}(uint[8]) )
   {

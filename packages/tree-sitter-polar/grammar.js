@@ -31,7 +31,7 @@ module.exports = grammar({
 
     component_definition: ($) =>
       seq(
-        "cmp",
+        "fn",
         field("name", $.identifier),
         optional(field("named_parameters", $.named_parameter_section)),
         optional(field("parameters", $.parameter_section)),
@@ -128,7 +128,7 @@ module.exports = grammar({
       choice(
         $.let_statement,
         $.return_statement,
-        $.rec_statement,
+        $.var_statement,
         $.assignment_statement,
         $.expression_statement,
       ),
@@ -138,8 +138,13 @@ module.exports = grammar({
 
     return_statement: ($) => seq("return", field("value", $.expression), ";"),
 
-    rec_statement: ($) =>
-      seq("rec", field("name", $.identifier), "=", field("body", $.block)),
+    var_statement: ($) =>
+      seq(
+        "var",
+        commaSep1(field("name", $.identifier)),
+        optional(seq(":", field("type", $.type_expression))),
+        ";",
+      ),
 
     assignment_statement: ($) =>
       seq(field("left", $.expression), "=", field("right", $.expression), ";"),
@@ -207,7 +212,18 @@ module.exports = grammar({
 
     named_or_shorthand_argument: ($) =>
       choice(
-        seq(field("name", $.identifier), "=", field("value", $.expression)),
+        seq(
+          optional(field("direction", choice("in", "out"))),
+          field("name", $.identifier),
+          "=>",
+          field("target", $.identifier),
+        ),
+        seq(
+          optional(field("direction", choice("in", "out"))),
+          field("name", $.identifier),
+          "=",
+          field("value", $.expression),
+        ),
         field("name", $.identifier),
       ),
 

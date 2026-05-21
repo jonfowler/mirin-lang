@@ -1,12 +1,11 @@
 [
-  "cmp"
   "struct"
   "port"
   "impl"
   "fn"
   "let"
+  "var"
   "return"
-  "rec"
 ] @keyword
 
 [
