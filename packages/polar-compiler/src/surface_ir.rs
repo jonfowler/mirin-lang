@@ -2,6 +2,13 @@ use std::{fmt, fs, path::Path};
 
 use crate::{Cst, CstNode, ParseError, SourceSpan, parse_source};
 
+/// Unique identifier for an AST node within a single `SourceFile`.
+///
+/// Assigned during lowering. Stable for the lifetime of the `SourceFile` value;
+/// not stable across re-parses or across files. Modeled on rustc's `NodeId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId(pub u32);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceFile {
     pub span: SourceSpan,
@@ -18,6 +25,7 @@ pub enum Item {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identifier {
+    pub id: NodeId,
     pub span: SourceSpan,
     pub text: String,
 }
@@ -388,172 +396,482 @@ pub fn parse_surface_file(path: impl AsRef<Path>) -> Result<SourceFile, SurfaceI
 }
 
 pub fn lower_cst(cst: &Cst, source: &str) -> Result<SourceFile, LowerError> {
-    expect_kind(&cst.root, "source_file")?;
+    Lowerer::new(source).lower_cst(cst)
+}
 
-    let mut items = Vec::new();
-    for child in named_children(&cst.root) {
-        items.push(lower_item(child, source)?);
+/// State threaded through lowering. Owns the source text and the `NodeId` counter
+/// so every constructed `Identifier` gets a unique id without a separate pass.
+struct Lowerer<'a> {
+    source: &'a str,
+    next_id: u32,
+}
+
+impl<'a> Lowerer<'a> {
+    fn new(source: &'a str) -> Self {
+        Self { source, next_id: 0 }
     }
 
-    Ok(SourceFile {
-        span: cst.root.span.clone(),
-        items,
-    })
-}
-
-fn lower_item(node: &CstNode, source: &str) -> Result<Item, LowerError> {
-    match node.kind.as_str() {
-        "component_definition" => Ok(Item::Component(lower_component_definition(node, source)?)),
-        "struct_definition" => Ok(Item::Struct(lower_struct_definition(node, source)?)),
-        "port_definition" => Ok(Item::Port(lower_port_definition(node, source)?)),
-        "impl_block" => Ok(Item::Impl(lower_impl_block(node, source)?)),
-        _ => Err(unexpected_node(node, "top-level declaration")),
+    fn next_node_id(&mut self) -> NodeId {
+        let id = NodeId(self.next_id);
+        self.next_id += 1;
+        id
     }
-}
 
-fn lower_component_definition(
-    node: &CstNode,
-    source: &str,
-) -> Result<ComponentDefinition, LowerError> {
-    expect_kind(node, "component_definition")?;
-    Ok(ComponentDefinition {
-        span: node.span.clone(),
-        name: lower_required_identifier(node, "name", source)?,
-        named_parameters: lower_named_parameter_section(node, "named_parameters", source)?,
-        parameters: lower_parameter_section(node, "parameters", source)?,
-        return_type: child_by_field(node, "return_type")
-            .map(|child| lower_type_expression(child, source))
-            .transpose()?,
-        body: lower_required_block(node, "body", source)?,
-    })
-}
+    fn lower_cst(&mut self, cst: &Cst) -> Result<SourceFile, LowerError> {
+        expect_kind(&cst.root, "source_file")?;
 
-fn lower_struct_definition(node: &CstNode, source: &str) -> Result<StructDefinition, LowerError> {
-    expect_kind(node, "struct_definition")?;
-    let body = lower_required_child(node, "body", "record_type_body")?;
-    Ok(StructDefinition {
-        span: node.span.clone(),
-        name: lower_required_identifier(node, "name", source)?,
-        parameters: lower_parameter_section(node, "parameters", source)?,
-        constructor: child_by_field(node, "constructor")
-            .map(|child| lower_identifier(child, source))
-            .transpose()?,
-        fields: named_children(body)
-            .map(|child| lower_record_field_type(child, source))
-            .collect::<Result<Vec<_>, _>>()?,
-    })
-}
+        let mut items = Vec::new();
+        for child in named_children(&cst.root) {
+            items.push(self.lower_item(child)?);
+        }
 
-fn lower_port_definition(node: &CstNode, source: &str) -> Result<PortDefinition, LowerError> {
-    expect_kind(node, "port_definition")?;
-    let body = lower_required_child(node, "body", "port_body")?;
-    Ok(PortDefinition {
-        span: node.span.clone(),
-        name: lower_required_identifier(node, "name", source)?,
-        named_parameters: lower_named_parameter_section(node, "named_parameters", source)?,
-        parameters: lower_parameter_section(node, "parameters", source)?,
-        constructor: child_by_field(node, "constructor")
-            .map(|child| lower_identifier(child, source))
-            .transpose()?,
-        fields: named_children(body)
-            .map(|child| lower_port_field(child, source))
-            .collect::<Result<Vec<_>, _>>()?,
-    })
-}
+        Ok(SourceFile {
+            span: cst.root.span.clone(),
+            items,
+        })
+    }
 
-fn lower_impl_block(node: &CstNode, source: &str) -> Result<ImplBlock, LowerError> {
-    expect_kind(node, "impl_block")?;
-    let body = lower_required_child(node, "body", "impl_body")?;
-    Ok(ImplBlock {
-        span: node.span.clone(),
-        name: lower_required_identifier(node, "name", source)?,
-        named_parameters: lower_named_parameter_section(node, "named_parameters", source)?,
-        parameters: lower_parameter_section(node, "parameters", source)?,
-        functions: named_children(body)
-            .map(|child| lower_function_definition(child, source))
-            .collect::<Result<Vec<_>, _>>()?,
-    })
-}
+    fn lower_item(&mut self, node: &CstNode) -> Result<Item, LowerError> {
+        match node.kind.as_str() {
+            "component_definition" => Ok(Item::Component(self.lower_component_definition(node)?)),
+            "struct_definition" => Ok(Item::Struct(self.lower_struct_definition(node)?)),
+            "port_definition" => Ok(Item::Port(self.lower_port_definition(node)?)),
+            "impl_block" => Ok(Item::Impl(self.lower_impl_block(node)?)),
+            _ => Err(unexpected_node(node, "top-level declaration")),
+        }
+    }
 
-fn lower_function_definition(
-    node: &CstNode,
-    source: &str,
-) -> Result<FunctionDefinition, LowerError> {
-    expect_kind(node, "function_definition")?;
-    Ok(FunctionDefinition {
-        span: node.span.clone(),
-        name: lower_required_identifier(node, "name", source)?,
-        named_parameters: lower_named_parameter_section(node, "named_parameters", source)?,
-        parameters: lower_parameter_section(node, "parameters", source)?,
-        return_type: child_by_field(node, "return_type")
-            .map(|child| lower_type_expression(child, source))
-            .transpose()?,
-        body: lower_required_block(node, "body", source)?,
-    })
-}
+    fn lower_component_definition(
+        &mut self,
+        node: &CstNode,
+    ) -> Result<ComponentDefinition, LowerError> {
+        expect_kind(node, "component_definition")?;
+        Ok(ComponentDefinition {
+            span: node.span.clone(),
+            name: self.lower_required_identifier(node, "name")?,
+            named_parameters: self.lower_named_parameter_section(node, "named_parameters")?,
+            parameters: self.lower_parameter_section(node, "parameters")?,
+            return_type: child_by_field(node, "return_type")
+                .map(|child| self.lower_type_expression(child))
+                .transpose()?,
+            body: self.lower_required_block(node, "body")?,
+        })
+    }
 
-fn lower_named_parameter_section(
-    node: &CstNode,
-    field_name: &str,
-    source: &str,
-) -> Result<Vec<NamedParameter>, LowerError> {
-    let Some(section) = child_by_field(node, field_name) else {
-        return Ok(Vec::new());
-    };
-    expect_kind(section, "named_parameter_section")?;
-    named_children(section)
-        .map(|child| lower_named_parameter(child, source))
-        .collect()
-}
+    fn lower_struct_definition(&mut self, node: &CstNode) -> Result<StructDefinition, LowerError> {
+        expect_kind(node, "struct_definition")?;
+        let body = lower_required_child(node, "body", "record_type_body")?;
+        Ok(StructDefinition {
+            span: node.span.clone(),
+            name: self.lower_required_identifier(node, "name")?,
+            parameters: self.lower_parameter_section(node, "parameters")?,
+            constructor: child_by_field(node, "constructor")
+                .map(|child| self.lower_identifier(child))
+                .transpose()?,
+            fields: named_children(body)
+                .map(|child| self.lower_record_field_type(child))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
 
-fn lower_parameter_section(
-    node: &CstNode,
-    field_name: &str,
-    source: &str,
-) -> Result<Vec<Parameter>, LowerError> {
-    let Some(section) = child_by_field(node, field_name) else {
-        return Ok(Vec::new());
-    };
-    expect_kind(section, "parameter_section")?;
-    named_children(section)
-        .map(|child| lower_parameter(child, source))
-        .collect()
-}
+    fn lower_port_definition(&mut self, node: &CstNode) -> Result<PortDefinition, LowerError> {
+        expect_kind(node, "port_definition")?;
+        let body = lower_required_child(node, "body", "port_body")?;
+        Ok(PortDefinition {
+            span: node.span.clone(),
+            name: self.lower_required_identifier(node, "name")?,
+            named_parameters: self.lower_named_parameter_section(node, "named_parameters")?,
+            parameters: self.lower_parameter_section(node, "parameters")?,
+            constructor: child_by_field(node, "constructor")
+                .map(|child| self.lower_identifier(child))
+                .transpose()?,
+            fields: named_children(body)
+                .map(|child| self.lower_port_field(child))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
 
-fn lower_named_parameter(node: &CstNode, source: &str) -> Result<NamedParameter, LowerError> {
-    expect_kind(node, "named_parameter")?;
-    Ok(NamedParameter {
-        span: node.span.clone(),
-        inferable: child_by_field(node, "inferable").is_some(),
-        is_const: child_by_field(node, "const").is_some(),
-        name: lower_required_identifier(node, "name", source)?,
-        ty: child_by_field(node, "type")
-            .map(|child| lower_type_expression(child, source))
-            .transpose()?,
-        default: child_by_field(node, "default")
-            .map(|child| lower_expression(child, source))
-            .transpose()?,
-    })
-}
+    fn lower_impl_block(&mut self, node: &CstNode) -> Result<ImplBlock, LowerError> {
+        expect_kind(node, "impl_block")?;
+        let body = lower_required_child(node, "body", "impl_body")?;
+        Ok(ImplBlock {
+            span: node.span.clone(),
+            name: self.lower_required_identifier(node, "name")?,
+            named_parameters: self.lower_named_parameter_section(node, "named_parameters")?,
+            parameters: self.lower_parameter_section(node, "parameters")?,
+            functions: named_children(body)
+                .map(|child| self.lower_function_definition(child))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
 
-fn lower_parameter(node: &CstNode, source: &str) -> Result<Parameter, LowerError> {
-    expect_kind(node, "parameter")?;
-    Ok(Parameter {
-        span: node.span.clone(),
-        direction: child_by_field(node, "direction")
-            .map(lower_direction)
-            .transpose()?,
-        inferable: child_by_field(node, "inferable").is_some(),
-        is_const: child_by_field(node, "const").is_some(),
-        name: lower_required_identifier(node, "name", source)?,
-        ty: lower_type_expression(
-            lower_required_child(node, "type", "type_expression")?,
-            source,
-        )?,
-        default: child_by_field(node, "default")
-            .map(|child| lower_expression(child, source))
-            .transpose()?,
-    })
+    fn lower_function_definition(
+        &mut self,
+        node: &CstNode,
+    ) -> Result<FunctionDefinition, LowerError> {
+        expect_kind(node, "function_definition")?;
+        Ok(FunctionDefinition {
+            span: node.span.clone(),
+            name: self.lower_required_identifier(node, "name")?,
+            named_parameters: self.lower_named_parameter_section(node, "named_parameters")?,
+            parameters: self.lower_parameter_section(node, "parameters")?,
+            return_type: child_by_field(node, "return_type")
+                .map(|child| self.lower_type_expression(child))
+                .transpose()?,
+            body: self.lower_required_block(node, "body")?,
+        })
+    }
+
+    fn lower_named_parameter_section(
+        &mut self,
+        node: &CstNode,
+        field_name: &str,
+    ) -> Result<Vec<NamedParameter>, LowerError> {
+        let Some(section) = child_by_field(node, field_name) else {
+            return Ok(Vec::new());
+        };
+        expect_kind(section, "named_parameter_section")?;
+        named_children(section)
+            .map(|child| self.lower_named_parameter(child))
+            .collect()
+    }
+
+    fn lower_parameter_section(
+        &mut self,
+        node: &CstNode,
+        field_name: &str,
+    ) -> Result<Vec<Parameter>, LowerError> {
+        let Some(section) = child_by_field(node, field_name) else {
+            return Ok(Vec::new());
+        };
+        expect_kind(section, "parameter_section")?;
+        named_children(section)
+            .map(|child| self.lower_parameter(child))
+            .collect()
+    }
+
+    fn lower_named_parameter(&mut self, node: &CstNode) -> Result<NamedParameter, LowerError> {
+        expect_kind(node, "named_parameter")?;
+        Ok(NamedParameter {
+            span: node.span.clone(),
+            inferable: child_by_field(node, "inferable").is_some(),
+            is_const: child_by_field(node, "const").is_some(),
+            name: self.lower_required_identifier(node, "name")?,
+            ty: child_by_field(node, "type")
+                .map(|child| self.lower_type_expression(child))
+                .transpose()?,
+            default: child_by_field(node, "default")
+                .map(|child| self.lower_expression(child))
+                .transpose()?,
+        })
+    }
+
+    fn lower_parameter(&mut self, node: &CstNode) -> Result<Parameter, LowerError> {
+        expect_kind(node, "parameter")?;
+        Ok(Parameter {
+            span: node.span.clone(),
+            direction: child_by_field(node, "direction")
+                .map(lower_direction)
+                .transpose()?,
+            inferable: child_by_field(node, "inferable").is_some(),
+            is_const: child_by_field(node, "const").is_some(),
+            name: self.lower_required_identifier(node, "name")?,
+            ty: self
+                .lower_type_expression(lower_required_child(node, "type", "type_expression")?)?,
+            default: child_by_field(node, "default")
+                .map(|child| self.lower_expression(child))
+                .transpose()?,
+        })
+    }
+
+    fn lower_record_field_type(&mut self, node: &CstNode) -> Result<RecordFieldType, LowerError> {
+        expect_kind(node, "record_field_type")?;
+        Ok(RecordFieldType {
+            span: node.span.clone(),
+            name: self.lower_required_identifier(node, "name")?,
+            ty: self
+                .lower_type_expression(lower_required_child(node, "type", "type_expression")?)?,
+        })
+    }
+
+    fn lower_port_field(&mut self, node: &CstNode) -> Result<PortField, LowerError> {
+        expect_kind(node, "port_field")?;
+        Ok(PortField {
+            span: node.span.clone(),
+            direction: lower_direction(lower_required_field(node, "direction")?)?,
+            name: self.lower_required_identifier(node, "name")?,
+            ty: self
+                .lower_type_expression(lower_required_child(node, "type", "type_expression")?)?,
+        })
+    }
+
+    fn lower_required_block(
+        &mut self,
+        node: &CstNode,
+        field_name: &str,
+    ) -> Result<Block, LowerError> {
+        self.lower_block(lower_required_child(node, field_name, "block")?)
+    }
+
+    fn lower_block(&mut self, node: &CstNode) -> Result<Block, LowerError> {
+        expect_kind(node, "block")?;
+        Ok(Block {
+            span: node.span.clone(),
+            statements: named_children(node)
+                .map(|child| self.lower_statement(child))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    fn lower_statement(&mut self, node: &CstNode) -> Result<Statement, LowerError> {
+        let node = unwrap_statement(node)?;
+        match node.kind.as_str() {
+            "let_statement" => Ok(Statement::Let(LetStatement {
+                span: node.span.clone(),
+                name: self.lower_required_identifier(node, "name")?,
+                value: self.lower_expression(lower_required_field(node, "value")?)?,
+            })),
+            "return_statement" => Ok(Statement::Return(ReturnStatement {
+                span: node.span.clone(),
+                value: self.lower_expression(lower_required_field(node, "value")?)?,
+            })),
+            "var_statement" => Ok(Statement::Var(VarStatement {
+                span: node.span.clone(),
+                names: named_children(node)
+                    .filter(|child| child.kind == "identifier")
+                    .map(|child| self.lower_identifier(child))
+                    .collect::<Result<Vec<_>, _>>()?,
+                ty: child_by_field(node, "type")
+                    .map(|child| self.lower_type_expression(child))
+                    .transpose()?,
+            })),
+            "assignment_statement" => Ok(Statement::Assignment(AssignmentStatement {
+                span: node.span.clone(),
+                left: self.lower_expression(lower_required_field(node, "left")?)?,
+                right: self.lower_expression(lower_required_field(node, "right")?)?,
+            })),
+            "expression_statement" => Ok(Statement::Expression(ExpressionStatement {
+                span: node.span.clone(),
+                value: self.lower_expression(
+                    named_children(node)
+                        .next()
+                        .ok_or_else(|| missing_child(node, "expression"))?,
+                )?,
+            })),
+            _ => Err(unexpected_node(node, "statement")),
+        }
+    }
+
+    fn lower_expression(&mut self, node: &CstNode) -> Result<Expression, LowerError> {
+        let node = unwrap_expression(node)?;
+        match node.kind.as_str() {
+            "identifier" => Ok(Expression::Identifier(self.lower_identifier(node)?)),
+            "number" => Ok(Expression::Number(NumberLiteral {
+                span: node.span.clone(),
+                text: text(node, self.source)?.to_owned(),
+            })),
+            "path_expression" => Ok(Expression::Path(PathExpression {
+                span: node.span.clone(),
+                ty: self.lower_required_identifier(node, "type")?,
+                member: self.lower_required_identifier(node, "member")?,
+            })),
+            "binary_expression" => Ok(Expression::Binary(BinaryExpression {
+                span: node.span.clone(),
+                left: Box::new(self.lower_expression(lower_required_field(node, "left")?)?),
+                operator: lower_binary_operator(lower_required_field(node, "operator")?)?,
+                right: Box::new(self.lower_expression(lower_required_field(node, "right")?)?),
+            })),
+            "postfix_expression" => {
+                let receiver = self.lower_expression(lower_required_field(node, "receiver")?)?;
+                let mut operations = Vec::new();
+                for child in named_children(node) {
+                    if child.field_name(node).is_some() {
+                        continue;
+                    }
+                    operations.push(self.lower_postfix_operation(child)?);
+                }
+                Ok(Expression::Postfix(PostfixExpression {
+                    span: node.span.clone(),
+                    receiver: Box::new(receiver),
+                    operations,
+                }))
+            }
+            "record_constructor_expression" => {
+                Ok(Expression::RecordConstructor(RecordConstructorExpression {
+                    span: node.span.clone(),
+                    constructor: self.lower_required_identifier(node, "constructor")?,
+                    fields: self.lower_record_literal(lower_required_child(
+                        node,
+                        "body",
+                        "record_literal",
+                    )?)?,
+                }))
+            }
+            "parenthesized_expression" => {
+                let inner = named_children(node)
+                    .next()
+                    .ok_or_else(|| missing_child(node, "expression"))?;
+                self.lower_expression(inner)
+            }
+            _ => Err(unexpected_node(node, "expression")),
+        }
+    }
+
+    fn lower_postfix_operation(
+        &mut self,
+        node: &CstNode,
+    ) -> Result<PostfixOperation, LowerError> {
+        match node.kind.as_str() {
+            "field_access" => Ok(PostfixOperation::Field(FieldAccess {
+                span: node.span.clone(),
+                field: self.lower_required_identifier(node, "field")?,
+            })),
+            "named_argument_list" => Ok(PostfixOperation::NamedArguments(NamedArgumentList {
+                span: node.span.clone(),
+                arguments: self.lower_named_arguments(node)?,
+            })),
+            "argument_list" => Ok(PostfixOperation::Arguments(ArgumentList {
+                span: node.span.clone(),
+                arguments: named_children(node)
+                    .map(|child| self.lower_expression(child))
+                    .collect::<Result<Vec<_>, _>>()?,
+            })),
+            "slice_expression" => Ok(PostfixOperation::Slice(SliceExpression {
+                span: node.span.clone(),
+                start: self.lower_expression(lower_required_field(node, "start")?)?,
+                end: self.lower_expression(lower_required_field(node, "end")?)?,
+            })),
+            _ => Err(unexpected_node(node, "postfix operation")),
+        }
+    }
+
+    fn lower_record_literal(
+        &mut self,
+        node: &CstNode,
+    ) -> Result<Vec<RecordFieldValue>, LowerError> {
+        expect_kind(node, "record_literal")?;
+        named_children(node)
+            .map(|child| self.lower_record_field_value(child))
+            .collect()
+    }
+
+    fn lower_record_field_value(
+        &mut self,
+        node: &CstNode,
+    ) -> Result<RecordFieldValue, LowerError> {
+        expect_kind(node, "record_field_value")?;
+        Ok(RecordFieldValue {
+            span: node.span.clone(),
+            name: self.lower_required_identifier(node, "name")?,
+            value: self.lower_expression(lower_required_field(node, "value")?)?,
+        })
+    }
+
+    fn lower_named_arguments(
+        &mut self,
+        node: &CstNode,
+    ) -> Result<Vec<NamedArgument>, LowerError> {
+        named_children(node)
+            .map(|child| self.lower_named_argument(child))
+            .collect()
+    }
+
+    fn lower_named_argument(&mut self, node: &CstNode) -> Result<NamedArgument, LowerError> {
+        expect_kind(node, "named_or_shorthand_argument")?;
+        let direction = child_by_field(node, "direction")
+            .map(lower_connection_direction)
+            .transpose()?;
+        let name = self.lower_required_identifier(node, "name")?;
+
+        if let Some(target_node) = child_by_field(node, "target") {
+            let target = self.lower_identifier(target_node)?;
+            return Ok(NamedArgument::Source(SourceArgument {
+                span: node.span.clone(),
+                direction,
+                name,
+                target,
+            }));
+        }
+
+        let value = if let Some(value) = child_by_field(node, "value") {
+            self.lower_expression(value)?
+        } else {
+            Expression::Identifier(name.clone())
+        };
+        Ok(NamedArgument::Sink(SinkArgument {
+            span: node.span.clone(),
+            direction,
+            name,
+            value,
+        }))
+    }
+
+    fn lower_type_expression(&mut self, node: &CstNode) -> Result<TypeExpression, LowerError> {
+        if node.kind != "type_expression" && node.kind != "return_type_expression" {
+            return Err(LowerError {
+                message: format!("expected type_expression, found {}", node.kind),
+                span: Some(node.span.clone()),
+            });
+        }
+        let mut suffixes = Vec::new();
+        let mut domain = None;
+
+        for child in &node.children {
+            let child = &child.node;
+            match child.kind.as_str() {
+                "type_index" => suffixes.push(TypeSuffix::Index(TypeIndex {
+                    span: child.span.clone(),
+                    index: self.lower_expression(lower_required_field(child, "index")?)?,
+                })),
+                "type_named_arguments" => {
+                    suffixes.push(TypeSuffix::NamedArguments(NamedArgumentList {
+                        span: child.span.clone(),
+                        arguments: self.lower_named_arguments(child)?,
+                    }));
+                }
+                "type_arguments" => {
+                    suffixes.push(TypeSuffix::Arguments(TypeArgumentList {
+                        span: child.span.clone(),
+                        arguments: named_children(child)
+                            .map(|grandchild| self.lower_type_expression(grandchild))
+                            .collect::<Result<Vec<_>, _>>()?,
+                    }));
+                }
+                "identifier"
+                    if child_by_field(node, "domain")
+                        .map(|domain_node| domain_node.span == child.span)
+                        .unwrap_or(false) =>
+                {
+                    domain = Some(self.lower_identifier(child)?);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(TypeExpression {
+            span: node.span.clone(),
+            name: self.lower_required_identifier(node, "name")?,
+            suffixes,
+            domain,
+        })
+    }
+
+    fn lower_identifier(&mut self, node: &CstNode) -> Result<Identifier, LowerError> {
+        expect_kind(node, "identifier")?;
+        Ok(Identifier {
+            id: self.next_node_id(),
+            span: node.span.clone(),
+            text: text(node, self.source)?.to_owned(),
+        })
+    }
+
+    fn lower_required_identifier(
+        &mut self,
+        node: &CstNode,
+        field_name: &str,
+    ) -> Result<Identifier, LowerError> {
+        self.lower_identifier(lower_required_field(node, field_name)?)
+    }
 }
 
 fn lower_direction(node: &CstNode) -> Result<Direction, LowerError> {
@@ -561,149 +879,6 @@ fn lower_direction(node: &CstNode) -> Result<Direction, LowerError> {
         "in" => Ok(Direction::In),
         "out" => Ok(Direction::Out),
         _ => Err(unexpected_node(node, "direction")),
-    }
-}
-
-fn lower_record_field_type(node: &CstNode, source: &str) -> Result<RecordFieldType, LowerError> {
-    expect_kind(node, "record_field_type")?;
-    Ok(RecordFieldType {
-        span: node.span.clone(),
-        name: lower_required_identifier(node, "name", source)?,
-        ty: lower_type_expression(
-            lower_required_child(node, "type", "type_expression")?,
-            source,
-        )?,
-    })
-}
-
-fn lower_port_field(node: &CstNode, source: &str) -> Result<PortField, LowerError> {
-    expect_kind(node, "port_field")?;
-    Ok(PortField {
-        span: node.span.clone(),
-        direction: lower_direction(lower_required_field(node, "direction")?)?,
-        name: lower_required_identifier(node, "name", source)?,
-        ty: lower_type_expression(
-            lower_required_child(node, "type", "type_expression")?,
-            source,
-        )?,
-    })
-}
-
-fn lower_required_block(
-    node: &CstNode,
-    field_name: &str,
-    source: &str,
-) -> Result<Block, LowerError> {
-    lower_block(lower_required_child(node, field_name, "block")?, source)
-}
-
-fn lower_block(node: &CstNode, source: &str) -> Result<Block, LowerError> {
-    expect_kind(node, "block")?;
-    Ok(Block {
-        span: node.span.clone(),
-        statements: named_children(node)
-            .map(|child| lower_statement(child, source))
-            .collect::<Result<Vec<_>, _>>()?,
-    })
-}
-
-fn lower_statement(node: &CstNode, source: &str) -> Result<Statement, LowerError> {
-    let node = unwrap_statement(node)?;
-    match node.kind.as_str() {
-        "let_statement" => Ok(Statement::Let(LetStatement {
-            span: node.span.clone(),
-            name: lower_required_identifier(node, "name", source)?,
-            value: lower_expression(lower_required_field(node, "value")?, source)?,
-        })),
-        "return_statement" => Ok(Statement::Return(ReturnStatement {
-            span: node.span.clone(),
-            value: lower_expression(lower_required_field(node, "value")?, source)?,
-        })),
-        "var_statement" => Ok(Statement::Var(VarStatement {
-            span: node.span.clone(),
-            names: named_children(node)
-                .filter(|child| child.kind == "identifier")
-                .map(|child| lower_identifier(child, source))
-                .collect::<Result<Vec<_>, _>>()?,
-            ty: child_by_field(node, "type")
-                .map(|child| lower_type_expression(child, source))
-                .transpose()?,
-        })),
-        "assignment_statement" => Ok(Statement::Assignment(AssignmentStatement {
-            span: node.span.clone(),
-            left: lower_expression(lower_required_field(node, "left")?, source)?,
-            right: lower_expression(lower_required_field(node, "right")?, source)?,
-        })),
-        "expression_statement" => Ok(Statement::Expression(ExpressionStatement {
-            span: node.span.clone(),
-            value: lower_expression(
-                named_children(node)
-                    .next()
-                    .ok_or_else(|| missing_child(node, "expression"))?,
-                source,
-            )?,
-        })),
-        _ => Err(unexpected_node(node, "statement")),
-    }
-}
-
-fn lower_expression(node: &CstNode, source: &str) -> Result<Expression, LowerError> {
-    let node = unwrap_expression(node)?;
-    match node.kind.as_str() {
-        "identifier" => Ok(Expression::Identifier(lower_identifier(node, source)?)),
-        "number" => Ok(Expression::Number(NumberLiteral {
-            span: node.span.clone(),
-            text: text(node, source)?.to_owned(),
-        })),
-        "path_expression" => Ok(Expression::Path(PathExpression {
-            span: node.span.clone(),
-            ty: lower_required_identifier(node, "type", source)?,
-            member: lower_required_identifier(node, "member", source)?,
-        })),
-        "binary_expression" => Ok(Expression::Binary(BinaryExpression {
-            span: node.span.clone(),
-            left: Box::new(lower_expression(
-                lower_required_field(node, "left")?,
-                source,
-            )?),
-            operator: lower_binary_operator(lower_required_field(node, "operator")?)?,
-            right: Box::new(lower_expression(
-                lower_required_field(node, "right")?,
-                source,
-            )?),
-        })),
-        "postfix_expression" => {
-            let receiver = lower_expression(lower_required_field(node, "receiver")?, source)?;
-            let mut operations = Vec::new();
-            for child in named_children(node) {
-                if child.field_name(node).is_some() {
-                    continue;
-                }
-                operations.push(lower_postfix_operation(child, source)?);
-            }
-            Ok(Expression::Postfix(PostfixExpression {
-                span: node.span.clone(),
-                receiver: Box::new(receiver),
-                operations,
-            }))
-        }
-        "record_constructor_expression" => {
-            Ok(Expression::RecordConstructor(RecordConstructorExpression {
-                span: node.span.clone(),
-                constructor: lower_required_identifier(node, "constructor", source)?,
-                fields: lower_record_literal(
-                    lower_required_child(node, "body", "record_literal")?,
-                    source,
-                )?,
-            }))
-        }
-        "parenthesized_expression" => {
-            let inner = named_children(node)
-                .next()
-                .ok_or_else(|| missing_child(node, "expression"))?;
-            lower_expression(inner, source)
-        }
-        _ => Err(unexpected_node(node, "expression")),
     }
 }
 
@@ -715,155 +890,12 @@ fn lower_binary_operator(node: &CstNode) -> Result<BinaryOperator, LowerError> {
     }
 }
 
-fn lower_postfix_operation(node: &CstNode, source: &str) -> Result<PostfixOperation, LowerError> {
-    match node.kind.as_str() {
-        "field_access" => Ok(PostfixOperation::Field(FieldAccess {
-            span: node.span.clone(),
-            field: lower_required_identifier(node, "field", source)?,
-        })),
-        "named_argument_list" => Ok(PostfixOperation::NamedArguments(NamedArgumentList {
-            span: node.span.clone(),
-            arguments: lower_named_arguments(node, source)?,
-        })),
-        "argument_list" => Ok(PostfixOperation::Arguments(ArgumentList {
-            span: node.span.clone(),
-            arguments: named_children(node)
-                .map(|child| lower_expression(child, source))
-                .collect::<Result<Vec<_>, _>>()?,
-        })),
-        "slice_expression" => Ok(PostfixOperation::Slice(SliceExpression {
-            span: node.span.clone(),
-            start: lower_expression(lower_required_field(node, "start")?, source)?,
-            end: lower_expression(lower_required_field(node, "end")?, source)?,
-        })),
-        _ => Err(unexpected_node(node, "postfix operation")),
-    }
-}
-
-fn lower_record_literal(node: &CstNode, source: &str) -> Result<Vec<RecordFieldValue>, LowerError> {
-    expect_kind(node, "record_literal")?;
-    named_children(node)
-        .map(|child| lower_record_field_value(child, source))
-        .collect()
-}
-
-fn lower_record_field_value(node: &CstNode, source: &str) -> Result<RecordFieldValue, LowerError> {
-    expect_kind(node, "record_field_value")?;
-    Ok(RecordFieldValue {
-        span: node.span.clone(),
-        name: lower_required_identifier(node, "name", source)?,
-        value: lower_expression(lower_required_field(node, "value")?, source)?,
-    })
-}
-
-fn lower_named_arguments(node: &CstNode, source: &str) -> Result<Vec<NamedArgument>, LowerError> {
-    named_children(node)
-        .map(|child| lower_named_argument(child, source))
-        .collect()
-}
-
-fn lower_named_argument(node: &CstNode, source: &str) -> Result<NamedArgument, LowerError> {
-    expect_kind(node, "named_or_shorthand_argument")?;
-    let direction = child_by_field(node, "direction")
-        .map(lower_connection_direction)
-        .transpose()?;
-    let name = lower_required_identifier(node, "name", source)?;
-
-    if let Some(target_node) = child_by_field(node, "target") {
-        let target = lower_identifier(target_node, source)?;
-        return Ok(NamedArgument::Source(SourceArgument {
-            span: node.span.clone(),
-            direction,
-            name,
-            target,
-        }));
-    }
-
-    let value = if let Some(value) = child_by_field(node, "value") {
-        lower_expression(value, source)?
-    } else {
-        Expression::Identifier(name.clone())
-    };
-    Ok(NamedArgument::Sink(SinkArgument {
-        span: node.span.clone(),
-        direction,
-        name,
-        value,
-    }))
-}
-
 fn lower_connection_direction(node: &CstNode) -> Result<ConnectionDirection, LowerError> {
     match node.kind.as_str() {
         "in" => Ok(ConnectionDirection::In),
         "out" => Ok(ConnectionDirection::Out),
         _ => Err(unexpected_node(node, "connection direction")),
     }
-}
-
-fn lower_type_expression(node: &CstNode, source: &str) -> Result<TypeExpression, LowerError> {
-    if node.kind != "type_expression" && node.kind != "return_type_expression" {
-        return Err(LowerError {
-            message: format!("expected type_expression, found {}", node.kind),
-            span: Some(node.span.clone()),
-        });
-    }
-    let mut suffixes = Vec::new();
-    let mut domain = None;
-
-    for child in &node.children {
-        let child = &child.node;
-        match child.kind.as_str() {
-            "type_index" => suffixes.push(TypeSuffix::Index(TypeIndex {
-                span: child.span.clone(),
-                index: lower_expression(lower_required_field(child, "index")?, source)?,
-            })),
-            "type_named_arguments" => {
-                suffixes.push(TypeSuffix::NamedArguments(NamedArgumentList {
-                    span: child.span.clone(),
-                    arguments: lower_named_arguments(child, source)?,
-                }));
-            }
-            "type_arguments" => {
-                suffixes.push(TypeSuffix::Arguments(TypeArgumentList {
-                    span: child.span.clone(),
-                    arguments: named_children(child)
-                        .map(|grandchild| lower_type_expression(grandchild, source))
-                        .collect::<Result<Vec<_>, _>>()?,
-                }));
-            }
-            "identifier"
-                if child_by_field(node, "domain")
-                    .map(|domain_node| domain_node.span == child.span)
-                    .unwrap_or(false) =>
-            {
-                domain = Some(lower_identifier(child, source)?);
-            }
-            _ => {}
-        }
-    }
-
-    Ok(TypeExpression {
-        span: node.span.clone(),
-        name: lower_required_identifier(node, "name", source)?,
-        suffixes,
-        domain,
-    })
-}
-
-fn lower_identifier(node: &CstNode, source: &str) -> Result<Identifier, LowerError> {
-    expect_kind(node, "identifier")?;
-    Ok(Identifier {
-        span: node.span.clone(),
-        text: text(node, source)?.to_owned(),
-    })
-}
-
-fn lower_required_identifier(
-    node: &CstNode,
-    field_name: &str,
-    source: &str,
-) -> Result<Identifier, LowerError> {
-    lower_identifier(lower_required_field(node, field_name)?, source)
 }
 
 fn unwrap_statement(node: &CstNode) -> Result<&CstNode, LowerError> {

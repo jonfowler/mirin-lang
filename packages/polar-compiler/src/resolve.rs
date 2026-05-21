@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use crate::surface_ir::{
     Block, ComponentDefinition, Expression, FunctionDefinition, ImplBlock, Item, LetStatement,
-    NamedArgument, NamedParameter, Parameter, PortDefinition, PostfixOperation, SourceArgument,
-    SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix, VarStatement,
+    NamedArgument, NamedParameter, NodeId, Parameter, PortDefinition, PostfixOperation,
+    SourceArgument, SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix,
+    VarStatement,
 };
 use crate::{Identifier, SourceSpan};
 
@@ -91,8 +92,8 @@ pub enum ResolveErrorKind {
 /// The output of name resolution.
 #[derive(Debug, Default)]
 pub struct ResolveResult {
-    /// Maps each identifier use-site (by start_byte of its span) to what it resolves to.
-    pub resolutions: HashMap<usize, Res>,
+    /// Maps each identifier use-site (by its `NodeId`) to what it resolves to.
+    pub resolutions: HashMap<NodeId, Res>,
     pub errors: Vec<ResolveError>,
     /// Info for each top-level definition, indexed by DefId.0.
     pub defs: Vec<DefInfo>,
@@ -186,7 +187,7 @@ impl Ctx {
         } else {
             let id = self.alloc_def(kind, ident);
             self.global_defs.insert(ident.text.clone(), id);
-            self.result.resolutions.insert(ident.span.start_byte, Res::Def(id));
+            self.result.resolutions.insert(ident.id, Res::Def(id));
         }
     }
 
@@ -251,12 +252,12 @@ impl Ctx {
         for np in &func.named_parameters {
             let id = self.alloc_param(&np.name, owner);
             params.insert(np.name.text.clone(), id);
-            self.result.resolutions.insert(np.name.span.start_byte, Res::Param(id));
+            self.result.resolutions.insert(np.name.id, Res::Param(id));
         }
         for p in &func.parameters {
             let id = self.alloc_param(&p.name, owner);
             params.insert(p.name.text.clone(), id);
-            self.result.resolutions.insert(p.name.span.start_byte, Res::Param(id));
+            self.result.resolutions.insert(p.name.id, Res::Param(id));
         }
         if let Some(ty) = &func.return_type {
             self.resolve_type_expr(ty, &params);
@@ -274,7 +275,7 @@ impl Ctx {
         for np in named {
             let id = self.alloc_param(&np.name, owner);
             scope.insert(np.name.text.clone(), id);
-            self.result.resolutions.insert(np.name.span.start_byte, Res::Param(id));
+            self.result.resolutions.insert(np.name.id, Res::Param(id));
             if let Some(ty) = &np.ty {
                 self.resolve_type_expr(ty, &scope);
             }
@@ -285,7 +286,7 @@ impl Ctx {
         for p in positional {
             let id = self.alloc_param(&p.name, owner);
             scope.insert(p.name.text.clone(), id);
-            self.result.resolutions.insert(p.name.span.start_byte, Res::Param(id));
+            self.result.resolutions.insert(p.name.id, Res::Param(id));
             self.resolve_type_expr(&p.ty, &scope);
             if let Some(default) = &p.default {
                 self.resolve_expr_in_params(default, &scope);
@@ -297,14 +298,14 @@ impl Ctx {
     fn resolve_type_expr(&mut self, ty: &TypeExpression, params: &HashMap<String, ParamId>) {
         // Type head: check params first (for type-level parameters), then global defs.
         if let Some(&id) = params.get(&ty.name.text) {
-            self.result.resolutions.insert(ty.name.span.start_byte, Res::Param(id));
+            self.result.resolutions.insert(ty.name.id, Res::Param(id));
         } else if let Some(&id) = self.global_defs.get(&ty.name.text) {
-            self.result.resolutions.insert(ty.name.span.start_byte, Res::Def(id));
+            self.result.resolutions.insert(ty.name.id, Res::Def(id));
         }
         // else: built-in type (uint, bool, Reset, …) — not in the def table
         if let Some(domain) = &ty.domain {
             if let Some(&id) = params.get(&domain.text) {
-                self.result.resolutions.insert(domain.span.start_byte, Res::Param(id));
+                self.result.resolutions.insert(domain.id, Res::Param(id));
             }
             // else: builtin domain name — leave for later
         }
@@ -325,9 +326,9 @@ impl Ctx {
         match expr {
             Expression::Identifier(ident) => {
                 if let Some(&id) = params.get(&ident.text) {
-                    self.result.resolutions.insert(ident.span.start_byte, Res::Param(id));
+                    self.result.resolutions.insert(ident.id, Res::Param(id));
                 } else if let Some(&id) = self.global_defs.get(&ident.text) {
-                    self.result.resolutions.insert(ident.span.start_byte, Res::Def(id));
+                    self.result.resolutions.insert(ident.id, Res::Def(id));
                 }
             }
             Expression::Binary(b) => {
@@ -380,7 +381,7 @@ impl BlockCtx<'_> {
                 } else {
                     let id = self.ctx.alloc_binding(BindingKind::Var, ident);
                     self.var_bindings.insert(ident.text.clone(), id);
-                    self.ctx.result.resolutions.insert(ident.span.start_byte, Res::Local(id));
+                    self.ctx.result.resolutions.insert(ident.id, Res::Local(id));
                 }
             }
         }
@@ -418,7 +419,7 @@ impl BlockCtx<'_> {
         // Resolve RHS before introducing the new binding (so `let x = x + 1` sees the old x).
         self.resolve_expr(&l.value);
         let id = self.ctx.alloc_binding(BindingKind::Let, &l.name);
-        self.ctx.result.resolutions.insert(l.name.span.start_byte, Res::Local(id));
+        self.ctx.result.resolutions.insert(l.name.id, Res::Local(id));
         self.let_scope.push((l.name.text.clone(), id));
     }
 
@@ -429,7 +430,7 @@ impl BlockCtx<'_> {
             Expression::Path(p) => {
                 // Resolve the type part; the member is a field name (deferred to type checking).
                 if let Some(&id) = self.ctx.global_defs.get(&p.ty.text) {
-                    self.ctx.result.resolutions.insert(p.ty.span.start_byte, Res::Def(id));
+                    self.ctx.result.resolutions.insert(p.ty.id, Res::Def(id));
                 }
             }
             Expression::Binary(b) => {
@@ -447,7 +448,7 @@ impl BlockCtx<'_> {
                     self.ctx
                         .result
                         .resolutions
-                        .insert(r.constructor.span.start_byte, Res::Def(id));
+                        .insert(r.constructor.id, Res::Def(id));
                 }
                 for field in &r.fields {
                     // field.name is a struct field name — deferred to type checking
@@ -502,7 +503,7 @@ impl BlockCtx<'_> {
                         self.ctx
                             .result
                             .resolutions
-                            .insert(s.target.span.start_byte, Res::Local(id));
+                            .insert(s.target.id, Res::Local(id));
                     }
                 }
             }
@@ -518,7 +519,7 @@ impl BlockCtx<'_> {
                 self.ctx
                     .result
                     .resolutions
-                    .insert(s.target.span.start_byte, Res::Local(id));
+                    .insert(s.target.id, Res::Local(id));
                 self.let_scope.push((s.target.text.clone(), id));
             }
         }
@@ -527,7 +528,7 @@ impl BlockCtx<'_> {
     fn resolve_name_use(&mut self, ident: &Identifier) {
         match self.lookup_name(&ident.text) {
             Some(res) => {
-                self.ctx.result.resolutions.insert(ident.span.start_byte, res);
+                self.ctx.result.resolutions.insert(ident.id, res);
             }
             None => {
                 self.ctx.result.errors.push(ResolveError {
@@ -540,16 +541,16 @@ impl BlockCtx<'_> {
 
     fn resolve_type(&mut self, ty: &TypeExpression) {
         if let Some(&id) = self.params.get(&ty.name.text) {
-            self.ctx.result.resolutions.insert(ty.name.span.start_byte, Res::Param(id));
+            self.ctx.result.resolutions.insert(ty.name.id, Res::Param(id));
         } else if let Some(&id) = self.ctx.global_defs.get(&ty.name.text) {
-            self.ctx.result.resolutions.insert(ty.name.span.start_byte, Res::Def(id));
+            self.ctx.result.resolutions.insert(ty.name.id, Res::Def(id));
         }
         if let Some(domain) = &ty.domain {
             if let Some(&id) = self.params.get(&domain.text) {
                 self.ctx
                     .result
                     .resolutions
-                    .insert(domain.span.start_byte, Res::Param(id));
+                    .insert(domain.id, Res::Param(id));
             }
         }
         for suffix in &ty.suffixes {
