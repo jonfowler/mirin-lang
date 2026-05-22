@@ -3,39 +3,16 @@
   "name": "Polar",
   "scopeName": "source.polar",
   "patterns": [
-    {
-      "include": "#comments"
-    },
-    {
-      "include": "#declarations"
-    },
-    {
-      "include": "#associated-functions"
-    },
-    {
-      "include": "#method-calls"
-    },
-    {
-      "include": "#field-access"
-    },
-    {
-      "include": "#bindings"
-    },
-    {
-      "include": "#keywords"
-    },
-    {
-      "include": "#types"
-    },
-    {
-      "include": "#domain-markers"
-    },
-    {
-      "include": "#numbers"
-    },
-    {
-      "include": "#operators"
-    }
+    { "include": "#comments" },
+    { "include": "#declarations" },
+    { "include": "#associated-functions" },
+    { "include": "#method-calls" },
+    { "include": "#field-access" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#domain-markers" },
+    { "include": "#numbers" },
+    { "include": "#operators" }
   ],
   "repository": {
     "comments": {
@@ -49,25 +26,17 @@
     "declarations": {
       "patterns": [
         {
-          "match": "\\b(cmp|struct|port|impl)\\b\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(fn)\\b\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
-            "1": {
-              "name": "storage.type.polar"
-            },
-            "2": {
-              "name": "entity.name.type.polar"
-            }
+            "1": { "name": "storage.type.function.polar" },
+            "2": { "name": "entity.name.function.polar" }
           }
         },
         {
-          "match": "\\b(fn)\\b\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*(?:\\{|\\())",
+          "match": "\\b(struct|port|impl)\\b\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
-            "1": {
-              "name": "storage.type.function.polar"
-            },
-            "2": {
-              "name": "entity.name.function.polar"
-            }
+            "1": { "name": "storage.type.polar" },
+            "2": { "name": "entity.name.type.polar" }
           }
         }
       ]
@@ -77,15 +46,9 @@
         {
           "match": "\\b([A-Z][A-Za-z0-9_]*)\\b(::)([A-Za-z_][A-Za-z0-9_]*)\\b",
           "captures": {
-            "1": {
-              "name": "entity.name.type.polar"
-            },
-            "2": {
-              "name": "keyword.operator.path.polar"
-            },
-            "3": {
-              "name": "entity.name.function.polar"
-            }
+            "1": { "name": "entity.name.type.polar" },
+            "2": { "name": "keyword.operator.path.polar" },
+            "3": { "name": "entity.name.function.polar" }
           }
         }
       ]
@@ -95,12 +58,8 @@
         {
           "match": "(\\.)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*(?:\\{|\\())",
           "captures": {
-            "1": {
-              "name": "punctuation.accessor.dot.polar"
-            },
-            "2": {
-              "name": "entity.name.function.polar"
-            }
+            "1": { "name": "punctuation.accessor.dot.polar" },
+            "2": { "name": "entity.name.function.polar" }
           }
         }
       ]
@@ -110,36 +69,8 @@
         {
           "match": "(\\.)([A-Za-z_][A-Za-z0-9_]*)\\b",
           "captures": {
-            "1": {
-              "name": "punctuation.accessor.dot.polar"
-            },
-            "2": {
-              "name": "variable.other.member.polar"
-            }
-          }
-        }
-      ]
-    },
-    "bindings": {
-      "patterns": [
-        {
-          "name": "variable.language.self.polar",
-          "match": "\\bself\\b"
-        },
-        {
-          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\b(?=\\s*(?:,|=)\\s*(?:[^:]|$))",
-          "captures": {
-            "1": {
-              "name": "variable.parameter.polar"
-            }
-          }
-        },
-        {
-          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\b(?=\\s*:)",
-          "captures": {
-            "1": {
-              "name": "variable.parameter.polar"
-            }
+            "1": { "name": "punctuation.accessor.dot.polar" },
+            "2": { "name": "variable.other.member.polar" }
           }
         }
       ]
@@ -147,8 +78,12 @@
     "keywords": {
       "patterns": [
         {
+          "name": "variable.language.self.polar",
+          "match": "\\bself\\b"
+        },
+        {
           "name": "keyword.control.polar",
-          "match": "\\b(let|return|rec)\\b"
+          "match": "\\b(let|var|return)\\b"
         },
         {
           "name": "storage.modifier.polar",
@@ -164,7 +99,7 @@
       "patterns": [
         {
           "name": "storage.type.polar",
-          "match": "\\b(Clock|Reset|bool|usize|uint)\\b"
+          "match": "\\b(Clock|Reset|bool|usize|uint|Self)\\b"
         },
         {
           "name": "entity.name.type.polar",
@@ -177,23 +112,15 @@
         {
           "match": "(#)([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
-            "1": {
-              "name": "punctuation.definition.inference.polar"
-            },
-            "2": {
-              "name": "variable.parameter.polar"
-            }
+            "1": { "name": "punctuation.definition.inference.polar" },
+            "2": { "name": "variable.parameter.polar" }
           }
         },
         {
           "match": "(@)([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
-            "1": {
-              "name": "punctuation.definition.domain.polar"
-            },
-            "2": {
-              "name": "entity.name.label.polar"
-            }
+            "1": { "name": "punctuation.definition.domain.polar" },
+            "2": { "name": "entity.name.label.polar" }
           }
         }
       ]
@@ -210,7 +137,7 @@
       "patterns": [
         {
           "name": "keyword.operator.polar",
-          "match": "::|->|=|\\+|\\*|:"
+          "match": "=>|->|::|\\+|\\*|=|:"
         }
       ]
     }
