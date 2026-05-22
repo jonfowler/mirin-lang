@@ -2,7 +2,7 @@ fn counter
   { #clk: Clock, rstn: Reset @clk = high }
   ()
   {
-    var count: uint[8] @clk;
-    var count: uint[8] @clk;
+    var count: uint(8) @clk;
+    var count: uint(8) @clk;
     count = (count + 1).reg{rstn, reset_val = 0}();
   }

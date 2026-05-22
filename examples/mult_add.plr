@@ -1,13 +1,12 @@
 fn multAdd
   { #clk: Clock,
     rstn: Reset @clk = high,
-    c: uint[8] @clk = 0,
+    c: uint(8) @clk = 0,
   }
-  ( a: uint[8] @clk, b: uint[8] @clk )
-  -> uint[8] @clk
+  ( a: uint(8) @clk, b: uint(8) @clk )
+  -> uint(8) @clk
   {
     let mult = a * b;
-    let mult = mult[8:0];
     let mult = mult.reg{rstn}();
     let add = mult + c;
     return add;

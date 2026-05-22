@@ -17,8 +17,7 @@ pub use surface_ir::{
     FunctionDefinition, Identifier, ImplBlock, Item, LetStatement, LowerError, NamedArgument,
     NamedArgumentList, NamedParameter, NodeId, NumberLiteral, Parameter, PathExpression,
     PortDefinition, PortField, PostfixExpression, PostfixOperation, RecordConstructorExpression,
-    RecordFieldType, RecordFieldValue, ReturnStatement, SinkArgument, SliceExpression,
-    SourceArgument, SourceFile, Statement, StructDefinition, SurfaceIrError, TypeArgumentList,
-    TypeExpression, TypeIndex, TypeSuffix, VarStatement, lower_cst, parse_surface_file,
-    parse_surface_source,
+    RecordFieldType, RecordFieldValue, ReturnStatement, SinkArgument, SourceArgument, SourceFile,
+    Statement, StructDefinition, SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix,
+    VarStatement, lower_cst, parse_surface_file, parse_surface_source,
 };

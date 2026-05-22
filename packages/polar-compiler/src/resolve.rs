@@ -415,12 +415,6 @@ impl Ctx {
         for suffix in &ty.suffixes {
             match suffix {
                 TypeSuffix::Index(idx) => self.resolve_expr_in_params(&idx.index, params),
-                TypeSuffix::Arguments(args) => {
-                    for arg in &args.arguments {
-                        self.resolve_type_expr(arg, params);
-                    }
-                }
-                TypeSuffix::NamedArguments(_) => {}
             }
         }
     }
@@ -591,10 +585,6 @@ impl BlockCtx<'_> {
                     self.resolve_expr(expr);
                 }
             }
-            PostfixOperation::Slice(s) => {
-                self.resolve_expr(&s.start);
-                self.resolve_expr(&s.end);
-            }
         }
     }
 
@@ -686,12 +676,6 @@ impl BlockCtx<'_> {
         for suffix in &ty.suffixes {
             match suffix {
                 TypeSuffix::Index(idx) => self.resolve_expr(&idx.index),
-                TypeSuffix::Arguments(args) => {
-                    for arg in &args.arguments {
-                        self.resolve_type(arg);
-                    }
-                }
-                TypeSuffix::NamedArguments(_) => {}
             }
         }
     }
@@ -734,7 +718,7 @@ mod tests {
         // Note: `fn f(...) -> Type { }` is ambiguous in the grammar when `Type` is followed
         // directly by `{` — the parser confuses the block with a named-argument type suffix.
         // Tests use no return type or @-domain annotations to avoid this.
-        let r = resolve("fn add(a: uint[8], b: uint[8]) { let r = a; }");
+        let r = resolve("fn add(a: uint(8), b: uint(8)) { let r = a; }");
         assert_eq!(r.defs.len(), 1);
         assert_eq!(r.defs[0].name, "add");
         assert!(matches!(r.defs[0].kind, DefKind::Component));
@@ -744,8 +728,8 @@ mod tests {
     #[test]
     fn reports_duplicate_top_level_def() {
         let r = resolve(
-            "fn foo(a: uint[8]) { let r = a; }\n\
-             fn foo(b: uint[8]) { let r = b; }",
+            "fn foo(a: uint(8)) { let r = a; }\n\
+             fn foo(b: uint(8)) { let r = b; }",
         );
         assert_eq!(r.errors.len(), 1);
         assert!(matches!(&r.errors[0].kind, ResolveErrorKind::DuplicateDef(n) if n == "foo"));
@@ -753,7 +737,7 @@ mod tests {
 
     #[test]
     fn resolves_parameter_use() {
-        let r = resolve("fn add(a: uint[8], b: uint[8]) { let r = a; }");
+        let r = resolve("fn add(a: uint(8), b: uint(8)) { let r = a; }");
         assert!(r.errors.is_empty());
         let param_res = r.resolutions.values().find(|res| match res {
             Res::Local(id) => matches!(r.locals[id].kind, LocalKind::Param { .. }),
@@ -767,7 +751,7 @@ mod tests {
 
     #[test]
     fn resolves_let_binding() {
-        let r = resolve("fn f(x: uint[8]) { let y = x; }");
+        let r = resolve("fn f(x: uint(8)) { let y = x; }");
         assert!(r.errors.is_empty());
         assert!(
             r.locals
@@ -778,7 +762,7 @@ mod tests {
 
     #[test]
     fn let_shadows_let() {
-        let r = resolve("fn f(x: uint[8]) { let x = x; }");
+        let r = resolve("fn f(x: uint(8)) { let x = x; }");
         assert!(r.errors.is_empty());
         let let_xs: Vec<_> = r
             .locals
@@ -791,7 +775,7 @@ mod tests {
     #[test]
     fn resolves_var_with_block_wide_scope() {
         // var is used in the assignment before the var declaration appears in source
-        let r = resolve("fn f() { count = count; var count: uint[8]; }");
+        let r = resolve("fn f() { count = count; var count: uint(8); }");
         assert!(r.errors.is_empty());
         assert!(
             r.locals
@@ -802,14 +786,14 @@ mod tests {
 
     #[test]
     fn reports_var_after_let() {
-        let r = resolve("fn f(x: uint[8]) { let y = x; var y; }");
+        let r = resolve("fn f(x: uint(8)) { let y = x; var y; }");
         assert_eq!(r.errors.len(), 1);
         assert!(matches!(&r.errors[0].kind, ResolveErrorKind::VarAfterLet(n) if n == "y"));
     }
 
     #[test]
     fn reports_duplicate_var() {
-        let r = resolve("fn f() { var x: uint[8]; var x: uint[8]; }");
+        let r = resolve("fn f() { var x: uint(8); var x: uint(8); }");
         assert_eq!(r.errors.len(), 1);
         assert!(matches!(&r.errors[0].kind, ResolveErrorKind::DuplicateVar(n) if n == "x"));
     }
@@ -826,7 +810,7 @@ mod tests {
         // `output => out_df` where `out_df` is not in scope should introduce an implicit var
         let r = resolve(
             "fn producer() { }\n\
-             fn consumer(inp: uint[8]) { producer { output => out_df }(); let _ = out_df; }",
+             fn consumer(inp: uint(8)) { producer { output => out_df }(); let _ = out_df; }",
         );
         // out_df should be introduced as ImplicitVar and be resolvable by the subsequent let
         assert!(r.errors.is_empty());
@@ -841,7 +825,7 @@ mod tests {
     fn reports_source_on_let_binding() {
         let r = resolve(
             "fn producer() { }\n\
-             fn consumer(inp: uint[8]) { let x = inp; producer { output => x }(); }",
+             fn consumer(inp: uint(8)) { let x = inp; producer { output => x }(); }",
         );
         assert_eq!(r.errors.len(), 1);
         assert!(matches!(&r.errors[0].kind, ResolveErrorKind::SourceOnLetBinding(n) if n == "x"));
@@ -851,7 +835,7 @@ mod tests {
     fn resolves_var_as_source_target() {
         let r = resolve(
             "fn producer() { }\n\
-             fn consumer() { var x: uint[8]; producer { output => x }(); }",
+             fn consumer() { var x: uint(8); producer { output => x }(); }",
         );
         assert!(r.errors.is_empty());
     }
@@ -859,7 +843,7 @@ mod tests {
     #[test]
     fn resolves_var_with_inline_initializer() {
         // var acc = acc + 1; — the init may reference the var itself (feedback)
-        let r = resolve("fn f(x: uint[8]) { var acc = acc + x; }");
+        let r = resolve("fn f(x: uint(8)) { var acc = acc + x; }");
         assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
         assert!(
             r.locals
@@ -871,7 +855,7 @@ mod tests {
     #[test]
     fn var_initializer_resolves_names_in_scope() {
         // The init expression sees params and other vars.
-        let r = resolve("fn f(x: uint[8]) { var a: uint[8]; var b = a + x; }");
+        let r = resolve("fn f(x: uint(8)) { var a: uint(8); var b = a + x; }");
         assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
     }
 
@@ -894,8 +878,8 @@ mod tests {
     #[test]
     fn error_message_duplicate_def() {
         let r = resolve(
-            "fn foo(a: uint[8]) { let r = a; }\n\
-             fn foo(b: uint[8]) { let r = b; }",
+            "fn foo(a: uint(8)) { let r = a; }\n\
+             fn foo(b: uint(8)) { let r = b; }",
         );
         assert_eq!(r.errors.len(), 1);
         assert_eq!(
@@ -906,7 +890,7 @@ mod tests {
 
     #[test]
     fn error_message_duplicate_var() {
-        let r = resolve("fn f() { var x: uint[8]; var x: uint[8]; }");
+        let r = resolve("fn f() { var x: uint(8); var x: uint(8); }");
         assert_eq!(r.errors.len(), 1);
         assert_eq!(
             r.errors[0].kind.to_string(),
@@ -916,7 +900,7 @@ mod tests {
 
     #[test]
     fn error_message_var_after_let() {
-        let r = resolve("fn f(x: uint[8]) { let y = x; var y; }");
+        let r = resolve("fn f(x: uint(8)) { let y = x; var y; }");
         assert_eq!(r.errors.len(), 1);
         assert_eq!(
             r.errors[0].kind.to_string(),
@@ -928,7 +912,7 @@ mod tests {
     fn error_message_source_on_let_binding() {
         let r = resolve(
             "fn producer() { }\n\
-             fn consumer(inp: uint[8]) { let x = inp; producer { output => x }(); }",
+             fn consumer(inp: uint(8)) { let x = inp; producer { output => x }(); }",
         );
         assert_eq!(r.errors.len(), 1);
         assert_eq!(
@@ -941,7 +925,7 @@ mod tests {
     fn error_message_invalid_source_target() {
         let r = resolve(
             "fn producer() { }\n\
-             fn consumer(inp: uint[8]) { producer { output => inp }(); }",
+             fn consumer(inp: uint(8)) { producer { output => inp }(); }",
         );
         assert_eq!(r.errors.len(), 1);
         assert_eq!(

@@ -12,9 +12,7 @@ module.exports = grammar({
 
   word: ($) => $.identifier,
 
-  conflicts: ($) => [
-    [$.named_argument_list, $.record_literal],
-  ],
+  conflicts: ($) => [],
 
   rules: {
     source_file: ($) => repeat($._item),
@@ -42,7 +40,7 @@ module.exports = grammar({
             field("parameters", $.parameter_section),
           ),
         ),
-        optional(seq("->", field("return_type", $.return_type_expression))),
+        optional(seq("->", field("return_type", $.type_expression))),
         field("body", $.block),
       ),
 
@@ -82,7 +80,7 @@ module.exports = grammar({
         field("name", $.identifier),
         optional(field("named_parameters", $.named_parameter_section)),
         field("parameters", $.parameter_section),
-        optional(seq("->", field("return_type", $.return_type_expression))),
+        optional(seq("->", field("return_type", $.type_expression))),
         field("body", $.block),
       ),
 
@@ -103,14 +101,20 @@ module.exports = grammar({
       ),
 
     parameter: ($) =>
-      seq(
-        optional(field("direction", choice("in", "out"))),
-        optional(field("inferable", "#")),
-        optional(field("const", "const")),
-        field("name", $.identifier),
-        ":",
-        field("type", $.type_expression),
-        optional(seq("=", field("default", $.expression))),
+      choice(
+        seq(
+          field("name", "self"),
+          optional(seq("@", field("domain", $.identifier))),
+        ),
+        seq(
+          optional(field("direction", choice("in", "out"))),
+          optional(field("inferable", "#")),
+          optional(field("const", "const")),
+          field("name", $.identifier),
+          ":",
+          field("type", $.type_expression),
+          optional(seq("=", field("default", $.expression))),
+        ),
       ),
 
     record_type_body: ($) =>
@@ -163,39 +167,12 @@ module.exports = grammar({
       prec.right(
         seq(
           field("name", $.identifier),
-          repeat(
-            choice(
-              $.type_index,
-              seq($.type_named_arguments, $.type_arguments),
-              $.type_arguments,
-            ),
-          ),
+          optional($.type_index),
           optional(seq("@", field("domain", $.identifier))),
         ),
       ),
 
-    // Return type positions exclude type_named_arguments to resolve the
-    // shift-reduce conflict between `-> T { named_args }` and `-> T { body }`.
-    return_type_expression: ($) =>
-      prec.right(
-        seq(
-          field("name", $.identifier),
-          repeat(
-            choice(
-              $.type_index,
-              $.type_arguments,
-            ),
-          ),
-          optional(seq("@", field("domain", $.identifier))),
-        ),
-      ),
-
-    type_index: ($) => seq("[", field("index", $.expression), "]"),
-
-    type_named_arguments: ($) =>
-      seq("{", commaSep($.named_or_shorthand_argument), optional(","), "}"),
-
-    type_arguments: ($) => seq("(", commaSep($.type_expression), optional(","), ")"),
+    type_index: ($) => seq("(", field("index", $.expression), ")"),
 
     expression: ($) =>
       choice(
@@ -233,16 +210,12 @@ module.exports = grammar({
               $.field_access,
               seq($.named_argument_list, $.argument_list),
               $.argument_list,
-              $.slice_expression,
             ),
           ),
         ),
       ),
 
     field_access: ($) => seq(".", field("field", $.identifier)),
-
-    slice_expression: ($) =>
-      seq("[", field("start", $.expression), ":", field("end", $.expression), "]"),
 
     named_argument_list: ($) =>
       seq("{", commaSep($.named_or_shorthand_argument), optional(","), "}"),

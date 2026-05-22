@@ -232,7 +232,6 @@ pub enum PostfixOperation {
     Field(FieldAccess),
     NamedArguments(NamedArgumentList),
     Arguments(ArgumentList),
-    Slice(SliceExpression),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,27 +316,12 @@ pub struct TypeExpression {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeSuffix {
     Index(TypeIndex),
-    NamedArguments(NamedArgumentList),
-    Arguments(TypeArgumentList),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeIndex {
     pub span: SourceSpan,
     pub index: Expression,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SliceExpression {
-    pub span: SourceSpan,
-    pub start: Expression,
-    pub end: Expression,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeArgumentList {
-    pub span: SourceSpan,
-    pub arguments: Vec<TypeExpression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -570,6 +554,36 @@ impl<'a> Lowerer<'a> {
 
     fn lower_parameter(&mut self, node: &CstNode) -> Result<Parameter, LowerError> {
         expect_kind(node, "parameter")?;
+        // Self parameter shorthand: `self @clk` — no type field, synthesize `Self` type.
+        if child_by_field(node, "type").is_none() && child_by_field(node, "name").is_none() {
+            let domain = child_by_field(node, "domain")
+                .map(|child| self.lower_identifier(child))
+                .transpose()?;
+            let self_id = Identifier {
+                id: self.next_node_id(),
+                span: node.span.clone(),
+                text: "self".to_owned(),
+            };
+            let self_type_name = Identifier {
+                id: self.next_node_id(),
+                span: node.span.clone(),
+                text: "Self".to_owned(),
+            };
+            return Ok(Parameter {
+                span: node.span.clone(),
+                direction: None,
+                inferable: false,
+                is_const: false,
+                name: self_id,
+                ty: TypeExpression {
+                    span: node.span.clone(),
+                    name: self_type_name,
+                    suffixes: Vec::new(),
+                    domain,
+                },
+                default: None,
+            });
+        }
         Ok(Parameter {
             span: node.span.clone(),
             direction: child_by_field(node, "direction")
@@ -747,11 +761,6 @@ impl<'a> Lowerer<'a> {
                     .map(|child| self.lower_expression(child))
                     .collect::<Result<Vec<_>, _>>()?,
             })),
-            "slice_expression" => Ok(PostfixOperation::Slice(SliceExpression {
-                span: node.span.clone(),
-                start: self.lower_expression(lower_required_field(node, "start")?)?,
-                end: self.lower_expression(lower_required_field(node, "end")?)?,
-            })),
             _ => Err(unexpected_node(node, "postfix operation")),
         }
     }
@@ -812,12 +821,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_type_expression(&mut self, node: &CstNode) -> Result<TypeExpression, LowerError> {
-        if node.kind != "type_expression" && node.kind != "return_type_expression" {
-            return Err(LowerError {
-                message: format!("expected type_expression, found {}", node.kind),
-                span: Some(node.span.clone()),
-            });
-        }
+        expect_kind(node, "type_expression")?;
         let mut suffixes = Vec::new();
         let mut domain = None;
 
@@ -828,20 +832,6 @@ impl<'a> Lowerer<'a> {
                     span: child.span.clone(),
                     index: self.lower_expression(lower_required_field(child, "index")?)?,
                 })),
-                "type_named_arguments" => {
-                    suffixes.push(TypeSuffix::NamedArguments(NamedArgumentList {
-                        span: child.span.clone(),
-                        arguments: self.lower_named_arguments(child)?,
-                    }));
-                }
-                "type_arguments" => {
-                    suffixes.push(TypeSuffix::Arguments(TypeArgumentList {
-                        span: child.span.clone(),
-                        arguments: named_children(child)
-                            .map(|grandchild| self.lower_type_expression(grandchild))
-                            .collect::<Result<Vec<_>, _>>()?,
-                    }));
-                }
                 "identifier"
                     if child_by_field(node, "domain")
                         .map(|domain_node| domain_node.span == child.span)
@@ -1018,7 +1008,7 @@ mod tests {
         assert_eq!(component.name.text, "multAdd");
         assert_eq!(component.named_parameters.len(), 3);
         assert_eq!(component.parameters.len(), 2);
-        assert_eq!(component.body.statements.len(), 5);
+        assert_eq!(component.body.statements.len(), 4);
     }
 
     #[test]
@@ -1028,7 +1018,7 @@ mod tests {
         let Item::Component(component) = &file.items[0] else {
             panic!("expected component");
         };
-        let Statement::Let(let_statement) = &component.body.statements[2] else {
+        let Statement::Let(let_statement) = &component.body.statements[1] else {
             panic!("expected let statement");
         };
         let Expression::Postfix(postfix) = &let_statement.value else {
@@ -1046,33 +1036,5 @@ mod tests {
             panic!("expected shorthand identifier value");
         };
         assert_eq!(value.text, "rstn");
-    }
-
-    #[test]
-    fn lowers_parameterized_struct_example() {
-        let source = include_str!("../../../examples/parameterized_struct.plr");
-        let file = parse_surface_source(source).unwrap();
-
-        assert_eq!(file.items.len(), 2);
-        let Item::Struct(structure) = &file.items[0] else {
-            panic!("expected struct");
-        };
-        assert_eq!(structure.name.text, "Bus");
-        assert_eq!(structure.parameters.len(), 1);
-        assert_eq!(structure.fields.len(), 2);
-    }
-
-    #[test]
-    fn lowers_parameterized_port_example() {
-        let source = include_str!("../../../examples/parameterized_port.plr");
-        let file = parse_surface_source(source).unwrap();
-
-        let Item::Port(port) = &file.items[0] else {
-            panic!("expected port");
-        };
-        assert_eq!(port.name.text, "DF");
-        assert_eq!(port.named_parameters.len(), 1);
-        assert_eq!(port.parameters.len(), 1);
-        assert_eq!(port.fields.len(), 3);
     }
 }

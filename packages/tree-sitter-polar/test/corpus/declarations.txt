@@ -3,12 +3,11 @@ component with named and positional args
 ========================================
 
 fn multAdd
-  { #clk: Clock, rstn: Reset @clk = high, c: uint[8] @clk = 0, }
-  ( a: uint[8] @clk, b: uint[8] @clk )
-  -> uint[8] @clk
+  { #clk: Clock, rstn: Reset @clk = high, c: uint(8) @clk = 0, }
+  ( a: uint(8) @clk, b: uint(8) @clk )
+  -> uint(8) @clk
   {
     let mult = a * b;
-    let mult = mult[8:0];
     let mult = mult.reg{rstn}();
     let add = mult + c;
     return add;
@@ -58,7 +57,7 @@ fn multAdd
             index: (expression
               (number)))
           domain: (identifier))))
-    return_type: (return_type_expression
+    return_type: (type_expression
       name: (identifier)
       (type_index
         index: (expression
@@ -74,17 +73,6 @@ fn multAdd
                 (identifier))
               right: (expression
                 (identifier))))))
-      (statement
-        (let_statement
-          name: (identifier)
-          value: (expression
-            (postfix_expression
-              receiver: (identifier)
-              (slice_expression
-                start: (expression
-                  (number))
-                end: (expression
-                  (number)))))))
       (statement
         (let_statement
           name: (identifier)
@@ -112,159 +100,11 @@ fn multAdd
             (identifier)))))))
 
 ========================================
-parameterized struct and port
-========================================
-
-struct Bus(A: Type) = bus {
-  valid: bool,
-  data: A,
-}
-
-port DF
-  { #clk: Clock }
-  ( A: Type )
-  = df {
-    in ready: bool @clk,
-    out valid: bool @clk,
-    out data: A @clk,
-  }
-
-fn connectDf
-  { #clk: Clock }
-  ( upstream: DF{clk}(uint[8]), out downstream: DF{clk}(uint[8]) )
-  {
-    downstream.valid = upstream.valid;
-    downstream.data = upstream.data;
-    upstream.ready = downstream.ready;
-  }
-
----
-
-(source_file
-  (struct_definition
-    name: (identifier)
-    parameters: (parameter_section
-      (parameter
-        name: (identifier)
-        type: (type_expression
-          name: (identifier))))
-    constructor: (identifier)
-    body: (record_type_body
-      (record_field_type
-        name: (identifier)
-        type: (type_expression
-          name: (identifier)))
-      (record_field_type
-        name: (identifier)
-        type: (type_expression
-          name: (identifier)))))
-  (port_definition
-    name: (identifier)
-    named_parameters: (named_parameter_section
-      (named_parameter
-        name: (identifier)
-        type: (type_expression
-          name: (identifier))))
-    parameters: (parameter_section
-      (parameter
-        name: (identifier)
-        type: (type_expression
-          name: (identifier))))
-    constructor: (identifier)
-    body: (port_body
-      (port_field
-        name: (identifier)
-        type: (type_expression
-          name: (identifier)
-          domain: (identifier)))
-      (port_field
-        name: (identifier)
-        type: (type_expression
-          name: (identifier)
-          domain: (identifier)))
-      (port_field
-        name: (identifier)
-        type: (type_expression
-          name: (identifier)
-          domain: (identifier)))))
-  (component_definition
-    name: (identifier)
-    named_parameters: (named_parameter_section
-      (named_parameter
-        name: (identifier)
-        type: (type_expression
-          name: (identifier))))
-    parameters: (parameter_section
-      (parameter
-        name: (identifier)
-        type: (type_expression
-          name: (identifier)
-          (type_named_arguments
-            (named_or_shorthand_argument
-              name: (identifier)))
-          (type_arguments
-            (type_expression
-              name: (identifier)
-              (type_index
-                index: (expression
-                  (number)))))))
-      (parameter
-        name: (identifier)
-        type: (type_expression
-          name: (identifier)
-          (type_named_arguments
-            (named_or_shorthand_argument
-              name: (identifier)))
-          (type_arguments
-            (type_expression
-              name: (identifier)
-              (type_index
-                index: (expression
-                  (number))))))))
-    body: (block
-      (statement
-        (assignment_statement
-          left: (expression
-            (postfix_expression
-              receiver: (identifier)
-              (field_access
-                field: (identifier))))
-          right: (expression
-            (postfix_expression
-              receiver: (identifier)
-              (field_access
-                field: (identifier))))))
-      (statement
-        (assignment_statement
-          left: (expression
-            (postfix_expression
-              receiver: (identifier)
-              (field_access
-                field: (identifier))))
-          right: (expression
-            (postfix_expression
-              receiver: (identifier)
-              (field_access
-                field: (identifier))))))
-      (statement
-        (assignment_statement
-          left: (expression
-            (postfix_expression
-              receiver: (identifier)
-              (field_access
-                field: (identifier))))
-          right: (expression
-            (postfix_expression
-              receiver: (identifier)
-              (field_access
-                field: (identifier)))))))))
-
-========================================
 var with combined initializer
 ========================================
 
 fn f() {
-  var count: uint[8] = count + 1;
+  var count: uint(8) = count + 1;
 }
 
 ---
@@ -288,3 +128,46 @@ fn f() {
                 (identifier))
               right: (expression
                 (number)))))))))
+
+========================================
+impl block with self parameter
+========================================
+
+impl Reg {
+  fn reg{#clk}(self @clk, rst: Reset @clk, reset_val: uint(8)) -> uint(8) @clk {
+  }
+}
+
+---
+
+(source_file
+  (impl_block
+    name: (identifier)
+    body: (impl_body
+      (function_definition
+        name: (identifier)
+        named_parameters: (named_parameter_section
+          (named_parameter
+            name: (identifier)))
+        parameters: (parameter_section
+          (parameter
+            domain: (identifier))
+          (parameter
+            name: (identifier)
+            type: (type_expression
+              name: (identifier)
+              domain: (identifier)))
+          (parameter
+            name: (identifier)
+            type: (type_expression
+              name: (identifier)
+              (type_index
+                index: (expression
+                  (number))))))
+        return_type: (type_expression
+          name: (identifier)
+          (type_index
+            index: (expression
+              (number)))
+          domain: (identifier))
+        body: (block)))))

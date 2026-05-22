@@ -144,7 +144,7 @@
         "required": false,
         "types": [
           {
-            "type": "return_type_expression",
+            "type": "type_expression",
             "named": true
           }
         ]
@@ -270,7 +270,7 @@
         "required": false,
         "types": [
           {
-            "type": "return_type_expression",
+            "type": "type_expression",
             "named": true
           }
         ]
@@ -538,6 +538,16 @@
           }
         ]
       },
+      "domain": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
       "inferable": {
         "multiple": false,
         "required": false,
@@ -555,12 +565,16 @@
           {
             "type": "identifier",
             "named": true
+          },
+          {
+            "type": "self",
+            "named": false
           }
         ]
       },
       "type": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "type_expression",
@@ -779,10 +793,6 @@
         {
           "type": "named_argument_list",
           "named": true
-        },
-        {
-          "type": "slice_expression",
-          "named": true
         }
       ]
     }
@@ -912,72 +922,6 @@
     }
   },
   {
-    "type": "return_type_expression",
-    "named": true,
-    "fields": {
-      "domain": {
-        "multiple": false,
-        "required": false,
-        "types": [
-          {
-            "type": "identifier",
-            "named": true
-          }
-        ]
-      },
-      "name": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "identifier",
-            "named": true
-          }
-        ]
-      }
-    },
-    "children": {
-      "multiple": true,
-      "required": false,
-      "types": [
-        {
-          "type": "type_arguments",
-          "named": true
-        },
-        {
-          "type": "type_index",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "slice_expression",
-    "named": true,
-    "fields": {
-      "end": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "expression",
-            "named": true
-          }
-        ]
-      },
-      "start": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "expression",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
     "type": "source_file",
     "named": true,
     "root": true,
@@ -1083,21 +1027,6 @@
     }
   },
   {
-    "type": "type_arguments",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": false,
-      "types": [
-        {
-          "type": "type_expression",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
     "type": "type_expression",
     "named": true,
     "fields": {
@@ -1123,19 +1052,11 @@
       }
     },
     "children": {
-      "multiple": true,
+      "multiple": false,
       "required": false,
       "types": [
         {
-          "type": "type_arguments",
-          "named": true
-        },
-        {
           "type": "type_index",
-          "named": true
-        },
-        {
-          "type": "type_named_arguments",
           "named": true
         }
       ]
@@ -1155,21 +1076,6 @@
           }
         ]
       }
-    }
-  },
-  {
-    "type": "type_named_arguments",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": false,
-      "types": [
-        {
-          "type": "named_or_shorthand_argument",
-          "named": true
-        }
-      ]
     }
   },
   {
@@ -1265,14 +1171,6 @@
     "named": false
   },
   {
-    "type": "[",
-    "named": false
-  },
-  {
-    "type": "]",
-    "named": false
-  },
-  {
     "type": "comment",
     "named": true
   },
@@ -1314,6 +1212,10 @@
   },
   {
     "type": "return",
+    "named": false
+  },
+  {
+    "type": "self",
     "named": false
   },
   {

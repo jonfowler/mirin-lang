@@ -1,7 +1,7 @@
 fn addConstant
   { #clk: Clock }
-  ( value: uint[8] @clk )
-  -> uint[8] @clk
+  ( value: uint(8) @clk )
+  -> uint(8) @clk
   {
     let bumped = value + 3;
     return bumped;

@@ -1,4 +1,4 @@
 struct Packet = packet {
   valid bool,
-  payload: uint[8],
+  payload: uint(8),
 }

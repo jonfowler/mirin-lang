@@ -526,18 +526,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_parameterized_struct_and_port_examples() {
-        for source in [
-            include_str!("../../../../examples/parameterized_struct.plr"),
-            include_str!("../../../../examples/parameterized_port.plr"),
-        ] {
-            let cst = parse_source(source).unwrap();
-            assert_eq!(cst.root.kind, "source_file");
-            assert!(!cst.root.children.is_empty());
-        }
-    }
-
-    #[test]
     fn root_span_covers_full_source() {
         let source = include_str!("../../../../examples/add_constant.plr");
         let cst = parse_source(source).unwrap();
