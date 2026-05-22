@@ -4,6 +4,6 @@ fn counter
   -> uint(bits) @clk
   {
     var count: uint(bits) @clk;
-    count = (count + 1).reg{rstn, reset_val = 0}();
+    count = (count + 1).reg(rstn, 0);
     return count;
   }

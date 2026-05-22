@@ -3,7 +3,7 @@ fn pipeline
   ( data: uint(8) @clk )
   -> uint(8) @clk
   {
-    let data = (data + 1).reg{rstn}();
-    let data = (data * 2).reg{rstn}();
+    let data = (data + 1).reg(rstn, 0);
+    let data = (data * 2).reg(rstn, 0);
     return data;
   }

@@ -985,29 +985,36 @@ mod tests {
     }
 
     #[test]
-    fn lowers_shorthand_named_arguments_to_explicit_values() {
+    fn lowers_reg_call_positional_arguments() {
         let source = include_str!("../../../examples/mult_add.plr");
         let file = parse_surface_source(source).unwrap();
         let Item::Fn(component) = &file.items[0] else {
-            panic!("expected component");
+            panic!("expected fn");
         };
-        let Statement::Let(let_statement) = &component.body.statements[1] else {
+        // statements[1] is `let mult = mult.reg(rstn, 0);`
+        let Statement::Let(let_stmt) = &component.body.statements[1] else {
             panic!("expected let statement");
         };
-        let Expression::Postfix(postfix) = &let_statement.value else {
+        let Expression::Postfix(postfix) = &let_stmt.value else {
             panic!("expected postfix expression");
         };
-        let PostfixOperation::NamedArguments(args) = &postfix.operations[1] else {
-            panic!("expected named arguments");
+        // .reg  →  field_access
+        let PostfixOperation::Field(field) = &postfix.operations[0] else {
+            panic!("expected field access");
         };
-        assert_eq!(args.arguments.len(), 1);
-        let NamedArgument::Sink(arg) = &args.arguments[0] else {
-            panic!("expected sink argument");
+        assert_eq!(field.field.text, "reg");
+        // (rstn, 0)  →  argument_list with two positional args
+        let PostfixOperation::Arguments(args) = &postfix.operations[1] else {
+            panic!("expected argument list");
         };
-        assert_eq!(arg.name.text, "rstn");
-        let Expression::Identifier(value) = &arg.value else {
-            panic!("expected shorthand identifier value");
+        assert_eq!(args.arguments.len(), 2);
+        let Expression::Identifier(rst) = &args.arguments[0] else {
+            panic!("expected identifier for rst");
         };
-        assert_eq!(value.text, "rstn");
+        assert_eq!(rst.text, "rstn");
+        let Expression::Number(reset_val) = &args.arguments[1] else {
+            panic!("expected number for reset_val");
+        };
+        assert_eq!(reset_val.text, "0");
     }
 }

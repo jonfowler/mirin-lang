@@ -3,7 +3,7 @@ fn shiftRegister
   ( input: uint(8) @clk )
   -> uint(8) @clk
   {
-    let stage0 = input.reg{rstn, reset_val = 0}();
-    let stage1 = stage0.reg{rstn, reset_val = 0}();
+    let stage0 = input.reg(rstn, 0);
+    let stage1 = stage0.reg(rstn, 0);
     return stage1;
   }

@@ -8,7 +8,7 @@ fn multAdd
   -> uint(8) @clk
   {
     let mult = a * b;
-    let mult = mult.reg{rstn}();
+    let mult = mult.reg(rstn, 0);
     let add = mult + c;
     return add;
   }
@@ -81,10 +81,11 @@ fn multAdd
               receiver: (identifier)
               (field_access
                 field: (identifier))
-              (named_argument_list
-                (named_or_shorthand_argument
-                  name: (identifier)))
-              (argument_list)))))
+              (argument_list
+                (expression
+                  (identifier))
+                (expression
+                  (number)))))))
       (statement
         (let_statement
           name: (identifier)
