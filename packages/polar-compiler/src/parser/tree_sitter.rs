@@ -520,7 +520,7 @@ mod tests {
                 cst.root
                     .children
                     .iter()
-                    .any(|child| child.node.kind == "component_definition")
+                    .any(|child| child.node.kind == "function_definition")
             );
         }
     }

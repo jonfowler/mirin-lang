@@ -47,8 +47,8 @@ fn success_exits_zero_with_cst_on_stdout() {
         "expected CST root node in output"
     );
     assert!(
-        stdout.contains("component_definition"),
-        "expected component node in CST"
+        stdout.contains("function_definition"),
+        "expected function node in CST"
     );
     assert!(output.stderr.is_empty(), "expected no stderr on success");
 }

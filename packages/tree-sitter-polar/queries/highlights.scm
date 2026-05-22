@@ -25,7 +25,7 @@
 "::" @punctuation.delimiter
 
 ; Top-level declaration names
-(component_definition name: (identifier) @type)
+(function_definition name: (identifier) @type)
 (struct_definition name: (identifier) @type)
 (struct_definition constructor: (identifier) @constructor)
 (port_definition name: (identifier) @type)

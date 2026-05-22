@@ -18,7 +18,7 @@ pub struct SourceFile {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
-    Component(ComponentDefinition),
+    Fn(FunctionDefinition),
     Struct(StructDefinition),
     Port(PortDefinition),
     Impl(ImplBlock),
@@ -29,16 +29,6 @@ pub struct Identifier {
     pub id: NodeId,
     pub span: SourceSpan,
     pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ComponentDefinition {
-    pub span: SourceSpan,
-    pub name: Identifier,
-    pub named_parameters: Vec<NamedParameter>,
-    pub parameters: Vec<Parameter>,
-    pub return_type: Option<TypeExpression>,
-    pub body: Block,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -419,29 +409,12 @@ impl<'a> Lowerer<'a> {
 
     fn lower_item(&mut self, node: &CstNode) -> Result<Item, LowerError> {
         match node.kind.as_str() {
-            "component_definition" => Ok(Item::Component(self.lower_component_definition(node)?)),
+            "function_definition" => Ok(Item::Fn(self.lower_function_definition(node)?)),
             "struct_definition" => Ok(Item::Struct(self.lower_struct_definition(node)?)),
             "port_definition" => Ok(Item::Port(self.lower_port_definition(node)?)),
             "impl_block" => Ok(Item::Impl(self.lower_impl_block(node)?)),
             _ => Err(unexpected_node(node, "top-level declaration")),
         }
-    }
-
-    fn lower_component_definition(
-        &mut self,
-        node: &CstNode,
-    ) -> Result<ComponentDefinition, LowerError> {
-        expect_kind(node, "component_definition")?;
-        Ok(ComponentDefinition {
-            span: node.span.clone(),
-            name: self.lower_required_identifier(node, "name")?,
-            named_parameters: self.lower_named_parameter_section(node, "named_parameters")?,
-            parameters: self.lower_parameter_section(node, "parameters")?,
-            return_type: child_by_field(node, "return_type")
-                .map(|child| self.lower_type_expression(child))
-                .transpose()?,
-            body: self.lower_required_block(node, "body")?,
-        })
     }
 
     fn lower_struct_definition(&mut self, node: &CstNode) -> Result<StructDefinition, LowerError> {
@@ -1002,7 +975,7 @@ mod tests {
         let file = parse_surface_source(source).unwrap();
 
         assert_eq!(file.items.len(), 1);
-        let Item::Component(component) = &file.items[0] else {
+        let Item::Fn(component) = &file.items[0] else {
             panic!("expected component");
         };
         assert_eq!(component.name.text, "multAdd");
@@ -1015,7 +988,7 @@ mod tests {
     fn lowers_shorthand_named_arguments_to_explicit_values() {
         let source = include_str!("../../../examples/mult_add.plr");
         let file = parse_surface_source(source).unwrap();
-        let Item::Component(component) = &file.items[0] else {
+        let Item::Fn(component) = &file.items[0] else {
             panic!("expected component");
         };
         let Statement::Let(let_statement) = &component.body.statements[1] else {

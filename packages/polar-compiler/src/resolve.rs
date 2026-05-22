@@ -3,10 +3,9 @@ use std::fmt;
 use std::path::Path;
 
 use crate::surface_ir::{
-    Block, ComponentDefinition, Expression, FunctionDefinition, ImplBlock, Item, LetStatement,
-    NamedArgument, NamedParameter, NodeId, Parameter, PortDefinition, PostfixOperation,
-    SourceArgument, SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix,
-    VarStatement,
+    Block, Expression, FunctionDefinition, ImplBlock, Item, LetStatement, NamedArgument,
+    NamedParameter, NodeId, Parameter, PortDefinition, PostfixOperation, SourceArgument,
+    SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix, VarStatement,
 };
 use crate::{Identifier, SourceExcerpt, SourceSpan};
 
@@ -33,7 +32,7 @@ pub enum Res {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefKind {
-    Component,
+    Fn,
     Struct,
     Port,
     Impl,
@@ -90,6 +89,8 @@ pub enum ResolveErrorKind {
     SourceOnLetBinding(String),
     /// A `=>` source connection targets a name that is not a valid signal node (e.g. a parameter or def).
     InvalidSourceTarget(String),
+    /// A `self` parameter appears in a top-level `fn`, not inside an `impl` block.
+    SelfOutsideImpl,
 }
 
 impl fmt::Display for ResolveErrorKind {
@@ -124,6 +125,9 @@ impl fmt::Display for ResolveErrorKind {
                     f,
                     "`{name}` is not a valid source arrow target; only `var` signals may be wired this way"
                 )
+            }
+            ResolveErrorKind::SelfOutsideImpl => {
+                write!(f, "`self` parameter is only valid inside an `impl` block")
             }
         }
     }
@@ -267,7 +271,7 @@ impl Ctx {
 
     fn collect_item(&mut self, item: &Item) {
         let (kind, ident) = match item {
-            Item::Component(c) => (DefKind::Component, &c.name),
+            Item::Fn(f) => (DefKind::Fn, &f.name),
             Item::Struct(s) => (DefKind::Struct, &s.name),
             Item::Port(p) => (DefKind::Port, &p.name),
             Item::Impl(i) => (DefKind::Impl, &i.name),
@@ -286,22 +290,25 @@ impl Ctx {
 
     fn resolve_item(&mut self, item: &Item) {
         match item {
-            Item::Component(c) => self.resolve_component(c),
+            Item::Fn(f) => {
+                // `self` is only valid inside an impl block.
+                for p in &f.parameters {
+                    if p.name.text == "self" {
+                        self.result.errors.push(ResolveError {
+                            kind: ResolveErrorKind::SelfOutsideImpl,
+                            span: p.name.span.clone(),
+                        });
+                    }
+                }
+                let Some(&(_, def_id)) = self.global_defs.get(&f.name.text) else {
+                    return;
+                };
+                self.resolve_function(f, def_id, &HashMap::new());
+            }
             Item::Struct(s) => self.resolve_struct(s),
             Item::Port(p) => self.resolve_port(p),
             Item::Impl(i) => self.resolve_impl(i),
         }
-    }
-
-    fn resolve_component(&mut self, comp: &ComponentDefinition) {
-        let Some(&(_, def_id)) = self.global_defs.get(&comp.name.text) else {
-            return;
-        };
-        let params = self.collect_params(def_id, &comp.named_parameters, &comp.parameters);
-        if let Some(ty) = &comp.return_type {
-            self.resolve_type_expr(ty, &params);
-        }
-        self.resolve_block(&comp.body, params);
     }
 
     fn resolve_struct(&mut self, s: &StructDefinition) {
@@ -721,7 +728,7 @@ mod tests {
         let r = resolve("fn add(a: uint(8), b: uint(8)) { let r = a; }");
         assert_eq!(r.defs.len(), 1);
         assert_eq!(r.defs[0].name, "add");
-        assert!(matches!(r.defs[0].kind, DefKind::Component));
+        assert!(matches!(r.defs[0].kind, DefKind::Fn));
         assert!(r.errors.is_empty());
     }
 

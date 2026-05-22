@@ -1,5 +1,5 @@
 ========================================
-component with named and positional args
+function with named and positional args
 ========================================
 
 fn multAdd
@@ -16,7 +16,7 @@ fn multAdd
 ---
 
 (source_file
-  (component_definition
+  (function_definition
     name: (identifier)
     named_parameters: (named_parameter_section
       (named_parameter
@@ -110,7 +110,7 @@ fn f() {
 ---
 
 (source_file
-  (component_definition
+  (function_definition
     name: (identifier)
     parameters: (parameter_section)
     body: (block

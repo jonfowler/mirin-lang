@@ -21,27 +21,10 @@ module.exports = grammar({
 
     _item: ($) =>
       choice(
-        $.component_definition,
+        $.function_definition,
         $.struct_definition,
         $.port_definition,
         $.impl_block,
-      ),
-
-    component_definition: ($) =>
-      seq(
-        "fn",
-        field("name", $.identifier),
-        optional(
-          choice(
-            seq(
-              field("named_parameters", $.named_parameter_section),
-              field("parameters", $.parameter_section),
-            ),
-            field("parameters", $.parameter_section),
-          ),
-        ),
-        optional(seq("->", field("return_type", $.type_expression))),
-        field("body", $.block),
       ),
 
     struct_definition: ($) =>

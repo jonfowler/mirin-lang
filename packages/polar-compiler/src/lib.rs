@@ -13,11 +13,11 @@ pub use resolve::{
 };
 pub use surface_ir::{
     ArgumentList, AssignmentStatement, BinaryExpression, BinaryOperator, Block,
-    ComponentDefinition, ConnectionDirection, Expression, ExpressionStatement, FieldAccess,
-    FunctionDefinition, Identifier, ImplBlock, Item, LetStatement, LowerError, NamedArgument,
-    NamedArgumentList, NamedParameter, NodeId, NumberLiteral, Parameter, PathExpression,
-    PortDefinition, PortField, PostfixExpression, PostfixOperation, RecordConstructorExpression,
-    RecordFieldType, RecordFieldValue, ReturnStatement, SinkArgument, SourceArgument, SourceFile,
-    Statement, StructDefinition, SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix,
-    VarStatement, lower_cst, parse_surface_file, parse_surface_source,
+    ConnectionDirection, Expression, ExpressionStatement, FieldAccess, FunctionDefinition,
+    Identifier, ImplBlock, Item, LetStatement, LowerError, NamedArgument, NamedArgumentList,
+    NamedParameter, NodeId, NumberLiteral, Parameter, PathExpression, PortDefinition, PortField,
+    PostfixExpression, PostfixOperation, RecordConstructorExpression, RecordFieldType,
+    RecordFieldValue, ReturnStatement, SinkArgument, SourceArgument, SourceFile, Statement,
+    StructDefinition, SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix, VarStatement,
+    lower_cst, parse_surface_file, parse_surface_source,
 };
