@@ -7,7 +7,7 @@ use crate::surface_ir::{
     NamedParameter, NodeId, Parameter, PortDefinition, PostfixOperation, SourceArgument,
     SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix, VarStatement,
 };
-use crate::{Identifier, SourceExcerpt, SourceSpan};
+use crate::{Identifier, SourceExcerpt, SourcePosition, SourceSpan};
 
 /// Unique ID for a top-level definition (component, struct, port, impl).
 ///
@@ -218,10 +218,36 @@ impl ResolveResult {
     pub fn local_info(&self, id: NodeId) -> &LocalInfo {
         &self.locals[&id]
     }
+
+    /// Find a definition by name. Returns the `DefId` of the first matching
+    /// entry, prelude or user-defined. Names are unique across the def table
+    /// (duplicate user definitions are rejected during collection), so the
+    /// result is unambiguous when it exists.
+    pub fn def_id(&self, name: &str) -> Option<DefId> {
+        self.defs
+            .iter()
+            .enumerate()
+            .find(|(_, d)| d.name == name)
+            .map(|(i, _)| DefId(i as u32))
+    }
+}
+
+/// Builtin functions made available to every source file. These are pre-populated
+/// in the def table so that calls to them go through the same `DefId`-based path
+/// as user-defined functions. See `planning/hir.md` ("Prelude").
+const PRELUDE_FN_NAMES: &[&str] = &["reg"];
+
+fn prelude_span() -> SourceSpan {
+    SourceSpan {
+        start_byte: 0,
+        end_byte: 0,
+        start: SourcePosition { row: 0, column: 0 },
+        end: SourcePosition { row: 0, column: 0 },
+    }
 }
 
 pub fn resolve_file(file: &SourceFile) -> ResolveResult {
-    let mut ctx = Ctx::default();
+    let mut ctx = Ctx::with_prelude();
 
     // Pass 1: collect all top-level definition names.
     for item in &file.items {
@@ -248,6 +274,20 @@ struct Ctx {
 }
 
 impl Ctx {
+    fn with_prelude() -> Self {
+        let mut ctx = Self::default();
+        for &name in PRELUDE_FN_NAMES {
+            let id = DefId(ctx.result.defs.len() as u32);
+            ctx.result.defs.push(DefInfo {
+                kind: DefKind::Fn,
+                name: name.to_owned(),
+                span: prelude_span(),
+            });
+            ctx.global_defs.insert(name.to_owned(), (DefKind::Fn, id));
+        }
+        ctx
+    }
+
     fn alloc_def(&mut self, kind: DefKind, ident: &Identifier) -> DefId {
         let id = DefId(self.result.defs.len() as u32);
         self.result.defs.push(DefInfo {
@@ -726,10 +766,43 @@ mod tests {
         // directly by `{` — the parser confuses the block with a named-argument type suffix.
         // Tests use no return type or @-domain annotations to avoid this.
         let r = resolve("fn add(a: uint(8), b: uint(8)) { let r = a; }");
-        assert_eq!(r.defs.len(), 1);
-        assert_eq!(r.defs[0].name, "add");
-        assert!(matches!(r.defs[0].kind, DefKind::Fn));
+        let add_id = r.def_id("add").expect("`add` should be registered");
+        let add = r.def_info(add_id);
+        assert_eq!(add.name, "add");
+        assert!(matches!(add.kind, DefKind::Fn));
         assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn prelude_registers_reg() {
+        // Empty source: prelude entries are still present.
+        let r = resolve("");
+        let reg_id = r.def_id("reg").expect("`reg` should be in the prelude");
+        let reg = r.def_info(reg_id);
+        assert_eq!(reg.name, "reg");
+        assert!(matches!(reg.kind, DefKind::Fn));
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn user_defs_follow_prelude() {
+        // User-defined `add` allocates a DefId after the prelude's `reg`.
+        let r = resolve("fn add(a: uint(8), b: uint(8)) { let r = a; }");
+        let reg_id = r.def_id("reg").expect("prelude `reg`");
+        let add_id = r.def_id("add").expect("user `add`");
+        assert!(
+            add_id.0 > reg_id.0,
+            "user defs should come after prelude in the def table; got reg={reg_id:?} add={add_id:?}"
+        );
+    }
+
+    #[test]
+    fn user_cannot_redefine_prelude_name() {
+        // Defining a `fn reg` collides with the prelude entry and surfaces as
+        // a duplicate-def error.
+        let r = resolve("fn reg(a: uint(8)) { let r = a; }");
+        assert_eq!(r.errors.len(), 1);
+        assert!(matches!(&r.errors[0].kind, ResolveErrorKind::DuplicateDef(n) if n == "reg"));
     }
 
     #[test]

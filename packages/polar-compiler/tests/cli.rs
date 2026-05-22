@@ -165,6 +165,38 @@ fn resolve_var_after_let_message() {
     assert!(output.stdout.is_empty(), "expected nothing on stdout");
 }
 
+// --- direction errors ---
+
+#[test]
+fn direction_unknown_named_arg_message() {
+    let output = bin()
+        .arg(fail_examples().join("unknown-named-arg.plr"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`target` has no named parameter `typo`"),
+        "got: {stderr}"
+    );
+    assert!(output.stdout.is_empty(), "expected nothing on stdout");
+}
+
+#[test]
+fn direction_source_arrow_on_fn_param_message() {
+    let output = bin()
+        .arg(fail_examples().join("source-arrow-on-fn-param.plr"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`=>` cannot drive `target`'s `rstn`"),
+        "got: {stderr}"
+    );
+    assert!(output.stdout.is_empty(), "expected nothing on stdout");
+}
+
 // --- output format: source excerpt is rendered ---
 
 #[test]

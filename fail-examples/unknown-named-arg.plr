@@ -1,0 +1,16 @@
+fn target
+  { #clk: Clock, rstn: Reset @clk = high, c: uint(8) @clk = 0 }
+  ( a: uint(8) @clk )
+  -> uint(8) @clk
+  {
+    return a.reg(rstn, 0);
+  }
+
+fn caller
+  { #clk: Clock, rstn: Reset @clk = high }
+  ( x: uint(8) @clk )
+  -> uint(8) @clk
+  {
+    let made = target { typo = 5 }(x);
+    return made;
+  }

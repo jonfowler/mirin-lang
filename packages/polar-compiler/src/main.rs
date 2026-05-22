@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::{env, fs, process};
 
 use polar_compiler::{
-    ParseError, lower_cst, parse_source_with_diagnostics, render_parse_error,
-    render_resolve_errors, resolve_file,
+    ParseError, check_directions, lower_cst, parse_source_with_diagnostics,
+    render_direction_errors, render_parse_error, render_resolve_errors, resolve_file,
 };
 
 fn main() {
@@ -69,6 +69,15 @@ fn main() {
         let mut rendered = String::new();
         render_resolve_errors(&result.errors, &source, Some(&path), &mut rendered)
             .expect("rendering resolve errors should not fail");
+        eprintln!("{rendered}");
+        process::exit(1);
+    }
+
+    let direction_errors = check_directions(&file, &result);
+    if !direction_errors.is_empty() {
+        let mut rendered = String::new();
+        render_direction_errors(&direction_errors, &source, Some(&path), &mut rendered)
+            .expect("rendering direction errors should not fail");
         eprintln!("{rendered}");
         process::exit(1);
     }

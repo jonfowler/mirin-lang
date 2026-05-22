@@ -1,7 +1,13 @@
+pub mod direction;
+pub mod hir;
 pub mod parser;
 pub mod resolve;
 pub mod surface_ir;
 
+pub use direction::{
+    DirectionError, DirectionErrorKind, NamedArgumentOperator, check_directions,
+    render_direction_errors,
+};
 pub use parser::tree_sitter::{
     Cst, CstChild, CstNode, ParseError, ParsedSource, SourceExcerpt, SourcePosition, SourceSpan,
     SyntaxDiagnostic, language, parse_file, parse_file_with_diagnostics, parse_source,
