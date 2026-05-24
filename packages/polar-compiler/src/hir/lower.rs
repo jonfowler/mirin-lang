@@ -869,12 +869,13 @@ impl<'a> Lowerer<'a> {
 }
 
 fn builtin_literal(text: &str) -> Option<ConstValue> {
-    // Reset-polarity literals used as the default in `rstn: Reset @clk = high`.
-    // First-pass `Reset` carries no separate enum; we represent the active level
-    // as a `bool` const and let later passes interpret it in `Reset` context.
+    // `true`/`false` are bool literals; `high`/`low` are reset-polarity
+    // literals (the default for `rstn: Reset @clk = high`). First-pass
+    // `Reset` carries no separate enum, so we represent the active level as
+    // a `bool` const and let later passes interpret it in `Reset` context.
     match text {
-        "high" => Some(ConstValue::Bool(true)),
-        "low" => Some(ConstValue::Bool(false)),
+        "true" | "high" => Some(ConstValue::Bool(true)),
+        "false" | "low" => Some(ConstValue::Bool(false)),
         _ => None,
     }
 }

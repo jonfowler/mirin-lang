@@ -1,6 +1,6 @@
 struct Packet = packet {
   valid: bool,
-  payload: uint[8],
+  payload: uint(8),
 }
 
 impl Packet {
@@ -19,11 +19,8 @@ impl Packet {
     };
   }
 
-  fn register{#clk}(self: Packet @clk, rstn: Reset @clk) -> Packet @clk {
-    return self.reg{
-      rstn,
-      reset_val = Packet::idle(),
-    }();
+  fn register{#clk}(self @clk, rstn: Reset @clk) -> Packet @clk {
+    return self.reg(rstn, Packet::idle());
   }
 }
 
@@ -31,7 +28,7 @@ port Stream8
   { #clk: Clock }
   = stream8 {
     out valid: bool @clk,
-    out data: uint[8] @clk,
+    out data: uint(8) @clk,
     in ready: bool @clk,
   }
 
@@ -39,7 +36,7 @@ impl Stream8
   { #clk: Clock }
   {
 
-    fn connect(self: Stream8{clk}(), out downstream: Stream8{clk}()) {
+    fn connect(self @clk, out downstream: Stream8 @clk) {
       downstream.valid = self.valid;
       downstream.data = self.data;
       self.ready = downstream.ready;

@@ -1,6 +1,6 @@
 struct Packet = packet {
   valid: bool,
-  payload: uint[8],
+  payload: uint(8),
 }
 
 fn registerPacket
@@ -8,13 +8,10 @@ fn registerPacket
   ( input: Packet @clk )
   -> Packet @clk
   {
-    let output = input.reg{
-      rstn,
-      reset_val = packet {
-        valid: false,
-        payload: 0,
-      },
-    }();
+    let output = input.reg(rstn, packet {
+      valid: false,
+      payload: 0,
+    });
 
     return output;
   }

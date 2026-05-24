@@ -2,15 +2,13 @@ port Stream8
   { #clk: Clock }
   = stream8 {
     out valid: bool @clk,
-    out data: uint[8] @clk,
+    out data: uint(8) @clk,
     in ready: bool @clk,
   }
 
 fn connectStream
   { #clk: Clock }
-  ( upstream: Stream8{clk}(), out downstream: Stream8{clk}() )
+  ( upstream: Stream8 @clk, out downstream: Stream8 @clk )
   {
-    downstream.valid = upstream.valid;
-    downstream.data = upstream.data;
-    upstream.ready = downstream.ready;
+    downstream = upstream;
   }

@@ -527,8 +527,12 @@ impl<'a> Lowerer<'a> {
 
     fn lower_parameter(&mut self, node: &CstNode) -> Result<Parameter, LowerError> {
         expect_kind(node, "parameter")?;
-        // Self parameter shorthand: `self @clk` — no type field, synthesize `Self` type.
-        if child_by_field(node, "type").is_none() && child_by_field(node, "name").is_none() {
+        // Self parameter shorthand: `self @clk`. The grammar uses the literal
+        // `"self"` for the name field, so the field exists but its child has
+        // kind `"self"` (not `"identifier"`). Detect that to synthesise the
+        // `Self` type with the given domain.
+        let is_self = child_by_field(node, "name").is_some_and(|c| c.kind == "self");
+        if is_self {
             let domain = child_by_field(node, "domain")
                 .map(|child| self.lower_identifier(child))
                 .transpose()?;
@@ -898,7 +902,7 @@ fn text<'a>(node: &CstNode, source: &'a str) -> Result<&'a str, LowerError> {
 fn named_children(node: &CstNode) -> impl Iterator<Item = &CstNode> {
     node.children
         .iter()
-        .filter(|child| child.node.named)
+        .filter(|child| child.node.named && child.node.kind != "comment")
         .map(|child| &child.node)
 }
 

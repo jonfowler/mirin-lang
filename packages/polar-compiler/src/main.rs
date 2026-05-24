@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::{env, fs, process};
 
 use polar_compiler::{
-    ParseError, check_directions, lower_cst, parse_source_with_diagnostics,
+    ParseError, check_directions, hir, lower_cst, parse_source_with_diagnostics,
     render_direction_errors, render_parse_error, render_resolve_errors, resolve_file,
 };
 
@@ -79,6 +79,22 @@ fn main() {
         render_direction_errors(&direction_errors, &source, Some(&path), &mut rendered)
             .expect("rendering direction errors should not fail");
         eprintln!("{rendered}");
+        process::exit(1);
+    }
+
+    if let Err(errors) = hir::lower_to_hir(&file, &result) {
+        for (i, err) in errors.iter().enumerate() {
+            if i > 0 {
+                eprintln!();
+            }
+            eprintln!(
+                "error: {} ({}:{}:{})",
+                err.kind,
+                path.display(),
+                err.span.start.row + 1,
+                err.span.start.column + 1,
+            );
+        }
         process::exit(1);
     }
 

@@ -91,6 +91,8 @@ pub enum ResolveErrorKind {
     InvalidSourceTarget(String),
     /// A `self` parameter appears in a top-level `fn`, not inside an `impl` block.
     SelfOutsideImpl,
+    /// An `impl` block targets a name that has no preceding struct/port definition.
+    ImplOfUnknownType(String),
 }
 
 impl fmt::Display for ResolveErrorKind {
@@ -128,6 +130,12 @@ impl fmt::Display for ResolveErrorKind {
             }
             ResolveErrorKind::SelfOutsideImpl => {
                 write!(f, "`self` parameter is only valid inside an `impl` block")
+            }
+            ResolveErrorKind::ImplOfUnknownType(name) => {
+                write!(
+                    f,
+                    "cannot `impl` `{name}`: no struct or port with that name"
+                )
             }
         }
     }
@@ -237,6 +245,13 @@ impl ResolveResult {
 /// as user-defined functions. See `planning/hir.md` ("Prelude").
 const PRELUDE_FN_NAMES: &[&str] = &["reg"];
 
+/// Identifier-shaped literals (`true`, `false`, `high`, `low`). The resolver
+/// neither errors on them nor emits a `Res` — HIR lowering recognises them by
+/// name and emits a `Const` node directly.
+fn is_builtin_literal(name: &str) -> bool {
+    matches!(name, "true" | "false" | "high" | "low")
+}
+
 fn prelude_span() -> SourceSpan {
     SourceSpan {
         start_byte: 0,
@@ -310,11 +325,14 @@ impl Ctx {
     }
 
     fn collect_item(&mut self, item: &Item) {
+        // `impl` blocks extend an existing type rather than introducing a new
+        // top-level name. They are handled in pass 2 (`resolve_impl`), which
+        // looks up the underlying struct/port DefId.
         let (kind, ident) = match item {
             Item::Fn(f) => (DefKind::Fn, &f.name),
             Item::Struct(s) => (DefKind::Struct, &s.name),
             Item::Port(p) => (DefKind::Port, &p.name),
-            Item::Impl(i) => (DefKind::Impl, &i.name),
+            Item::Impl(_) => return,
         };
         if self.global_defs.contains_key(&ident.text) {
             self.result.errors.push(ResolveError {
@@ -372,9 +390,17 @@ impl Ctx {
     }
 
     fn resolve_impl(&mut self, impl_block: &ImplBlock) {
-        let Some(&(_, def_id)) = self.global_defs.get(&impl_block.name.text) else {
+        let Some(&(kind, def_id)) = self.global_defs.get(&impl_block.name.text) else {
+            self.result.errors.push(ResolveError {
+                kind: ResolveErrorKind::ImplOfUnknownType(impl_block.name.text.clone()),
+                span: impl_block.name.span.clone(),
+            });
             return;
         };
+        // Record the impl-header name resolution against the existing type.
+        self.result
+            .resolutions
+            .insert(impl_block.name.id, Res::Def(kind, def_id));
         let impl_params =
             self.collect_params(def_id, &impl_block.named_parameters, &impl_block.parameters);
         for func in &impl_block.functions {
@@ -692,6 +718,12 @@ impl BlockCtx<'_> {
                 self.ctx.result.resolutions.insert(ident.id, res);
             }
             None => {
+                // Built-in literal identifiers (`true`, `false`, `high`, `low`)
+                // are not in any scope; HIR lowering recognises them by name
+                // and emits a `Const` node. Skip the undefined-name error.
+                if is_builtin_literal(&ident.text) {
+                    return;
+                }
                 self.ctx.result.errors.push(ResolveError {
                     kind: ResolveErrorKind::UndefinedName(ident.text.clone()),
                     span: ident.span.clone(),
