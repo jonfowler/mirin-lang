@@ -328,10 +328,10 @@ impl Ctx {
         // `impl` blocks extend an existing type rather than introducing a new
         // top-level name. They are handled in pass 2 (`resolve_impl`), which
         // looks up the underlying struct/port DefId.
-        let (kind, ident) = match item {
-            Item::Fn(f) => (DefKind::Fn, &f.name),
-            Item::Struct(s) => (DefKind::Struct, &s.name),
-            Item::Port(p) => (DefKind::Port, &p.name),
+        let (kind, ident, constructor) = match item {
+            Item::Fn(f) => (DefKind::Fn, &f.name, None),
+            Item::Struct(s) => (DefKind::Struct, &s.name, s.constructor.as_ref()),
+            Item::Port(p) => (DefKind::Port, &p.name, p.constructor.as_ref()),
             Item::Impl(_) => return,
         };
         if self.global_defs.contains_key(&ident.text) {
@@ -339,10 +339,28 @@ impl Ctx {
                 kind: ResolveErrorKind::DuplicateDef(ident.text.clone()),
                 span: ident.span.clone(),
             });
-        } else {
-            let id = self.alloc_def(kind, ident);
-            self.global_defs.insert(ident.text.clone(), (kind, id));
-            self.result.resolutions.insert(ident.id, Res::Def(kind, id));
+            return;
+        }
+        let id = self.alloc_def(kind, ident);
+        self.global_defs.insert(ident.text.clone(), (kind, id));
+        self.result.resolutions.insert(ident.id, Res::Def(kind, id));
+
+        // Register the constructor alias if one was declared with `= name`.
+        // It points back to the same DefId so `Packet @clk` and the
+        // constructor `packet { ... }` both resolve to the same definition.
+        if let Some(ctor) = constructor {
+            if ctor.text == ident.text {
+                // Same identifier as the type name; already inserted.
+                self.result.resolutions.insert(ctor.id, Res::Def(kind, id));
+            } else if self.global_defs.contains_key(&ctor.text) {
+                self.result.errors.push(ResolveError {
+                    kind: ResolveErrorKind::DuplicateDef(ctor.text.clone()),
+                    span: ctor.span.clone(),
+                });
+            } else {
+                self.global_defs.insert(ctor.text.clone(), (kind, id));
+                self.result.resolutions.insert(ctor.id, Res::Def(kind, id));
+            }
         }
     }
 

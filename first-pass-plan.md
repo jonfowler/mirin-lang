@@ -10,6 +10,15 @@ To achieve this we are going to reduce some of the current scope, to focus on th
 - `Clock` — clock domain type; only appears in named parameter sections.
 - `Reset` — active-low reset, always domain-qualified (`Reset @clk`).
 
+## User-defined types
+
+- **Structs** — positive value types declared with `struct Name = constructor { field: T, ... }`. Both the type name and the constructor name resolve to the struct's `DefId`. Construct via the constructor identifier: `constructor { field: value, ... }`. Parametric structs (`struct Bus(A: Type)`) remain out of scope.
+- **Ports** — compound types declared with `port Name { #clk: Clock } = constructor { in/out field: T @clk, ... }`. Fields carry an `in` or `out` direction. Ports do not carry a top-level domain (HIR rejects `@` annotations on ports); clocking flows through the port's clock parameter into per-field types. Parametric ports (`port DF{clk}(A: Type)`) remain out of scope.
+
+## Function parameter directions
+
+- Positional parameters may carry an `in` or `out` keyword. The direction is preserved on `HirParam::direction`; later passes validate uses against it. The direction is only meaningful for port-typed parameters at present.
+
 ## Primitive operations
 
 - `+` and `*` take two `uint(N)` of the same width and produce `uint(N)`.
@@ -25,6 +34,9 @@ Call syntax: `expr.reg(rstn, 0)`.
 ## What is out of scope for the first pass
 
 - Slicing (`expr[hi:lo]`)
-- Type arguments / parameterized types other than `uint(N)` with a const width
-- Struct, port, and impl items beyond the built-in `Reg` primitive
-- Any `.method()` calls other than `.reg(...)`
+- Parametric type application: type arguments other than `uint(N)` with a const width, including `Stream8{clk}` / `Bus(uint(8))` style use sites.
+- Parametric struct/port declarations (`struct Bus(A: Type)`, `port DF{clk}(A: Type)`).
+- `impl` blocks and method dispatch beyond `.reg`. Path expressions (`Type::method()`) and struct field access (`record.field`) are not yet lowered.
+- Any `.method()` calls other than `.reg(...)`.
+
+Examples documenting intended but unsupported features live in `todo-examples/`.

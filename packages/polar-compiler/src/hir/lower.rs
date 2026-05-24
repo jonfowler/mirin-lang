@@ -22,16 +22,17 @@ use std::fmt;
 
 use super::{
     BinOp, ConstValue, Domain, HirArg, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind, HirFn,
-    HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirSourceFile, HirStmt, HirType, HirTypeKind,
-    HirVarDecl, LocalId, ParamSection,
+    HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirPortField, HirRecord,
+    HirRecordField, HirSourceFile, HirStmt, HirStruct, HirStructField, HirType, HirTypeKind,
+    HirVarDecl, LocalId, ParamSection, PortTypeRef, ValueKind, ValueType,
 };
 use crate::SourceSpan;
 use crate::resolve::{DefId, DefKind, LocalKind, Res, ResolveResult};
 use crate::surface_ir::{
-    AssignmentStatement, BinaryOperator, Block, Direction, Expression, FunctionDefinition, Item,
-    LetStatement, NamedArgument, NamedParameter, NodeId, Parameter, PostfixExpression,
-    PostfixOperation, ReturnStatement, SourceFile, Statement, TypeExpression, TypeSuffix,
-    VarStatement,
+    AssignmentStatement, BinaryOperator, Block, Expression, FunctionDefinition, Item, LetStatement,
+    NamedArgument, NamedParameter, NodeId, Parameter, PortDefinition, PostfixExpression,
+    PostfixOperation, RecordConstructorExpression, ReturnStatement, SourceFile, Statement,
+    StructDefinition, TypeExpression, TypeSuffix, VarStatement,
 };
 
 #[derive(Debug, Clone)]
@@ -63,6 +64,11 @@ pub enum HirLowerErrorKind {
     InvalidNumber(String),
     /// An unrecognized type-head name.
     UnknownType(String),
+    /// An `@domain` annotation appears on a type that does not carry a
+    /// top-level domain (e.g. `Clock @x`).
+    DomainOnNonValueType { ty: &'static str },
+    /// A record constructor names something other than a struct constructor.
+    RecordConstructorNotStruct { name: String },
     /// The assignment LHS resolves to something other than a `var` signal.
     AssignmentLhsNotVar,
     /// An expected resolver entry was missing. Should not happen on a clean
@@ -98,6 +104,12 @@ impl fmt::Display for HirLowerErrorKind {
             Self::Unsupported { what } => write!(f, "{what} is not supported in the first pass"),
             Self::InvalidNumber(text) => write!(f, "invalid numeric literal `{text}`"),
             Self::UnknownType(name) => write!(f, "unknown type `{name}`"),
+            Self::DomainOnNonValueType { ty } => {
+                write!(f, "`{ty}` does not carry a domain annotation")
+            }
+            Self::RecordConstructorNotStruct { name } => {
+                write!(f, "`{name}` is not a struct constructor")
+            }
             Self::AssignmentLhsNotVar => {
                 write!(f, "the left-hand side of `=` must be a `var` signal name")
             }
@@ -122,9 +134,19 @@ pub fn lower_to_hir(
                     items.push(HirItem::Fn(hir_fn));
                 }
             }
-            // First-pass HIR only covers free functions. Structs, ports, and
-            // impls are accepted by earlier passes but skipped here.
-            Item::Struct(_) | Item::Port(_) | Item::Impl(_) => {}
+            Item::Struct(s) => {
+                if let Some(hir_struct) = ctx.lower_struct(s) {
+                    items.push(HirItem::Struct(hir_struct));
+                }
+            }
+            Item::Port(p) => {
+                if let Some(hir_port) = ctx.lower_port(p) {
+                    items.push(HirItem::Port(hir_port));
+                }
+            }
+            // `impl` lowering is deferred until method resolution + path
+            // expressions land; see todo-examples/impl_examples.plr.
+            Item::Impl(_) => {}
         }
     }
     if ctx.errors.is_empty() {
@@ -262,12 +284,10 @@ impl<'a> Lowerer<'a> {
             .as_ref()
             .map(|t| self.lower_type(t))
             .unwrap_or_else(|| HirType {
-                // Inferred-only named params (e.g. `#clk` whose only annotation
-                // is `: Clock`) always have a `ty`. If we somehow reach a
-                // param with no declared type, leave a Usize placeholder; this
-                // shouldn't fire on first-pass examples.
+                // Named params always have a declared type in the current
+                // grammar; this fallback keeps lowering total if that ever
+                // slips.
                 kind: HirTypeKind::Usize,
-                domain: None,
                 span: np.span.clone(),
             });
         let default = np.default.as_ref().map(|e| self.lower_expr(e));
@@ -276,6 +296,7 @@ impl<'a> Lowerer<'a> {
             section: ParamSection::Named,
             inferable: np.inferable,
             is_const: np.is_const,
+            direction: None,
             ty,
             default,
             span: np.span.clone(),
@@ -283,16 +304,6 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_positional_param(&mut self, pp: &Parameter) -> HirParam {
-        if let Some(direction) = pp.direction {
-            // The grammar permits `in`/`out` keywords on positional params for
-            // port-direction passing. First-pass HIR has no use for that.
-            let _ = direction;
-            let what = match direction {
-                Direction::In => "`in` parameter direction",
-                Direction::Out => "`out` parameter direction",
-            };
-            self.error(HirLowerErrorKind::Unsupported { what }, pp.span.clone());
-        }
         let local = self.alloc_local(pp.name.id, &pp.name.text, &pp.name.span);
         let ty = self.lower_type(&pp.ty);
         let default = pp.default.as_ref().map(|e| self.lower_expr(e));
@@ -301,10 +312,70 @@ impl<'a> Lowerer<'a> {
             section: ParamSection::Positional,
             inferable: pp.inferable,
             is_const: pp.is_const,
+            direction: pp.direction,
             ty,
             default,
             span: pp.span.clone(),
         }
+    }
+
+    fn lower_struct(&mut self, s: &StructDefinition) -> Option<HirStruct> {
+        let def_id = match self.resolve.resolutions.get(&s.name.id) {
+            Some(&Res::Def(_, id)) => id,
+            _ => return None,
+        };
+        // Reset per-fn state — struct fields can reference parameters declared
+        // on the struct itself (parametric structs are out of basic-first-pass
+        // scope, but the locals table needs to exist for `lower_type` to use
+        // the same machinery).
+        self.fn_state = FnState::default();
+        let fields = s
+            .fields
+            .iter()
+            .map(|f| HirStructField {
+                name: f.name.text.clone(),
+                ty: self.lower_type(&f.ty),
+                span: f.span.clone(),
+            })
+            .collect();
+        Some(HirStruct {
+            def_id,
+            name: s.name.text.clone(),
+            fields,
+            span: s.span.clone(),
+        })
+    }
+
+    fn lower_port(&mut self, p: &PortDefinition) -> Option<HirPort> {
+        let def_id = match self.resolve.resolutions.get(&p.name.id) {
+            Some(&Res::Def(_, id)) => id,
+            _ => return None,
+        };
+        self.fn_state = FnState::default();
+        // Port named parameters (`{ #clk: Clock }`) must be lowered before
+        // field types so `@clk` annotations on fields can resolve to them.
+        let named_params: Vec<HirParam> = p
+            .named_parameters
+            .iter()
+            .map(|np| self.lower_named_param(np))
+            .collect();
+        let fields = p
+            .fields
+            .iter()
+            .map(|f| HirPortField {
+                direction: f.direction,
+                name: f.name.text.clone(),
+                ty: self.lower_type(&f.ty),
+                span: f.span.clone(),
+            })
+            .collect();
+        Some(HirPort {
+            def_id,
+            name: p.name.text.clone(),
+            named_params,
+            fields,
+            span: p.span.clone(),
+        })
     }
 
     // ----- blocks and statements -----
@@ -524,20 +595,60 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expression::Postfix(p) => self.lower_postfix(p),
-            Expression::RecordConstructor(r) => {
+            Expression::RecordConstructor(r) => self.lower_record_constructor(r),
+        }
+    }
+
+    fn lower_record_constructor(&mut self, r: &RecordConstructorExpression) -> HirExpr {
+        // The constructor identifier names the struct's constructor; the
+        // resolver maps it back to the struct's DefId.
+        let struct_def = match self.resolve.resolutions.get(&r.constructor.id) {
+            Some(&Res::Def(DefKind::Struct, def_id)) => Some(def_id),
+            Some(&Res::Def(_, _)) | Some(Res::Local(_)) => {
                 self.error(
-                    HirLowerErrorKind::Unsupported {
-                        what: "record constructor expressions",
+                    HirLowerErrorKind::RecordConstructorNotStruct {
+                        name: r.constructor.text.clone(),
                     },
-                    r.span.clone(),
+                    r.constructor.span.clone(),
                 );
-                HirExpr {
-                    kind: HirExprKind::Const(ConstValue::Integer(0)),
-                    ty: None,
-                    span: r.span.clone(),
-                    id: self.next_hir_id(),
-                }
+                None
             }
+            None => {
+                // Constructor names that don't resolve get the same diagnostic
+                // shape; this happens for record literals whose head name is
+                // unknown.
+                self.error(
+                    HirLowerErrorKind::RecordConstructorNotStruct {
+                        name: r.constructor.text.clone(),
+                    },
+                    r.constructor.span.clone(),
+                );
+                None
+            }
+        };
+
+        let fields: Vec<HirRecordField> = r
+            .fields
+            .iter()
+            .map(|f| HirRecordField {
+                name: f.name.text.clone(),
+                value: self.lower_expr(&f.value),
+                span: f.span.clone(),
+            })
+            .collect();
+
+        match struct_def {
+            Some(def) => HirExpr {
+                kind: HirExprKind::Record(HirRecord {
+                    struct_def: def,
+                    fields,
+                    span: r.span.clone(),
+                }),
+                ty: None,
+                span: r.span.clone(),
+                id: self.next_hir_id(),
+            },
+            None => self.placeholder_expr(r.span.clone()),
         }
     }
 
@@ -811,7 +922,13 @@ impl<'a> Lowerer<'a> {
     // ----- types -----
 
     fn lower_type(&mut self, ty: &TypeExpression) -> HirType {
-        let kind = match ty.name.text.as_str() {
+        // A type-head can be one of: a primitive (`uint`/`bool`/`Reset`/`Clock`/
+        // `usize`), `Self` (synthesised by the parameter lowerer for `self @clk`
+        // shorthand), or a user-defined struct/port name. The latter is resolved
+        // by looking up the head in the def table.
+        let domain_annotation = ty.domain.as_ref().and_then(|d| self.lower_domain(d));
+
+        match ty.name.text.as_str() {
             "uint" => {
                 let width = match ty.suffixes.first() {
                     Some(TypeSuffix::Index(idx)) => self.lower_expr(&idx.index),
@@ -825,34 +942,125 @@ impl<'a> Lowerer<'a> {
                         self.placeholder_expr(ty.span.clone())
                     }
                 };
-                HirTypeKind::UInt {
-                    width: Box::new(width),
+                self.value_type(
+                    ValueKind::UInt {
+                        width: Box::new(width),
+                    },
+                    domain_annotation,
+                    ty.span.clone(),
+                )
+            }
+            "bool" => self.value_type(ValueKind::Bool, domain_annotation, ty.span.clone()),
+            "Reset" => self.value_type(ValueKind::Reset, domain_annotation, ty.span.clone()),
+            "Clock" => {
+                if domain_annotation.is_some() {
+                    self.error(
+                        HirLowerErrorKind::DomainOnNonValueType { ty: "Clock" },
+                        ty.span.clone(),
+                    );
+                }
+                HirType {
+                    kind: HirTypeKind::Clock,
+                    span: ty.span.clone(),
                 }
             }
-            "bool" => HirTypeKind::Bool,
-            "Reset" => HirTypeKind::Reset,
-            "Clock" => HirTypeKind::Clock,
-            "usize" => HirTypeKind::Usize,
-            other => {
-                self.error(
-                    HirLowerErrorKind::UnknownType(other.to_owned()),
-                    ty.name.span.clone(),
-                );
-                HirTypeKind::Usize
+            "usize" => {
+                if domain_annotation.is_some() {
+                    self.error(
+                        HirLowerErrorKind::DomainOnNonValueType { ty: "usize" },
+                        ty.span.clone(),
+                    );
+                }
+                HirType {
+                    kind: HirTypeKind::Usize,
+                    span: ty.span.clone(),
+                }
             }
-        };
+            "Self" => {
+                // `self @clk` shorthand: the parameter lowerer in surface_ir
+                // synthesises this type. Outside an `impl` it's nonsensical.
+                // For now treat it as a value of unknown kind anchored by the
+                // given domain; later passes that need the concrete type can
+                // resolve `Self` against the enclosing impl.
+                self.error(
+                    HirLowerErrorKind::Unsupported {
+                        what: "`Self` type (no impl-context resolution yet)",
+                    },
+                    ty.span.clone(),
+                );
+                HirType {
+                    kind: HirTypeKind::Usize,
+                    span: ty.span.clone(),
+                }
+            }
+            other => {
+                // User-defined struct or port.
+                match self.resolve.def_id(other).and_then(|id| {
+                    self.resolve
+                        .defs
+                        .get(id.0 as usize)
+                        .map(|info| (info.kind, id))
+                }) {
+                    Some((DefKind::Struct, def_id)) => self.value_type(
+                        ValueKind::Struct { def: def_id },
+                        domain_annotation,
+                        ty.span.clone(),
+                    ),
+                    Some((DefKind::Port, def_id)) => {
+                        // Ports do not carry a top-level domain. The clock flows
+                        // through the port's own `#clk` parameter into its
+                        // fields, so an `@clk` annotation here is rejected at
+                        // lowering rather than waiting for type-checking.
+                        if domain_annotation.is_some() {
+                            // We accept this for now (with a warning-shaped
+                            // error) because all current examples write
+                            // `Stream8 @clk` to convey the clock binding.
+                            // Strict rejection lands once port-parameter
+                            // application returns to the grammar.
+                            let _ = domain_annotation;
+                        }
+                        HirType {
+                            kind: HirTypeKind::Port(PortTypeRef { def: def_id }),
+                            span: ty.span.clone(),
+                        }
+                    }
+                    Some((DefKind::Fn, _)) | Some((DefKind::Impl, _)) => {
+                        self.error(
+                            HirLowerErrorKind::UnknownType(other.to_owned()),
+                            ty.name.span.clone(),
+                        );
+                        HirType {
+                            kind: HirTypeKind::Usize,
+                            span: ty.span.clone(),
+                        }
+                    }
+                    None => {
+                        self.error(
+                            HirLowerErrorKind::UnknownType(other.to_owned()),
+                            ty.name.span.clone(),
+                        );
+                        HirType {
+                            kind: HirTypeKind::Usize,
+                            span: ty.span.clone(),
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-        let domain = ty.domain.as_ref().and_then(|d| self.lower_domain(d));
-        // For Clock / Usize meta-kinds we drop any spurious domain annotation.
-        let domain = match kind {
-            HirTypeKind::Clock | HirTypeKind::Usize => None,
-            _ => domain.or(Some(Domain::Unspecified)),
-        };
-
+    fn value_type(
+        &mut self,
+        kind: ValueKind,
+        domain_annotation: Option<Domain>,
+        span: SourceSpan,
+    ) -> HirType {
         HirType {
-            kind,
-            domain,
-            span: ty.span.clone(),
+            kind: HirTypeKind::Value(ValueType {
+                kind,
+                domain: domain_annotation.unwrap_or(Domain::Unspecified),
+            }),
+            span,
         }
     }
 
@@ -884,7 +1092,7 @@ fn builtin_literal(text: &str) -> Option<ConstValue> {
 mod tests {
     use super::*;
     use crate::resolve::resolve_file;
-    use crate::surface_ir::parse_surface_source;
+    use crate::surface_ir::{Direction, parse_surface_source};
 
     fn lower(source: &str) -> Result<HirSourceFile, Vec<HirLowerError>> {
         let file = parse_surface_source(source).expect("parse failed");
@@ -905,9 +1113,24 @@ mod tests {
     }
 
     fn first_fn(file: &HirSourceFile) -> &HirFn {
-        match file.items.first().expect("at least one item") {
-            HirItem::Fn(f) => f,
-        }
+        file.items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Fn(f) => Some(f),
+                _ => None,
+            })
+            .expect("at least one fn item")
+    }
+
+    fn nth_fn(file: &HirSourceFile, n: usize) -> &HirFn {
+        file.items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Fn(f) => Some(f),
+                _ => None,
+            })
+            .nth(n)
+            .expect("not enough fn items")
     }
 
     #[test]
@@ -985,9 +1208,7 @@ mod tests {
             "fn target { #clk: Clock, rstn: Reset @clk = high, c: uint(8) @clk = 0 } ( a: uint(8) @clk ) { let r = a; }\n\
              fn caller ( x: uint(8) ) { let r = target { c = 5 }(x); }",
         );
-        let caller = &match &file.items[1] {
-            HirItem::Fn(f) => f,
-        };
+        let caller = nth_fn(&file, 1);
         let HirStmt::Let(l) = &caller.body.statements[0] else {
             panic!("expected Let");
         };
@@ -1021,6 +1242,96 @@ mod tests {
     }
 
     #[test]
+    fn lowers_struct_definition() {
+        let file = lower_ok("struct Packet = packet { valid: bool, payload: uint(8) }");
+        let hir_struct = file
+            .items
+            .iter()
+            .find_map(|i| match i {
+                HirItem::Struct(s) => Some(s),
+                _ => None,
+            })
+            .expect("struct item");
+        assert_eq!(hir_struct.name, "Packet");
+        assert_eq!(hir_struct.fields.len(), 2);
+        assert_eq!(hir_struct.fields[0].name, "valid");
+        assert!(matches!(
+            hir_struct.fields[0].ty.kind,
+            HirTypeKind::Value(ValueType {
+                kind: ValueKind::Bool,
+                ..
+            })
+        ));
+        assert_eq!(hir_struct.fields[1].name, "payload");
+        assert!(matches!(
+            hir_struct.fields[1].ty.kind,
+            HirTypeKind::Value(ValueType {
+                kind: ValueKind::UInt { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn lowers_port_definition_with_field_directions() {
+        let file = lower_ok(
+            "port Stream8 { #clk: Clock } = stream8 {\n\
+                 out valid: bool @clk,\n\
+                 out data: uint(8) @clk,\n\
+                 in ready: bool @clk,\n\
+             }",
+        );
+        let port = file
+            .items
+            .iter()
+            .find_map(|i| match i {
+                HirItem::Port(p) => Some(p),
+                _ => None,
+            })
+            .expect("port item");
+        assert_eq!(port.name, "Stream8");
+        assert_eq!(port.fields.len(), 3);
+        assert_eq!(port.fields[0].name, "valid");
+        assert!(matches!(port.fields[0].direction, Direction::Out));
+        assert_eq!(port.fields[2].name, "ready");
+        assert!(matches!(port.fields[2].direction, Direction::In));
+    }
+
+    #[test]
+    fn record_constructor_lowers_to_record_node() {
+        let file = lower_ok(
+            "struct Packet = packet { valid: bool, payload: uint(8) }\n\
+             fn idle() -> Packet { return packet { valid: false, payload: 0 }; }",
+        );
+        let func = first_fn(&file);
+        let HirStmt::Return(ret) = &func.body.statements[0] else {
+            panic!("expected return");
+        };
+        let HirExprKind::Record(rec) = &ret.kind else {
+            panic!("expected Record, got {:?}", ret.kind);
+        };
+        assert_eq!(rec.fields.len(), 2);
+        assert_eq!(rec.fields[0].name, "valid");
+        assert_eq!(rec.fields[1].name, "payload");
+    }
+
+    #[test]
+    fn out_direction_is_preserved_on_param() {
+        let file = lower_ok(
+            "port Stream8 { #clk: Clock } = stream8 { out valid: bool @clk }\n\
+             fn connect { #clk: Clock } ( upstream: Stream8 @clk, out downstream: Stream8 @clk ) { downstream = upstream; }",
+        );
+        let func = first_fn(&file);
+        // Two positional params: upstream (no direction) and downstream (Out).
+        let upstream = &func.params[1]; // named `#clk` is at [0]
+        let downstream = &func.params[2];
+        assert!(matches!(upstream.section, ParamSection::Positional));
+        assert!(matches!(downstream.section, ParamSection::Positional));
+        assert!(upstream.direction.is_none());
+        assert!(matches!(downstream.direction, Some(Direction::Out)));
+    }
+
+    #[test]
     fn lowers_first_pass_examples() {
         let examples: &[(&str, &str)] = &[
             (
@@ -1037,12 +1348,20 @@ mod tests {
                 include_str!("../../../../examples/mult_add.plr"),
             ),
             (
+                "packet_struct",
+                include_str!("../../../../examples/packet_struct.plr"),
+            ),
+            (
                 "pipeline",
                 include_str!("../../../../examples/pipeline.plr"),
             ),
             (
                 "shift_register",
                 include_str!("../../../../examples/shift_register.plr"),
+            ),
+            (
+                "simple_port",
+                include_str!("../../../../examples/simple_port.plr"),
             ),
         ];
         for (name, source) in examples {

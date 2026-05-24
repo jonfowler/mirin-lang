@@ -15,7 +15,7 @@ pub use lower::{HirLowerError, HirLowerErrorKind, lower_to_hir};
 
 use crate::SourceSpan;
 use crate::resolve::{DefId, LocalKind};
-use crate::surface_ir::NodeId;
+use crate::surface_ir::{Direction, NodeId};
 
 /// Index into a function's `locals` table. Dense and per-function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,7 +48,44 @@ pub struct HirSourceFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirItem {
     Fn(HirFn),
-    // Struct/Port/Impl land later — out of first-pass scope.
+    Struct(HirStruct),
+    Port(HirPort),
+    // Impl lands later — out of basic first-pass scope.
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirStruct {
+    pub def_id: DefId,
+    pub name: String,
+    pub fields: Vec<HirStructField>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirStructField {
+    pub name: String,
+    pub ty: HirType,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirPort {
+    pub def_id: DefId,
+    pub name: String,
+    /// Port-level named parameters (most commonly `#clk: Clock`). Lowered the
+    /// same way as function named parameters; type-checking later validates
+    /// uses inside field types.
+    pub named_params: Vec<HirParam>,
+    pub fields: Vec<HirPortField>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirPortField {
+    pub direction: Direction,
+    pub name: String,
+    pub ty: HirType,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +110,10 @@ pub struct HirParam {
     pub section: ParamSection,
     pub inferable: bool,
     pub is_const: bool,
+    /// `in`/`out` annotation from the source. Currently only meaningful for
+    /// port-typed positional parameters; preserved here so later passes can
+    /// validate uses against the declared direction.
+    pub direction: Option<Direction>,
     pub ty: HirType,
     pub default: Option<HirExpr>,
     pub span: SourceSpan,
@@ -140,6 +181,25 @@ pub enum HirExprKind {
     Local(LocalId),
     Binary(BinOp, Box<HirExpr>, Box<HirExpr>),
     Call(HirCall),
+    Record(HirRecord),
+}
+
+/// A record-literal constructor, e.g. `packet { valid: false, payload: 0 }`.
+/// `struct_def` is the `DefId` of the struct type; `fields` carries values in
+/// source order, keyed by textual field name. Field-name resolution against
+/// the struct's declared fields happens in type-checking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirRecord {
+    pub struct_def: DefId,
+    pub fields: Vec<HirRecordField>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirRecordField {
+    pub name: String,
+    pub value: HirExpr,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,14 +237,42 @@ pub enum HirArg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HirType {
     pub kind: HirTypeKind,
-    /// `None` for the `Clock` and `Usize` meta-kinds; `Some(_)` for value types
-    /// (`uint(N)`, `bool`, `Reset`).
-    pub domain: Option<Domain>,
     pub span: SourceSpan,
 }
 
+/// The top branch of HIR types. The factoring matters during type inference:
+/// a `let x;` introduces `?T = Var(_)` and only narrows to `Value(...)` or
+/// `Port(...)` once uses force the kind. Domains live only on `Value` because
+/// ports have no top-level domain — clocking flows through their fields via
+/// the port's clock parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirTypeKind {
+    /// Type-inference variable. The unifier resolves it to one of the other
+    /// branches; lowering never produces this directly.
+    Var(TypeVar),
+    /// Scalars (`uint(N)`, `bool`, `Reset`) and structs. Carries a single
+    /// domain.
+    Value(ValueType),
+    /// Port type. Does not carry a top-level domain — clocking is parametric
+    /// over the port's `#clk` (or similar) named parameter, which flows into
+    /// the per-field types.
+    Port(PortTypeRef),
+    /// Meta-kind: a clock domain itself (e.g. `#clk: Clock`). Never the type
+    /// of a value-level expression.
+    Clock,
+    /// Meta-kind: compile-time integer (e.g. `const bits: usize`). Never the
+    /// type of a value-level expression.
+    Usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueType {
+    pub kind: ValueKind,
+    pub domain: Domain,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueKind {
     UInt {
         /// Width expression. Const-ness is checked by a dedicated pass; this
         /// keeps the HIR free of a parallel `ConstExpr` enum that would have to
@@ -193,9 +281,22 @@ pub enum HirTypeKind {
     },
     Bool,
     Reset,
-    Clock,
-    Usize,
+    /// A user-defined struct.
+    Struct {
+        def: DefId,
+    },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortTypeRef {
+    pub def: DefId,
+    // Future: type/clock arguments for parametric ports.
+}
+
+/// Type-inference variable for the value-vs-port-vs-meta branch. Produced by
+/// the type checker; never by lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeVar(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Domain {

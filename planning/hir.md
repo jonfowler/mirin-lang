@@ -45,7 +45,9 @@ pub struct HirSourceFile {
 
 pub enum HirItem {
     Fn(HirFn),
-    // Struct, Port, Impl land later — out of first-pass scope.
+    Struct(HirStruct),
+    Port(HirPort),
+    // Impl lands later — out of basic first-pass scope.
 }
 
 pub struct HirFn {
@@ -63,6 +65,7 @@ pub struct HirParam {
     pub section: ParamSection,     // Named | Positional
     pub inferable: bool,           // `#`-prefixed
     pub is_const: bool,
+    pub direction: Option<Direction>,  // `in`/`out` on positional params
     pub ty: HirType,
     pub default: Option<HirExpr>,
     pub span: SourceSpan,
@@ -129,6 +132,7 @@ pub enum HirExprKind {
     Local(LocalId),
     Binary(BinOp, Box<HirExpr>, Box<HirExpr>),
     Call(HirCall),
+    Record(HirRecord),             // `constructor { field: value, ... }`
 }
 
 pub enum BinOp { Add, Multiply }
@@ -146,17 +150,31 @@ For literals: at HIR construction the lowering pass tags the expression's `ty` a
 ```rust
 pub struct HirType {
     pub kind: HirTypeKind,
-    pub domain: Option<Domain>,    // None for Clock and Usize; Some(_) for value types
     pub span: SourceSpan,
 }
 
 pub enum HirTypeKind {
-    UInt { width: HirExpr },       // const-ness verified by a dedicated pass
+    Var(TypeVar),                  // type-inference variable
+    Value(ValueType),              // scalars and structs
+    Port(PortTypeRef),              // ports — no top-level domain
+    Clock,                         // meta-kind
+    Usize,                         // meta-kind
+}
+
+pub struct ValueType {
+    pub kind: ValueKind,
+    pub domain: Domain,
+}
+
+pub enum ValueKind {
+    UInt { width: HirExpr },
     Bool,
     Reset,
-    Clock,
-    Usize,
+    Struct { def: DefId },
 }
+
+pub struct PortTypeRef { pub def: DefId }
+pub struct TypeVar(pub u32);
 
 pub enum Domain {
     Const,                         // attached to literals
@@ -165,9 +183,49 @@ pub enum Domain {
 }
 ```
 
-**Domain lives on `HirType`.** This matches `planning/domain_checking.md`: `uint(8) @clk` is a single type. The unifier reasons about one `HirType` value at a time, and a domain mismatch is just a type mismatch. Note that domain *inference* is somewhat orthogonal to the rest of type inference and is expected to be implemented as its own constraint set within the type checker.
+**Compound vs value is factored at the top.** A `let x;` introduces `?T = Var(_)`. The unifier later narrows it to `Value(...)` or `Port(...)` based on use sites, and a domain only appears on the `Value` branch. Ports carry no top-level domain because clocking flows through the port's own `#clk` (or similar) parameter into per-field types.
+
+**Domain lives on `ValueType`.** This matches `planning/domain_checking.md`: `uint(8) @clk` is a single value type. The unifier reasons about one `HirType` value at a time, and a domain mismatch is just a value-type mismatch. Note that domain *inference* is somewhat orthogonal to the rest of type inference and is expected to be implemented as its own constraint set within the type checker.
+
+**Early failure for `@` on a port.** `lower_type` rejects `Stream8 @clk` once parametric port application returns to the grammar; until then the annotation is tolerated to keep first-pass examples expressible without parametric types.
 
 **Width is an `HirExpr`.** `uint(8)` and `uint(bits)` use the same `HirExpr` slot; a dedicated const-eval / const-check pass verifies that the width position is actually a compile-time constant. This avoids a parallel `ConstExpr` enum that would have to grow alongside `HirExpr` whenever `usize` arithmetic is extended.
+
+## Items beyond functions
+
+Basic-first-pass HIR also lowers `struct` and `port` items:
+
+```rust
+pub struct HirStruct {
+    pub def_id: DefId,
+    pub name: String,
+    pub fields: Vec<HirStructField>,
+    pub span: SourceSpan,
+}
+
+pub struct HirStructField {
+    pub name: String,
+    pub ty: HirType,
+    pub span: SourceSpan,
+}
+
+pub struct HirPort {
+    pub def_id: DefId,
+    pub name: String,
+    pub named_params: Vec<HirParam>,   // typically `#clk: Clock`
+    pub fields: Vec<HirPortField>,
+    pub span: SourceSpan,
+}
+
+pub struct HirPortField {
+    pub direction: Direction,
+    pub name: String,
+    pub ty: HirType,
+    pub span: SourceSpan,
+}
+```
+
+`impl` blocks remain out of scope; they need method resolution + path expressions, both of which require type information.
 
 ## Calls
 
