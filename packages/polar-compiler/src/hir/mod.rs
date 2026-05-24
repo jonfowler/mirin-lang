@@ -250,8 +250,8 @@ pub enum HirTypeKind {
     /// Type-inference variable. The unifier resolves it to one of the other
     /// branches; lowering never produces this directly.
     Var(TypeVar),
-    /// Scalars (`uint(N)`, `bool`, `Reset`) and structs. Carries a single
-    /// domain.
+    /// Scalars (`uint(N)`, `bool`, `Reset`, `usize`) and structs. Carries a
+    /// single domain.
     Value(ValueType),
     /// Port type. Does not carry a top-level domain — clocking is parametric
     /// over the port's `#clk` (or similar) named parameter, which flows into
@@ -260,9 +260,6 @@ pub enum HirTypeKind {
     /// Meta-kind: a clock domain itself (e.g. `#clk: Clock`). Never the type
     /// of a value-level expression.
     Clock,
-    /// Meta-kind: compile-time integer (e.g. `const bits: usize`). Never the
-    /// type of a value-level expression.
-    Usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,6 +278,9 @@ pub enum ValueKind {
     },
     Bool,
     Reset,
+    /// Compile-time integer (e.g. `const bits: usize`). Not synthesisable, but
+    /// still a value type so it can carry a domain (e.g. for use in tests).
+    Usize,
     /// A user-defined struct.
     Struct {
         def: DefId,

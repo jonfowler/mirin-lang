@@ -3,6 +3,7 @@ pub mod hir;
 pub mod parser;
 pub mod resolve;
 pub mod surface_ir;
+pub mod typeck;
 
 pub use direction::{
     DirectionError, DirectionErrorKind, NamedArgumentOperator, check_directions,

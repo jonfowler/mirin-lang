@@ -3,7 +3,7 @@ use std::{env, fs, process};
 
 use polar_compiler::{
     ParseError, check_directions, hir, lower_cst, parse_source_with_diagnostics,
-    render_direction_errors, render_parse_error, render_resolve_errors, resolve_file,
+    render_direction_errors, render_parse_error, render_resolve_errors, resolve_file, typeck,
 };
 
 fn main() {
@@ -82,19 +82,31 @@ fn main() {
         process::exit(1);
     }
 
-    if let Err(errors) = hir::lower_to_hir(&file, &result) {
-        for (i, err) in errors.iter().enumerate() {
-            if i > 0 {
-                eprintln!();
+    let hir = match hir::lower_to_hir(&file, &result) {
+        Ok(h) => h,
+        Err(errors) => {
+            for (i, err) in errors.iter().enumerate() {
+                if i > 0 {
+                    eprintln!();
+                }
+                eprintln!(
+                    "error: {} ({}:{}:{})",
+                    err.kind,
+                    path.display(),
+                    err.span.start.row + 1,
+                    err.span.start.column + 1,
+                );
             }
-            eprintln!(
-                "error: {} ({}:{}:{})",
-                err.kind,
-                path.display(),
-                err.span.start.row + 1,
-                err.span.start.column + 1,
-            );
+            process::exit(1);
         }
+    };
+
+    let tc = typeck::check_file(&hir, &result);
+    if !tc.errors.is_empty() {
+        let mut rendered = String::new();
+        typeck::render_type_errors(&tc.errors, &source, Some(&path), &mut rendered)
+            .expect("rendering type errors should not fail");
+        eprintln!("{rendered}");
         process::exit(1);
     }
 

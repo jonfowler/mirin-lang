@@ -283,12 +283,17 @@ impl<'a> Lowerer<'a> {
             .ty
             .as_ref()
             .map(|t| self.lower_type(t))
-            .unwrap_or_else(|| HirType {
+            .unwrap_or_else(|| {
                 // Named params always have a declared type in the current
                 // grammar; this fallback keeps lowering total if that ever
                 // slips.
-                kind: HirTypeKind::Usize,
-                span: np.span.clone(),
+                HirType {
+                    kind: HirTypeKind::Value(ValueType {
+                        kind: ValueKind::Usize,
+                        domain: Domain::Unspecified,
+                    }),
+                    span: np.span.clone(),
+                }
             });
         let default = np.default.as_ref().map(|e| self.lower_expr(e));
         HirParam {
@@ -964,18 +969,7 @@ impl<'a> Lowerer<'a> {
                     span: ty.span.clone(),
                 }
             }
-            "usize" => {
-                if domain_annotation.is_some() {
-                    self.error(
-                        HirLowerErrorKind::DomainOnNonValueType { ty: "usize" },
-                        ty.span.clone(),
-                    );
-                }
-                HirType {
-                    kind: HirTypeKind::Usize,
-                    span: ty.span.clone(),
-                }
-            }
+            "usize" => self.value_type(ValueKind::Usize, domain_annotation, ty.span.clone()),
             "Self" => {
                 // `self @clk` shorthand: the parameter lowerer in surface_ir
                 // synthesises this type. Outside an `impl` it's nonsensical.
@@ -988,10 +982,7 @@ impl<'a> Lowerer<'a> {
                     },
                     ty.span.clone(),
                 );
-                HirType {
-                    kind: HirTypeKind::Usize,
-                    span: ty.span.clone(),
-                }
+                self.value_type(ValueKind::Usize, None, ty.span.clone())
             }
             other => {
                 // User-defined struct or port.
@@ -1029,20 +1020,14 @@ impl<'a> Lowerer<'a> {
                             HirLowerErrorKind::UnknownType(other.to_owned()),
                             ty.name.span.clone(),
                         );
-                        HirType {
-                            kind: HirTypeKind::Usize,
-                            span: ty.span.clone(),
-                        }
+                        self.value_type(ValueKind::Usize, None, ty.span.clone())
                     }
                     None => {
                         self.error(
                             HirLowerErrorKind::UnknownType(other.to_owned()),
                             ty.name.span.clone(),
                         );
-                        HirType {
-                            kind: HirTypeKind::Usize,
-                            span: ty.span.clone(),
-                        }
+                        self.value_type(ValueKind::Usize, None, ty.span.clone())
                     }
                 }
             }
