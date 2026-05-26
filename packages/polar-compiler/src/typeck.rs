@@ -18,8 +18,8 @@ use std::path::Path;
 
 use crate::hir::{
     ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFn, HirId, HirItem,
-    HirRecord, HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId, PortTypeRef,
-    TypeVar, ValueKind, ValueType,
+    HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId, PortTypeRef, TypeVar,
+    ValueKind, ValueType,
 };
 use crate::resolve::{DefId, ResolveResult};
 use crate::{Identifier, SourceExcerpt, SourceSpan};
@@ -40,14 +40,6 @@ pub enum TypeErrorKind {
     TypeMismatch { expected: String, got: String },
     /// Two domains failed to unify.
     DomainMismatch { expected: String, got: String },
-    /// A record constructor refers to an unknown struct.
-    UnknownStruct,
-    /// A record constructor names a field the struct does not declare.
-    UnknownStructField { struct_name: String, field: String },
-    /// A record constructor omits a required field.
-    MissingStructField { struct_name: String, field: String },
-    /// A record constructor mentions the same field twice.
-    DuplicateStructField { field: String },
     /// A call had the wrong number of positional arguments. Direction-check
     /// catches most of these, but type-check sees the post-slotting view.
     ArityMismatch {
@@ -71,19 +63,6 @@ impl fmt::Display for TypeErrorKind {
             }
             Self::DomainMismatch { expected, got } => {
                 write!(f, "domain mismatch: expected `{expected}`, got `{got}`")
-            }
-            Self::UnknownStruct => write!(f, "record constructor names an unknown struct"),
-            Self::UnknownStructField { struct_name, field } => {
-                write!(f, "struct `{struct_name}` has no field `{field}`")
-            }
-            Self::MissingStructField { struct_name, field } => {
-                write!(
-                    f,
-                    "missing field `{field}` in record constructor for `{struct_name}`"
-                )
-            }
-            Self::DuplicateStructField { field } => {
-                write!(f, "duplicate field `{field}` in record constructor")
             }
             Self::ArityMismatch {
                 callee,
@@ -575,7 +554,6 @@ impl InferCtxt {
                 .cloned()
                 .unwrap_or_else(|| self.fresh_type_var(expr.span.clone())),
             HirExprKind::Call(call) => self.infer_call(call, file),
-            HirExprKind::Record(rec) => self.infer_record(rec, expr.span.clone(), file),
         };
         self.expr_types.insert(expr.id, ty.clone());
         ty
@@ -632,6 +610,9 @@ impl InferCtxt {
         if file.is_reg(call.callee) {
             return self.infer_reg_call(call, file);
         }
+        if let Some(struct_def) = file.lookup_struct(call.callee) {
+            return self.infer_struct_call(struct_def, call, file);
+        }
         let Some(callee) = file.lookup_fn(call.callee) else {
             // Unknown callee — direction-check should have caught this; if
             // not, downgrade to a fresh var so the walk continues.
@@ -666,7 +647,7 @@ impl InferCtxt {
         for (param, arg) in callee.params.iter().zip(call.args.iter()) {
             let param_ty = subst.apply_to_type(&param.ty);
             let arg_expr = match arg {
-                HirArg::Given(e) | HirArg::Default(e) => Some(e),
+                HirArg::Provided { expr, .. } => Some(expr),
                 HirArg::Inferable => None,
             };
             if let Some(e) = arg_expr {
@@ -705,11 +686,11 @@ impl InferCtxt {
             return self.fresh_type_var(call.span.clone());
         }
         let lhs_ty = match &call.args[0] {
-            HirArg::Given(e) | HirArg::Default(e) => self.infer_expr(e, file),
+            HirArg::Provided { expr, .. } => self.infer_expr(expr, file),
             HirArg::Inferable => self.fresh_type_var(call.span.clone()),
         };
         let rhs_ty = match &call.args[1] {
-            HirArg::Given(e) | HirArg::Default(e) => self.infer_expr(e, file),
+            HirArg::Provided { expr, .. } => self.infer_expr(expr, file),
             HirArg::Inferable => self.fresh_type_var(call.span.clone()),
         };
         self.unify_types(&lhs_ty, &rhs_ty, call.span.clone());
@@ -739,7 +720,7 @@ impl InferCtxt {
 
         // Slot 1: `self @clk`.
         let self_ty = match &call.args[1] {
-            HirArg::Given(e) | HirArg::Default(e) => self.infer_expr(e, file),
+            HirArg::Provided { expr, .. } => self.infer_expr(expr, file),
             HirArg::Inferable => self.fresh_type_var(call.span.clone()),
         };
 
@@ -751,13 +732,13 @@ impl InferCtxt {
             }),
             span: call.span.clone(),
         };
-        if let HirArg::Given(e) | HirArg::Default(e) = &call.args[2] {
+        if let HirArg::Provided { expr: e, .. } = &call.args[2] {
             let rt = self.infer_expr(e, file);
             self.unify_types(&rst_expected, &rt, e.span.clone());
         }
 
         // Slot 3: `reset_val: uint(N) @clk` — width and domain unify with `self`.
-        if let HirArg::Given(e) | HirArg::Default(e) = &call.args[3] {
+        if let HirArg::Provided { expr: e, .. } = &call.args[3] {
             let rv_ty = self.infer_expr(e, file);
             self.unify_types(&self_ty, &rv_ty, e.span.clone());
         }
@@ -778,64 +759,44 @@ impl InferCtxt {
         self.resolve_type(&self_ty)
     }
 
-    fn infer_record(&mut self, rec: &HirRecord, span: SourceSpan, file: &FileCtx<'_>) -> HirType {
-        let Some(struct_def) = file.lookup_struct(rec.struct_def) else {
+    /// Type-check a struct-constructor call. The struct's declared fields act
+    /// as the callee's positional parameters; HIR lowering already slotted
+    /// the user's named fields into declared order and reported shape errors,
+    /// so this method only needs to unify each arg's type against the
+    /// corresponding field's declared type.
+    fn infer_struct_call(
+        &mut self,
+        struct_def: &HirStruct,
+        call: &HirCall,
+        file: &FileCtx<'_>,
+    ) -> HirType {
+        if call.args.len() != struct_def.fields.len() {
+            // HIR lowering should have produced exactly one arg per declared
+            // field. A mismatch is a sign of an upstream bug; fall back
+            // gracefully.
             self.errors.push(TypeError {
-                kind: TypeErrorKind::UnknownStruct,
-                span: span.clone(),
+                kind: TypeErrorKind::ArityMismatch {
+                    callee: struct_def.name.clone(),
+                    expected: struct_def.fields.len(),
+                    got: call.args.len(),
+                },
+                span: call.span.clone(),
             });
-            return self.fresh_type_var(span);
-        };
-
-        // Field-name validation + per-field type unification.
-        let mut seen: HashMap<&str, usize> = HashMap::new();
-        for field in &rec.fields {
-            if let Some(_prev) = seen.insert(field.name.as_str(), 0) {
-                self.errors.push(TypeError {
-                    kind: TypeErrorKind::DuplicateStructField {
-                        field: field.name.clone(),
-                    },
-                    span: field.span.clone(),
-                });
-                continue;
-            }
-            let Some(decl) = struct_def.fields.iter().find(|f| f.name == field.name) else {
-                self.errors.push(TypeError {
-                    kind: TypeErrorKind::UnknownStructField {
-                        struct_name: struct_def.name.clone(),
-                        field: field.name.clone(),
-                    },
-                    span: field.span.clone(),
-                });
-                let _ = self.infer_expr(&field.value, file);
-                continue;
-            };
-            let value_ty = self.infer_expr(&field.value, file);
-            self.unify_types(&decl.ty, &value_ty, field.span.clone());
         }
-
-        for decl in &struct_def.fields {
-            if !seen.contains_key(decl.name.as_str()) {
-                self.errors.push(TypeError {
-                    kind: TypeErrorKind::MissingStructField {
-                        struct_name: struct_def.name.clone(),
-                        field: decl.name.clone(),
-                    },
-                    span: span.clone(),
-                });
+        for (decl, arg) in struct_def.fields.iter().zip(call.args.iter()) {
+            if let HirArg::Provided { expr, .. } = arg {
+                let value_ty = self.infer_expr(expr, file);
+                self.unify_types(&decl.ty, &value_ty, expr.span.clone());
             }
         }
-
-        // The struct's domain is whatever the use site needs. Leave it
-        // Unspecified — surrounding unification will pin it.
         HirType {
             kind: HirTypeKind::Value(ValueType {
                 kind: ValueKind::Struct {
-                    def: rec.struct_def,
+                    def: struct_def.def_id,
                 },
                 domain: Domain::Unspecified,
             }),
-            span,
+            span: call.span.clone(),
         }
     }
 }
@@ -1013,39 +974,5 @@ mod tests {
                 r.errors
             );
         }
-    }
-
-    #[test]
-    fn missing_struct_field_is_reported() {
-        let r = check(
-            "struct Packet = packet { valid: bool, payload: uint(8) }\n\
-             fn f() -> Packet { return packet { valid: false }; }",
-        );
-        assert!(
-            r.errors.iter().any(|e| matches!(
-                &e.kind,
-                TypeErrorKind::MissingStructField { struct_name, field }
-                    if struct_name == "Packet" && field == "payload"
-            )),
-            "errors: {:?}",
-            r.errors
-        );
-    }
-
-    #[test]
-    fn unknown_struct_field_is_reported() {
-        let r = check(
-            "struct Packet = packet { valid: bool, payload: uint(8) }\n\
-             fn f() -> Packet { return packet { valid: false, payload: 0, extra: 1 }; }",
-        );
-        assert!(
-            r.errors.iter().any(|e| matches!(
-                &e.kind,
-                TypeErrorKind::UnknownStructField { struct_name, field }
-                    if struct_name == "Packet" && field == "extra"
-            )),
-            "errors: {:?}",
-            r.errors
-        );
     }
 }

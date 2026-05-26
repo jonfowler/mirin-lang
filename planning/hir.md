@@ -130,12 +130,8 @@ pub struct HirExpr {
 pub enum HirExprKind {
     Const(ConstValue),             // literal, domain inferred as @const
     Local(LocalId),
-    Binary(BinOp, Box<HirExpr>, Box<HirExpr>),
-    Call(HirCall),
-    Record(HirRecord),             // `constructor { field: value, ... }`
+    Call(HirCall),                 // every "do something with arguments" lowers here
 }
-
-pub enum BinOp { Add, Multiply }
 
 pub enum ConstValue {
     Integer(u64),
@@ -212,7 +208,7 @@ pub struct HirStructField {
 pub struct HirPort {
     pub def_id: DefId,
     pub name: String,
-    pub named_params: Vec<HirParam>,   // typically `#clk: Clock`
+    pub params: Vec<HirParam>,         // shape mirrors HirFn: named section first, then positional
     pub fields: Vec<HirPortField>,
     pub span: SourceSpan,
 }
@@ -239,9 +235,13 @@ pub struct HirCall {
 }
 
 pub enum HirArg {
-    Given(HirExpr),                // user supplied (either named or positional in source)
-    Default(HirExpr),              // substituted from the param's default
+    Provided { expr: HirExpr, source: HirArgSource },
     Inferable,                     // an inferable param (#clk) the type checker must fill
+}
+
+pub enum HirArgSource {
+    Given,                         // user wrote this argument at the call site
+    Default,                       // substituted from the param's declared default
 }
 ```
 
@@ -252,7 +252,13 @@ pub enum HirArg {
 3. Remaining empty slots are filled as `Default(...)` if the param has a declared default, `Inferable` if the param is `#`-marked, or an error otherwise (missing required argument).
 4. Method calls (`x.reg(rstn, 0)`) are desugared at this stage: the receiver `x` fills the `self` parameter slot of the callee.
 
-Each `HirArg` keeps its own span. For `Given`, the span points into source; for `Default`, into the default expression in the callee's declaration; for `Inferable`, at the call site.
+Each `HirArg` keeps its own span. For `Provided { source: Given }`, the span points into source; for `Provided { source: Default }`, into the default expression in the callee's declaration; for `Inferable`, at the call site.
+
+Surface-level binary operators (`a + b`, `a * b`), method calls (`x.reg(rstn, 0)`), and struct constructors (`packet { valid: false, payload: 0 }`) all desugar to `HirCall` at lowering time:
+
+- Operators have prelude `DefId`s (`+`, `*`). HIR lowering produces `Call { callee: +-def, args: [Given(a), Given(b)] }`.
+- Methods slot the receiver into the callee's `self` param. `x.reg(rstn, 0)` becomes `Call { callee: reg-def, args: [Inferable, Given(x), Given(rstn), Given(0)] }`.
+- Struct constructors slot user-provided named fields into declared field order. `packet { payload: 0, valid: false }` becomes `Call { callee: Packet-def, args: [Given(false), Given(0)] }` — the constructor's "signature" is the field list. Missing, unknown, or duplicate field names are caught during HIR lowering so type-checking sees a well-formed call.
 
 There is **no `Callee::Builtin` variant**. Primitive operations such as `.reg` are registered as compiler-provided definitions in a *prelude* during resolver initialisation: each gets a real `DefId`, a `HirFn`-shaped signature, and is therefore indistinguishable from a user-defined function for the purposes of call resolution. This keeps later passes from having to branch on call kind.
 
@@ -270,7 +276,7 @@ The lowering pass runs after name resolution and direction checking. It does **a
 
 1. **Names baked in.** Identifier expressions in surface IR become `HirExprKind::Local(LocalId)` (after translation from `NodeId`) or `HirExprKind::Call` with the appropriate `DefId`. The resolver's side table is no longer consulted by later passes.
 2. **Method desugaring.** `x.f(args)` becomes `Call { callee: f_def_id, args: [Given(x), ...] }` with `x` slotted into the callee's `self` parameter.
-3. **Default substitution.** Missing named-arg slots whose param has a declared default get `HirArg::Default(<default expr>)` filled in. The default expression has already been name-resolved in its declaration scope (this happens during name resolution).
+3. **Default substitution.** Missing named-arg slots whose param has a declared default get `HirArg::Provided { source: Default, expr }` filled in. The default expression has already been name-resolved in its declaration scope (this happens during name resolution).
 4. **Inferable marker.** Missing slots whose param is `#`-marked become `HirArg::Inferable`. No attempt is made to anchor these from explicit `Reset @clk` arguments — that is left to type inference, which already needs the same machinery.
 5. **`var` split.** Surface `VarStatement` with an `init` becomes `VarDecl` + `Equation`.
 6. **Surface-AST helpers gone.** `PostfixExpression`, `NamedArgument`, `PathExpression`, etc., disappear; everything is `HirExprKind`.

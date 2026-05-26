@@ -72,10 +72,11 @@ pub struct HirStructField {
 pub struct HirPort {
     pub def_id: DefId,
     pub name: String,
-    /// Port-level named parameters (most commonly `#clk: Clock`). Lowered the
-    /// same way as function named parameters; type-checking later validates
-    /// uses inside field types.
-    pub named_params: Vec<HirParam>,
+    /// Port-level parameters: named-section first (typically `#clk: Clock`),
+    /// then positional-section (used by parametric ports for type args).
+    /// Shape mirrors `HirFn::params` so callers can ask "what are this item's
+    /// parameters?" without caring about item kind.
+    pub params: Vec<HirParam>,
     pub fields: Vec<HirPortField>,
     pub span: SourceSpan,
 }
@@ -179,29 +180,12 @@ pub struct HirExpr {
 pub enum HirExprKind {
     Const(ConstValue),
     Local(LocalId),
-    /// Calls cover both user-defined functions and prelude builtins. Surface
-    /// `a + b` is desugared into a call against the prelude operator's
-    /// `DefId`; there is no dedicated `Binary` shape at the HIR level.
+    /// Calls cover everything callable: user-defined functions, prelude
+    /// operators and primitives (`+`, `*`, `reg`), and struct constructors.
+    /// HIR lowering desugars `a + b`, `x.reg(...)`, and
+    /// `packet { valid: false, ... }` into the same shape so later passes
+    /// have one code path.
     Call(HirCall),
-    Record(HirRecord),
-}
-
-/// A record-literal constructor, e.g. `packet { valid: false, payload: 0 }`.
-/// `struct_def` is the `DefId` of the struct type; `fields` carries values in
-/// source order, keyed by textual field name. Field-name resolution against
-/// the struct's declared fields happens in type-checking.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HirRecord {
-    pub struct_def: DefId,
-    pub fields: Vec<HirRecordField>,
-    pub span: SourceSpan,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HirRecordField {
-    pub name: String,
-    pub value: HirExpr,
-    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,12 +206,19 @@ pub struct HirCall {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirArg {
-    /// User-supplied expression — either positional or named in source.
-    Given(HirExpr),
-    /// The callee's declared default substituted because no argument was supplied.
-    Default(HirExpr),
+    /// An expression occupies this slot. `source` records where it came from
+    /// (user supplied vs. substituted from the callee's declared default).
+    Provided { expr: HirExpr, source: HirArgSource },
     /// An inferable parameter (`#`-marked) the type checker must resolve.
     Inferable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirArgSource {
+    /// User wrote this argument at the call site (named or positional).
+    Given,
+    /// The callee's declared default substituted because no argument was supplied.
+    Default,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

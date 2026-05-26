@@ -21,10 +21,10 @@ use std::collections::HashMap;
 use std::fmt;
 
 use super::{
-    ConstValue, Domain, HirArg, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind, HirFn, HirId,
-    HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirPortField, HirRecord, HirRecordField,
-    HirSourceFile, HirStmt, HirStruct, HirStructField, HirType, HirTypeKind, HirVarDecl, LocalId,
-    ParamSection, PortTypeRef, ValueKind, ValueType,
+    ConstValue, Domain, HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind,
+    HirFn, HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirPortField, HirSourceFile,
+    HirStmt, HirStruct, HirStructField, HirType, HirTypeKind, HirVarDecl, LocalId, ParamSection,
+    PortTypeRef, ValueKind, ValueType,
 };
 use crate::SourceSpan;
 use crate::resolve::{DefId, DefKind, LocalKind, Res, ResolveResult};
@@ -69,6 +69,12 @@ pub enum HirLowerErrorKind {
     DomainOnNonValueType { ty: &'static str },
     /// A record constructor names something other than a struct constructor.
     RecordConstructorNotStruct { name: String },
+    /// A record constructor mentions a field the struct does not declare.
+    UnknownStructField { struct_name: String, field: String },
+    /// A record constructor omits a required field.
+    MissingStructField { struct_name: String, field: String },
+    /// A record constructor mentions the same field twice.
+    DuplicateStructField { field: String },
     /// The assignment LHS resolves to something other than a `var` signal.
     AssignmentLhsNotVar,
     /// An expected resolver entry was missing. Should not happen on a clean
@@ -109,6 +115,18 @@ impl fmt::Display for HirLowerErrorKind {
             }
             Self::RecordConstructorNotStruct { name } => {
                 write!(f, "`{name}` is not a struct constructor")
+            }
+            Self::UnknownStructField { struct_name, field } => {
+                write!(f, "struct `{struct_name}` has no field `{field}`")
+            }
+            Self::MissingStructField { struct_name, field } => {
+                write!(
+                    f,
+                    "missing field `{field}` in record constructor for `{struct_name}`"
+                )
+            }
+            Self::DuplicateStructField { field } => {
+                write!(f, "duplicate field `{field}` in record constructor")
             }
             Self::AssignmentLhsNotVar => {
                 write!(f, "the left-hand side of `=` must be a `var` signal name")
@@ -164,6 +182,9 @@ struct Lowerer<'a> {
     /// User-defined top-level functions, keyed by `DefId` for signature lookup
     /// when slotting call-site arguments.
     user_fns: HashMap<DefId, &'a FunctionDefinition>,
+    /// User-defined structs, keyed by `DefId`. Used to slot record-literal
+    /// constructors against declared field order.
+    user_structs: HashMap<DefId, &'a StructDefinition>,
     /// `DefId` of the prelude `reg` primitive. Set once at startup; used for
     /// every `.reg(...)` desugaring.
     reg_def_id: Option<DefId>,
@@ -185,16 +206,26 @@ struct FnState {
 impl<'a> Lowerer<'a> {
     fn new(file: &'a SourceFile, resolve: &'a ResolveResult) -> Self {
         let mut user_fns = HashMap::new();
+        let mut user_structs = HashMap::new();
         for item in &file.items {
-            if let Item::Fn(func) = item
-                && let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&func.name.id)
-            {
-                user_fns.insert(def_id, func);
+            match item {
+                Item::Fn(func) => {
+                    if let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&func.name.id) {
+                        user_fns.insert(def_id, func);
+                    }
+                }
+                Item::Struct(s) => {
+                    if let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&s.name.id) {
+                        user_structs.insert(def_id, s);
+                    }
+                }
+                _ => {}
             }
         }
         Self {
             resolve,
             user_fns,
+            user_structs,
             reg_def_id: resolve.def_id("reg"),
             next_hir_id: 0,
             fn_state: FnState::default(),
@@ -357,13 +388,16 @@ impl<'a> Lowerer<'a> {
             _ => return None,
         };
         self.fn_state = FnState::default();
-        // Port named parameters (`{ #clk: Clock }`) must be lowered before
-        // field types so `@clk` annotations on fields can resolve to them.
-        let named_params: Vec<HirParam> = p
-            .named_parameters
-            .iter()
-            .map(|np| self.lower_named_param(np))
-            .collect();
+        // Parameters must be lowered before field types so `@clk` annotations
+        // on fields can resolve to the port's named parameter. The shape
+        // mirrors `HirFn::params` — named section first, then positional.
+        let mut params = Vec::new();
+        for np in &p.named_parameters {
+            params.push(self.lower_named_param(np));
+        }
+        for pp in &p.parameters {
+            params.push(self.lower_positional_param(pp));
+        }
         let fields = p
             .fields
             .iter()
@@ -377,7 +411,7 @@ impl<'a> Lowerer<'a> {
         Some(HirPort {
             def_id,
             name: p.name.text.clone(),
-            named_params,
+            params,
             fields,
             span: p.span.clone(),
         })
@@ -616,7 +650,7 @@ impl<'a> Lowerer<'a> {
         HirExpr {
             kind: HirExprKind::Call(HirCall {
                 callee,
-                args: vec![HirArg::Given(left), HirArg::Given(right)],
+                args: vec![hir_given(left), hir_given(right)],
                 span: b.span.clone(),
             }),
             ty: None,
@@ -625,56 +659,95 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Desugar a record literal into a `HirCall` against the struct's `DefId`.
+    /// The struct's declared fields act as a positional parameter list; the
+    /// user's named fields are slotted into declared order. Missing, unknown,
+    /// and duplicate fields are caught here so type-checking sees a
+    /// well-formed call (with one `Given` arg per declared field) and only
+    /// needs to verify value types.
     fn lower_record_constructor(&mut self, r: &RecordConstructorExpression) -> HirExpr {
-        // The constructor identifier names the struct's constructor; the
-        // resolver maps it back to the struct's DefId.
-        let struct_def = match self.resolve.resolutions.get(&r.constructor.id) {
-            Some(&Res::Def(DefKind::Struct, def_id)) => Some(def_id),
-            Some(&Res::Def(_, _)) | Some(Res::Local(_)) => {
+        let struct_def_id = match self.resolve.resolutions.get(&r.constructor.id) {
+            Some(&Res::Def(DefKind::Struct, def_id)) => def_id,
+            _ => {
                 self.error(
                     HirLowerErrorKind::RecordConstructorNotStruct {
                         name: r.constructor.text.clone(),
                     },
                     r.constructor.span.clone(),
                 );
-                None
-            }
-            None => {
-                // Constructor names that don't resolve get the same diagnostic
-                // shape; this happens for record literals whose head name is
-                // unknown.
-                self.error(
-                    HirLowerErrorKind::RecordConstructorNotStruct {
-                        name: r.constructor.text.clone(),
-                    },
-                    r.constructor.span.clone(),
-                );
-                None
+                // Still lower the field expressions so any inner errors surface.
+                for f in &r.fields {
+                    let _ = self.lower_expr(&f.value);
+                }
+                return self.placeholder_expr(r.span.clone());
             }
         };
 
-        let fields: Vec<HirRecordField> = r
-            .fields
-            .iter()
-            .map(|f| HirRecordField {
-                name: f.name.text.clone(),
-                value: self.lower_expr(&f.value),
-                span: f.span.clone(),
-            })
-            .collect();
+        let Some(decl) = self.user_structs.get(&struct_def_id).copied() else {
+            self.error(
+                HirLowerErrorKind::RecordConstructorNotStruct {
+                    name: r.constructor.text.clone(),
+                },
+                r.constructor.span.clone(),
+            );
+            return self.placeholder_expr(r.span.clone());
+        };
 
-        match struct_def {
-            Some(def) => HirExpr {
-                kind: HirExprKind::Record(HirRecord {
-                    struct_def: def,
-                    fields,
-                    span: r.span.clone(),
-                }),
-                ty: None,
+        // Lower each provided field's value, indexed by name. Reject
+        // duplicates and unknown names along the way.
+        let mut provided: HashMap<String, HirExpr> = HashMap::new();
+        for field in &r.fields {
+            let value = self.lower_expr(&field.value);
+            if provided.contains_key(&field.name.text) {
+                self.error(
+                    HirLowerErrorKind::DuplicateStructField {
+                        field: field.name.text.clone(),
+                    },
+                    field.span.clone(),
+                );
+                continue;
+            }
+            if !decl.fields.iter().any(|d| d.name.text == field.name.text) {
+                self.error(
+                    HirLowerErrorKind::UnknownStructField {
+                        struct_name: decl.name.text.clone(),
+                        field: field.name.text.clone(),
+                    },
+                    field.span.clone(),
+                );
+                continue;
+            }
+            provided.insert(field.name.text.clone(), value);
+        }
+
+        // Slot in declared field order. Missing fields are reported and slot
+        // gets a placeholder so the call's arg count still matches.
+        let mut args = Vec::with_capacity(decl.fields.len());
+        for decl_field in &decl.fields {
+            match provided.remove(&decl_field.name.text) {
+                Some(expr) => args.push(hir_given(expr)),
+                None => {
+                    self.error(
+                        HirLowerErrorKind::MissingStructField {
+                            struct_name: decl.name.text.clone(),
+                            field: decl_field.name.text.clone(),
+                        },
+                        r.span.clone(),
+                    );
+                    args.push(hir_given(self.placeholder_expr(r.span.clone())));
+                }
+            }
+        }
+
+        HirExpr {
+            kind: HirExprKind::Call(HirCall {
+                callee: struct_def_id,
+                args,
                 span: r.span.clone(),
-                id: self.next_hir_id(),
-            },
-            None => self.placeholder_expr(r.span.clone()),
+            }),
+            ty: None,
+            span: r.span.clone(),
+            id: self.next_hir_id(),
         }
     }
 
@@ -823,9 +896,9 @@ impl<'a> Lowerer<'a> {
         call_span: &SourceSpan,
     ) -> HirArg {
         if let Some(expr) = supplied {
-            HirArg::Given(self.lower_expr(expr))
+            hir_given(self.lower_expr(expr))
         } else if let Some(expr) = default {
-            HirArg::Default(self.lower_expr(expr))
+            hir_default(self.lower_expr(expr))
         } else if inferable {
             HirArg::Inferable
         } else {
@@ -918,10 +991,10 @@ impl<'a> Lowerer<'a> {
             .unwrap_or_else(|| self.placeholder_expr(p.span.clone()));
 
         let hir_args = vec![
-            HirArg::Inferable,            // #clk
-            HirArg::Given(receiver_expr), // self
-            HirArg::Given(rst),
-            HirArg::Given(reset_val),
+            HirArg::Inferable,        // #clk
+            hir_given(receiver_expr), // self
+            hir_given(rst),
+            hir_given(reset_val),
         ];
 
         HirExpr {
@@ -1082,6 +1155,20 @@ impl<'a> Lowerer<'a> {
     }
 }
 
+fn hir_given(expr: HirExpr) -> HirArg {
+    HirArg::Provided {
+        expr,
+        source: HirArgSource::Given,
+    }
+}
+
+fn hir_default(expr: HirExpr) -> HirArg {
+    HirArg::Provided {
+        expr,
+        source: HirArgSource::Default,
+    }
+}
+
 fn builtin_literal(text: &str) -> Option<ConstValue> {
     // `true`/`false` are bool literals; `high`/`low` are reset-polarity
     // literals (the default for `rstn: Reset @clk = high`). First-pass
@@ -1201,9 +1288,27 @@ mod tests {
         // reg's args = [#clk: Inferable, self: Given(data), rst: Given(rstn), reset_val: Given(0)]
         assert_eq!(call.args.len(), 4);
         assert!(matches!(call.args[0], HirArg::Inferable));
-        assert!(matches!(call.args[1], HirArg::Given(_)));
-        assert!(matches!(call.args[2], HirArg::Given(_)));
-        assert!(matches!(call.args[3], HirArg::Given(_)));
+        assert!(matches!(
+            call.args[1],
+            HirArg::Provided {
+                source: HirArgSource::Given,
+                ..
+            }
+        ));
+        assert!(matches!(
+            call.args[2],
+            HirArg::Provided {
+                source: HirArgSource::Given,
+                ..
+            }
+        ));
+        assert!(matches!(
+            call.args[3],
+            HirArg::Provided {
+                source: HirArgSource::Given,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1224,9 +1329,27 @@ mod tests {
         // [#clk: Inferable, rstn: Default(high), c: Given(5), a: Given(x)]
         assert_eq!(call.args.len(), 4);
         assert!(matches!(call.args[0], HirArg::Inferable));
-        assert!(matches!(call.args[1], HirArg::Default(_)));
-        assert!(matches!(call.args[2], HirArg::Given(_)));
-        assert!(matches!(call.args[3], HirArg::Given(_)));
+        assert!(matches!(
+            call.args[1],
+            HirArg::Provided {
+                source: HirArgSource::Default,
+                ..
+            }
+        ));
+        assert!(matches!(
+            call.args[2],
+            HirArg::Provided {
+                source: HirArgSource::Given,
+                ..
+            }
+        ));
+        assert!(matches!(
+            call.args[3],
+            HirArg::Provided {
+                source: HirArgSource::Given,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1304,21 +1427,84 @@ mod tests {
     }
 
     #[test]
-    fn record_constructor_lowers_to_record_node() {
+    fn record_constructor_lowers_to_call_in_declared_order() {
         let file = lower_ok(
             "struct Packet = packet { valid: bool, payload: uint(8) }\n\
-             fn idle() -> Packet { return packet { valid: false, payload: 0 }; }",
+             fn idle() -> Packet { return packet { payload: 0, valid: false }; }",
         );
         let func = first_fn(&file);
         let HirStmt::Return(ret) = &func.body.statements[0] else {
             panic!("expected return");
         };
-        let HirExprKind::Record(rec) = &ret.kind else {
-            panic!("expected Record, got {:?}", ret.kind);
+        let HirExprKind::Call(call) = &ret.kind else {
+            panic!("expected Call, got {:?}", ret.kind);
         };
-        assert_eq!(rec.fields.len(), 2);
-        assert_eq!(rec.fields[0].name, "valid");
-        assert_eq!(rec.fields[1].name, "payload");
+        // Slotted in declared field order: valid (bool), then payload (uint).
+        assert_eq!(call.args.len(), 2);
+        let HirArg::Provided { expr: valid, .. } = &call.args[0] else {
+            panic!("expected Provided");
+        };
+        assert!(matches!(
+            valid.kind,
+            HirExprKind::Const(ConstValue::Bool(false))
+        ));
+        let HirArg::Provided { expr: payload, .. } = &call.args[1] else {
+            panic!("expected Provided");
+        };
+        assert!(matches!(
+            payload.kind,
+            HirExprKind::Const(ConstValue::Integer(0))
+        ));
+    }
+
+    #[test]
+    fn missing_struct_field_is_reported() {
+        let errors = lower(
+            "struct Packet = packet { valid: bool, payload: uint(8) }\n\
+             fn f() -> Packet { return packet { valid: false }; }",
+        )
+        .expect_err("expected lowering errors");
+        assert!(
+            errors.iter().any(|e| matches!(
+                &e.kind,
+                HirLowerErrorKind::MissingStructField { struct_name, field }
+                    if struct_name == "Packet" && field == "payload"
+            )),
+            "errors: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_struct_field_is_reported() {
+        let errors = lower(
+            "struct Packet = packet { valid: bool, payload: uint(8) }\n\
+             fn f() -> Packet { return packet { valid: false, payload: 0, extra: 1 }; }",
+        )
+        .expect_err("expected lowering errors");
+        assert!(
+            errors.iter().any(|e| matches!(
+                &e.kind,
+                HirLowerErrorKind::UnknownStructField { struct_name, field }
+                    if struct_name == "Packet" && field == "extra"
+            )),
+            "errors: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_struct_field_is_reported() {
+        let errors = lower(
+            "struct Packet = packet { valid: bool, payload: uint(8) }\n\
+             fn f() -> Packet { return packet { valid: false, valid: true, payload: 0 }; }",
+        )
+        .expect_err("expected lowering errors");
+        assert!(
+            errors.iter().any(|e| matches!(
+                &e.kind,
+                HirLowerErrorKind::DuplicateStructField { field } if field == "valid"
+            )),
+            "errors: {errors:?}"
+        );
     }
 
     #[test]

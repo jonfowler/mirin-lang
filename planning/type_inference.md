@@ -128,7 +128,7 @@ The walker computes a type for each expression and records it in `expr_types`. R
 | `Local(id)` | `locals[&id].clone()` |
 | `Call(call)` for `+`/`*` | infer both args, `unify_types(l_ty, r_ty)`, return the unified type. Operators are prelude `DefId`s; HIR lowering desugars `a + b` into a `HirCall` so the type checker has one code path. |
 | `Call(call)` for user fns | look up callee signature, zip args against params, unify each arg's inferred type against the param's declared type. |
-| `Record(rec)` | look up struct fields, check each provided field's value against its declared type, ensure all required fields supplied. Return `Value(Struct { def }, fresh_domain_var)`. |
+| `Call(call)` for a struct constructor | the struct's declared fields are the callee's positional params (HIR lowering already slotted user-named fields into declared order). Unify each arg's type against the field's declared type. Return `Value(Struct { def }, fresh_domain_var)`. |
 
 For `Call`, inferable named params (`#clk`) become *fresh `DomainVar`s* at the call site. Each arg's inferred domain unifies with the corresponding param's domain — which threads `#clk` through `rstn`'s `Reset @clk`, the receiver's `self @clk`, and the result's `uint(N) @clk` until they all agree.
 
