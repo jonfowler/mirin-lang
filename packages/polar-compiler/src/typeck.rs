@@ -17,9 +17,9 @@ use std::fmt;
 use std::path::Path;
 
 use crate::hir::{
-    BinOp, ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFn, HirId,
-    HirItem, HirRecord, HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId,
-    PortTypeRef, TypeVar, ValueKind, ValueType,
+    ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFn, HirId, HirItem,
+    HirRecord, HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId, PortTypeRef,
+    TypeVar, ValueKind, ValueType,
 };
 use crate::resolve::{DefId, ResolveResult};
 use crate::{Identifier, SourceExcerpt, SourceSpan};
@@ -232,6 +232,12 @@ struct FileCtx<'hir> {
     /// `DefId` of the prelude `reg` primitive. Calls to it use a hand-built
     /// signature instead of looking up a `HirFn`.
     reg_def_id: Option<DefId>,
+    /// `DefId`s of the prelude arithmetic operators. HIR lowering desugars
+    /// `a + b` into a `HirCall` against one of these. Their polymorphic
+    /// signature (`{N, D}(uint(N) @D, uint(N) @D) -> uint(N) @D`) is handled
+    /// by `infer_arith_call` until value-level type parameters land.
+    add_def_id: Option<DefId>,
+    mul_def_id: Option<DefId>,
     errors: Vec<TypeError>,
     residual_obligations: Vec<Obligation>,
     expr_types: HashMap<HirId, HirType>,
@@ -257,6 +263,8 @@ impl<'hir> FileCtx<'hir> {
             fns,
             structs,
             reg_def_id: resolve.def_id("reg"),
+            add_def_id: resolve.def_id("+"),
+            mul_def_id: resolve.def_id("*"),
             errors: Vec::new(),
             residual_obligations: Vec::new(),
             expr_types: HashMap::new(),
@@ -287,6 +295,10 @@ impl<'hir> FileCtx<'hir> {
 
     fn is_reg(&self, def_id: DefId) -> bool {
         self.reg_def_id == Some(def_id)
+    }
+
+    fn is_arith_op(&self, def_id: DefId) -> bool {
+        Some(def_id) == self.add_def_id || Some(def_id) == self.mul_def_id
     }
 }
 
@@ -562,7 +574,6 @@ impl InferCtxt {
                 .get(id)
                 .cloned()
                 .unwrap_or_else(|| self.fresh_type_var(expr.span.clone())),
-            HirExprKind::Binary(op, l, r) => self.infer_binary(*op, l, r, expr.span.clone(), file),
             HirExprKind::Call(call) => self.infer_call(call, file),
             HirExprKind::Record(rec) => self.infer_record(rec, expr.span.clone(), file),
         };
@@ -609,28 +620,15 @@ impl InferCtxt {
         }
     }
 
-    fn infer_binary(
-        &mut self,
-        _op: BinOp,
-        l: &HirExpr,
-        r: &HirExpr,
-        span: SourceSpan,
-        file: &FileCtx<'_>,
-    ) -> HirType {
-        let lt = self.infer_expr(l, file);
-        let rt = self.infer_expr(r, file);
-        // `+` and `*` require two `uint` of the same width and the same
-        // domain. Unifying directly handles both — width-equality drops to
-        // the WidthEq obligation when symbolic.
-        self.unify_types(&lt, &rt, span);
-        self.resolve_type(&lt)
-    }
-
     fn infer_call(&mut self, call: &HirCall, file: &FileCtx<'_>) -> HirType {
-        // Build the callee's signature. For user-defined functions the
-        // signature comes from the lowered `HirFn`. The prelude `reg` uses a
-        // hand-built signature with implicit width inference between `self`
-        // and `reset_val`.
+        // Prelude operators and primitives are dispatched here with bespoke
+        // logic until value-level type/width parameters land. Each of them
+        // has a polymorphic signature the general substitution machinery
+        // doesn't yet handle (`(+){N, D}(uint(N) @D, uint(N) @D)`,
+        // `reg{N, D}(...)`, etc.); the special cases unify args directly.
+        if file.is_arith_op(call.callee) {
+            return self.infer_arith_call(call, file);
+        }
         if file.is_reg(call.callee) {
             return self.infer_reg_call(call, file);
         }
@@ -686,6 +684,36 @@ impl InferCtxt {
                 span: call.span.clone(),
             },
         }
+    }
+
+    /// Arithmetic operators have signature
+    /// `{N, D}(uint(N) @D, uint(N) @D) -> uint(N) @D`. The two operands
+    /// must agree on width and domain; the result is the unified type.
+    /// Today the implicit `N` and `D` parameters are unified by directly
+    /// equating the operand types; once value-level type/width parameters
+    /// land they fold into the standard substitution path.
+    fn infer_arith_call(&mut self, call: &HirCall, file: &FileCtx<'_>) -> HirType {
+        if call.args.len() != 2 {
+            self.errors.push(TypeError {
+                kind: TypeErrorKind::ArityMismatch {
+                    callee: "<arith>".to_owned(),
+                    expected: 2,
+                    got: call.args.len(),
+                },
+                span: call.span.clone(),
+            });
+            return self.fresh_type_var(call.span.clone());
+        }
+        let lhs_ty = match &call.args[0] {
+            HirArg::Given(e) | HirArg::Default(e) => self.infer_expr(e, file),
+            HirArg::Inferable => self.fresh_type_var(call.span.clone()),
+        };
+        let rhs_ty = match &call.args[1] {
+            HirArg::Given(e) | HirArg::Default(e) => self.infer_expr(e, file),
+            HirArg::Inferable => self.fresh_type_var(call.span.clone()),
+        };
+        self.unify_types(&lhs_ty, &rhs_ty, call.span.clone());
+        self.resolve_type(&lhs_ty)
     }
 
     /// `reg` has an implicit width parameter `N` shared between `self` and

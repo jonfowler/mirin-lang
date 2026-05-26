@@ -126,13 +126,15 @@ The walker computes a type for each expression and records it in `expr_types`. R
 | `Const(Integer(_))` | `Value(UInt { width: fresh_const_var }, Const)`. The width is left as a fresh `HirExpr` that const-eval will resolve from context. |
 | `Const(Bool(_))` | `Value(Bool, Const)` |
 | `Local(id)` | `locals[&id].clone()` |
-| `Binary(Add, l, r)` | infer both, `unify_types(l_ty, r_ty)`, return the unified type. |
-| `Call(call)` | look up callee signature, zip args against params, unify each arg's inferred type against the param's declared type. |
+| `Call(call)` for `+`/`*` | infer both args, `unify_types(l_ty, r_ty)`, return the unified type. Operators are prelude `DefId`s; HIR lowering desugars `a + b` into a `HirCall` so the type checker has one code path. |
+| `Call(call)` for user fns | look up callee signature, zip args against params, unify each arg's inferred type against the param's declared type. |
 | `Record(rec)` | look up struct fields, check each provided field's value against its declared type, ensure all required fields supplied. Return `Value(Struct { def }, fresh_domain_var)`. |
 
 For `Call`, inferable named params (`#clk`) become *fresh `DomainVar`s* at the call site. Each arg's inferred domain unifies with the corresponding param's domain — which threads `#clk` through `rstn`'s `Reset @clk`, the receiver's `self @clk`, and the result's `uint(N) @clk` until they all agree.
 
 This is exactly the substitution rustc applies when instantiating a generic function: fresh variables stand in for each generic parameter, get unified with use sites, and the answer is read out at the end. Polar's "generics" right now are the inferable `#clk` named params and the `uint(N)` widths; parametric structs (`struct Bus(A: Type)`) will plug in here unchanged when they return — they just add more fresh-variable slots at instantiation.
+
+Note that operators are also calls. `a + b` lowers to a `HirCall` against the prelude `+` DefId; `.reg(...)` likewise. There is no `HirExprKind::Binary` and no method-call shape at the HIR layer. Both `+` and `reg` have polymorphic signatures that the current substitution machinery doesn't fully handle (implicit width parameter `N`, domain `D`); for now they take bespoke paths (`infer_arith_call`, `infer_reg_call`) inside `infer_call`. Both paths use the same width-placeholder and unification primitives the general path will use once value-level type parameters are first-class.
 
 ## Unification rules
 

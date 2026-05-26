@@ -21,10 +21,10 @@ use std::collections::HashMap;
 use std::fmt;
 
 use super::{
-    BinOp, ConstValue, Domain, HirArg, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind, HirFn,
-    HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirPortField, HirRecord,
-    HirRecordField, HirSourceFile, HirStmt, HirStruct, HirStructField, HirType, HirTypeKind,
-    HirVarDecl, LocalId, ParamSection, PortTypeRef, ValueKind, ValueType,
+    ConstValue, Domain, HirArg, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind, HirFn, HirId,
+    HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirPortField, HirRecord, HirRecordField,
+    HirSourceFile, HirStmt, HirStruct, HirStructField, HirType, HirTypeKind, HirVarDecl, LocalId,
+    ParamSection, PortTypeRef, ValueKind, ValueType,
 };
 use crate::SourceSpan;
 use crate::resolve::{DefId, DefKind, LocalKind, Res, ResolveResult};
@@ -585,22 +585,43 @@ impl<'a> Lowerer<'a> {
                     id: self.next_hir_id(),
                 }
             }
-            Expression::Binary(b) => {
-                let left = self.lower_expr(&b.left);
-                let right = self.lower_expr(&b.right);
-                let op = match b.operator {
-                    BinaryOperator::Add => BinOp::Add,
-                    BinaryOperator::Multiply => BinOp::Multiply,
-                };
-                HirExpr {
-                    kind: HirExprKind::Binary(op, Box::new(left), Box::new(right)),
-                    ty: None,
-                    span: b.span.clone(),
-                    id: self.next_hir_id(),
-                }
-            }
+            Expression::Binary(b) => self.lower_binary(b),
             Expression::Postfix(p) => self.lower_postfix(p),
             Expression::RecordConstructor(r) => self.lower_record_constructor(r),
+        }
+    }
+
+    /// Desugar `a + b` / `a * b` into a `HirCall` against the prelude
+    /// operator's `DefId`. After lowering, HIR has no dedicated binary-op
+    /// shape — every "operation" is a call. Type checking handles the
+    /// polymorphic signature `(+){N, D}(uint(N) @D, uint(N) @D) -> uint(N) @D`
+    /// the same way it handles `reg`'s implicit width parameter today.
+    fn lower_binary(&mut self, b: &crate::surface_ir::BinaryExpression) -> HirExpr {
+        let op_name = match b.operator {
+            BinaryOperator::Add => "+",
+            BinaryOperator::Multiply => "*",
+        };
+        let left = self.lower_expr(&b.left);
+        let right = self.lower_expr(&b.right);
+        let callee = match self.resolve.def_id(op_name) {
+            Some(id) => id,
+            None => {
+                self.error(
+                    HirLowerErrorKind::InternalUnresolved(format!("prelude operator `{op_name}`")),
+                    b.span.clone(),
+                );
+                return self.placeholder_expr(b.span.clone());
+            }
+        };
+        HirExpr {
+            kind: HirExprKind::Call(HirCall {
+                callee,
+                args: vec![HirArg::Given(left), HirArg::Given(right)],
+                span: b.span.clone(),
+            }),
+            ty: None,
+            span: b.span.clone(),
+            id: self.next_hir_id(),
         }
     }
 

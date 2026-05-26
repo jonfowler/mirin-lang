@@ -179,7 +179,9 @@ pub struct HirExpr {
 pub enum HirExprKind {
     Const(ConstValue),
     Local(LocalId),
-    Binary(BinOp, Box<HirExpr>, Box<HirExpr>),
+    /// Calls cover both user-defined functions and prelude builtins. Surface
+    /// `a + b` is desugared into a call against the prelude operator's
+    /// `DefId`; there is no dedicated `Binary` shape at the HIR level.
     Call(HirCall),
     Record(HirRecord),
 }
@@ -200,12 +202,6 @@ pub struct HirRecordField {
     pub name: String,
     pub value: HirExpr,
     pub span: SourceSpan,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinOp {
-    Add,
-    Multiply,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

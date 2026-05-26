@@ -243,7 +243,12 @@ impl ResolveResult {
 /// Builtin functions made available to every source file. These are pre-populated
 /// in the def table so that calls to them go through the same `DefId`-based path
 /// as user-defined functions. See `planning/hir.md` ("Prelude").
-const PRELUDE_FN_NAMES: &[&str] = &["reg"];
+///
+/// The entries with non-identifier names (`+`, `*`, ...) are reachable only via
+/// HIR lowering, which converts surface-level operator syntax into a `HirCall`
+/// against the corresponding prelude `DefId`. The user cannot name them
+/// directly because they don't tokenise as identifiers.
+const PRELUDE_FN_NAMES: &[&str] = &["reg", "+", "*"];
 
 /// Identifier-shaped literals (`true`, `false`, `high`, `low`). The resolver
 /// neither errors on them nor emits a `Res` — HIR lowering recognises them by
