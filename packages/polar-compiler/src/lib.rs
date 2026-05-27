@@ -29,4 +29,4 @@ pub use surface_ir::{
     StructDefinition, SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix, VarStatement,
     lower_cst, parse_surface_file, parse_surface_source,
 };
-pub use typeck::{WidthCheckResult, discharge_width_obligations};
+pub use typeck::{WidthCheckResult, check_width_obligations};

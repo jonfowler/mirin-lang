@@ -197,21 +197,28 @@ fn excerpt_for_span(source: &str, span: &SourceSpan) -> Option<SourceExcerpt> {
 }
 
 // ============================================================================
-// Width obligation discharge
+// Width obligation check (early-error pass over residual obligations)
 // ============================================================================
 
-/// Attempt to discharge `WidthEq` obligations left over from type-checking.
+/// Early-error check over `WidthEq` obligations left after type-checking.
 ///
-/// Each obligation is evaluated by trying to reduce both sides to a concrete
-/// integer. Obligations whose sides are both concrete integers are checked for
-/// equality. Obligations that cannot yet be evaluated (e.g. because they
-/// reference unbound const parameters) survive into `unresolved` for later
-/// passes — this will become relevant once parametric widths are in scope.
+/// Per the non-monomorphic SV backend plan, symbolic width equalities
+/// (`N + N ~ 2 * N`) are *not* a Polar-compile-time concern — they thread
+/// through to the SV elaborator as parameter-level arithmetic. This pass
+/// therefore only catches the cases that *can* be resolved now:
 ///
-/// `DomainKind` obligations are not handled here; they pass through unchanged.
-pub fn discharge_width_obligations(obligations: &[Obligation]) -> WidthCheckResult {
+/// - Both sides are concrete integers and disagree → error.
+/// - Both sides are concrete integers and agree → discharged.
+/// - Either side is non-literal → recorded in `unresolved_widths` for the
+///   SV emitter to translate into parameter expressions (or, eventually,
+///   for an algebraic checker to discharge symbolically).
+///
+/// `DomainKind` obligations are pass-through; the bound-tracking domain
+/// solver will handle them later.
+pub fn check_width_obligations(obligations: &[Obligation]) -> WidthCheckResult {
     let mut errors = Vec::new();
-    let mut unresolved = Vec::new();
+    let mut unresolved_widths = Vec::new();
+    let mut unresolved_domain_kinds = Vec::new();
     for ob in obligations {
         match &ob.kind {
             ObligationKind::WidthEq { lhs, rhs } => {
@@ -226,21 +233,29 @@ pub fn discharge_width_obligations(obligations: &[Obligation]) -> WidthCheckResu
                         });
                     }
                     (Some(_), Some(_)) => {}
-                    _ => unresolved.push(ob.clone()),
+                    _ => unresolved_widths.push(ob.clone()),
                 }
             }
-            ObligationKind::DomainKind { .. } => unresolved.push(ob.clone()),
+            ObligationKind::DomainKind { .. } => unresolved_domain_kinds.push(ob.clone()),
         }
     }
-    WidthCheckResult { errors, unresolved }
+    WidthCheckResult {
+        errors,
+        unresolved_widths,
+        unresolved_domain_kinds,
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct WidthCheckResult {
     pub errors: Vec<TypeError>,
-    /// Obligations that could not be discharged (non-literal widths, domain
-    /// kind constraints). These will be revisited once const parameters land.
-    pub unresolved: Vec<Obligation>,
+    /// Symbolic `WidthEq` obligations that could not be reduced to literals.
+    /// TODO: thread these into the SV emitter so they can be emitted as
+    /// parameter arithmetic (`logic [N+M-1:0]` etc.) once parametric widths
+    /// land. Currently dropped on the floor by the CLI.
+    pub unresolved_widths: Vec<Obligation>,
+    /// `DomainKind` obligations awaiting the bound-tracking domain solver.
+    pub unresolved_domain_kinds: Vec<Obligation>,
 }
 
 fn const_eval_width(e: &HirExpr) -> Option<u64> {
@@ -899,6 +914,13 @@ impl InferCtxt {
         }
         // Fresh domain var for the struct instance. Gets bound when the result
         // is unified with its use context (e.g. assigned to a @clk var).
+        //
+        // TODO: this propagation is order-dependent for mixed-domain literals
+        // because the `@const` arm in `unify_domains` accepts without
+        // rebinding. If a `@const` field is unified first, the struct's
+        // domain pins to `@const` and later `@clk` fields slip past silently.
+        // The proper fix is MLsub-style bound tracking — recording @const as
+        // a lower bound but allowing concrete clocks to refine the variable.
         let domain = self.fresh_domain_var();
         for (decl, arg) in struct_def.fields.iter().zip(call.args.iter()) {
             if let HirArg::Provided { expr, .. } = arg {

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::{env, fs, process};
 
 use polar_compiler::{
-    ParseError, check_directions, check_drivers, discharge_width_obligations, hir, lower_cst,
+    ParseError, check_directions, check_drivers, check_width_obligations, hir, lower_cst,
     parse_source_with_diagnostics, render_direction_errors, render_driver_errors,
     render_parse_error, render_resolve_errors, resolve_file, typeck,
 };
@@ -120,7 +120,7 @@ fn main() {
         process::exit(1);
     }
 
-    let width_check = discharge_width_obligations(&tc.residual_obligations);
+    let width_check = check_width_obligations(&tc.residual_obligations);
     if !width_check.errors.is_empty() {
         let mut rendered = String::new();
         typeck::render_type_errors(&width_check.errors, &source, Some(&path), &mut rendered)
@@ -128,6 +128,12 @@ fn main() {
         eprintln!("{rendered}");
         process::exit(1);
     }
+    // TODO: thread `width_check.unresolved_widths` into the SV emitter so
+    // they can be lowered to parameter-level arithmetic. Today's examples
+    // produce none, so dropping them is a no-op; this matters once
+    // parametric widths are in scope.
+    let _ = width_check.unresolved_widths;
+    let _ = width_check.unresolved_domain_kinds;
 
     print!("{}", parsed.cst);
 }
