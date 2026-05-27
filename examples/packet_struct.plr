@@ -5,13 +5,13 @@ struct Packet = packet {
 
 fn registerPacket
   { #clk: Clock, rstn: Reset @clk = high }
-  ( input: Packet @clk )
+  ( inp: Packet @clk )
   -> Packet @clk
   {
-    let output = input.reg(rstn, packet {
+    let held = inp.reg(rstn, packet {
       valid: false,
       payload: 0,
     });
 
-    return output;
+    return held;
   }
