@@ -1092,20 +1092,17 @@ impl<'a> Lowerer<'a> {
                         ty.span.clone(),
                     ),
                     Some((DefKind::Port, def_id)) => {
-                        // Ports do not carry a top-level domain. The clock flows
-                        // through the port's own `#clk` parameter into its
-                        // fields, so an `@clk` annotation here is rejected at
-                        // lowering rather than waiting for type-checking.
-                        if domain_annotation.is_some() {
-                            // We accept this for now (with a warning-shaped
-                            // error) because all current examples write
-                            // `Stream8 @clk` to convey the clock binding.
-                            // Strict rejection lands once port-parameter
-                            // application returns to the grammar.
-                            let _ = domain_annotation;
-                        }
+                        // Ports don't carry a top-level domain in the value
+                        // lattice. The clock instead flows through the port's
+                        // own `#clk` parameter, which the use site binds via
+                        // the `@clk` annotation (e.g. `Stream8 @clk`). We
+                        // record that binding on the `PortTypeRef` so the
+                        // flattening pass can resolve field domains.
                         HirType {
-                            kind: HirTypeKind::Port(PortTypeRef { def: def_id }),
+                            kind: HirTypeKind::Port(PortTypeRef {
+                                def: def_id,
+                                domain: domain_annotation.unwrap_or(Domain::Unspecified),
+                            }),
                             span: ty.span.clone(),
                         }
                     }

@@ -518,7 +518,9 @@ impl InferCtxt {
                     });
                 }
             }
-            (HirTypeKind::Port(pa), HirTypeKind::Port(pb)) if pa.def == pb.def => {}
+            (HirTypeKind::Port(pa), HirTypeKind::Port(pb)) if pa.def == pb.def => {
+                self.unify_domains(&pa.domain, &pb.domain, span.clone());
+            }
             (HirTypeKind::Clock, HirTypeKind::Clock) => {}
             _ => {
                 self.errors.push(TypeError {
@@ -970,7 +972,10 @@ impl SigSubst {
                 kind: vt.kind.clone(),
                 domain: self.apply_to_domain(&vt.domain),
             }),
-            HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef { def: p.def }),
+            HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef {
+                def: p.def,
+                domain: self.apply_to_domain(&p.domain),
+            }),
             other => other.clone(),
         };
         HirType {

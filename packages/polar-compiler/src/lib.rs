@@ -9,7 +9,10 @@ pub use direction::{
     DirectionError, DirectionErrorKind, NamedArgumentOperator, check_directions,
     render_direction_errors,
 };
-pub use hir::{DriverError, DriverErrorKind, check_drivers, render_driver_errors};
+pub use hir::{
+    DriverError, DriverErrorKind, FlattenError, FlattenErrorKind, check_drivers,
+    flatten_aggregates, render_driver_errors, render_flatten_errors,
+};
 pub use parser::tree_sitter::{
     Cst, CstChild, CstNode, ParseError, ParsedSource, SourceExcerpt, SourcePosition, SourceSpan,
     SyntaxDiagnostic, language, parse_file, parse_file_with_diagnostics, parse_source,

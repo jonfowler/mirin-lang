@@ -444,6 +444,12 @@ impl Ctx {
             self.result
                 .resolutions
                 .insert(np.name.id, Res::Local(np.name.id));
+            if let Some(ty) = &np.ty {
+                self.resolve_type_expr(ty, &params);
+            }
+            if let Some(default) = &np.default {
+                self.resolve_expr_in_params(default, &params);
+            }
         }
         for p in &func.parameters {
             self.alloc_local(LocalKind::Param { owner }, &p.name);
@@ -451,6 +457,10 @@ impl Ctx {
             self.result
                 .resolutions
                 .insert(p.name.id, Res::Local(p.name.id));
+            self.resolve_type_expr(&p.ty, &params);
+            if let Some(default) = &p.default {
+                self.resolve_expr_in_params(default, &params);
+            }
         }
         if let Some(ty) = &func.return_type {
             self.resolve_type_expr(ty, &params);

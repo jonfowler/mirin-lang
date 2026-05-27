@@ -10,9 +10,11 @@
 //! the [`lower`] submodule.
 
 pub mod check_drivers;
+pub mod flatten;
 pub mod lower;
 
 pub use check_drivers::{DriverError, DriverErrorKind, check_drivers, render_driver_errors};
+pub use flatten::{FlattenError, FlattenErrorKind, flatten_aggregates, render_flatten_errors};
 pub use lower::{HirLowerError, HirLowerErrorKind, lower_to_hir};
 
 use crate::SourceSpan;
@@ -279,7 +281,12 @@ pub enum ValueKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortTypeRef {
     pub def: DefId,
-    // Future: type/clock arguments for parametric ports.
+    /// The domain bound to the port's `#clk` parameter at the use site,
+    /// populated by lowering from the `@clk` annotation (e.g. `Stream8 @clk`).
+    /// `Domain::Unspecified` when no annotation was given — lowering accepts
+    /// that today, but the flattening pass requires a concrete binding.
+    pub domain: Domain,
+    // Future: positional type arguments for parametric ports.
 }
 
 /// Type-inference variable for the value-vs-port-vs-meta branch. Produced by
