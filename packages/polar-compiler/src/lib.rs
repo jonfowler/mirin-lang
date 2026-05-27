@@ -9,6 +9,7 @@ pub use direction::{
     DirectionError, DirectionErrorKind, NamedArgumentOperator, check_directions,
     render_direction_errors,
 };
+pub use hir::{DriverError, DriverErrorKind, check_drivers, render_driver_errors};
 pub use parser::tree_sitter::{
     Cst, CstChild, CstNode, ParseError, ParsedSource, SourceExcerpt, SourcePosition, SourceSpan,
     SyntaxDiagnostic, language, parse_file, parse_file_with_diagnostics, parse_source,
@@ -28,3 +29,4 @@ pub use surface_ir::{
     StructDefinition, SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix, VarStatement,
     lower_cst, parse_surface_file, parse_surface_source,
 };
+pub use typeck::{WidthCheckResult, discharge_width_obligations};

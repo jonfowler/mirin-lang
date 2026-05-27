@@ -9,8 +9,10 @@
 //! This module defines the data types only. Lowering from Surface IR lives in
 //! the [`lower`] submodule.
 
+pub mod check_drivers;
 pub mod lower;
 
+pub use check_drivers::{DriverError, DriverErrorKind, check_drivers, render_driver_errors};
 pub use lower::{HirLowerError, HirLowerErrorKind, lower_to_hir};
 
 use crate::SourceSpan;
@@ -294,7 +296,13 @@ pub enum Domain {
     /// A concrete clock domain referenced via a `Clock`-typed local (typically
     /// a `#clk` parameter).
     Clock(LocalId),
-    /// Domain not yet inferred. Type inference must replace this with `Const`
-    /// or `Clock(_)` before subsequent passes run.
+    /// Domain not yet inferred. Produced by lowering when a type carries no
+    /// explicit `@…` annotation. Treated as `@const` if it reaches the end of
+    /// type inference without being resolved.
     Unspecified,
+    /// A domain inference variable, allocated by `InferCtxt::fresh_domain_var`.
+    /// The `u32` is an index into `InferCtxt::domain_vars`. Resolved (and
+    /// defaulted to `Const` if unbound) during type-check finalisation; should
+    /// not appear in HIR after `check_file` returns.
+    Var(u32),
 }

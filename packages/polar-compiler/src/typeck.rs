@@ -197,6 +197,60 @@ fn excerpt_for_span(source: &str, span: &SourceSpan) -> Option<SourceExcerpt> {
 }
 
 // ============================================================================
+// Width obligation discharge
+// ============================================================================
+
+/// Attempt to discharge `WidthEq` obligations left over from type-checking.
+///
+/// Each obligation is evaluated by trying to reduce both sides to a concrete
+/// integer. Obligations whose sides are both concrete integers are checked for
+/// equality. Obligations that cannot yet be evaluated (e.g. because they
+/// reference unbound const parameters) survive into `unresolved` for later
+/// passes — this will become relevant once parametric widths are in scope.
+///
+/// `DomainKind` obligations are not handled here; they pass through unchanged.
+pub fn discharge_width_obligations(obligations: &[Obligation]) -> WidthCheckResult {
+    let mut errors = Vec::new();
+    let mut unresolved = Vec::new();
+    for ob in obligations {
+        match &ob.kind {
+            ObligationKind::WidthEq { lhs, rhs } => {
+                match (const_eval_width(lhs), const_eval_width(rhs)) {
+                    (Some(a), Some(b)) if a != b => {
+                        errors.push(TypeError {
+                            kind: TypeErrorKind::TypeMismatch {
+                                expected: format!("uint({a})"),
+                                got: format!("uint({b})"),
+                            },
+                            span: ob.span.clone(),
+                        });
+                    }
+                    (Some(_), Some(_)) => {}
+                    _ => unresolved.push(ob.clone()),
+                }
+            }
+            ObligationKind::DomainKind { .. } => unresolved.push(ob.clone()),
+        }
+    }
+    WidthCheckResult { errors, unresolved }
+}
+
+#[derive(Debug, Default)]
+pub struct WidthCheckResult {
+    pub errors: Vec<TypeError>,
+    /// Obligations that could not be discharged (non-literal widths, domain
+    /// kind constraints). These will be revisited once const parameters land.
+    pub unresolved: Vec<Obligation>,
+}
+
+fn const_eval_width(e: &HirExpr) -> Option<u64> {
+    match &e.kind {
+        HirExprKind::Const(ConstValue::Integer(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+// ============================================================================
 // File-scoped context (struct/port/fn lookups shared across functions)
 // ============================================================================
 
@@ -328,11 +382,7 @@ impl InferCtxt {
     fn fresh_domain_var(&mut self) -> Domain {
         let id = self.domain_vars.len() as u32;
         self.domain_vars.push(None);
-        // We represent domain variables by binding the next-free `Unspecified`
-        // slot at allocation time. The chosen DomainVar marker is the index
-        // stored implicitly in the table — see `resolve_domain` for the walk.
-        let _ = id;
-        Domain::Unspecified
+        Domain::Var(id)
     }
 
     // ---- resolution (follow substitution chains) ----
@@ -362,13 +412,69 @@ impl InferCtxt {
         }
     }
 
+    /// Follow substitution chain for a domain. `Var(n)` that is unbound stays
+    /// as `Var(n)` — callers that need a concrete result should call
+    /// `finalize_domain` instead (which defaults unbound vars to `Const`).
     fn resolve_domain(&self, d: &Domain) -> Domain {
-        // The first-pass design represents domain variables out-of-band: the
-        // `Unspecified` variant + an index. We don't currently store the index
-        // in `Domain` itself, which keeps the HIR shape unchanged while we
-        // wire things up. For now, `Unspecified` just stays `Unspecified`
-        // until something binds it — see `unify_domains`.
-        d.clone()
+        match d {
+            Domain::Var(i) => match self.domain_vars.get(*i as usize).and_then(|r| r.as_ref()) {
+                Some(bound) => self.resolve_domain(bound),
+                None => d.clone(),
+            },
+            other => other.clone(),
+        }
+    }
+
+    /// Like `resolve_domain` but defaults unbound `Var` and `Unspecified` to
+    /// `Const`. Called during finalisation after the walk is complete.
+    fn finalize_domain(&self, d: &Domain) -> Domain {
+        match d {
+            Domain::Var(i) => match self.domain_vars.get(*i as usize).and_then(|r| r.as_ref()) {
+                Some(bound) => self.finalize_domain(bound),
+                None => Domain::Const,
+            },
+            Domain::Unspecified => Domain::Const,
+            other => other.clone(),
+        }
+    }
+
+    /// Finalise a type by following all substitution chains and defaulting any
+    /// remaining `Var` or `Unspecified` domains to `Const`. Call this after the
+    /// full walk to produce clean types for downstream passes.
+    fn finalize_type(&self, ty: &HirType) -> HirType {
+        match &ty.kind {
+            HirTypeKind::Var(v) => {
+                match self.type_vars.get(v.0 as usize).and_then(|r| r.as_ref()) {
+                    Some(bound) => self.finalize_type(bound),
+                    None => ty.clone(),
+                }
+            }
+            HirTypeKind::Value(vt) => HirType {
+                kind: HirTypeKind::Value(ValueType {
+                    kind: vt.kind.clone(),
+                    domain: self.finalize_domain(&vt.domain),
+                }),
+                span: ty.span.clone(),
+            },
+            _ => ty.clone(),
+        }
+    }
+
+    /// Resolve all stored expression and local types, defaulting any
+    /// unbound domain variables to `Const`. Called at the end of `check_fn`.
+    fn finalize_types(&mut self) {
+        let ids: Vec<HirId> = self.expr_types.keys().copied().collect();
+        for id in ids {
+            let ty = self.expr_types[&id].clone();
+            let resolved = self.finalize_type(&ty);
+            self.expr_types.insert(id, resolved);
+        }
+        let locals: Vec<LocalId> = self.locals.keys().copied().collect();
+        for local in locals {
+            let ty = self.locals[&local].clone();
+            let resolved = self.finalize_type(&ty);
+            self.locals.insert(local, resolved);
+        }
     }
 
     // ---- unification ----
@@ -463,11 +569,18 @@ impl InferCtxt {
         let a = self.resolve_domain(expected);
         let b = self.resolve_domain(got);
         match (&a, &b) {
-            (Domain::Unspecified, _) | (_, Domain::Unspecified) => {
-                // First-pass policy: an unannotated domain absorbs whatever
-                // it's unified against. Replacing Unspecified with a true
-                // DomainVar lands when the domain solver does.
+            // Two vars pointing to the same slot — already unified.
+            (Domain::Var(i), Domain::Var(j)) if i == j => {}
+            // Bind a domain variable.
+            (Domain::Var(i), _) => {
+                self.domain_vars[*i as usize] = Some(b.clone());
             }
+            (_, Domain::Var(j)) => {
+                self.domain_vars[*j as usize] = Some(a.clone());
+            }
+            // `Unspecified` is a lowering artifact meaning "no annotation";
+            // it defaults to @const at finalisation, so accept it here.
+            (Domain::Unspecified, _) | (_, Domain::Unspecified) => {}
             (Domain::Const, _) | (_, Domain::Const) => {
                 // `@const` is a supertype of every concrete clock domain.
                 // Accept; bound-tracking will land with MLsub work.
@@ -492,6 +605,7 @@ impl InferCtxt {
             self.locals.insert(param.local, param.ty.clone());
         }
         self.check_block(&hir_fn.body, hir_fn.return_type.as_ref(), file);
+        self.finalize_types();
     }
 
     fn check_block(
@@ -783,10 +897,19 @@ impl InferCtxt {
                 span: call.span.clone(),
             });
         }
+        // Fresh domain var for the struct instance. Gets bound when the result
+        // is unified with its use context (e.g. assigned to a @clk var).
+        let domain = self.fresh_domain_var();
         for (decl, arg) in struct_def.fields.iter().zip(call.args.iter()) {
             if let HirArg::Provided { expr, .. } = arg {
                 let value_ty = self.infer_expr(expr, file);
                 self.unify_types(&decl.ty, &value_ty, expr.span.clone());
+                // Propagate the field's domain up to the struct's domain so
+                // that e.g. `packet { valid: true, data: some_clk_signal }`
+                // infers @clk for the whole struct.
+                if let HirTypeKind::Value(vt) = &value_ty.kind {
+                    self.unify_domains(&domain, &vt.domain, expr.span.clone());
+                }
             }
         }
         HirType {
@@ -794,7 +917,7 @@ impl InferCtxt {
                 kind: ValueKind::Struct {
                     def: struct_def.def_id,
                 },
-                domain: Domain::Unspecified,
+                domain,
             }),
             span: call.span.clone(),
         }
@@ -888,6 +1011,7 @@ fn describe_domain(d: &Domain) -> String {
         Domain::Const => "const".to_owned(),
         Domain::Clock(l) => format!("clk#{}", l.0),
         Domain::Unspecified => String::new(),
+        Domain::Var(n) => format!("?D{n}"),
     }
 }
 

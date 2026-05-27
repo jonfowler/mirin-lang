@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::{env, fs, process};
 
 use polar_compiler::{
-    ParseError, check_directions, hir, lower_cst, parse_source_with_diagnostics,
-    render_direction_errors, render_parse_error, render_resolve_errors, resolve_file, typeck,
+    ParseError, check_directions, check_drivers, discharge_width_obligations, hir, lower_cst,
+    parse_source_with_diagnostics, render_direction_errors, render_driver_errors,
+    render_parse_error, render_resolve_errors, resolve_file, typeck,
 };
 
 fn main() {
@@ -101,11 +102,29 @@ fn main() {
         }
     };
 
+    let driver_errors = check_drivers(&hir);
+    if !driver_errors.is_empty() {
+        let mut rendered = String::new();
+        render_driver_errors(&driver_errors, &source, Some(&path), &mut rendered)
+            .expect("rendering driver errors should not fail");
+        eprintln!("{rendered}");
+        process::exit(1);
+    }
+
     let tc = typeck::check_file(&hir, &result);
     if !tc.errors.is_empty() {
         let mut rendered = String::new();
         typeck::render_type_errors(&tc.errors, &source, Some(&path), &mut rendered)
             .expect("rendering type errors should not fail");
+        eprintln!("{rendered}");
+        process::exit(1);
+    }
+
+    let width_check = discharge_width_obligations(&tc.residual_obligations);
+    if !width_check.errors.is_empty() {
+        let mut rendered = String::new();
+        typeck::render_type_errors(&width_check.errors, &source, Some(&path), &mut rendered)
+            .expect("rendering width errors should not fail");
         eprintln!("{rendered}");
         process::exit(1);
     }
