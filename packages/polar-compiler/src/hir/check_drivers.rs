@@ -238,10 +238,6 @@ mod tests {
                 "shift_register",
                 include_str!("../../../../examples/shift_register.plr"),
             ),
-            (
-                "simple_port",
-                include_str!("../../../../examples/simple_port.plr"),
-            ),
         ];
         for (name, source) in examples {
             let errs = drivers(source);

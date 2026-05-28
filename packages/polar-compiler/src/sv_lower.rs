@@ -586,21 +586,6 @@ mod tests {
     }
 
     #[test]
-    fn lowers_simple_port_with_only_assigns() {
-        let sv = lower(include_str!("../../../examples/simple_port.plr"));
-        let m = &sv.modules[0];
-        // Three assigns from the flattened port equation.
-        let assigns: usize = m
-            .items
-            .iter()
-            .filter(|i| matches!(i, SvItem::Assign { .. }))
-            .count();
-        assert_eq!(assigns, 3);
-        // No always_ff — pure combinational.
-        assert!(m.items.iter().all(|i| !matches!(i, SvItem::AlwaysFf(_))));
-    }
-
-    #[test]
     fn lowers_packet_struct_with_two_always_ff() {
         let sv = lower(include_str!("../../../examples/packet_struct.plr"));
         let m = &sv.modules[0];
@@ -626,7 +611,6 @@ mod tests {
             include_str!("../../../examples/packet_struct.plr"),
             include_str!("../../../examples/pipeline.plr"),
             include_str!("../../../examples/shift_register.plr"),
-            include_str!("../../../examples/simple_port.plr"),
         ];
         for src in examples {
             let _sv = lower(src);

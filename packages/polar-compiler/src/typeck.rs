@@ -547,7 +547,9 @@ impl InferCtxt {
                 }
             }
             (HirTypeKind::Port(pa), HirTypeKind::Port(pb)) if pa.def == pb.def => {
-                self.unify_domains(&pa.domain, &pb.domain, span.clone());
+                // Port unification is currently def-equality only. Once
+                // positional type arguments land (`Stream8(clk)`), this arm
+                // unifies the per-argument domains.
             }
             (HirTypeKind::Clock, HirTypeKind::Clock) => {}
             _ => {
@@ -1023,10 +1025,16 @@ impl InferCtxt {
                 }
             },
             HirTypeKind::Port(port_ref) => {
-                let Some(port_def) = file.lookup_port(port_ref.def) else {
-                    return self.fresh_type_var(span);
-                };
-                let Some(decl_field) = port_def.fields.iter().find(|f| f.name == field.name) else {
+                // Port field access depends on the port's clock binding being
+                // available so the field type can have its `#clk` parameter
+                // substituted out. That binding lived on `PortTypeRef.domain`
+                // (single-clock-only); it has been removed pending the
+                // `Stream8(clk)` positional type-argument syntax. Validate
+                // the field name to give a useful error, but the typed
+                // result is unrecoverable today.
+                if let Some(port_def) = file.lookup_port(port_ref.def)
+                    && !port_def.fields.iter().any(|f| f.name == field.name)
+                {
                     self.errors.push(TypeError {
                         kind: TypeErrorKind::UnknownField {
                             receiver_type: port_def.name.clone(),
@@ -1035,9 +1043,14 @@ impl InferCtxt {
                         span: field.name_span.clone(),
                     });
                     return self.fresh_type_var(span);
-                };
-                let port_clk = port_clock_local(port_def);
-                substitute_port_domain(&decl_field.ty, port_clk, &port_ref.domain)
+                }
+                self.errors.push(TypeError {
+                    kind: TypeErrorKind::FieldAccessOnNonAggregate {
+                        receiver_type: describe_type(&resolved),
+                    },
+                    span: span.clone(),
+                });
+                self.fresh_type_var(span)
             }
             _ => {
                 self.errors.push(TypeError {
@@ -1055,37 +1068,6 @@ impl InferCtxt {
 // ============================================================================
 // Helpers
 // ============================================================================
-
-/// Find the `LocalId` of a port's `Clock`-typed named parameter, if any.
-/// Returns `None` if the port has no such parameter (a defensive case —
-/// direction-check rejects this earlier, but we don't crash on malformed HIR).
-fn port_clock_local(port: &HirPort) -> Option<LocalId> {
-    port.params
-        .iter()
-        .find(|p| matches!(p.ty.kind, HirTypeKind::Clock))
-        .map(|p| p.local)
-}
-
-/// Substitute a port's `#clk` parameter `LocalId` for the receiver's actual
-/// clock domain in a field type. Also stamps `Unspecified` slots with the
-/// receiver's domain so unannotated port fields inherit it like struct fields.
-fn substitute_port_domain(ty: &HirType, port_clk: Option<LocalId>, recv: &Domain) -> HirType {
-    let kind = match &ty.kind {
-        HirTypeKind::Value(vt) => HirTypeKind::Value(ValueType {
-            kind: vt.kind.clone(),
-            domain: match &vt.domain {
-                Domain::Unspecified => recv.clone(),
-                Domain::Clock(l) if port_clk == Some(*l) => recv.clone(),
-                other => other.clone(),
-            },
-        }),
-        other => other.clone(),
-    };
-    HirType {
-        kind,
-        span: ty.span.clone(),
-    }
-}
 
 /// Copy `recv_domain` over any `Domain::Unspecified` slot in `ty`. Used by
 /// struct field access: the field's declared type carries no domain
@@ -1127,10 +1109,7 @@ impl SigSubst {
                 kind: vt.kind.clone(),
                 domain: self.apply_to_domain(&vt.domain),
             }),
-            HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef {
-                def: p.def,
-                domain: self.apply_to_domain(&p.domain),
-            }),
+            HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef { def: p.def }),
             other => other.clone(),
         };
         HirType {
@@ -1267,10 +1246,6 @@ mod tests {
                 "shift_register",
                 include_str!("../../../examples/shift_register.plr"),
             ),
-            (
-                "simple_port",
-                include_str!("../../../examples/simple_port.plr"),
-            ),
             ("delay", include_str!("../../../examples/delay.plr")),
         ];
         for (name, source) in examples {
@@ -1330,38 +1305,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn type_checks_port_field_access() {
-        // A port-typed parameter binds the port's `#clk` to the caller's
-        // clock. Reading a field's value should yield the field type with
-        // the caller's clock substituted.
-        let r = check(
-            "port Stream8 { #clk: Clock } = stream8 {\n\
-                 out valid: bool @clk,\n\
-                 out data: uint(8) @clk,\n\
-                 in ready: bool @clk,\n\
-             }\n\
-             fn f { #clk: Clock } ( upstream: Stream8 @clk ) -> bool @clk { return upstream.valid; }",
-        );
-        assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn unknown_port_field_is_reported() {
-        let r = check(
-            "port Stream8 { #clk: Clock } = stream8 {\n\
-                 out valid: bool @clk,\n\
-             }\n\
-             fn f { #clk: Clock } ( upstream: Stream8 @clk ) -> bool @clk { return upstream.missing; }",
-        );
-        assert!(
-            r.errors.iter().any(|e| matches!(
-                &e.kind,
-                TypeErrorKind::UnknownField { receiver_type, field }
-                    if receiver_type == "Stream8" && field == "missing"
-            )),
-            "expected UnknownField on Stream8.missing, got: {:?}",
-            r.errors
-        );
-    }
+    // Port field-access tests removed: they exercised `Stream8 @clk`, which
+    // is rejected at HIR lowering pending the `Stream8(clk)` positional
+    // type-argument syntax. Restore once that lands.
 }

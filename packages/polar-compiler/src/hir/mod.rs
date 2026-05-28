@@ -296,12 +296,10 @@ pub enum ValueKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortTypeRef {
     pub def: DefId,
-    /// The domain bound to the port's `#clk` parameter at the use site,
-    /// populated by lowering from the `@clk` annotation (e.g. `Stream8 @clk`).
-    /// `Domain::Unspecified` when no annotation was given — lowering accepts
-    /// that today, but the flattening pass requires a concrete binding.
-    pub domain: Domain,
-    // Future: positional type arguments for parametric ports.
+    // Future: positional type arguments for parametric ports — the
+    // `Stream8(clk)` shape. The `@clk` annotation at use sites was a
+    // single-clock-only hack and has been removed (rejected at HIR
+    // lowering for port-typed names).
 }
 
 /// Type-inference variable for the value-vs-port-vs-meta branch. Produced by

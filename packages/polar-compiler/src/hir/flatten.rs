@@ -470,79 +470,27 @@ impl<'a> FnFlattener<'a> {
     fn expand_port(
         &mut self,
         port_ref: &PortTypeRef,
-        name: &str,
-        path: Vec<String>,
-        is_out_param: bool,
-        kind: LocalKind,
+        _name: &str,
+        _path: Vec<String>,
+        _is_out_param: bool,
+        _kind: LocalKind,
         span: &SourceSpan,
     ) -> Result<Vec<Leaf>, FlattenError> {
-        let port = match self.ports.get(&port_ref.def) {
-            Some(p) => *p,
-            None => {
-                return Err(FlattenError {
-                    kind: FlattenErrorKind::UnresolvedDef,
-                    span: span.clone(),
-                });
-            }
-        };
-
-        // Find the port's internal `#clk` Clock-typed param. The field types
-        // reference this local through `Domain::Clock(_)`; we substitute it
-        // with the bound domain from the use site.
-        let port_clk_local = port
-            .params
-            .iter()
-            .find(|p| matches!(p.ty.kind, HirTypeKind::Clock))
-            .map(|p| p.local);
-
-        let bound_domain = match &port_ref.domain {
-            Domain::Unspecified => {
-                return Err(FlattenError {
-                    kind: FlattenErrorKind::PortWithoutDomain {
-                        port: port.name.clone(),
-                    },
-                    span: span.clone(),
-                });
-            }
-            other => other.clone(),
-        };
-
-        let port_clk_local = match port_clk_local {
-            Some(l) => l,
-            None => {
-                return Err(FlattenError {
-                    kind: FlattenErrorKind::PortMissingClock {
-                        port: port.name.clone(),
-                    },
-                    span: span.clone(),
-                });
-            }
-        };
-
-        let mut leaves = Vec::new();
-        for field in &port.fields {
-            let field_ty = substitute_clock_in_type(&field.ty, port_clk_local, &bound_domain);
-            // function-body direction for this field, given outer param direction.
-            // is_out_param XNOR (field.direction == Out)
-            let field_is_out = matches!(field.direction, Direction::Out);
-            let fn_body_output = is_out_param == field_is_out;
-
-            let mut field_path = path.clone();
-            field_path.push(field.name.clone());
-            let field_name = format!("{name}__{}", field.name);
-
-            let nested = self.expand_type_to_leaves(
-                &field_ty,
-                &field_name,
-                field_path,
-                Some(fn_body_output),
-                false, // nested structs inherit direction, not is_out_param
-                kind,
-                &field.span,
-            )?;
-            leaves.extend(nested);
-        }
-        Ok(leaves)
+        // The clock binding used to live on `PortTypeRef.domain`, populated
+        // by the `Stream8 @clk` use-site syntax. That syntax has been removed
+        // pending the positional type-argument form (`Stream8(clk)`). Until
+        // it lands, port-typed locals cannot be flattened. The full field
+        // expansion (with `#clk` substitution and direction flipping) is in
+        // git history at the previous revision of this function.
+        let port_name = self
+            .ports
+            .get(&port_ref.def)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "<unresolved>".to_owned());
+        Err(FlattenError {
+            kind: FlattenErrorKind::PortWithoutDomain { port: port_name },
+            span: span.clone(),
+        })
     }
 
     fn expand_struct(
@@ -1126,6 +1074,10 @@ fn is_aggregate(kind: &HirTypeKind) -> bool {
 }
 
 /// Replace `Domain::Clock(target)` with `replacement` in the type's domain.
+/// Currently unused — `expand_port` short-circuits with an error pending the
+/// `Stream8(clk)` syntax — but the substitution shape is preserved here for
+/// the next iteration.
+#[allow(dead_code)]
 fn substitute_clock_in_type(ty: &HirType, target: LocalId, replacement: &Domain) -> HirType {
     let kind = match &ty.kind {
         HirTypeKind::Value(vt) => HirTypeKind::Value(ValueType {
@@ -1135,13 +1087,7 @@ fn substitute_clock_in_type(ty: &HirType, target: LocalId, replacement: &Domain)
                 other => other.clone(),
             },
         }),
-        HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef {
-            def: p.def,
-            domain: match &p.domain {
-                Domain::Clock(l) if *l == target => replacement.clone(),
-                other => other.clone(),
-            },
-        }),
+        HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef { def: p.def }),
         other => other.clone(),
     };
     HirType {
@@ -1262,60 +1208,6 @@ mod tests {
     }
 
     #[test]
-    fn flattens_simple_port() {
-        let source = include_str!("../../../../examples/simple_port.plr");
-        let file = flatten_ok(source);
-        let func = nth_fn(&file, 0);
-
-        // Expected params after flattening:
-        //   #clk: Clock,
-        //   upstream__valid: bool @clk (input),
-        //   upstream__data:  uint(8) @clk (input),
-        //   upstream__ready: bool @clk (output),
-        //   downstream__valid: bool @clk (output),
-        //   downstream__data:  uint(8) @clk (output),
-        //   downstream__ready: bool @clk (input).
-        assert_eq!(func.params.len(), 7);
-
-        // Confirm the name of the second param (`upstream__valid`).
-        assert_eq!(local_name(func, func.params[1].local), "upstream__valid");
-
-        // No params should have an aggregate type.
-        for p in &func.params {
-            assert!(
-                !is_aggregate(&p.ty.kind),
-                "param {:?} still aggregate",
-                local_name(func, p.local)
-            );
-        }
-
-        // Body should have 3 equations.
-        assert_eq!(func.body.statements.len(), 3);
-        for stmt in &func.body.statements {
-            assert!(matches!(stmt, HirStmt::Equation(_)));
-        }
-
-        // Check the direction-flip: `upstream__ready = downstream__ready`.
-        // Find the equation whose lhs is named `upstream__ready`.
-        let mut saw_ready = false;
-        for stmt in &func.body.statements {
-            if let HirStmt::Equation(eq) = stmt {
-                let lhs_name = local_name(func, eq.lhs);
-                if lhs_name == "upstream__ready" {
-                    saw_ready = true;
-                    // RHS should be Local(downstream__ready).
-                    if let HirExprKind::Local(id) = &eq.rhs.kind {
-                        assert_eq!(local_name(func, *id), "downstream__ready");
-                    } else {
-                        panic!("expected Local on rhs, got {:?}", eq.rhs.kind);
-                    }
-                }
-            }
-        }
-        assert!(saw_ready, "no equation with lhs upstream__ready");
-    }
-
-    #[test]
     fn flattens_packet_struct() {
         let source = include_str!("../../../../examples/packet_struct.plr");
         let file = flatten_ok(source);
@@ -1392,10 +1284,6 @@ mod tests {
         // Re-run typeck on the flattened HIR for each example. This sanity-
         // checks that the pass produces type-correct HIR.
         let examples = [
-            (
-                "simple_port",
-                include_str!("../../../../examples/simple_port.plr"),
-            ),
             (
                 "packet_struct",
                 include_str!("../../../../examples/packet_struct.plr"),

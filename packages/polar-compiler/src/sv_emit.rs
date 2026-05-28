@@ -464,17 +464,6 @@ mod tests {
     }
 
     #[test]
-    fn emits_simple_port() {
-        let s = build_sv(include_str!("../../../examples/simple_port.plr")).expect("emit");
-        assert!(s.contains("module connectStream"), "{s}");
-        assert!(s.contains("upstream__valid"), "{s}");
-        assert!(s.contains("downstream__ready"), "{s}");
-        // One assign per port field — three assigns total.
-        let assigns = s.matches("assign ").count();
-        assert_eq!(assigns, 3, "{s}");
-    }
-
-    #[test]
     fn emits_counter_with_parameter() {
         let s = build_sv(include_str!("../../../examples/counter.plr")).expect("emit");
         assert!(s.contains("#(parameter int bits"), "{s}");
@@ -518,7 +507,6 @@ mod tests {
             include_str!("../../../examples/packet_struct.plr"),
             include_str!("../../../examples/pipeline.plr"),
             include_str!("../../../examples/shift_register.plr"),
-            include_str!("../../../examples/simple_port.plr"),
         ];
         for src in examples {
             let _ = build_sv(src).expect("each example should emit without errors");

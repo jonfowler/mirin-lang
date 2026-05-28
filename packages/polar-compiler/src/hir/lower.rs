@@ -67,6 +67,11 @@ pub enum HirLowerErrorKind {
     /// An `@domain` annotation appears on a type that does not carry a
     /// top-level domain (e.g. `Clock @x`).
     DomainOnNonValueType { ty: &'static str },
+    /// An `@domain` annotation appears on a port type. Ports take their clock
+    /// binding via type arguments (e.g. `Stream8(clk)`, syntax pending), not
+    /// via a domain annotation. Reported when the name resolves to a port
+    /// def — the annotation is fine on structs and primitives.
+    DomainOnPortType { port: String },
     /// A record constructor names something other than a struct constructor.
     RecordConstructorNotStruct { name: String },
     /// A record constructor mentions a field the struct does not declare.
@@ -113,6 +118,10 @@ impl fmt::Display for HirLowerErrorKind {
             Self::DomainOnNonValueType { ty } => {
                 write!(f, "`{ty}` does not carry a domain annotation")
             }
+            Self::DomainOnPortType { port } => write!(
+                f,
+                "port `{port}` does not take a domain annotation; ports take their clock as a type argument"
+            ),
             Self::RecordConstructorNotStruct { name } => {
                 write!(f, "`{name}` is not a struct constructor")
             }
@@ -1129,17 +1138,20 @@ impl<'a> Lowerer<'a> {
                         ty.span.clone(),
                     ),
                     Some((DefKind::Port, def_id)) => {
-                        // Ports don't carry a top-level domain in the value
-                        // lattice. The clock instead flows through the port's
-                        // own `#clk` parameter, which the use site binds via
-                        // the `@clk` annotation (e.g. `Stream8 @clk`). We
-                        // record that binding on the `PortTypeRef` so the
-                        // flattening pass can resolve field domains.
+                        // Ports don't carry a top-level domain. Clock bindings
+                        // are supplied as type arguments (`Stream8(clk)` —
+                        // syntax pending). An `@clk` annotation here is a
+                        // category error and is rejected.
+                        if domain_annotation.is_some() {
+                            self.error(
+                                HirLowerErrorKind::DomainOnPortType {
+                                    port: other.to_owned(),
+                                },
+                                ty.span.clone(),
+                            );
+                        }
                         HirType {
-                            kind: HirTypeKind::Port(PortTypeRef {
-                                def: def_id,
-                                domain: domain_annotation.unwrap_or(Domain::Unspecified),
-                            }),
+                            kind: HirTypeKind::Port(PortTypeRef { def: def_id }),
                             span: ty.span.clone(),
                         }
                     }
@@ -1553,21 +1565,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn out_direction_is_preserved_on_param() {
-        let file = lower_ok(
-            "port Stream8 { #clk: Clock } = stream8 { out valid: bool @clk }\n\
-             fn connect { #clk: Clock } ( upstream: Stream8 @clk, out downstream: Stream8 @clk ) { downstream = upstream; }",
-        );
-        let func = first_fn(&file);
-        // Two positional params: upstream (no direction) and downstream (Out).
-        let upstream = &func.params[1]; // named `#clk` is at [0]
-        let downstream = &func.params[2];
-        assert!(matches!(upstream.section, ParamSection::Positional));
-        assert!(matches!(downstream.section, ParamSection::Positional));
-        assert!(upstream.direction.is_none());
-        assert!(matches!(downstream.direction, Some(Direction::Out)));
-    }
+    // `out_direction_is_preserved_on_param` exercised `Stream8 @clk` —
+    // removed pending `Stream8(clk)` syntax. Restore once port type
+    // arguments are wired up.
 
     #[test]
     fn lowers_first_pass_examples() {
@@ -1596,10 +1596,6 @@ mod tests {
             (
                 "shift_register",
                 include_str!("../../../../examples/shift_register.plr"),
-            ),
-            (
-                "simple_port",
-                include_str!("../../../../examples/simple_port.plr"),
             ),
             ("delay", include_str!("../../../../examples/delay.plr")),
         ];
