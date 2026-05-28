@@ -18,8 +18,8 @@ use std::path::Path;
 
 use crate::hir::{
     ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFieldAccess, HirFn,
-    HirId, HirItem, HirPort, HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId,
-    ParamKind, ParamSection, PortTypeRef, TypeVar, ValueKind, ValueType,
+    HirId, HirItem, HirMethodCall, HirParam, HirPort, HirSourceFile, HirStmt, HirStruct, HirType,
+    HirTypeKind, LocalId, ParamKind, ParamSection, PortTypeRef, TypeVar, ValueKind, ValueType,
 };
 use crate::resolve::{DefId, ResolveResult};
 use crate::{Identifier, SourceExcerpt, SourceSpan};
@@ -122,6 +122,10 @@ pub struct TypeCheckResult {
     pub residual_obligations: Vec<Obligation>,
     /// Types inferred for each expression keyed by `HirId`.
     pub expr_types: HashMap<HirId, HirType>,
+    /// Resolved callee `DefId` for each `HirExprKind::MethodCall` expression,
+    /// keyed by the MethodCall's `HirId`. Consumed by the `method_lower` pass
+    /// to rewrite each `MethodCall` into a regular `Call`.
+    pub method_resolutions: HashMap<HirId, DefId>,
 }
 
 /// Run type and domain checking on a lowered HIR file.
@@ -145,6 +149,7 @@ pub fn check_file(file: &HirSourceFile, resolve: &ResolveResult) -> TypeCheckRes
         errors: ctx.errors,
         residual_obligations: ctx.residual_obligations,
         expr_types: ctx.expr_types,
+        method_resolutions: ctx.method_resolutions,
     }
 }
 
@@ -309,6 +314,7 @@ struct FileCtx<'hir> {
     errors: Vec<TypeError>,
     residual_obligations: Vec<Obligation>,
     expr_types: HashMap<HirId, HirType>,
+    method_resolutions: HashMap<HirId, DefId>,
 }
 
 impl<'hir> FileCtx<'hir> {
@@ -340,6 +346,7 @@ impl<'hir> FileCtx<'hir> {
             errors: Vec::new(),
             residual_obligations: Vec::new(),
             expr_types: HashMap::new(),
+            method_resolutions: HashMap::new(),
         }
     }
 
@@ -348,6 +355,9 @@ impl<'hir> FileCtx<'hir> {
         self.residual_obligations.append(&mut infer.obligations);
         for (id, ty) in infer.expr_types.drain() {
             self.expr_types.insert(id, ty);
+        }
+        for (id, def) in infer.method_resolutions.drain() {
+            self.method_resolutions.insert(id, def);
         }
     }
 
@@ -394,6 +404,9 @@ struct InferCtxt {
     locals: HashMap<LocalId, HirType>,
     /// Per-expression inferred types, keyed by `HirId`.
     expr_types: HashMap<HirId, HirType>,
+    /// Resolved callee for each `HirExprKind::MethodCall`, keyed by the
+    /// MethodCall's `HirId`. Filled in by `infer_method_call`.
+    method_resolutions: HashMap<HirId, DefId>,
     /// Constraints not solved at the walk site.
     obligations: Vec<Obligation>,
     errors: Vec<TypeError>,
@@ -406,6 +419,7 @@ impl InferCtxt {
             domain_vars: Vec::new(),
             locals: HashMap::new(),
             expr_types: HashMap::new(),
+            method_resolutions: HashMap::new(),
             obligations: Vec::new(),
             errors: Vec::new(),
         }
@@ -716,6 +730,9 @@ impl InferCtxt {
                 .unwrap_or_else(|| self.fresh_type_var(expr.span.clone())),
             HirExprKind::Call(call) => self.infer_call(call, file),
             HirExprKind::Field(field) => self.infer_field(field, expr.span.clone(), file),
+            HirExprKind::MethodCall(mc) => {
+                self.infer_method_call(mc, expr.id, expr.span.clone(), file)
+            }
         };
         self.expr_types.insert(expr.id, ty.clone());
         ty
@@ -1063,6 +1080,136 @@ impl InferCtxt {
                 });
                 self.fresh_type_var(span)
             }
+        }
+    }
+
+    /// Resolve `recv.method(args)` against the receiver's type. Looks up
+    /// `(receiver_type_def, method_name)` in `ResolveResult::impl_methods`,
+    /// type-checks args against the method's signature (with the receiver
+    /// as the implicit `self` arg), and records the resolution for the
+    /// `method_lower` pass.
+    fn infer_method_call(
+        &mut self,
+        mc: &HirMethodCall,
+        expr_id: HirId,
+        span: SourceSpan,
+        file: &FileCtx<'_>,
+    ) -> HirType {
+        let recv_ty = self.infer_expr(&mc.receiver, file);
+        let resolved_recv = self.resolve_type(&recv_ty);
+
+        // Receiver must be a user-defined type (struct or port) — only those
+        // can have `impl` blocks.
+        let owner_def = match &resolved_recv.kind {
+            HirTypeKind::Value(vt) => match &vt.kind {
+                ValueKind::Struct { def } => Some(*def),
+                _ => None,
+            },
+            HirTypeKind::Port(p) => Some(p.def),
+            _ => None,
+        };
+
+        let Some(owner) = owner_def else {
+            self.errors.push(TypeError {
+                kind: TypeErrorKind::FieldAccessOnNonAggregate {
+                    receiver_type: describe_type(&resolved_recv),
+                },
+                span: span.clone(),
+            });
+            // Still infer arg expressions for completeness.
+            for arg in &mc.args {
+                if let HirArg::Provided { expr, .. } = arg {
+                    let _ = self.infer_expr(expr, file);
+                }
+            }
+            return self.fresh_type_var(span);
+        };
+
+        // Look up the method on `owner` in the resolver's per-type table.
+        let Some(&method_def) = file.resolve.impl_methods.get(&(owner, mc.name.clone())) else {
+            self.errors.push(TypeError {
+                kind: TypeErrorKind::UnknownField {
+                    receiver_type: describe_type(&resolved_recv),
+                    field: mc.name.clone(),
+                },
+                span: mc.name_span.clone(),
+            });
+            for arg in &mc.args {
+                if let HirArg::Provided { expr, .. } = arg {
+                    let _ = self.infer_expr(expr, file);
+                }
+            }
+            return self.fresh_type_var(span);
+        };
+
+        let Some(callee) = file.lookup_fn(method_def) else {
+            return self.fresh_type_var(span);
+        };
+
+        // Record the resolution for the post-typeck `method_lower` rewrite.
+        self.method_resolutions.insert(expr_id, method_def);
+
+        // Build a substitution for inferable named params (e.g. `dom clk`).
+        let mut subst = SigSubst::default();
+        for param in &callee.params {
+            let inferable = matches!(param.section, ParamSection::Named)
+                && matches!(param.kind, ParamKind::Dom | ParamKind::Param)
+                && param.default.is_none();
+            if inferable && is_clock_type(&param.ty) {
+                subst
+                    .domain_subst
+                    .insert(param.local, self.fresh_domain_var());
+            }
+        }
+
+        // Split positional params into `self` and the rest. The receiver is
+        // checked against the first positional param; the remaining args are
+        // checked against the rest.
+        let positional: Vec<&HirParam> = callee
+            .params
+            .iter()
+            .filter(|p| matches!(p.section, ParamSection::Positional))
+            .collect();
+
+        let Some(self_param) = positional.first() else {
+            self.errors.push(TypeError {
+                kind: TypeErrorKind::ArityMismatch {
+                    callee: callee.name.clone(),
+                    expected: 1,
+                    got: 0,
+                },
+                span: span.clone(),
+            });
+            return self.fresh_type_var(span);
+        };
+        let self_expected = subst.apply_to_type(&self_param.ty);
+        self.unify_types(&self_expected, &resolved_recv, mc.receiver.span.clone());
+
+        let user_params = &positional[1..];
+        if user_params.len() != mc.args.len() {
+            self.errors.push(TypeError {
+                kind: TypeErrorKind::ArityMismatch {
+                    callee: callee.name.clone(),
+                    expected: user_params.len(),
+                    got: mc.args.len(),
+                },
+                span: span.clone(),
+            });
+        }
+        for (param, arg) in user_params.iter().zip(mc.args.iter()) {
+            let param_ty = subst.apply_to_type(&param.ty);
+            if let HirArg::Provided { expr, .. } = arg {
+                let arg_ty = self.infer_expr(expr, file);
+                self.unify_types(&param_ty, &arg_ty, expr.span.clone());
+            }
+        }
+
+        match &callee.return_type {
+            Some(rt) => subst.apply_to_type(rt),
+            None => HirType {
+                kind: HirTypeKind::Clock,
+                span,
+            },
         }
     }
 }

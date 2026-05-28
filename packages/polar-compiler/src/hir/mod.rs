@@ -12,11 +12,13 @@
 pub mod check_drivers;
 pub mod flatten;
 pub mod lower;
+pub mod method_lower;
 pub mod out_args;
 
 pub use check_drivers::{DriverError, DriverErrorKind, check_drivers, render_driver_errors};
 pub use flatten::{FlattenError, FlattenErrorKind, flatten_aggregates, render_flatten_errors};
 pub use lower::{HirLowerError, HirLowerErrorKind, lower_to_hir};
+pub use method_lower::lower_method_calls;
 pub use out_args::{OutArgsError, OutArgsErrorKind, desugar_user_calls};
 
 use crate::SourceSpan;
@@ -218,6 +220,26 @@ pub enum HirExprKind {
     /// time — type checking matches it against the receiver's struct (or, in
     /// future, port) definition. See `infer_field` in `typeck`.
     Field(HirFieldAccess),
+    /// Method call `<receiver>.<name>(<args>)`. The receiver's type is
+    /// unknown at HIR-lowering time; `typeck` looks up `(receiver_type,
+    /// name)` in `ResolveResult::impl_methods` and records the resolution.
+    /// A subsequent `hir::method_lower` pass rewrites every `MethodCall`
+    /// into a regular `Call` against the resolved method's `DefId`. By the
+    /// time `flatten` / `sv_lower` run, no `MethodCall` remains.
+    MethodCall(HirMethodCall),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirMethodCall {
+    pub receiver: Box<HirExpr>,
+    pub name: String,
+    /// Span of the method-name identifier (the part after the `.`). Used by
+    /// diagnostics to point at the method name rather than the whole call.
+    pub name_span: SourceSpan,
+    /// Positional arguments. Inferable slots (for inferable named params on
+    /// the resolved method, e.g. `dom clk`) are inserted by typeck when it
+    /// resolves the call.
+    pub args: Vec<HirArg>,
 }
 
 /// Deferred field-access node. The receiver's type is unknown at HIR-lowering

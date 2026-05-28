@@ -427,8 +427,9 @@ mod tests {
         let surface = parse_surface_source(src).expect("parse");
         let resolve = resolve_file(&surface);
         let hir = lower_to_hir(&surface, &resolve).expect("lower");
-        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let tc = typeck::check_file(&hir, &resolve);
+        let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
+        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let flat = flatten_aggregates(&hir, &tc.expr_types).expect("flatten");
         let sv = lower_to_sv(&flat, &resolve);
         emit(&sv)
@@ -517,6 +518,20 @@ mod tests {
         assert_eq!(
             instances, 3,
             "expected 3 add3 instances, got {instances} in:\n{s}"
+        );
+    }
+
+    #[test]
+    fn emits_delay_impl_with_chained_method_calls() {
+        // delay_impl.plr defines `reg2` as a method on `Option` and writes
+        // `upstream.reg2(rstn).reg2(rstn)` — chained method dispatch. The
+        // out_args + method_lower combo lifts the inner call into a temp
+        // and produces two reg2 instances.
+        let s = build_sv(include_str!("../../../examples/working/delay_impl.plr")).expect("emit");
+        let instances = s.matches("reg2 reg2").count();
+        assert_eq!(
+            instances, 2,
+            "expected 2 reg2 instances, got {instances} in:\n{s}"
         );
     }
 

@@ -456,6 +456,9 @@ fn lower_expr(
         // flatten didn't cover this shape; emit a placeholder so downstream
         // tooling sees it but doesn't silently produce wrong SV.
         HirExprKind::Field(_) => SvExpr::Ident("UNRESOLVED_FIELD".to_owned()),
+        HirExprKind::MethodCall(_) => unreachable!(
+            "MethodCall should be lowered to Call by `hir::method_lower` before sv_lower"
+        ),
     }
 }
 
@@ -544,6 +547,7 @@ fn lower_width_expr(
         // Widths are `usize`, so field access (a struct/port field result)
         // cannot appear here in well-typed HIR; pick a safe placeholder.
         HirExprKind::Field(_) => SvExpr::Lit("0".to_owned()),
+        HirExprKind::MethodCall(_) => SvExpr::Lit("0".to_owned()),
     }
 }
 
@@ -584,6 +588,7 @@ fn infer_sv_type(
         // Field access after flatten should have been rewritten to a Local.
         // If one slips through, fall back to a bit-wide type.
         HirExprKind::Field(_) => SvType::bit(),
+        HirExprKind::MethodCall(_) => SvType::bit(),
     }
 }
 
@@ -652,9 +657,10 @@ mod tests {
         let resolve = resolve_file(&surface);
         assert!(resolve.errors.is_empty(), "resolve: {:?}", resolve.errors);
         let hir = lower_to_hir(&surface, &resolve).expect("lower");
-        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
+        let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
+        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let flat = flatten_aggregates(&hir, &tc.expr_types).expect("flatten");
         lower_to_sv(&flat, &resolve)
     }

@@ -171,9 +171,9 @@ pub fn lower_to_hir(
                     items.push(HirItem::Port(hir_port));
                 }
             }
-            // `impl` lowering is deferred until method resolution + path
-            // expressions land; see examples/todo/impl_examples.plr.
-            Item::Impl(_) => {}
+            Item::Impl(impl_block) => {
+                ctx.lower_impl(impl_block, &mut items);
+            }
         }
     }
     if ctx.errors.is_empty() {
@@ -188,8 +188,9 @@ pub fn lower_to_hir(
 
 struct Lowerer<'a> {
     resolve: &'a ResolveResult,
-    /// User-defined top-level functions, keyed by `DefId` for signature lookup
-    /// when slotting call-site arguments.
+    /// User-defined top-level functions AND impl methods, keyed by `DefId`.
+    /// Both kinds share the same call-site slotting logic; their `FunctionDefinition`
+    /// shape is identical.
     user_fns: HashMap<DefId, &'a FunctionDefinition>,
     /// User-defined structs, keyed by `DefId`. Used to slot record-literal
     /// constructors against declared field order.
@@ -201,6 +202,10 @@ struct Lowerer<'a> {
     next_hir_id: u32,
     /// Per-function state. Reset by [`Lowerer::lower_fn`].
     fn_state: FnState,
+    /// `DefId` of the type whose `impl T { … }` block we are lowering, if
+    /// any. Set when entering an impl item; cleared when leaving. Used by
+    /// `lower_type` to substitute `Self` in method signatures and bodies.
+    current_impl_target: Option<DefId>,
     errors: Vec<HirLowerError>,
 }
 
@@ -228,6 +233,16 @@ impl<'a> Lowerer<'a> {
                         user_structs.insert(def_id, s);
                     }
                 }
+                Item::Impl(impl_block) => {
+                    // Methods defined inside the impl get their own `DefId`s
+                    // from `resolve_impl`; record each one so call-site
+                    // lookups (e.g. typeck's `lookup_fn`) find them.
+                    for func in &impl_block.functions {
+                        if let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&func.name.id) {
+                            user_fns.insert(def_id, func);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -238,6 +253,7 @@ impl<'a> Lowerer<'a> {
             reg_def_id: resolve.def_id("reg"),
             next_hir_id: 0,
             fn_state: FnState::default(),
+            current_impl_target: None,
             errors: Vec::new(),
         }
     }
@@ -422,6 +438,36 @@ impl<'a> Lowerer<'a> {
             fields,
             span: p.span.clone(),
         })
+    }
+
+    /// Lower each method inside an `impl T { ... }` block as a `HirItem::Fn`.
+    /// The method's `HirFn.def_id` is the method's own `DefId` (allocated by
+    /// `resolve_impl`), not the target type's. `current_impl_target` is set
+    /// during method lowering so `lower_type` can substitute `Self`.
+    ///
+    /// Impl-level parameters (e.g. `impl T { #clk: Clock } { … }`) are not
+    /// yet supported; if present, lowering errors and the impl is skipped.
+    fn lower_impl(&mut self, impl_block: &crate::surface_ir::ImplBlock, items: &mut Vec<HirItem>) {
+        let target_def = match self.resolve.resolutions.get(&impl_block.name.id) {
+            Some(&Res::Def(_, id)) => id,
+            _ => return,
+        };
+        if !impl_block.named_parameters.is_empty() || !impl_block.parameters.is_empty() {
+            self.error(
+                HirLowerErrorKind::Unsupported {
+                    what: "impl-level parameters",
+                },
+                impl_block.span.clone(),
+            );
+            return;
+        }
+        self.current_impl_target = Some(target_def);
+        for func in &impl_block.functions {
+            if let Some(hir_fn) = self.lower_fn(func) {
+                items.push(HirItem::Fn(hir_fn));
+            }
+        }
+        self.current_impl_target = None;
     }
 
     // ----- blocks and statements -----
@@ -991,9 +1037,13 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lower a single `.<name>(<args>)` step against an already-lowered
-    /// receiver. Only `.reg(rst, reset_val)` is recognised in the first
-    /// pass; everything else is `UnknownMethod` until the deferred
-    /// method-dispatch pass lands.
+    /// receiver.
+    ///
+    /// - `.reg(rst, reset_val)` is special-cased and lowered directly to a
+    ///   `HirCall` against the prelude `reg` def. The prelude method is
+    ///   not associated with a specific receiver type.
+    /// - Every other `.method(...)` becomes a `HirExprKind::MethodCall`,
+    ///   which `typeck` later resolves via `ResolveResult::impl_methods`.
     fn lower_method_step(
         &mut self,
         receiver: HirExpr,
@@ -1002,15 +1052,37 @@ impl<'a> Lowerer<'a> {
     ) -> HirExpr {
         let call_span = combine_spans(&receiver.span, &field.span);
 
-        if field.field.text != "reg" {
-            self.error(
-                HirLowerErrorKind::UnknownMethod {
-                    method: field.field.text.clone(),
-                },
-                field.span.clone(),
-            );
-            return self.placeholder_expr(call_span);
+        if field.field.text == "reg" {
+            return self.lower_reg_call(receiver, args, call_span);
         }
+
+        // Deferred method dispatch: lower the args, emit `MethodCall`. The
+        // receiver's type is unknown here; `typeck` looks the method up by
+        // (receiver_type, name).
+        let lowered_args: Vec<HirArg> =
+            args.iter().map(|e| hir_given(self.lower_expr(e))).collect();
+        HirExpr {
+            kind: HirExprKind::MethodCall(super::HirMethodCall {
+                receiver: Box::new(receiver),
+                name: field.field.text.clone(),
+                name_span: field.field.span.clone(),
+                args: lowered_args,
+            }),
+            ty: None,
+            span: call_span,
+            id: self.next_hir_id(),
+        }
+    }
+
+    /// Lower `<receiver>.reg(rst, reset_val)` into a direct `HirCall` against
+    /// the prelude `reg` def. `reg` is the only method baked into the
+    /// language; everything else dispatches via `HirExprKind::MethodCall`.
+    fn lower_reg_call(
+        &mut self,
+        receiver: HirExpr,
+        args: &[Expression],
+        call_span: SourceSpan,
+    ) -> HirExpr {
         let Some(reg_def_id) = self.reg_def_id else {
             self.error(
                 HirLowerErrorKind::InternalUnresolved("prelude `reg` def".to_owned()),
@@ -1018,10 +1090,6 @@ impl<'a> Lowerer<'a> {
             );
             return self.placeholder_expr(call_span);
         };
-
-        // `reg` signature (hardcoded for first pass):
-        //   named:      [ #clk: Clock ]
-        //   positional: [ self @clk, rst: Reset @clk, reset_val: uint(N) @clk ]
         if args.len() != 2 {
             self.error(
                 HirLowerErrorKind::RegArity { got: args.len() },
@@ -1036,14 +1104,12 @@ impl<'a> Lowerer<'a> {
             .get(1)
             .map(|e| self.lower_expr(e))
             .unwrap_or_else(|| self.placeholder_expr(call_span.clone()));
-
         let hir_args = vec![
             HirArg::Inferable,   // #clk
             hir_given(receiver), // self
             hir_given(rst),
             hir_given(reset_val),
         ];
-
         HirExpr {
             kind: HirExprKind::Call(HirCall {
                 callee: reg_def_id,
@@ -1114,16 +1180,49 @@ impl<'a> Lowerer<'a> {
             "Self" => {
                 // `self @clk` shorthand: the parameter lowerer in surface_ir
                 // synthesises this type. Outside an `impl` it's nonsensical.
-                // For now treat it as a value of unknown kind anchored by the
-                // given domain; later passes that need the concrete type can
-                // resolve `Self` against the enclosing impl.
-                self.error(
-                    HirLowerErrorKind::Unsupported {
-                        what: "`Self` type (no impl-context resolution yet)",
-                    },
-                    ty.span.clone(),
-                );
-                self.value_type(ValueKind::Usize, None, ty.span.clone())
+                // Inside an impl, substitute the impl's target type.
+                let Some(target) = self.current_impl_target else {
+                    self.error(
+                        HirLowerErrorKind::Unsupported {
+                            what: "`Self` type outside an `impl` block",
+                        },
+                        ty.span.clone(),
+                    );
+                    return self.value_type(ValueKind::Usize, None, ty.span.clone());
+                };
+                let target_kind = self
+                    .resolve
+                    .defs
+                    .get(target.0 as usize)
+                    .map(|info| info.kind);
+                match target_kind {
+                    Some(DefKind::Struct) => self.value_type(
+                        ValueKind::Struct { def: target },
+                        domain_annotation,
+                        ty.span.clone(),
+                    ),
+                    Some(DefKind::Port) => {
+                        if domain_annotation.is_some() {
+                            self.error(
+                                HirLowerErrorKind::DomainOnPortType {
+                                    port: "Self".to_owned(),
+                                },
+                                ty.span.clone(),
+                            );
+                        }
+                        HirType {
+                            kind: HirTypeKind::Port(PortTypeRef { def: target }),
+                            span: ty.span.clone(),
+                        }
+                    }
+                    _ => {
+                        self.error(
+                            HirLowerErrorKind::UnknownType("Self".to_owned()),
+                            ty.span.clone(),
+                        );
+                        self.value_type(ValueKind::Usize, None, ty.span.clone())
+                    }
+                }
             }
             other => {
                 // User-defined struct or port.
@@ -1156,7 +1255,9 @@ impl<'a> Lowerer<'a> {
                             span: ty.span.clone(),
                         }
                     }
-                    Some((DefKind::Fn, _)) | Some((DefKind::Impl, _)) => {
+                    Some((DefKind::Fn, _))
+                    | Some((DefKind::Impl, _))
+                    | Some((DefKind::Method { .. }, _)) => {
                         self.error(
                             HirLowerErrorKind::UnknownType(other.to_owned()),
                             ty.name.span.clone(),
@@ -1640,17 +1741,20 @@ mod tests {
     }
 
     #[test]
-    fn unknown_method_still_reports_for_non_reg() {
-        // A bare method call that isn't `.reg` should still surface as
-        // UnknownMethod until the deferred dispatch pass lands.
-        let errs = lower("fn f(a: uint(8)) -> uint(8) { return a.frobnicate(); }")
-            .expect_err("expected lowering errors");
-        assert!(
-            errs.iter().any(|e| matches!(
-                &e.kind,
-                HirLowerErrorKind::UnknownMethod { method } if method == "frobnicate"
-            )),
-            "errors: {errs:?}"
-        );
+    fn non_reg_method_lowers_to_method_call() {
+        // Any `.method(args)` that isn't the prelude `.reg` becomes a
+        // `HirExprKind::MethodCall`; resolution happens at typeck via the
+        // resolver's `impl_methods` table.
+        let file = lower_ok("fn f(a: uint(8)) -> uint(8) { return a.frobnicate(); }");
+        let func = first_fn(&file);
+        let HirStmt::Return(ret) = &func.body.statements[0] else {
+            panic!("expected return");
+        };
+        let HirExprKind::MethodCall(mc) = &ret.kind else {
+            panic!("expected MethodCall, got {:?}", ret.kind);
+        };
+        assert_eq!(mc.name, "frobnicate");
+        assert!(matches!(mc.receiver.kind, HirExprKind::Local(_)));
+        assert!(mc.args.is_empty());
     }
 }

@@ -36,6 +36,12 @@ pub enum DefKind {
     Struct,
     Port,
     Impl,
+    /// A function defined inside an `impl T { … }` block. Lives outside the
+    /// global name table — callers reach it via `Type::method` or by method
+    /// dispatch on a receiver of type `T`. `owner` is the `T` def.
+    Method {
+        owner: DefId,
+    },
 }
 
 /// How a local binding was introduced.
@@ -216,6 +222,12 @@ pub struct ResolveResult {
     /// Info for each local binding (param, let, var, implicit var),
     /// keyed by the binding name identifier's `NodeId`.
     pub locals: HashMap<NodeId, LocalInfo>,
+    /// Method dispatch table keyed on `(owner_type_def_id, method_name)`.
+    /// Populated from `impl T { fn m … }` items. Methods do not appear in
+    /// the global name table — calls reach them either via method dispatch
+    /// (`x.m(…)` where `x: T`) or eventually via path syntax (`T::m(…)`,
+    /// not yet implemented).
+    pub impl_methods: HashMap<(DefId, String), DefId>,
 }
 
 impl ResolveResult {
@@ -427,7 +439,28 @@ impl Ctx {
         let impl_params =
             self.collect_params(def_id, &impl_block.named_parameters, &impl_block.parameters);
         for func in &impl_block.functions {
-            self.resolve_function(func, def_id, &impl_params);
+            // Allocate a `DefId` for the method, scoped to its owner type
+            // rather than the global namespace. Two impls may define the
+            // same method name on different types; both get distinct ids.
+            let method_def = self.alloc_def(DefKind::Method { owner: def_id }, &func.name);
+            self.result.resolutions.insert(
+                func.name.id,
+                Res::Def(DefKind::Method { owner: def_id }, method_def),
+            );
+            let prior = self
+                .result
+                .impl_methods
+                .insert((def_id, func.name.text.clone()), method_def);
+            if prior.is_some() {
+                self.result.errors.push(ResolveError {
+                    kind: ResolveErrorKind::DuplicateDef(format!(
+                        "{}::{}",
+                        impl_block.name.text, func.name.text
+                    )),
+                    span: func.name.span.clone(),
+                });
+            }
+            self.resolve_function(func, method_def, &impl_params);
         }
     }
 

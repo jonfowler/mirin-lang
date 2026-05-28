@@ -958,6 +958,9 @@ impl<'a> FnFlattener<'a> {
                 full_path.extend_from_slice(path);
                 self.extract_field(&field.receiver, &full_path)
             }
+            HirExprKind::MethodCall(_) => unreachable!(
+                "MethodCall should be lowered to Call by `hir::method_lower` before flatten"
+            ),
         }
     }
 
@@ -1113,6 +1116,9 @@ impl<'a> FnFlattener<'a> {
                     .extract_field(&field.receiver, &[field.name.clone()])
                     .ok();
             }
+            HirExprKind::MethodCall(_) => unreachable!(
+                "MethodCall should be lowered to Call by `hir::method_lower` before flatten"
+            ),
         };
         Some(HirExpr {
             kind: new_kind,
@@ -1254,9 +1260,10 @@ mod tests {
         let resolve = resolve_file(&file);
         assert!(resolve.errors.is_empty(), "resolve: {:?}", resolve.errors);
         let hir = lower_to_hir(&file, &resolve).expect("hir lowering");
-        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
+        let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
+        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         flatten_aggregates(&hir, &tc.expr_types)
     }
 
@@ -1357,9 +1364,10 @@ mod tests {
             let surface = parse_surface_source(&source).expect("parse");
             let resolve = resolve_file(&surface);
             let hir = lower_to_hir(&surface, &resolve).expect("lower");
-            let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
             let tc = typeck::check_file(&hir, &resolve);
             assert!(tc.errors.is_empty(), "{name} typeck: {:?}", tc.errors);
+            let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
+            let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
             let flat = flatten_aggregates(&hir, &tc.expr_types)
                 .unwrap_or_else(|e| panic!("{name} flatten: {e:?}"));
             let _tc2 = typeck::check_file(&flat, &resolve);

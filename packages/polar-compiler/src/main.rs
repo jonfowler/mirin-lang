@@ -193,29 +193,6 @@ fn main() {
         process::exit(1);
     }
 
-    // Rewrite user-function calls to use out-arguments, so calls like
-    // `let x = f(args)` become `var x; f(args, x);`. After this pass each
-    // user-fn call sits at expression-statement position, which sv_lower
-    // emits as a single SV module instance.
-    let hir = match polar_compiler::desugar_user_calls(&hir) {
-        Ok(h) => h,
-        Err(errors) => {
-            for (i, err) in errors.iter().enumerate() {
-                if i > 0 {
-                    eprintln!();
-                }
-                eprintln!(
-                    "error: {} ({}:{}:{})",
-                    err.kind,
-                    args.input.display(),
-                    err.span.start.row + 1,
-                    err.span.start.column + 1,
-                );
-            }
-            process::exit(1);
-        }
-    };
-
     let tc = typeck::check_file(&hir, &result);
     if !tc.errors.is_empty() {
         let mut rendered = String::new();
@@ -244,6 +221,33 @@ fn main() {
     // parametric widths are in scope.
     let _ = width_check.unresolved_widths;
     let _ = width_check.unresolved_domain_kinds;
+
+    // Rewrite each `HirExprKind::MethodCall` into a regular `Call` against
+    // the resolved method's `DefId`. After this pass no `MethodCall`
+    // remains in HIR; downstream passes treat methods like user fns.
+    let hir = polar_compiler::lower_method_calls(&hir, &tc.method_resolutions);
+
+    // Rewrite user-function calls into out-arg form so that, after flatten,
+    // they sit at expression-statement position with binding leaves passed
+    // as out-arguments. sv_lower then emits each as a single SV instance.
+    let hir = match polar_compiler::desugar_user_calls(&hir) {
+        Ok(h) => h,
+        Err(errors) => {
+            for (i, err) in errors.iter().enumerate() {
+                if i > 0 {
+                    eprintln!();
+                }
+                eprintln!(
+                    "error: {} ({}:{}:{})",
+                    err.kind,
+                    args.input.display(),
+                    err.span.start.row + 1,
+                    err.span.start.column + 1,
+                );
+            }
+            process::exit(1);
+        }
+    };
 
     match args.emit {
         EmitMode::Cst => {
