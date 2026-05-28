@@ -125,6 +125,14 @@ fn validate_item(item: &SvItem, module: &str, errors: &mut Vec<EmitError>) {
                 validate_expr_idents(&s.rhs, module, errors);
             }
         }
+        SvItem::Instance(inst) => {
+            if is_reserved(&inst.name) {
+                push_err(errors, &inst.name, module);
+            }
+            for (_port, expr) in &inst.ports {
+                validate_expr_idents(expr, module, errors);
+            }
+        }
     }
 }
 

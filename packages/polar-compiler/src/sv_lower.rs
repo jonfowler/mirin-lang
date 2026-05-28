@@ -33,10 +33,17 @@ use crate::sv_ir::{
 /// Lower a flattened HIR file to SV IR. `resolve` is used only to identify
 /// prelude defs (`reg`, `+`, `*`).
 pub fn lower_to_sv(file: &HirSourceFile, resolve: &ResolveResult) -> SvFile {
+    let mut user_fns: HashMap<DefId, &HirFn> = HashMap::new();
+    for item in &file.items {
+        if let HirItem::Fn(func) = item {
+            user_fns.insert(func.def_id, func);
+        }
+    }
     let defs = BackendDefs {
         reg: resolve.def_id("reg"),
         add: resolve.def_id("+"),
         mul: resolve.def_id("*"),
+        user_fns,
     };
     let mut modules = Vec::new();
     for item in &file.items {
@@ -47,18 +54,23 @@ pub fn lower_to_sv(file: &HirSourceFile, resolve: &ResolveResult) -> SvFile {
     SvFile { modules }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct BackendDefs {
+#[derive(Debug, Clone)]
+struct BackendDefs<'a> {
     reg: Option<DefId>,
     add: Option<DefId>,
     mul: Option<DefId>,
+    /// Post-flatten user-defined functions, keyed by their `DefId`. Used by
+    /// the SV-instance lowering path (lands with the `out_args` pre-flatten
+    /// pass) to find the callee's flattened port list.
+    #[allow(dead_code)]
+    user_fns: HashMap<DefId, &'a HirFn>,
 }
 
 // ============================================================================
 // Per-function lowering
 // ============================================================================
 
-fn lower_fn(func: &HirFn, defs: &BackendDefs) -> SvModule {
+fn lower_fn(func: &HirFn, defs: &BackendDefs<'_>) -> SvModule {
     let mut parameters = Vec::new();
     let mut ports = Vec::new();
     let mut items = Vec::new();
@@ -162,7 +174,7 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs) -> SvModule {
 fn lower_block(
     block: &HirBlock,
     func: &HirFn,
-    defs: &BackendDefs,
+    defs: &BackendDefs<'_>,
     clock_names: &HashMap<LocalId, String>,
     local_names: &HashMap<LocalId, String>,
     local_types: &mut HashMap<LocalId, SvType>,
@@ -184,7 +196,7 @@ fn lower_block(
 fn lower_stmt(
     stmt: &HirStmt,
     func: &HirFn,
-    defs: &BackendDefs,
+    defs: &BackendDefs<'_>,
     clock_names: &HashMap<LocalId, String>,
     local_names: &HashMap<LocalId, String>,
     local_types: &mut HashMap<LocalId, SvType>,
@@ -244,6 +256,9 @@ fn lower_stmt(
         }
         HirStmt::Expr(_) => {
             // Side-effecting expressions are not in first-pass scope. Skip.
+            // (User-function calls in expression position with out-args will
+            // be lowered to `SvItem::Instance` here once the `out_args` pass
+            // lands.)
         }
     }
 }
@@ -254,7 +269,7 @@ fn lower_assignment_into(
     value: &HirExpr,
     lhs_name: &str,
     func: &HirFn,
-    defs: &BackendDefs,
+    defs: &BackendDefs<'_>,
     clock_names: &HashMap<LocalId, String>,
     local_names: &HashMap<LocalId, String>,
     items: &mut Vec<SvItem>,
@@ -337,7 +352,7 @@ fn clock_for_reg(
 fn lower_expr(
     expr: &HirExpr,
     func: &HirFn,
-    defs: &BackendDefs,
+    defs: &BackendDefs<'_>,
     local_names: &HashMap<LocalId, String>,
 ) -> SvExpr {
     match &expr.kind {
@@ -362,7 +377,7 @@ fn lower_expr(
 fn lower_call(
     call: &HirCall,
     func: &HirFn,
-    defs: &BackendDefs,
+    defs: &BackendDefs<'_>,
     local_names: &HashMap<LocalId, String>,
 ) -> SvExpr {
     // Binary operators (+, *) — two positional args.
@@ -394,7 +409,7 @@ fn lower_call(
 fn arg_expr(
     arg: &HirArg,
     func: &HirFn,
-    defs: &BackendDefs,
+    defs: &BackendDefs<'_>,
     local_names: &HashMap<LocalId, String>,
 ) -> SvExpr {
     match arg {
@@ -410,7 +425,7 @@ fn arg_expr(
 fn sv_type_for_value(
     vt: &ValueType,
     func: &HirFn,
-    defs: &BackendDefs,
+    defs: &BackendDefs<'_>,
     local_names: &HashMap<LocalId, String>,
 ) -> SvType {
     match &vt.kind {
@@ -430,7 +445,7 @@ fn sv_type_for_value(
 fn lower_width_expr(
     width: &HirExpr,
     func: &HirFn,
-    defs: &BackendDefs,
+    defs: &BackendDefs<'_>,
     local_names: &HashMap<LocalId, String>,
 ) -> SvExpr {
     // Width expressions are usize-typed; reuse the standard expr lowering
@@ -453,7 +468,7 @@ fn lower_width_expr(
 fn infer_sv_type(
     expr: &HirExpr,
     func: &HirFn,
-    defs: &BackendDefs,
+    defs: &BackendDefs<'_>,
     local_names: &HashMap<LocalId, String>,
     local_types: &HashMap<LocalId, SvType>,
 ) -> SvType {

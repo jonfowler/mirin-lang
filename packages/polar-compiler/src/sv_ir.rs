@@ -77,6 +77,20 @@ pub enum SvItem {
     /// `always_ff @(posedge clk) begin if (!rstn) … else … end`. First pass
     /// is always synchronous active-low reset.
     AlwaysFf(SvAlwaysFf),
+    /// `module_name instance_name (.port_a(...), ...);`
+    /// Lowered from `HirStmt::Instance` for user-function calls whose
+    /// argument or return shape involves an aggregate.
+    Instance(SvInstance),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SvInstance {
+    /// SV module name (the callee).
+    pub module: String,
+    /// Instance name within the surrounding module.
+    pub name: String,
+    /// Port connections in declaration order: `(port_name, expression)`.
+    pub ports: Vec<(String, SvExpr)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +229,14 @@ impl fmt::Display for SvItem {
             Self::Logic(d) => writeln!(f, "    logic{} {};", d.ty.bracketed(), d.name),
             Self::Assign { lhs, rhs } => writeln!(f, "    assign {lhs} = {rhs};"),
             Self::AlwaysFf(a) => write!(f, "{a}"),
+            Self::Instance(inst) => {
+                writeln!(f, "    {} {} (", inst.module, inst.name)?;
+                for (i, (port, expr)) in inst.ports.iter().enumerate() {
+                    let sep = if i + 1 < inst.ports.len() { "," } else { "" };
+                    writeln!(f, "        .{port}({expr}){sep}")?;
+                }
+                writeln!(f, "    );")
+            }
         }
     }
 }
