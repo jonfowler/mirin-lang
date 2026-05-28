@@ -75,11 +75,10 @@ module.exports = grammar({
       prec(
         1,
         seq(
-        optional(field("inferable", "#")),
-        optional(field("const", "const")),
-        field("name", $.identifier),
-        optional(seq(":", field("type", $.type_expression))),
-        optional(seq("=", field("default", $.expression))),
+          optional(field("kind", choice("param", "dom"))),
+          field("name", $.identifier),
+          optional(seq(":", field("type", $.type_expression))),
+          optional(seq("=", field("default", $.expression))),
         ),
       ),
 
@@ -91,8 +90,7 @@ module.exports = grammar({
         ),
         seq(
           optional(field("direction", choice("in", "out"))),
-          optional(field("inferable", "#")),
-          optional(field("const", "const")),
+          optional(field("kind", choice("param", "dom"))),
           field("name", $.identifier),
           ":",
           field("type", $.type_expression),

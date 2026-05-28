@@ -1,5 +1,5 @@
 fn addConstant
-  { #clk: Clock }
+  { dom clk: Clock }
   ( value: uint(8) @clk )
   -> uint(8) @clk
   {

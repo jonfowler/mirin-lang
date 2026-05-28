@@ -72,8 +72,7 @@ pub struct FunctionDefinition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedParameter {
     pub span: SourceSpan,
-    pub inferable: bool,
-    pub is_const: bool,
+    pub kind: ParamKind,
     pub name: Identifier,
     pub ty: Option<TypeExpression>,
     pub default: Option<Expression>,
@@ -83,11 +82,29 @@ pub struct NamedParameter {
 pub struct Parameter {
     pub span: SourceSpan,
     pub direction: Option<Direction>,
-    pub inferable: bool,
-    pub is_const: bool,
+    pub kind: ParamKind,
     pub name: Identifier,
     pub ty: TypeExpression,
     pub default: Option<Expression>,
+}
+
+/// What kind of binding a parameter introduces.
+///
+/// - `Value` — a runtime value, visible in the value environment only.
+/// - `Param` — a compile-time parameter (e.g. `param N: usize`). Visible in
+///   the type environment as well, so later types/widths can reference it.
+/// - `Dom` — a domain (clock) binding (e.g. `dom clk: Clock`). Visible in
+///   the type environment for `@clk` annotations.
+///
+/// Inferability is implicit: a `Param` or `Dom` *named* parameter with no
+/// default is inferred from the call-site usage. A positional `Param`/`Dom`
+/// (per the syntax design) must always be supplied explicitly. `Value`
+/// parameters are never inferable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamKind {
+    Value,
+    Param,
+    Dom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -513,8 +530,7 @@ impl<'a> Lowerer<'a> {
         expect_kind(node, "named_parameter")?;
         Ok(NamedParameter {
             span: node.span.clone(),
-            inferable: child_by_field(node, "inferable").is_some(),
-            is_const: child_by_field(node, "const").is_some(),
+            kind: lower_param_kind(node)?,
             name: self.lower_required_identifier(node, "name")?,
             ty: child_by_field(node, "type")
                 .map(|child| self.lower_type_expression(child))
@@ -549,8 +565,7 @@ impl<'a> Lowerer<'a> {
             return Ok(Parameter {
                 span: node.span.clone(),
                 direction: None,
-                inferable: false,
-                is_const: false,
+                kind: ParamKind::Value,
                 name: self_id,
                 ty: TypeExpression {
                     span: node.span.clone(),
@@ -566,8 +581,7 @@ impl<'a> Lowerer<'a> {
             direction: child_by_field(node, "direction")
                 .map(lower_direction)
                 .transpose()?,
-            inferable: child_by_field(node, "inferable").is_some(),
-            is_const: child_by_field(node, "const").is_some(),
+            kind: lower_param_kind(node)?,
             name: self.lower_required_identifier(node, "name")?,
             ty: self.lower_type_expression(lower_required_child(
                 node,
@@ -851,6 +865,20 @@ fn lower_direction(node: &CstNode) -> Result<Direction, LowerError> {
         "in" => Ok(Direction::In),
         "out" => Ok(Direction::Out),
         _ => Err(unexpected_node(node, "direction")),
+    }
+}
+
+/// Read the optional `kind` field on a parameter CST node. Returns `Value`
+/// when absent (an ordinary value binding) and the matching `Param` / `Dom`
+/// when the keyword is present.
+fn lower_param_kind(node: &CstNode) -> Result<ParamKind, LowerError> {
+    let Some(kind_node) = child_by_field(node, "kind") else {
+        return Ok(ParamKind::Value);
+    };
+    match kind_node.kind.as_str() {
+        "param" => Ok(ParamKind::Param),
+        "dom" => Ok(ParamKind::Dom),
+        _ => Err(unexpected_node(kind_node, "param kind")),
     }
 }
 

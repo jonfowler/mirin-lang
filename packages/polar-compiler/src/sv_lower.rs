@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use crate::hir::{
     ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFn, HirId, HirItem,
-    HirSourceFile, HirStmt, HirTypeKind, LocalId, ValueKind, ValueType,
+    HirSourceFile, HirStmt, HirTypeKind, LocalId, ParamKind, ValueKind, ValueType,
 };
 use crate::resolve::{DefId, ResolveResult};
 use crate::surface_ir::Direction;
@@ -92,8 +92,8 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs) -> SvModule {
                 clock_names.insert(param.local, name);
             }
             HirTypeKind::Value(vt) => {
-                if param.is_const {
-                    // const param → SV parameter, no port.
+                if matches!(param.kind, ParamKind::Param) {
+                    // `param`-kind binding → SV parameter, no port.
                     parameters.push(SvParameter {
                         name: name.clone(),
                         default: param

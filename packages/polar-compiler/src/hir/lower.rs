@@ -24,13 +24,13 @@ use super::{
     ConstValue, Domain, HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind,
     HirFieldAccess, HirFn, HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirPortField,
     HirSourceFile, HirStmt, HirStruct, HirStructField, HirType, HirTypeKind, HirVarDecl, LocalId,
-    ParamSection, PortTypeRef, ValueKind, ValueType,
+    ParamKind as HirParamKind, ParamSection, PortTypeRef, ValueKind, ValueType,
 };
 use crate::SourceSpan;
 use crate::resolve::{DefId, DefKind, LocalKind, Res, ResolveResult};
 use crate::surface_ir::{
     AssignmentStatement, BinaryOperator, Block, Expression, FunctionDefinition, Item, LetStatement,
-    NamedArgument, NamedParameter, NodeId, Parameter, PortDefinition, PostfixExpression,
+    NamedArgument, NamedParameter, NodeId, ParamKind, Parameter, PortDefinition, PostfixExpression,
     PostfixOperation, RecordConstructorExpression, ReturnStatement, SourceFile, Statement,
     StructDefinition, TypeExpression, TypeSuffix, VarStatement,
 };
@@ -339,8 +339,7 @@ impl<'a> Lowerer<'a> {
         HirParam {
             local,
             section: ParamSection::Named,
-            inferable: np.inferable,
-            is_const: np.is_const,
+            kind: lower_param_kind(np.kind),
             direction: None,
             ty,
             default,
@@ -355,8 +354,7 @@ impl<'a> Lowerer<'a> {
         HirParam {
             local,
             section: ParamSection::Positional,
-            inferable: pp.inferable,
-            is_const: pp.is_const,
+            kind: lower_param_kind(pp.kind),
             direction: pp.direction,
             ty,
             default,
@@ -858,25 +856,28 @@ impl<'a> Lowerer<'a> {
 
         let mut args = Vec::with_capacity(callee.named_parameters.len() + positional_param_count);
 
-        // Named-section slots.
+        // Named-section slots. A named `param`/`dom` with no default is
+        // inferable from call-site usage.
         for np in &callee.named_parameters {
             let supplied = user_named.get(np.name.text.as_str()).copied();
+            let inferable = matches!(np.kind, ParamKind::Param | ParamKind::Dom);
             args.push(self.slot_arg(
                 supplied,
                 np.default.as_ref(),
-                np.inferable,
+                inferable,
                 &np.name.text,
                 &callee.name.text,
                 &p.span,
             ));
         }
-        // Positional-section slots.
+        // Positional-section slots. Positional `param`/`dom` are never
+        // inferable — they must be supplied at the call site.
         for (i, pp) in callee.parameters.iter().enumerate() {
             let supplied = positional.get(i);
             args.push(self.slot_arg(
                 supplied,
                 pp.default.as_ref(),
-                pp.inferable,
+                false,
                 &pp.name.text,
                 &callee.name.text,
                 &p.span,
@@ -1201,6 +1202,15 @@ impl<'a> Lowerer<'a> {
     }
 }
 
+/// Surface and HIR `ParamKind` carry the same three variants; just remap.
+fn lower_param_kind(kind: ParamKind) -> HirParamKind {
+    match kind {
+        ParamKind::Value => HirParamKind::Value,
+        ParamKind::Param => HirParamKind::Param,
+        ParamKind::Dom => HirParamKind::Dom,
+    }
+}
+
 fn hir_given(expr: HirExpr) -> HirArg {
     HirArg::Provided {
         expr,
@@ -1374,7 +1384,7 @@ mod tests {
         // `target` declares all three named params (#clk inferable, rstn with default, c with default)
         // and one positional `a`. The caller supplies only `c` and the positional `x`.
         let file = lower_ok(
-            "fn target { #clk: Clock, rstn: Reset @clk = high, c: uint(8) @clk = 0 } ( a: uint(8) @clk ) { let r = a; }\n\
+            "fn target { dom clk: Clock, rstn: Reset @clk = high, c: uint(8) @clk = 0 } ( a: uint(8) @clk ) { let r = a; }\n\
              fn caller ( x: uint(8) ) { let r = target { c = 5 }(x); }",
         );
         let caller = nth_fn(&file, 1);
@@ -1462,7 +1472,7 @@ mod tests {
     #[test]
     fn lowers_port_definition_with_field_directions() {
         let file = lower_ok(
-            "port Stream8 { #clk: Clock } = stream8 {\n\
+            "port Stream8 { dom clk: Clock } = stream8 {\n\
                  out valid: bool @clk,\n\
                  out data: uint(8) @clk,\n\
                  in ready: bool @clk,\n\

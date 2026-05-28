@@ -4,7 +4,7 @@ struct Packet = packet {
 }
 
 fn registerPacket
-  { #clk: Clock, rstn: Reset @clk = high }
+  { dom clk: Clock, rstn: Reset @clk = high }
   ( inp: Packet @clk )
   -> Packet @clk
   {

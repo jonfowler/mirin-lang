@@ -1,5 +1,5 @@
 fn counter
-  { #clk: Clock, rstn: Reset @clk = high }
+  { dom clk: Clock, rstn: Reset @clk = high }
   ()
   {
     var count: uint(8) @clk;

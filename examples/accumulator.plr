@@ -1,5 +1,5 @@
 fn accumulator
-  { #clk: Clock, rstn: Reset @clk = high }
+  { dom clk: Clock, rstn: Reset @clk = high }
   ( data: uint(8) @clk )
   -> uint(8) @clk
   {

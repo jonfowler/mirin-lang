@@ -11,7 +11,8 @@
 [
   "in"
   "out"
-  "const"
+  "param"
+  "dom"
 ] @keyword.modifier
 
 (comment) @comment
@@ -21,7 +22,6 @@
 "->" @operator
 "=>" @operator
 "@" @punctuation.special
-"#" @punctuation.special
 "::" @punctuation.delimiter
 
 ; Top-level declaration names

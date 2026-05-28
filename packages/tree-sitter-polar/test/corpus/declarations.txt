@@ -3,7 +3,7 @@ function with named and positional args
 ========================================
 
 fn multAdd
-  { #clk: Clock, rstn: Reset @clk = high, c: uint(8) @clk = 0, }
+  { dom clk: Clock, rstn: Reset @clk = high, c: uint(8) @clk = 0, }
   ( a: uint(8) @clk, b: uint(8) @clk )
   -> uint(8) @clk
   {
@@ -135,7 +135,7 @@ impl block with self parameter
 ========================================
 
 impl Reg {
-  fn reg{#clk}(self @clk, rst: Reset @clk, reset_val: uint(8)) -> uint(8) @clk {
+  fn reg{dom clk: Clock}(self @clk, rst: Reset @clk, reset_val: uint(8)) -> uint(8) @clk {
   }
 }
 
@@ -149,7 +149,9 @@ impl Reg {
         name: (identifier)
         named_parameters: (named_parameter_section
           (named_parameter
-            name: (identifier)))
+            name: (identifier)
+            type: (type_expression
+              name: (identifier))))
         parameters: (parameter_section
           (parameter
             domain: (identifier))

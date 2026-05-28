@@ -1,5 +1,5 @@
 port Stream8
-  { #clk: Clock }
+  { dom clk: Clock }
   = stream8 {
     out valid: bool @clk
     out data: uint(8) @clk,

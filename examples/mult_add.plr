@@ -1,5 +1,5 @@
 fn multAdd
-  { #clk: Clock,
+  { dom clk: Clock,
     rstn: Reset @clk = high,
     c: uint(8) @clk = 0,
   }

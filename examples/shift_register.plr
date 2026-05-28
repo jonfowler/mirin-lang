@@ -1,5 +1,5 @@
 fn shiftRegister
-  { #clk: Clock, rstn: Reset @clk = high }
+  { dom clk: Clock, rstn: Reset @clk = high }
   ( inp: uint(8) @clk )
   -> uint(8) @clk
   {

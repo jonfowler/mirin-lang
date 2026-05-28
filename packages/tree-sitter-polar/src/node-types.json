@@ -377,16 +377,6 @@
     "type": "named_parameter",
     "named": true,
     "fields": {
-      "const": {
-        "multiple": false,
-        "required": false,
-        "types": [
-          {
-            "type": "const",
-            "named": false
-          }
-        ]
-      },
       "default": {
         "multiple": false,
         "required": false,
@@ -397,12 +387,16 @@
           }
         ]
       },
-      "inferable": {
+      "kind": {
         "multiple": false,
         "required": false,
         "types": [
           {
-            "type": "#",
+            "type": "dom",
+            "named": false
+          },
+          {
+            "type": "param",
             "named": false
           }
         ]
@@ -448,16 +442,6 @@
     "type": "parameter",
     "named": true,
     "fields": {
-      "const": {
-        "multiple": false,
-        "required": false,
-        "types": [
-          {
-            "type": "const",
-            "named": false
-          }
-        ]
-      },
       "default": {
         "multiple": false,
         "required": false,
@@ -492,12 +476,16 @@
           }
         ]
       },
-      "inferable": {
+      "kind": {
         "multiple": false,
         "required": false,
         "types": [
           {
-            "type": "#",
+            "type": "dom",
+            "named": false
+          },
+          {
+            "type": "param",
             "named": false
           }
         ]
@@ -1059,10 +1047,6 @@
     }
   },
   {
-    "type": "#",
-    "named": false
-  },
-  {
     "type": "(",
     "named": false
   },
@@ -1116,10 +1100,11 @@
   },
   {
     "type": "comment",
-    "named": true
+    "named": true,
+    "extra": true
   },
   {
-    "type": "const",
+    "type": "dom",
     "named": false
   },
   {
@@ -1148,6 +1133,10 @@
   },
   {
     "type": "out",
+    "named": false
+  },
+  {
+    "type": "param",
     "named": false
   },
   {

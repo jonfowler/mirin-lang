@@ -113,8 +113,12 @@ pub struct HirFn {
 pub struct HirParam {
     pub local: LocalId,
     pub section: ParamSection,
-    pub inferable: bool,
-    pub is_const: bool,
+    /// What kind of binding this parameter is: a plain runtime value, a
+    /// compile-time `param`, or a domain (`dom`). The kind also drives
+    /// inferability — a named `Param` / `Dom` with no default is inferred
+    /// from call-site usage; positional `Param` / `Dom` must always be
+    /// supplied explicitly.
+    pub kind: ParamKind,
     /// `in`/`out` annotation from the source. Currently only meaningful for
     /// port-typed positional parameters; preserved here so later passes can
     /// validate uses against the declared direction.
@@ -122,6 +126,24 @@ pub struct HirParam {
     pub ty: HirType,
     pub default: Option<HirExpr>,
     pub span: SourceSpan,
+}
+
+/// What kind of binding a parameter introduces. Mirrors
+/// [`crate::surface_ir::ParamKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamKind {
+    Value,
+    Param,
+    Dom,
+}
+
+impl ParamKind {
+    /// `true` if a binding of this kind enters the type environment (so
+    /// later types/widths/domains may reference its name). `Param` and `Dom`
+    /// do; ordinary `Value` bindings do not.
+    pub fn type_scoped(self) -> bool {
+        matches!(self, ParamKind::Param | ParamKind::Dom)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

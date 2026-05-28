@@ -19,7 +19,7 @@ use std::path::Path;
 use crate::hir::{
     ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFieldAccess, HirFn,
     HirId, HirItem, HirPort, HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId,
-    PortTypeRef, TypeVar, ValueKind, ValueType,
+    ParamKind, ParamSection, PortTypeRef, TypeVar, ValueKind, ValueType,
 };
 use crate::resolve::{DefId, ResolveResult};
 use crate::{Identifier, SourceExcerpt, SourceSpan};
@@ -781,17 +781,19 @@ impl InferCtxt {
             return self.fresh_type_var(call.span.clone());
         };
 
-        // Build a substitution map for inferable named parameters. Each
-        // inferable `Clock`-kinded param becomes a fresh `DomainVar` for the
-        // duration of this call.
+        // Build a substitution map for inferable named parameters. A
+        // named `dom` parameter without a default contributes a fresh
+        // `DomainVar` that is unified with the corresponding caller-side
+        // domain when arguments are checked.
         let mut subst = SigSubst::default();
         for param in &callee.params {
-            if param.inferable {
-                if is_clock_type(&param.ty) {
-                    subst
-                        .domain_subst
-                        .insert(param.local, self.fresh_domain_var());
-                }
+            let inferable = matches!(param.section, ParamSection::Named)
+                && matches!(param.kind, ParamKind::Dom | ParamKind::Param)
+                && param.default.is_none();
+            if inferable && is_clock_type(&param.ty) {
+                subst
+                    .domain_subst
+                    .insert(param.local, self.fresh_domain_var());
             }
         }
 

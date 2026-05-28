@@ -1,6 +1,6 @@
 fn counter
-  { #clk: Clock, rstn: Reset @clk = high }
-  ( const bits: usize )
+  { dom clk: Clock, rstn: Reset @clk = high }
+  ( param bits: usize )
   -> uint(bits) @clk
   {
     var count: uint(bits) @clk;

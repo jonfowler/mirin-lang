@@ -31,7 +31,8 @@ use std::path::Path;
 use super::{
     Domain, HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind, HirFn,
     HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirSourceFile, HirStmt, HirStruct,
-    HirType, HirTypeKind, HirVarDecl, LocalId, ParamSection, PortTypeRef, ValueKind, ValueType,
+    HirType, HirTypeKind, HirVarDecl, LocalId, ParamKind, ParamSection, PortTypeRef, ValueKind,
+    ValueType,
 };
 use crate::resolve::{DefId, LocalKind};
 use crate::surface_ir::{Direction, NodeId};
@@ -332,8 +333,7 @@ impl<'a> FnFlattener<'a> {
                 new_params.push(HirParam {
                     local: leaf.local,
                     section: param.section,
-                    inferable: param.inferable,
-                    is_const: param.is_const,
+                    kind: param.kind,
                     direction,
                     ty: leaf.ty.clone(),
                     default: None,
@@ -371,8 +371,7 @@ impl<'a> FnFlattener<'a> {
                     new_params.push(HirParam {
                         local: leaf.local,
                         section: ParamSection::Positional,
-                        inferable: false,
-                        is_const: false,
+                        kind: ParamKind::Value,
                         direction,
                         ty: leaf.ty.clone(),
                         default: None,

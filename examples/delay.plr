@@ -5,7 +5,7 @@ struct Option {
     payload: uint(8),
 }
 
-fn reg2{#clk}(a: Option @clk, rstn: Reset @clk) -> Option @clk {
+fn reg2{ dom clk: Clock }(a: Option @clk, rstn: Reset @clk) -> Option @clk {
     let payloadd = a.payload.reg(rstn, 0);
     return Option {
         valid: a.valid,
@@ -14,7 +14,7 @@ fn reg2{#clk}(a: Option @clk, rstn: Reset @clk) -> Option @clk {
 }
 
 fn double_delay
-    { #clk: Clock, rstn: Reset @clk}
+    { dom clk: Clock, rstn: Reset @clk}
     ( in upstream: Option @clk, out downstream: Option @clk )
     {
         let delay1 = reg2(upstream,rstn);

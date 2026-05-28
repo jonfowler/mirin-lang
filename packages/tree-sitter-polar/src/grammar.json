@@ -473,26 +473,19 @@
             "members": [
               {
                 "type": "FIELD",
-                "name": "inferable",
+                "name": "kind",
                 "content": {
-                  "type": "STRING",
-                  "value": "#"
-                }
-              },
-              {
-                "type": "BLANK"
-              }
-            ]
-          },
-          {
-            "type": "CHOICE",
-            "members": [
-              {
-                "type": "FIELD",
-                "name": "const",
-                "content": {
-                  "type": "STRING",
-                  "value": "const"
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "param"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "dom"
+                    }
+                  ]
                 }
               },
               {
@@ -635,26 +628,19 @@
               "members": [
                 {
                   "type": "FIELD",
-                  "name": "inferable",
+                  "name": "kind",
                   "content": {
-                    "type": "STRING",
-                    "value": "#"
-                  }
-                },
-                {
-                  "type": "BLANK"
-                }
-              ]
-            },
-            {
-              "type": "CHOICE",
-              "members": [
-                {
-                  "type": "FIELD",
-                  "name": "const",
-                  "content": {
-                    "type": "STRING",
-                    "value": "const"
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "STRING",
+                        "value": "param"
+                      },
+                      {
+                        "type": "STRING",
+                        "value": "dom"
+                      }
+                    ]
                   }
                 },
                 {
@@ -1788,5 +1774,6 @@
   "precedences": [],
   "externals": [],
   "inline": [],
-  "supertypes": []
+  "supertypes": [],
+  "reserved": {}
 }
