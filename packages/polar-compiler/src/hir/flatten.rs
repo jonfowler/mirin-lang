@@ -258,11 +258,12 @@ struct Leaf {
     /// Field-name path from the original local. Empty for scalar locals.
     /// Used by `extract_field` to align RHS expressions to LHS leaves.
     path: Vec<String>,
-    /// For leaves derived from a port parameter / return value: whether the
-    /// function body drives this leaf (`Some(true)` = function output;
-    /// `Some(false)` = function input). `None` for scalar params, struct
-    /// params, and any body local.
-    fn_body_output: Option<bool>,
+    /// For leaves derived from a port parameter / return value: the
+    /// function-body-side direction (`Out` = function drives this leaf,
+    /// `In` = function reads this leaf). `None` for scalar params, struct
+    /// params, and any body local — anything not rooted at a directional
+    /// port.
+    fn_body_dir: Option<Direction>,
 }
 
 impl<'a> FnFlattener<'a> {
@@ -308,12 +309,21 @@ impl<'a> FnFlattener<'a> {
                 .map(|l| l.kind)
                 .unwrap_or(LocalKind::Let);
 
+            // Port-typed param: scope_dir is the param's declared direction
+            // (defaulting to `In` for ordinary value-consuming params).
+            // Struct-typed or scalar param: directionless — the leaves are
+            // body locals, the function's `direction:` attribute on the
+            // synthesised flattened param handles I/O.
+            let scope_dir = if matches!(param.ty.kind, HirTypeKind::Port(_)) {
+                Some(param.direction.unwrap_or(Direction::In))
+            } else {
+                None
+            };
             let leaves = match self.expand_type_to_leaves(
                 &param.ty,
                 &original_name,
                 Vec::new(),
-                None,
-                param.direction == Some(Direction::Out),
+                scope_dir,
                 original_kind,
                 &param.span,
             ) {
@@ -325,9 +335,9 @@ impl<'a> FnFlattener<'a> {
             };
 
             for leaf in &leaves {
-                let direction = match leaf.fn_body_output {
-                    Some(true) => Some(Direction::Out),
-                    Some(false) => None,
+                let direction = match leaf.fn_body_dir {
+                    Some(Direction::Out) => Some(Direction::Out),
+                    Some(Direction::In) => None,
                     None => param.direction,
                 };
                 new_params.push(HirParam {
@@ -346,12 +356,20 @@ impl<'a> FnFlattener<'a> {
         // 2. Handle the return type.
         let new_return_type = if let Some(rt) = &func.return_type {
             if is_aggregate(&rt.kind) {
+                // For a port-typed return, the scope direction is `Out`
+                // (the function drives the externally-visible port). For a
+                // struct return, scope is directionless — leaves' direction
+                // is decided by the consuming site below (line 369).
+                let scope_dir = if matches!(rt.kind, HirTypeKind::Port(_)) {
+                    Some(Direction::Out)
+                } else {
+                    None
+                };
                 let result_leaves = match self.expand_type_to_leaves(
                     rt,
                     "result",
                     Vec::new(),
-                    None,
-                    true,
+                    scope_dir,
                     LocalKind::Let,
                     &rt.span,
                 ) {
@@ -362,9 +380,9 @@ impl<'a> FnFlattener<'a> {
                     }
                 };
                 for leaf in &result_leaves {
-                    let direction = match leaf.fn_body_output {
-                        Some(true) => Some(Direction::Out),
-                        Some(false) => None,
+                    let direction = match leaf.fn_body_dir {
+                        Some(Direction::Out) => Some(Direction::Out),
+                        Some(Direction::In) => None,
                         // Non-port aggregate returns are fully out-direction.
                         None => Some(Direction::Out),
                     };
@@ -408,28 +426,31 @@ impl<'a> FnFlattener<'a> {
     // ---- Type expansion ----
 
     /// Recursively expand `ty` into one `Leaf` per terminal scalar field.
-    /// `name` is the identifier prefix to use for the root; `path` is the
-    /// field-name chain accumulated so far. `inherited_dir` carries the
-    /// outer port field's direction-as-seen-by-the-function-body when
-    /// expanding a struct nested inside a port field; for direct top-level
-    /// expansion it is `None`. `is_out_param` is `true` when the root of
-    /// this expansion is an `out` parameter, used to flip the function-body
-    /// direction calculation per the planning-doc table.
+    /// `name` is the identifier prefix for the root; `path` is the field-name
+    /// chain accumulated so far. `scope_dir` is the function-body-side
+    /// direction at this point in the expansion:
+    ///
+    /// - `None` — directionless context (body local, or struct value not
+    ///   rooted at a port).
+    /// - `Some(d)` — port-rooted expansion; leaves at this depth see the
+    ///   function body as driving (`Out`) or reading (`In`) them.
+    ///
+    /// Direction composes under the rule `in` flips and `out` is identity —
+    /// see `Direction::flip` and the port-field traversal in `expand_port`.
     fn expand_type_to_leaves(
         &mut self,
         ty: &HirType,
         name: &str,
         path: Vec<String>,
-        inherited_dir: Option<bool>,
-        is_out_param: bool,
+        scope_dir: Option<Direction>,
         kind: LocalKind,
         span: &SourceSpan,
     ) -> Result<Vec<Leaf>, FlattenError> {
         match &ty.kind {
-            HirTypeKind::Port(p) => self.expand_port(p, name, path, is_out_param, kind, span),
+            HirTypeKind::Port(p) => self.expand_port(p, name, path, scope_dir, kind, span),
             HirTypeKind::Value(vt) => {
                 if let ValueKind::Struct { def } = &vt.kind {
-                    self.expand_struct(*def, &vt.domain, name, path, inherited_dir, kind, span)
+                    self.expand_struct(*def, &vt.domain, name, path, scope_dir, kind, span)
                 } else {
                     // Scalar leaf.
                     let local = self.alloc_local(name.to_owned(), span.clone(), kind);
@@ -437,19 +458,19 @@ impl<'a> FnFlattener<'a> {
                         local,
                         ty: ty.clone(),
                         path,
-                        fn_body_output: inherited_dir,
+                        fn_body_dir: scope_dir,
                     }])
                 }
             }
             HirTypeKind::Clock => {
-                // Clock-typed param (e.g. `#clk: Clock`). Treated as a leaf,
-                // passed through verbatim.
+                // Clock-typed param. Treated as a leaf, passed through
+                // verbatim; clocks have no direction in the value lattice.
                 let local = self.alloc_local(name.to_owned(), span.clone(), kind);
                 Ok(vec![Leaf {
                     local,
                     ty: ty.clone(),
                     path,
-                    fn_body_output: None,
+                    fn_body_dir: None,
                 }])
             }
             HirTypeKind::Var(_) => {
@@ -460,7 +481,7 @@ impl<'a> FnFlattener<'a> {
                     local,
                     ty: ty.clone(),
                     path,
-                    fn_body_output: inherited_dir,
+                    fn_body_dir: scope_dir,
                 }])
             }
         }
@@ -471,7 +492,7 @@ impl<'a> FnFlattener<'a> {
         port_ref: &PortTypeRef,
         _name: &str,
         _path: Vec<String>,
-        _is_out_param: bool,
+        _scope_dir: Option<Direction>,
         _kind: LocalKind,
         span: &SourceSpan,
     ) -> Result<Vec<Leaf>, FlattenError> {
@@ -498,7 +519,7 @@ impl<'a> FnFlattener<'a> {
         domain: &Domain,
         name: &str,
         path: Vec<String>,
-        inherited_dir: Option<bool>,
+        scope_dir: Option<Direction>,
         kind: LocalKind,
         span: &SourceSpan,
     ) -> Result<Vec<Leaf>, FlattenError> {
@@ -512,10 +533,10 @@ impl<'a> FnFlattener<'a> {
             }
         };
 
+        // Struct fields have no direction of their own, so `scope_dir`
+        // passes through unchanged to nested expansions.
         let mut leaves = Vec::new();
         for field in &s.fields {
-            // Apply the struct's domain to each field that's @const so it
-            // picks up the struct's domain at this use site.
             let field_ty = apply_struct_domain(&field.ty, domain);
             let mut field_path = path.clone();
             field_path.push(field.name.clone());
@@ -524,8 +545,7 @@ impl<'a> FnFlattener<'a> {
                 &field_ty,
                 &field_name,
                 field_path,
-                inherited_dir,
-                false,
+                scope_dir,
                 kind,
                 &field.span,
             )?;
@@ -582,7 +602,6 @@ impl<'a> FnFlattener<'a> {
                 &name,
                 Vec::new(),
                 None,
-                false,
                 LocalKind::Let,
                 &l.span,
             ) {
@@ -622,7 +641,7 @@ impl<'a> FnFlattener<'a> {
                     local,
                     ty: value_ty,
                     path: Vec::new(),
-                    fn_body_output: None,
+                    fn_body_dir: None,
                 }],
             );
         }
@@ -651,7 +670,6 @@ impl<'a> FnFlattener<'a> {
                 &name,
                 Vec::new(),
                 None,
-                false,
                 LocalKind::Var,
                 &v.span,
             ) {
@@ -682,7 +700,7 @@ impl<'a> FnFlattener<'a> {
                     local,
                     ty,
                     path: Vec::new(),
-                    fn_body_output: None,
+                    fn_body_dir: None,
                 }],
             );
         }
@@ -798,11 +816,11 @@ impl<'a> FnFlattener<'a> {
     ///
     /// Returns `(lhs_local, rhs_expr)`.
     ///
-    /// Rule: the side with `fn_body_output == Some(true)` is the sink. If
-    /// only one side is a port leaf (the other is a body local or a
-    /// constructed value), the port leaf's direction picks. If neither has a
-    /// direction (struct field, body-local-to-body-local), the original
-    /// equation's LHS stays as the sink.
+    /// Rule: the side with `fn_body_dir == Some(Out)` is the sink. If only
+    /// one side is a port leaf (the other is a body local or a constructed
+    /// value), the port leaf's direction picks. If neither has a direction
+    /// (struct field, body-local-to-body-local), the original equation's
+    /// LHS stays as the sink.
     fn choose_sink(
         &mut self,
         lhs_leaf: &Leaf,
@@ -820,11 +838,11 @@ impl<'a> FnFlattener<'a> {
         };
 
         match (
-            lhs_leaf.fn_body_output,
-            rhs_leaf.as_ref().and_then(|l| l.fn_body_output),
+            lhs_leaf.fn_body_dir,
+            rhs_leaf.as_ref().and_then(|l| l.fn_body_dir),
         ) {
-            (Some(true), _) => (lhs_leaf.local, rhs_extracted.clone()),
-            (Some(false), Some(true)) => {
+            (Some(Direction::Out), _) => (lhs_leaf.local, rhs_extracted.clone()),
+            (Some(Direction::In), Some(Direction::Out)) => {
                 // RHS is sink, LHS is source.
                 let lhs_as_expr = self.local_expr(
                     lhs_leaf.local,

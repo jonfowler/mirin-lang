@@ -113,6 +113,19 @@ pub enum Direction {
     Out,
 }
 
+impl Direction {
+    /// Direction composition under the rule "`in` flips, `out` is identity".
+    /// Used during aggregate flattening: descending through an `in` field of
+    /// a port reverses the function-body-side direction; descending through
+    /// an `out` field preserves it.
+    pub fn flip(self) -> Direction {
+        match self {
+            Direction::In => Direction::Out,
+            Direction::Out => Direction::In,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordFieldType {
     pub span: SourceSpan,
