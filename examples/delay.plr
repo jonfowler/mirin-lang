@@ -1,0 +1,23 @@
+
+
+struct Option {
+    valid: bool,
+    payload: uint(8),
+}
+
+fn reg2{#clk}(a: Option @clk, rstn: Reset @clk) -> Option @clk {
+    let payloadd = a.payload.reg(rstn, 0);
+    return Option {
+        valid: a.valid,
+        payload: payloadd,
+    };
+}
+
+fn double_delay
+    { #clk: Clock, rstn: Reset @clk}
+    ( in upstream: Option @clk, out downstream: Option @clk )
+    {
+        let delay1 = reg2(upstream,rstn);
+        let delay2 = reg2(delay1,rstn);
+        downstream = delay2;
+    }

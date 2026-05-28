@@ -351,6 +351,11 @@ fn lower_expr(
         },
         HirExprKind::Local(id) => SvExpr::Ident(sv_name(local_names, func, *id)),
         HirExprKind::Call(call) => lower_call(call, func, defs, local_names),
+        // After `flatten_aggregates` runs, every field access on a flattened
+        // aggregate is rewritten to a `Local`. A `Field` reaching here means
+        // flatten didn't cover this shape; emit a placeholder so downstream
+        // tooling sees it but doesn't silently produce wrong SV.
+        HirExprKind::Field(_) => SvExpr::Ident("UNRESOLVED_FIELD".to_owned()),
     }
 }
 
@@ -436,6 +441,9 @@ fn lower_width_expr(
         HirExprKind::Local(id) => SvExpr::Ident(sv_name(local_names, func, *id)),
         HirExprKind::Call(_) => lower_expr(width, func, defs, local_names),
         HirExprKind::Const(ConstValue::Bool(_)) => SvExpr::Lit("1".to_owned()),
+        // Widths are `usize`, so field access (a struct/port field result)
+        // cannot appear here in well-typed HIR; pick a safe placeholder.
+        HirExprKind::Field(_) => SvExpr::Lit("0".to_owned()),
     }
 }
 
@@ -473,6 +481,9 @@ fn infer_sv_type(
             }
             SvType::bit()
         }
+        // Field access after flatten should have been rewritten to a Local.
+        // If one slips through, fall back to a bit-wide type.
+        HirExprKind::Field(_) => SvType::bit(),
     }
 }
 

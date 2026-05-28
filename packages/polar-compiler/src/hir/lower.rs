@@ -22,9 +22,9 @@ use std::fmt;
 
 use super::{
     ConstValue, Domain, HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind,
-    HirFn, HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirPortField, HirSourceFile,
-    HirStmt, HirStruct, HirStructField, HirType, HirTypeKind, HirVarDecl, LocalId, ParamSection,
-    PortTypeRef, ValueKind, ValueType,
+    HirFieldAccess, HirFn, HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirPortField,
+    HirSourceFile, HirStmt, HirStruct, HirStructField, HirType, HirTypeKind, HirVarDecl, LocalId,
+    ParamSection, PortTypeRef, ValueKind, ValueType,
 };
 use crate::SourceSpan;
 use crate::resolve::{DefId, DefKind, LocalKind, Res, ResolveResult};
@@ -913,42 +913,84 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Walk a postfix expression's operations left-to-right, building up the
+    /// HIR expression as we go. Two shapes are recognised within the walk:
+    ///
+    /// - `Field` immediately followed by `Arguments` → method call. Only the
+    ///   prelude `.reg(rst, reset_val)` is dispatched today; everything else
+    ///   surfaces as an `UnknownMethod` error pending the deferred
+    ///   method-dispatch pass (typeck-time, modelled on rustc).
+    /// - Bare `Field` → field access (`HirExprKind::Field`); the receiver's
+    ///   type is resolved by type-check, which dispatches to the struct or
+    ///   port definition.
+    ///
+    /// `NamedArguments` and standalone `Arguments` ops only make sense
+    /// against a direct fn-def receiver, handled by `lower_free_call`. Any
+    /// other shape (e.g. `f(x).y`) is rejected as unsupported.
     fn lower_method_call(&mut self, p: &PostfixExpression) -> HirExpr {
-        // First-pass supports only `<expr>.reg(rst, reset_val)`.
-        let mut field = None;
-        let mut args: Option<&[Expression]> = None;
-        let mut rest_ok = true;
-        for op in &p.operations {
-            match op {
-                PostfixOperation::Field(f) if field.is_none() => {
-                    field = Some(f);
+        let mut current = self.lower_expr(&p.receiver);
+        let ops = &p.operations;
+        let mut i = 0;
+        while i < ops.len() {
+            match &ops[i] {
+                PostfixOperation::Field(field) => {
+                    let method_call =
+                        matches!(ops.get(i + 1), Some(PostfixOperation::Arguments(_)));
+                    if method_call {
+                        let PostfixOperation::Arguments(args_list) = &ops[i + 1] else {
+                            unreachable!()
+                        };
+                        current = self.lower_method_step(current, field, &args_list.arguments);
+                        i += 2;
+                    } else {
+                        let span = combine_spans(&current.span, &field.span);
+                        current = HirExpr {
+                            kind: HirExprKind::Field(HirFieldAccess {
+                                receiver: Box::new(current),
+                                name: field.field.text.clone(),
+                                name_span: field.field.span.clone(),
+                            }),
+                            ty: None,
+                            span,
+                            id: self.next_hir_id(),
+                        };
+                        i += 1;
+                    }
                 }
-                PostfixOperation::Arguments(list) if args.is_none() => {
-                    args = Some(&list.arguments);
+                PostfixOperation::Arguments(list) => {
+                    self.error(
+                        HirLowerErrorKind::Unsupported {
+                            what: "calling a non-function expression",
+                        },
+                        list.span.clone(),
+                    );
+                    return self.placeholder_expr(p.span.clone());
                 }
-                _ => {
-                    rest_ok = false;
+                PostfixOperation::NamedArguments(list) => {
+                    self.error(
+                        HirLowerErrorKind::Unsupported {
+                            what: "named arguments outside a direct function call",
+                        },
+                        list.span.clone(),
+                    );
+                    return self.placeholder_expr(p.span.clone());
                 }
             }
         }
-        if !rest_ok {
-            self.error(
-                HirLowerErrorKind::Unsupported {
-                    what: "method-call shapes beyond `<expr>.method(args)`",
-                },
-                p.span.clone(),
-            );
-            return self.placeholder_expr(p.span.clone());
-        }
-        let Some(field) = field else {
-            self.error(
-                HirLowerErrorKind::Unsupported {
-                    what: "postfix expressions without a callable head",
-                },
-                p.span.clone(),
-            );
-            return self.placeholder_expr(p.span.clone());
-        };
+        current
+    }
+
+    /// Lower a single `.<name>(<args>)` step against an already-lowered
+    /// receiver. Only `.reg(rst, reset_val)` is recognised in the first
+    /// pass; everything else is `UnknownMethod` until the deferred
+    /// method-dispatch pass lands.
+    fn lower_method_step(
+        &mut self,
+        receiver: HirExpr,
+        field: &crate::surface_ir::FieldAccess,
+        args: &[Expression],
+    ) -> HirExpr {
+        let call_span = combine_spans(&receiver.span, &field.span);
 
         if field.field.text != "reg" {
             self.error(
@@ -957,42 +999,37 @@ impl<'a> Lowerer<'a> {
                 },
                 field.span.clone(),
             );
-            return self.placeholder_expr(p.span.clone());
+            return self.placeholder_expr(call_span);
         }
         let Some(reg_def_id) = self.reg_def_id else {
             self.error(
                 HirLowerErrorKind::InternalUnresolved("prelude `reg` def".to_owned()),
-                p.span.clone(),
+                call_span.clone(),
             );
-            return self.placeholder_expr(p.span.clone());
+            return self.placeholder_expr(call_span);
         };
-
-        let receiver_expr = self.lower_expr(&p.receiver);
 
         // `reg` signature (hardcoded for first pass):
         //   named:      [ #clk: Clock ]
         //   positional: [ self @clk, rst: Reset @clk, reset_val: uint(N) @clk ]
-        let user_args = args.unwrap_or(&[]);
-        if user_args.len() != 2 {
+        if args.len() != 2 {
             self.error(
-                HirLowerErrorKind::RegArity {
-                    got: user_args.len(),
-                },
-                p.span.clone(),
+                HirLowerErrorKind::RegArity { got: args.len() },
+                call_span.clone(),
             );
         }
-        let rst = user_args
+        let rst = args
             .first()
             .map(|e| self.lower_expr(e))
-            .unwrap_or_else(|| self.placeholder_expr(p.span.clone()));
-        let reset_val = user_args
+            .unwrap_or_else(|| self.placeholder_expr(call_span.clone()));
+        let reset_val = args
             .get(1)
             .map(|e| self.lower_expr(e))
-            .unwrap_or_else(|| self.placeholder_expr(p.span.clone()));
+            .unwrap_or_else(|| self.placeholder_expr(call_span.clone()));
 
         let hir_args = vec![
-            HirArg::Inferable,        // #clk
-            hir_given(receiver_expr), // self
+            HirArg::Inferable,   // #clk
+            hir_given(receiver), // self
             hir_given(rst),
             hir_given(reset_val),
         ];
@@ -1001,10 +1038,10 @@ impl<'a> Lowerer<'a> {
             kind: HirExprKind::Call(HirCall {
                 callee: reg_def_id,
                 args: hir_args,
-                span: p.span.clone(),
+                span: call_span.clone(),
             }),
             ty: None,
-            span: p.span.clone(),
+            span: call_span,
             id: self.next_hir_id(),
         }
     }
@@ -1163,6 +1200,18 @@ fn hir_default(expr: HirExpr) -> HirArg {
     HirArg::Provided {
         expr,
         source: HirArgSource::Default,
+    }
+}
+
+/// Build a span covering `from`'s start through `to`'s end. Used when stitching
+/// a postfix operation onto a receiver expression to produce a span for the
+/// combined HIR node.
+fn combine_spans(from: &SourceSpan, to: &SourceSpan) -> SourceSpan {
+    SourceSpan {
+        start_byte: from.start_byte,
+        end_byte: to.end_byte,
+        start: from.start.clone(),
+        end: to.end.clone(),
     }
 }
 
@@ -1552,6 +1601,7 @@ mod tests {
                 "simple_port",
                 include_str!("../../../../examples/simple_port.plr"),
             ),
+            ("delay", include_str!("../../../../examples/delay.plr")),
         ];
         for (name, source) in examples {
             let file = parse_surface_source(source)
@@ -1567,5 +1617,62 @@ mod tests {
                 Err(errors) => panic!("example `{name}` failed to lower: {errors:?}"),
             }
         }
+    }
+
+    #[test]
+    fn bare_field_access_lowers_to_field_expr() {
+        let file = lower_ok(
+            "struct Pair = pair { a: bool, b: uint(8) }\n\
+             fn f(p: Pair) -> bool { return p.a; }",
+        );
+        let func = first_fn(&file);
+        let HirStmt::Return(ret) = &func.body.statements[0] else {
+            panic!("expected return statement");
+        };
+        let HirExprKind::Field(field) = &ret.kind else {
+            panic!("expected Field expression, got {:?}", ret.kind);
+        };
+        assert_eq!(field.name, "a");
+        assert!(matches!(field.receiver.kind, HirExprKind::Local(_)));
+    }
+
+    #[test]
+    fn chained_field_then_reg_lowers_to_call_on_field_access() {
+        let file = lower_ok(
+            "struct Pair = pair { a: bool, b: uint(8) }\n\
+             fn f(rstn: Reset @clk, p: Pair @clk) -> uint(8) @clk { return p.b.reg(rstn, 0); }",
+        );
+        let func = first_fn(&file);
+        let HirStmt::Return(ret) = &func.body.statements[0] else {
+            panic!("expected return statement");
+        };
+        // `p.b.reg(rstn, 0)` should lower to a Call whose self arg (slot 1)
+        // is a Field(Local(p), "b").
+        let HirExprKind::Call(call) = &ret.kind else {
+            panic!("expected Call, got {:?}", ret.kind);
+        };
+        assert_eq!(call.args.len(), 4);
+        let HirArg::Provided { expr: self_arg, .. } = &call.args[1] else {
+            panic!("expected Provided self");
+        };
+        let HirExprKind::Field(field) = &self_arg.kind else {
+            panic!("expected Field at self slot, got {:?}", self_arg.kind);
+        };
+        assert_eq!(field.name, "b");
+    }
+
+    #[test]
+    fn unknown_method_still_reports_for_non_reg() {
+        // A bare method call that isn't `.reg` should still surface as
+        // UnknownMethod until the deferred dispatch pass lands.
+        let errs = lower("fn f(a: uint(8)) -> uint(8) { return a.frobnicate(); }")
+            .expect_err("expected lowering errors");
+        assert!(
+            errs.iter().any(|e| matches!(
+                &e.kind,
+                HirLowerErrorKind::UnknownMethod { method } if method == "frobnicate"
+            )),
+            "errors: {errs:?}"
+        );
     }
 }

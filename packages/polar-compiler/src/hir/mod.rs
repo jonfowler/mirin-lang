@@ -190,6 +190,21 @@ pub enum HirExprKind {
     /// `packet { valid: false, ... }` into the same shape so later passes
     /// have one code path.
     Call(HirCall),
+    /// Field access `<receiver>.<name>`. The field name is unresolved at HIR
+    /// time — type checking matches it against the receiver's struct (or, in
+    /// future, port) definition. See `infer_field` in `typeck`.
+    Field(HirFieldAccess),
+}
+
+/// Deferred field-access node. The receiver's type is unknown at HIR-lowering
+/// time, so we just record the name and let type-check do the dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirFieldAccess {
+    pub receiver: Box<HirExpr>,
+    pub name: String,
+    /// Span of the field name identifier (after the `.`). Useful for pointing
+    /// diagnostics at the field rather than the whole expression.
+    pub name_span: SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

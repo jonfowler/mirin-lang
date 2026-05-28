@@ -926,6 +926,16 @@ impl<'a> FnFlattener<'a> {
                     span: expr.span.clone(),
                 })
             }
+            // `a.payload` in an aggregate context behaves like
+            // `extract_field(a, ["payload"] ++ path)` — the field-access node
+            // just prepends one element to the lookup path before recursing
+            // into the receiver's expansion.
+            HirExprKind::Field(field) => {
+                let mut full_path = Vec::with_capacity(path.len() + 1);
+                full_path.push(field.name.clone());
+                full_path.extend_from_slice(path);
+                self.extract_field(&field.receiver, &full_path)
+            }
         }
     }
 
@@ -1071,6 +1081,15 @@ impl<'a> FnFlattener<'a> {
                     args: new_args,
                     span: call.span.clone(),
                 })
+            }
+            // Scalar Field access: try to resolve to the corresponding
+            // flattened leaf. Falling back to `None` leaves the Field node
+            // in place so sv_lower can fail loudly if flatten didn't cover
+            // the receiver shape.
+            HirExprKind::Field(field) => {
+                return self
+                    .extract_field(&field.receiver, &[field.name.clone()])
+                    .ok();
             }
         };
         Some(HirExpr {

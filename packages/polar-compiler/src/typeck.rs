@@ -17,9 +17,9 @@ use std::fmt;
 use std::path::Path;
 
 use crate::hir::{
-    ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFn, HirId, HirItem,
-    HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId, PortTypeRef, TypeVar,
-    ValueKind, ValueType,
+    ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFieldAccess, HirFn,
+    HirId, HirItem, HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId, PortTypeRef,
+    TypeVar, ValueKind, ValueType,
 };
 use crate::resolve::{DefId, ResolveResult};
 use crate::{Identifier, SourceExcerpt, SourceSpan};
@@ -53,6 +53,14 @@ pub enum TypeErrorKind {
         expected: &'static str,
         got: &'static str,
     },
+    /// A field access referenced a name not declared on the receiver's type.
+    UnknownField {
+        receiver_type: String,
+        field: String,
+    },
+    /// A field access was attempted on a receiver whose type doesn't have
+    /// fields (a scalar value, a clock, etc.).
+    FieldAccessOnNonAggregate { receiver_type: String },
 }
 
 impl fmt::Display for TypeErrorKind {
@@ -72,6 +80,14 @@ impl fmt::Display for TypeErrorKind {
             Self::KindMismatch { expected, got } => {
                 write!(f, "kind mismatch: expected {expected}, got {got}")
             }
+            Self::UnknownField {
+                receiver_type,
+                field,
+            } => write!(f, "type `{receiver_type}` has no field `{field}`"),
+            Self::FieldAccessOnNonAggregate { receiver_type } => write!(
+                f,
+                "cannot access a field on a value of type `{receiver_type}`"
+            ),
         }
     }
 }
@@ -685,6 +701,7 @@ impl InferCtxt {
                 .cloned()
                 .unwrap_or_else(|| self.fresh_type_var(expr.span.clone())),
             HirExprKind::Call(call) => self.infer_call(call, file),
+            HirExprKind::Field(field) => self.infer_field(field, expr.span.clone(), file),
         };
         self.expr_types.insert(expr.id, ty.clone());
         ty
@@ -946,11 +963,102 @@ impl InferCtxt {
             span: call.span.clone(),
         }
     }
+
+    /// Infer the type of `<receiver>.<name>`. Resolves the receiver's type,
+    /// requires it to be a struct (port field access is deferred until port
+    /// instances carry a domain in HIR), and returns the declared field type
+    /// with the receiver's domain stamped over any unspecified slots.
+    fn infer_field(
+        &mut self,
+        field: &HirFieldAccess,
+        span: SourceSpan,
+        file: &FileCtx<'_>,
+    ) -> HirType {
+        let recv_ty = self.infer_expr(&field.receiver, file);
+        let resolved = self.resolve_type(&recv_ty);
+
+        let (struct_def, recv_domain) = match &resolved.kind {
+            HirTypeKind::Value(vt) => match &vt.kind {
+                ValueKind::Struct { def } => match file.lookup_struct(*def) {
+                    Some(s) => (s, vt.domain.clone()),
+                    None => {
+                        // Resolver should have caught an undefined struct
+                        // before this; downgrade to a fresh var so the walk
+                        // continues.
+                        return self.fresh_type_var(span);
+                    }
+                },
+                _ => {
+                    self.errors.push(TypeError {
+                        kind: TypeErrorKind::FieldAccessOnNonAggregate {
+                            receiver_type: describe_type(&resolved),
+                        },
+                        span: span.clone(),
+                    });
+                    return self.fresh_type_var(span);
+                }
+            },
+            HirTypeKind::Port(_) => {
+                // Port field access requires the port instance to know its
+                // clock domain, which today is dropped at HIR lowering. Lands
+                // when port parametric handling does.
+                self.errors.push(TypeError {
+                    kind: TypeErrorKind::FieldAccessOnNonAggregate {
+                        receiver_type: describe_type(&resolved),
+                    },
+                    span: span.clone(),
+                });
+                return self.fresh_type_var(span);
+            }
+            _ => {
+                self.errors.push(TypeError {
+                    kind: TypeErrorKind::FieldAccessOnNonAggregate {
+                        receiver_type: describe_type(&resolved),
+                    },
+                    span: span.clone(),
+                });
+                return self.fresh_type_var(span);
+            }
+        };
+
+        let Some(decl_field) = struct_def.fields.iter().find(|f| f.name == field.name) else {
+            self.errors.push(TypeError {
+                kind: TypeErrorKind::UnknownField {
+                    receiver_type: struct_def.name.clone(),
+                    field: field.name.clone(),
+                },
+                span: field.name_span.clone(),
+            });
+            return self.fresh_type_var(span);
+        };
+
+        stamp_domain(&decl_field.ty, &recv_domain)
+    }
 }
 
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Copy `recv_domain` over any `Domain::Unspecified` slot in `ty`. Used by
+/// field access: the field's declared type carries no domain annotation, so
+/// it adopts the receiver's domain at the use site.
+fn stamp_domain(ty: &HirType, recv_domain: &Domain) -> HirType {
+    let kind = match &ty.kind {
+        HirTypeKind::Value(vt) => HirTypeKind::Value(ValueType {
+            kind: vt.kind.clone(),
+            domain: match &vt.domain {
+                Domain::Unspecified => recv_domain.clone(),
+                other => other.clone(),
+            },
+        }),
+        other => other.clone(),
+    };
+    HirType {
+        kind,
+        span: ty.span.clone(),
+    }
+}
 
 #[allow(dead_code)]
 fn unused_identifier_marker(_: &Identifier) {}
@@ -1116,6 +1224,7 @@ mod tests {
                 "simple_port",
                 include_str!("../../../examples/simple_port.plr"),
             ),
+            ("delay", include_str!("../../../examples/delay.plr")),
         ];
         for (name, source) in examples {
             let r = check(source);
@@ -1125,5 +1234,52 @@ mod tests {
                 r.errors
             );
         }
+    }
+
+    #[test]
+    fn type_checks_struct_field_access() {
+        let r = check(
+            "struct Pair = pair { a: bool, b: uint(8) }\n\
+             fn f(p: Pair @clk) -> uint(8) @clk { return p.b; }",
+        );
+        assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn struct_field_access_carries_receiver_domain() {
+        let r = check(
+            "struct Pair = pair { a: bool, b: uint(8) }\n\
+             fn f(rstn: Reset @clk, p: Pair @clk) -> uint(8) @clk { return p.b.reg(rstn, 0); }",
+        );
+        assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn unknown_struct_field_is_reported_by_typeck() {
+        let r = check(
+            "struct Pair = pair { a: bool, b: uint(8) }\n\
+             fn f(p: Pair) -> bool { return p.c; }",
+        );
+        assert!(
+            r.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownField { receiver_type, field }
+                    if receiver_type == "Pair" && field == "c"
+            )),
+            "expected UnknownField, got: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn field_access_on_scalar_is_rejected() {
+        let r = check("fn f(x: uint(8)) -> bool { return x.payload; }");
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::FieldAccessOnNonAggregate { .. })),
+            "expected FieldAccessOnNonAggregate, got: {:?}",
+            r.errors
+        );
     }
 }
