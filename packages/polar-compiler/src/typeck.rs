@@ -18,8 +18,8 @@ use std::path::Path;
 
 use crate::hir::{
     ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFieldAccess, HirFn,
-    HirId, HirItem, HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId, PortTypeRef,
-    TypeVar, ValueKind, ValueType,
+    HirId, HirItem, HirPort, HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId,
+    PortTypeRef, TypeVar, ValueKind, ValueType,
 };
 use crate::resolve::{DefId, ResolveResult};
 use crate::{Identifier, SourceExcerpt, SourceSpan};
@@ -293,6 +293,10 @@ struct FileCtx<'hir> {
     fns: HashMap<DefId, &'hir HirFn>,
     /// Structs keyed by `DefId`. Used to validate record constructors.
     structs: HashMap<DefId, &'hir HirStruct>,
+    /// Ports keyed by `DefId`. Used to resolve field access on port-typed
+    /// receivers (substituting the port's `#clk` parameter for the
+    /// instance's actual clock).
+    ports: HashMap<DefId, &'hir HirPort>,
     /// `DefId` of the prelude `reg` primitive. Calls to it use a hand-built
     /// signature instead of looking up a `HirFn`.
     reg_def_id: Option<DefId>,
@@ -311,6 +315,7 @@ impl<'hir> FileCtx<'hir> {
     fn new(file: &'hir HirSourceFile, resolve: &'hir ResolveResult) -> Self {
         let mut fns = HashMap::new();
         let mut structs = HashMap::new();
+        let mut ports = HashMap::new();
         for item in &file.items {
             match item {
                 HirItem::Fn(f) => {
@@ -319,13 +324,16 @@ impl<'hir> FileCtx<'hir> {
                 HirItem::Struct(s) => {
                     structs.insert(s.def_id, s);
                 }
-                HirItem::Port(_) => {}
+                HirItem::Port(p) => {
+                    ports.insert(p.def_id, p);
+                }
             }
         }
         Self {
             resolve,
             fns,
             structs,
+            ports,
             reg_def_id: resolve.def_id("reg"),
             add_def_id: resolve.def_id("+"),
             mul_def_id: resolve.def_id("*"),
@@ -355,6 +363,10 @@ impl<'hir> FileCtx<'hir> {
 
     fn lookup_struct(&self, def_id: DefId) -> Option<&'hir HirStruct> {
         self.structs.get(&def_id).copied()
+    }
+
+    fn lookup_port(&self, def_id: DefId) -> Option<&'hir HirPort> {
+        self.ports.get(&def_id).copied()
     }
 
     fn is_reg(&self, def_id: DefId) -> bool {
@@ -964,10 +976,11 @@ impl InferCtxt {
         }
     }
 
-    /// Infer the type of `<receiver>.<name>`. Resolves the receiver's type,
-    /// requires it to be a struct (port field access is deferred until port
-    /// instances carry a domain in HIR), and returns the declared field type
-    /// with the receiver's domain stamped over any unspecified slots.
+    /// Infer the type of `<receiver>.<name>`. Resolves the receiver's type;
+    /// for a struct, returns the declared field type with the receiver's
+    /// domain stamped over `Unspecified` slots; for a port, substitutes the
+    /// port's `#clk` parameter `LocalId` for the receiver's clock domain
+    /// (the binding carried on `PortTypeRef.domain`).
     fn infer_field(
         &mut self,
         field: &HirFieldAccess,
@@ -977,17 +990,28 @@ impl InferCtxt {
         let recv_ty = self.infer_expr(&field.receiver, file);
         let resolved = self.resolve_type(&recv_ty);
 
-        let (struct_def, recv_domain) = match &resolved.kind {
+        match &resolved.kind {
             HirTypeKind::Value(vt) => match &vt.kind {
-                ValueKind::Struct { def } => match file.lookup_struct(*def) {
-                    Some(s) => (s, vt.domain.clone()),
-                    None => {
+                ValueKind::Struct { def } => {
+                    let Some(struct_def) = file.lookup_struct(*def) else {
                         // Resolver should have caught an undefined struct
                         // before this; downgrade to a fresh var so the walk
                         // continues.
                         return self.fresh_type_var(span);
-                    }
-                },
+                    };
+                    let Some(decl_field) = struct_def.fields.iter().find(|f| f.name == field.name)
+                    else {
+                        self.errors.push(TypeError {
+                            kind: TypeErrorKind::UnknownField {
+                                receiver_type: struct_def.name.clone(),
+                                field: field.name.clone(),
+                            },
+                            span: field.name_span.clone(),
+                        });
+                        return self.fresh_type_var(span);
+                    };
+                    stamp_domain(&decl_field.ty, &vt.domain)
+                }
                 _ => {
                     self.errors.push(TypeError {
                         kind: TypeErrorKind::FieldAccessOnNonAggregate {
@@ -995,20 +1019,25 @@ impl InferCtxt {
                         },
                         span: span.clone(),
                     });
-                    return self.fresh_type_var(span);
+                    self.fresh_type_var(span)
                 }
             },
-            HirTypeKind::Port(_) => {
-                // Port field access requires the port instance to know its
-                // clock domain, which today is dropped at HIR lowering. Lands
-                // when port parametric handling does.
-                self.errors.push(TypeError {
-                    kind: TypeErrorKind::FieldAccessOnNonAggregate {
-                        receiver_type: describe_type(&resolved),
-                    },
-                    span: span.clone(),
-                });
-                return self.fresh_type_var(span);
+            HirTypeKind::Port(port_ref) => {
+                let Some(port_def) = file.lookup_port(port_ref.def) else {
+                    return self.fresh_type_var(span);
+                };
+                let Some(decl_field) = port_def.fields.iter().find(|f| f.name == field.name) else {
+                    self.errors.push(TypeError {
+                        kind: TypeErrorKind::UnknownField {
+                            receiver_type: port_def.name.clone(),
+                            field: field.name.clone(),
+                        },
+                        span: field.name_span.clone(),
+                    });
+                    return self.fresh_type_var(span);
+                };
+                let port_clk = port_clock_local(port_def);
+                substitute_port_domain(&decl_field.ty, port_clk, &port_ref.domain)
             }
             _ => {
                 self.errors.push(TypeError {
@@ -1017,22 +1046,9 @@ impl InferCtxt {
                     },
                     span: span.clone(),
                 });
-                return self.fresh_type_var(span);
+                self.fresh_type_var(span)
             }
-        };
-
-        let Some(decl_field) = struct_def.fields.iter().find(|f| f.name == field.name) else {
-            self.errors.push(TypeError {
-                kind: TypeErrorKind::UnknownField {
-                    receiver_type: struct_def.name.clone(),
-                    field: field.name.clone(),
-                },
-                span: field.name_span.clone(),
-            });
-            return self.fresh_type_var(span);
-        };
-
-        stamp_domain(&decl_field.ty, &recv_domain)
+        }
     }
 }
 
@@ -1040,9 +1056,40 @@ impl InferCtxt {
 // Helpers
 // ============================================================================
 
+/// Find the `LocalId` of a port's `Clock`-typed named parameter, if any.
+/// Returns `None` if the port has no such parameter (a defensive case —
+/// direction-check rejects this earlier, but we don't crash on malformed HIR).
+fn port_clock_local(port: &HirPort) -> Option<LocalId> {
+    port.params
+        .iter()
+        .find(|p| matches!(p.ty.kind, HirTypeKind::Clock))
+        .map(|p| p.local)
+}
+
+/// Substitute a port's `#clk` parameter `LocalId` for the receiver's actual
+/// clock domain in a field type. Also stamps `Unspecified` slots with the
+/// receiver's domain so unannotated port fields inherit it like struct fields.
+fn substitute_port_domain(ty: &HirType, port_clk: Option<LocalId>, recv: &Domain) -> HirType {
+    let kind = match &ty.kind {
+        HirTypeKind::Value(vt) => HirTypeKind::Value(ValueType {
+            kind: vt.kind.clone(),
+            domain: match &vt.domain {
+                Domain::Unspecified => recv.clone(),
+                Domain::Clock(l) if port_clk == Some(*l) => recv.clone(),
+                other => other.clone(),
+            },
+        }),
+        other => other.clone(),
+    };
+    HirType {
+        kind,
+        span: ty.span.clone(),
+    }
+}
+
 /// Copy `recv_domain` over any `Domain::Unspecified` slot in `ty`. Used by
-/// field access: the field's declared type carries no domain annotation, so
-/// it adopts the receiver's domain at the use site.
+/// struct field access: the field's declared type carries no domain
+/// annotation, so it adopts the receiver's domain at the use site.
 fn stamp_domain(ty: &HirType, recv_domain: &Domain) -> HirType {
     let kind = match &ty.kind {
         HirTypeKind::Value(vt) => HirTypeKind::Value(ValueType {
@@ -1279,6 +1326,41 @@ mod tests {
                 .iter()
                 .any(|e| matches!(&e.kind, TypeErrorKind::FieldAccessOnNonAggregate { .. })),
             "expected FieldAccessOnNonAggregate, got: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn type_checks_port_field_access() {
+        // A port-typed parameter binds the port's `#clk` to the caller's
+        // clock. Reading a field's value should yield the field type with
+        // the caller's clock substituted.
+        let r = check(
+            "port Stream8 { #clk: Clock } = stream8 {\n\
+                 out valid: bool @clk,\n\
+                 out data: uint(8) @clk,\n\
+                 in ready: bool @clk,\n\
+             }\n\
+             fn f { #clk: Clock } ( upstream: Stream8 @clk ) -> bool @clk { return upstream.valid; }",
+        );
+        assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn unknown_port_field_is_reported() {
+        let r = check(
+            "port Stream8 { #clk: Clock } = stream8 {\n\
+                 out valid: bool @clk,\n\
+             }\n\
+             fn f { #clk: Clock } ( upstream: Stream8 @clk ) -> bool @clk { return upstream.missing; }",
+        );
+        assert!(
+            r.errors.iter().any(|e| matches!(
+                &e.kind,
+                TypeErrorKind::UnknownField { receiver_type, field }
+                    if receiver_type == "Stream8" && field == "missing"
+            )),
+            "expected UnknownField on Stream8.missing, got: {:?}",
             r.errors
         );
     }
