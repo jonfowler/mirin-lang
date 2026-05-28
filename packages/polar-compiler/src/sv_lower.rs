@@ -68,9 +68,19 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs) -> SvModule {
     // param; reused by every `always_ff` block.
     let mut clock_names: HashMap<LocalId, String> = HashMap::new();
 
+    // Disambiguate Polar identifier names for the SV-side namespace. Polar
+    // allows `let` shadowing (`let data = ... ; let data = ...`), so two
+    // distinct `LocalId`s can share a `name`. SV identifiers must be unique
+    // within a module, so we suffix duplicates with `_1`, `_2`, … in source
+    // order; the first occurrence keeps its original name.
+    let local_names = build_local_name_map(func);
+
     // --- Params ---
     for param in &func.params {
-        let name = local_name(func, param.local).to_owned();
+        let name = local_names
+            .get(&param.local)
+            .cloned()
+            .unwrap_or_else(|| local_name(func, param.local).to_owned());
         match &param.ty.kind {
             HirTypeKind::Clock => {
                 ports.push(SvPort {
@@ -86,11 +96,14 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs) -> SvModule {
                     // const param → SV parameter, no port.
                     parameters.push(SvParameter {
                         name: name.clone(),
-                        default: param.default.as_ref().map(|e| lower_expr(e, func, defs)),
+                        default: param
+                            .default
+                            .as_ref()
+                            .map(|e| lower_expr(e, func, defs, &local_names)),
                     });
                     local_types.insert(param.local, SvType::bit());
                 } else {
-                    let sv_ty = sv_type_for_value(vt, func, defs);
+                    let sv_ty = sv_type_for_value(vt, func, defs, &local_names);
                     let direction = match param.direction {
                         Some(Direction::Out) => SvPortDirection::Output,
                         _ => SvPortDirection::Input,
@@ -118,7 +131,7 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs) -> SvModule {
     //     already represented as out-direction params by the flattening pass.
     if let Some(rt) = &func.return_type {
         if let HirTypeKind::Value(vt) = &rt.kind {
-            let sv_ty = sv_type_for_value(vt, func, defs);
+            let sv_ty = sv_type_for_value(vt, func, defs, &local_names);
             ports.push(SvPort {
                 direction: SvPortDirection::Output,
                 ty: sv_ty,
@@ -133,6 +146,7 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs) -> SvModule {
         func,
         defs,
         &clock_names,
+        &local_names,
         &mut local_types,
         &mut items,
     );
@@ -150,11 +164,20 @@ fn lower_block(
     func: &HirFn,
     defs: &BackendDefs,
     clock_names: &HashMap<LocalId, String>,
+    local_names: &HashMap<LocalId, String>,
     local_types: &mut HashMap<LocalId, SvType>,
     items: &mut Vec<SvItem>,
 ) {
     for stmt in &block.statements {
-        lower_stmt(stmt, func, defs, clock_names, local_types, items);
+        lower_stmt(
+            stmt,
+            func,
+            defs,
+            clock_names,
+            local_names,
+            local_types,
+            items,
+        );
     }
 }
 
@@ -163,25 +186,34 @@ fn lower_stmt(
     func: &HirFn,
     defs: &BackendDefs,
     clock_names: &HashMap<LocalId, String>,
+    local_names: &HashMap<LocalId, String>,
     local_types: &mut HashMap<LocalId, SvType>,
     items: &mut Vec<SvItem>,
 ) {
     match stmt {
         HirStmt::Let(l) => {
             // Declare the LHS as a logic of the value's type.
-            let sv_ty = infer_sv_type(&l.value, func, defs, local_types);
+            let sv_ty = infer_sv_type(&l.value, func, defs, local_names, local_types);
             local_types.insert(l.local, sv_ty.clone());
-            let lhs_name = local_name(func, l.local).to_owned();
+            let lhs_name = sv_name(local_names, func, l.local);
             items.push(SvItem::Logic(SvLogicDecl {
                 ty: sv_ty,
                 name: lhs_name.clone(),
             }));
-            lower_assignment_into(&l.value, &lhs_name, func, defs, clock_names, items);
+            lower_assignment_into(
+                &l.value,
+                &lhs_name,
+                func,
+                defs,
+                clock_names,
+                local_names,
+                items,
+            );
         }
         HirStmt::VarDecl(v) => {
             let sv_ty = if let Some(ty) = &v.ty {
                 if let HirTypeKind::Value(vt) = &ty.kind {
-                    sv_type_for_value(vt, func, defs)
+                    sv_type_for_value(vt, func, defs, local_names)
                 } else {
                     SvType::bit()
                 }
@@ -191,16 +223,24 @@ fn lower_stmt(
             local_types.insert(v.local, sv_ty.clone());
             items.push(SvItem::Logic(SvLogicDecl {
                 ty: sv_ty,
-                name: local_name(func, v.local).to_owned(),
+                name: sv_name(local_names, func, v.local),
             }));
         }
         HirStmt::Equation(eq) => {
-            let lhs_name = local_name(func, eq.lhs).to_owned();
-            lower_assignment_into(&eq.rhs, &lhs_name, func, defs, clock_names, items);
+            let lhs_name = sv_name(local_names, func, eq.lhs);
+            lower_assignment_into(
+                &eq.rhs,
+                &lhs_name,
+                func,
+                defs,
+                clock_names,
+                local_names,
+                items,
+            );
         }
         HirStmt::Return(e) => {
             // Scalar return → drive `result`.
-            lower_assignment_into(e, "result", func, defs, clock_names, items);
+            lower_assignment_into(e, "result", func, defs, clock_names, local_names, items);
         }
         HirStmt::Expr(_) => {
             // Side-effecting expressions are not in first-pass scope. Skip.
@@ -216,6 +256,7 @@ fn lower_assignment_into(
     func: &HirFn,
     defs: &BackendDefs,
     clock_names: &HashMap<LocalId, String>,
+    local_names: &HashMap<LocalId, String>,
     items: &mut Vec<SvItem>,
 ) {
     if let HirExprKind::Call(call) = &value.kind {
@@ -243,7 +284,7 @@ fn lower_assignment_into(
                     .unwrap_or_else(|| "clk".to_owned())
             });
             let reset = match &rstn_expr.kind {
-                HirExprKind::Local(id) => local_name(func, *id).to_owned(),
+                HirExprKind::Local(id) => sv_name(local_names, func, *id),
                 _ => "rstn".to_owned(),
             };
             items.push(SvItem::AlwaysFf(SvAlwaysFf {
@@ -251,11 +292,11 @@ fn lower_assignment_into(
                 reset,
                 reset_body: vec![SvSeqAssign {
                     lhs: SvExpr::Ident(lhs_name.to_owned()),
-                    rhs: lower_expr(reset_val_expr, func, defs),
+                    rhs: lower_expr(reset_val_expr, func, defs, local_names),
                 }],
                 clocked_body: vec![SvSeqAssign {
                     lhs: SvExpr::Ident(lhs_name.to_owned()),
-                    rhs: lower_expr(self_expr, func, defs),
+                    rhs: lower_expr(self_expr, func, defs, local_names),
                 }],
             }));
             return;
@@ -265,7 +306,7 @@ fn lower_assignment_into(
     // Default: continuous assign.
     items.push(SvItem::Assign {
         lhs: SvExpr::Ident(lhs_name.to_owned()),
-        rhs: lower_expr(value, func, defs),
+        rhs: lower_expr(value, func, defs, local_names),
     });
 }
 
@@ -293,7 +334,12 @@ fn clock_for_reg(
 // Expression lowering
 // ============================================================================
 
-fn lower_expr(expr: &HirExpr, func: &HirFn, defs: &BackendDefs) -> SvExpr {
+fn lower_expr(
+    expr: &HirExpr,
+    func: &HirFn,
+    defs: &BackendDefs,
+    local_names: &HashMap<LocalId, String>,
+) -> SvExpr {
     match &expr.kind {
         HirExprKind::Const(c) => match c {
             ConstValue::Integer(n) => SvExpr::Lit(format!("{n}")),
@@ -303,17 +349,22 @@ fn lower_expr(expr: &HirExpr, func: &HirFn, defs: &BackendDefs) -> SvExpr {
                 "1'b0".to_owned()
             }),
         },
-        HirExprKind::Local(id) => SvExpr::Ident(local_name(func, *id).to_owned()),
-        HirExprKind::Call(call) => lower_call(call, func, defs),
+        HirExprKind::Local(id) => SvExpr::Ident(sv_name(local_names, func, *id)),
+        HirExprKind::Call(call) => lower_call(call, func, defs, local_names),
     }
 }
 
-fn lower_call(call: &HirCall, func: &HirFn, defs: &BackendDefs) -> SvExpr {
+fn lower_call(
+    call: &HirCall,
+    func: &HirFn,
+    defs: &BackendDefs,
+    local_names: &HashMap<LocalId, String>,
+) -> SvExpr {
     // Binary operators (+, *) — two positional args.
     if defs.add == Some(call.callee) || defs.mul == Some(call.callee) {
         if call.args.len() == 2 {
-            let lhs = arg_expr(&call.args[0], func, defs);
-            let rhs = arg_expr(&call.args[1], func, defs);
+            let lhs = arg_expr(&call.args[0], func, defs, local_names);
+            let rhs = arg_expr(&call.args[1], func, defs, local_names);
             let op = if defs.add == Some(call.callee) {
                 SvBinOp::Add
             } else {
@@ -327,7 +378,7 @@ fn lower_call(call: &HirCall, func: &HirFn, defs: &BackendDefs) -> SvExpr {
     // builds (the always_ff path is the correct route).
     if defs.reg == Some(call.callee) && call.args.len() == 4 {
         if let HirArg::Provided { expr, .. } = &call.args[1] {
-            return lower_expr(expr, func, defs);
+            return lower_expr(expr, func, defs, local_names);
         }
     }
     // Unknown call shape — emit a placeholder identifier so the file still
@@ -335,9 +386,14 @@ fn lower_call(call: &HirCall, func: &HirFn, defs: &BackendDefs) -> SvExpr {
     SvExpr::Ident("__unknown_call__".to_owned())
 }
 
-fn arg_expr(arg: &HirArg, func: &HirFn, defs: &BackendDefs) -> SvExpr {
+fn arg_expr(
+    arg: &HirArg,
+    func: &HirFn,
+    defs: &BackendDefs,
+    local_names: &HashMap<LocalId, String>,
+) -> SvExpr {
     match arg {
-        HirArg::Provided { expr, .. } => lower_expr(expr, func, defs),
+        HirArg::Provided { expr, .. } => lower_expr(expr, func, defs, local_names),
         HirArg::Inferable => SvExpr::Lit("/* inferable */".to_owned()),
     }
 }
@@ -346,12 +402,17 @@ fn arg_expr(arg: &HirArg, func: &HirFn, defs: &BackendDefs) -> SvExpr {
 // Type helpers
 // ============================================================================
 
-fn sv_type_for_value(vt: &ValueType, func: &HirFn, defs: &BackendDefs) -> SvType {
+fn sv_type_for_value(
+    vt: &ValueType,
+    func: &HirFn,
+    defs: &BackendDefs,
+    local_names: &HashMap<LocalId, String>,
+) -> SvType {
     match &vt.kind {
         ValueKind::Bool | ValueKind::Reset => SvType::bit(),
         ValueKind::Usize => SvType::bit(),
         ValueKind::UInt { width } => {
-            let w = lower_width_expr(width, func, defs);
+            let w = lower_width_expr(width, func, defs, local_names);
             SvType::uint(w)
         }
         ValueKind::Struct { .. } => {
@@ -361,14 +422,19 @@ fn sv_type_for_value(vt: &ValueType, func: &HirFn, defs: &BackendDefs) -> SvType
     }
 }
 
-fn lower_width_expr(width: &HirExpr, func: &HirFn, defs: &BackendDefs) -> SvExpr {
+fn lower_width_expr(
+    width: &HirExpr,
+    func: &HirFn,
+    defs: &BackendDefs,
+    local_names: &HashMap<LocalId, String>,
+) -> SvExpr {
     // Width expressions are usize-typed; reuse the standard expr lowering
     // and then peel off any `Lit("1'bX")` form (which only arises for
     // booleans, irrelevant for widths).
     match &width.kind {
         HirExprKind::Const(ConstValue::Integer(n)) => SvExpr::Lit(format!("{n}")),
-        HirExprKind::Local(id) => SvExpr::Ident(local_name(func, *id).to_owned()),
-        HirExprKind::Call(_) => lower_expr(width, func, defs),
+        HirExprKind::Local(id) => SvExpr::Ident(sv_name(local_names, func, *id)),
+        HirExprKind::Call(_) => lower_expr(width, func, defs, local_names),
         HirExprKind::Const(ConstValue::Bool(_)) => SvExpr::Lit("1".to_owned()),
     }
 }
@@ -380,11 +446,12 @@ fn infer_sv_type(
     expr: &HirExpr,
     func: &HirFn,
     defs: &BackendDefs,
+    local_names: &HashMap<LocalId, String>,
     local_types: &HashMap<LocalId, SvType>,
 ) -> SvType {
     if let Some(ty) = &expr.ty {
         if let HirTypeKind::Value(vt) = &ty.kind {
-            return sv_type_for_value(vt, func, defs);
+            return sv_type_for_value(vt, func, defs, local_names);
         }
     }
     match &expr.kind {
@@ -395,13 +462,13 @@ fn infer_sv_type(
             // Binary op result has the same type as either operand.
             if call.args.len() >= 2 {
                 if let HirArg::Provided { expr, .. } = &call.args[0] {
-                    return infer_sv_type(expr, func, defs, local_types);
+                    return infer_sv_type(expr, func, defs, local_names, local_types);
                 }
             }
             // `.reg(...)` — self is at slot 1.
             if call.args.len() == 4 {
                 if let HirArg::Provided { expr, .. } = &call.args[1] {
-                    return infer_sv_type(expr, func, defs, local_types);
+                    return infer_sv_type(expr, func, defs, local_names, local_types);
                 }
             }
             SvType::bit()
@@ -414,6 +481,41 @@ fn local_name(func: &HirFn, id: LocalId) -> &str {
         .get(id.0 as usize)
         .map(|l| l.name.as_str())
         .unwrap_or("__unknown_local__")
+}
+
+/// Look up the SV-side identifier for a `LocalId`, falling back to the raw
+/// HIR name if the map has no entry (shouldn't happen in practice).
+fn sv_name(local_names: &HashMap<LocalId, String>, func: &HirFn, id: LocalId) -> String {
+    local_names
+        .get(&id)
+        .cloned()
+        .unwrap_or_else(|| local_name(func, id).to_owned())
+}
+
+/// Build a `LocalId → unique SV identifier` map for a function. Polar
+/// allows `let` shadowing, so multiple `HirLocalInfo` entries can share a
+/// `name`. SV requires identifiers be unique within a module, so we keep
+/// the first occurrence's name and suffix later ones with `_1`, `_2`, ….
+/// Order follows the `func.locals` index (source order).
+fn build_local_name_map(func: &HirFn) -> HashMap<LocalId, String> {
+    let mut used: HashMap<String, u32> = HashMap::new();
+    let mut names: HashMap<LocalId, String> = HashMap::new();
+    for (i, info) in func.locals.iter().enumerate() {
+        let local = LocalId(i as u32);
+        let base = info.name.clone();
+        let chosen = match used.get_mut(&base) {
+            None => {
+                used.insert(base.clone(), 0);
+                base
+            }
+            Some(count) => {
+                *count += 1;
+                format!("{base}_{count}")
+            }
+        };
+        names.insert(local, chosen);
+    }
+    names
 }
 
 // `HirId` import is used in the function signatures above (via

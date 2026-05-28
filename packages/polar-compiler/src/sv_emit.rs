@@ -494,6 +494,21 @@ mod tests {
     }
 
     #[test]
+    fn shadowed_lets_emit_unique_sv_names() {
+        // pipeline.plr shadows the `data` param with two `let data = …`
+        // bindings. The emitter must rename the shadows so SV doesn't see
+        // three declarations of the same identifier.
+        let s = build_sv(include_str!("../../../examples/pipeline.plr")).expect("emit");
+        // The original `data` port and the renamed shadows should both appear.
+        assert!(s.contains("input  logic [7:0] data,"), "{s}");
+        assert!(s.contains("data_1"), "{s}");
+        assert!(s.contains("data_2"), "{s}");
+        // No duplicate logic decls.
+        let dup_count = s.matches("logic [7:0] data;").count();
+        assert_eq!(dup_count, 0, "unexpected duplicate `data` decl: {s}");
+    }
+
+    #[test]
     fn emits_all_examples_without_errors() {
         let examples = [
             include_str!("../../../examples/accumulator.plr"),
