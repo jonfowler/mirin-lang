@@ -87,7 +87,7 @@
         },
         {
           "name": "storage.modifier.polar",
-          "match": "\\b(const|in|out)\\b"
+          "match": "\\b(param|dom|in|out)\\b"
         },
         {
           "name": "constant.language.polar",
@@ -109,13 +109,6 @@
     },
     "domain-markers": {
       "patterns": [
-        {
-          "match": "(#)([A-Za-z_][A-Za-z0-9_]*)",
-          "captures": {
-            "1": { "name": "punctuation.definition.inference.polar" },
-            "2": { "name": "variable.parameter.polar" }
-          }
-        },
         {
           "match": "(@)([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
