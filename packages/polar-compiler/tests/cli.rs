@@ -13,6 +13,16 @@ fn fail_examples() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fail-examples")
 }
 
+/// Unique tempdir for SV output, scoped to the test binary's tmpdir so
+/// parallel runs don't collide.
+fn tmp_out_dir(suffix: &str) -> PathBuf {
+    let base = env!("CARGO_TARGET_TMPDIR");
+    let dir = Path::new(base).join(format!("sv-out-{suffix}"));
+    // Best-effort clean-up of stale contents from a prior run.
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
 // --- invocation errors (exit 2) ---
 
 #[test]
@@ -30,8 +40,9 @@ fn nonexistent_file_exits_2() {
 // --- success cases ---
 
 #[test]
-fn success_exits_zero_with_cst_on_stdout() {
+fn emit_cst_prints_to_stdout() {
     let output = bin()
+        .args(["--emit", "cst"])
         .arg(examples().join("add_constant.plr"))
         .output()
         .unwrap();
@@ -54,9 +65,33 @@ fn success_exits_zero_with_cst_on_stdout() {
 }
 
 #[test]
+fn default_emits_sv_to_out_dir() {
+    let out_dir = tmp_out_dir("default_emits_sv");
+    let output = bin()
+        .args(["--out".as_ref(), out_dir.as_os_str()])
+        .arg(examples().join("accumulator.plr"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sv_path = out_dir.join("accumulator.sv");
+    let sv = std::fs::read_to_string(&sv_path)
+        .unwrap_or_else(|e| panic!("expected SV at {}: {e}", sv_path.display()));
+    assert!(sv.contains("module accumulator"), "{sv}");
+    assert!(sv.contains("always_ff @(posedge clk)"), "{sv}");
+    assert!(sv.contains("if (!rstn)"), "{sv}");
+    assert!(output.stderr.is_empty(), "unexpected stderr");
+}
+
+#[test]
 fn success_produces_no_stderr() {
+    let out_dir = tmp_out_dir("no_stderr");
     for name in &["counter", "mult_add", "accumulator", "pipeline"] {
         let output = bin()
+            .args(["--out".as_ref(), out_dir.as_os_str()])
             .arg(examples().join(format!("{name}.plr")))
             .output()
             .unwrap();
@@ -71,6 +106,22 @@ fn success_produces_no_stderr() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[test]
+fn reserved_word_exits_1_with_message() {
+    let out_dir = tmp_out_dir("reserved_word");
+    let output = bin()
+        .args(["--out".as_ref(), out_dir.as_os_str()])
+        .arg(fail_examples().join("sv-reserved-word.plr"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`input`") && stderr.contains("reserved word"),
+        "expected reserved-word error mentioning `input`, got: {stderr}"
+    );
 }
 
 // --- parse errors ---
