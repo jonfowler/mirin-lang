@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn emits_accumulator() {
-        let s = build_sv(include_str!("../../../examples/accumulator.plr")).expect("emit");
+        let s = build_sv(include_str!("../../../examples/working/accumulator.plr")).expect("emit");
         // Eyeball-check the key shapes; the exact whitespace can shift
         // without breaking SV semantics.
         assert!(s.contains("module accumulator"), "{s}");
@@ -474,14 +474,15 @@ mod tests {
 
     #[test]
     fn emits_counter_with_parameter() {
-        let s = build_sv(include_str!("../../../examples/counter.plr")).expect("emit");
+        let s = build_sv(include_str!("../../../examples/working/counter.plr")).expect("emit");
         assert!(s.contains("#(parameter int bits"), "{s}");
         assert!(s.contains("[bits-1:0]"), "{s}");
     }
 
     #[test]
     fn emits_packet_struct() {
-        let s = build_sv(include_str!("../../../examples/packet_struct.plr")).expect("emit");
+        let s =
+            build_sv(include_str!("../../../examples/working/packet_struct.plr")).expect("emit");
         assert!(s.contains("inp__valid"), "{s}");
         assert!(s.contains("inp__payload"), "{s}");
         assert!(s.contains("result__valid"), "{s}");
@@ -496,7 +497,7 @@ mod tests {
         // pipeline.plr shadows the `data` param with two `let data = …`
         // bindings. The emitter must rename the shadows so SV doesn't see
         // three declarations of the same identifier.
-        let s = build_sv(include_str!("../../../examples/pipeline.plr")).expect("emit");
+        let s = build_sv(include_str!("../../../examples/working/pipeline.plr")).expect("emit");
         // The original `data` port and the renamed shadows should both appear.
         assert!(s.contains("input  logic [7:0] data,"), "{s}");
         assert!(s.contains("data_1"), "{s}");
@@ -511,7 +512,7 @@ mod tests {
         // multi_call.plr's `add9` writes `return add3(add3(x))` — a nested
         // user-fn call. The out_args pass lifts the inner call into a
         // synthetic temp; sv_lower emits three `add3` instances in `add9`.
-        let s = build_sv(include_str!("../../../examples/multi_call.plr")).expect("emit");
+        let s = build_sv(include_str!("../../../examples/working/multi_call.plr")).expect("emit");
         let instances = s.matches("add3 add3").count();
         assert_eq!(
             instances, 3,
@@ -523,7 +524,7 @@ mod tests {
     fn emits_delay_with_user_fn_instances() {
         // delay.plr's `double_delay` instantiates `reg2` twice; flatten +
         // out_args + sv_lower should produce two SV instance declarations.
-        let s = build_sv(include_str!("../../../examples/delay.plr")).expect("emit");
+        let s = build_sv(include_str!("../../../examples/working/delay.plr")).expect("emit");
         // Two `reg2` instances appear (one named `reg2`, one `reg2_1`).
         assert!(s.contains("module reg2"), "{s}");
         assert!(s.contains("module double_delay"), "{s}");
@@ -537,28 +538,18 @@ mod tests {
     }
 
     #[test]
-    fn emits_all_examples_without_errors() {
-        let examples = [
-            include_str!("../../../examples/accumulator.plr"),
-            include_str!("../../../examples/add_constant.plr"),
-            include_str!("../../../examples/counter.plr"),
-            include_str!("../../../examples/delay.plr"),
-            include_str!("../../../examples/multi_call.plr"),
-            include_str!("../../../examples/mult_add.plr"),
-            include_str!("../../../examples/packet_struct.plr"),
-            include_str!("../../../examples/pipeline.plr"),
-            include_str!("../../../examples/shift_register.plr"),
-        ];
-        for src in examples {
-            let _ = build_sv(src).expect("each example should emit without errors");
+    fn emits_working_examples_without_errors() {
+        for (name, source) in crate::test_support::working_examples() {
+            let _ = build_sv(&source)
+                .unwrap_or_else(|e| panic!("example `{name}` failed to emit: {e:?}"));
         }
     }
 
     #[test]
     fn fail_example_with_reserved_word_errors() {
-        // fail-examples/sv-reserved-word.plr uses `input` as a parameter
+        // examples/fail-expected/sv-reserved-word.plr uses `input` as a parameter
         // name. The earlier passes accept it; the emitter should reject it.
-        let src = include_str!("../../../fail-examples/sv-reserved-word.plr");
+        let src = include_str!("../../../examples/fail-expected/sv-reserved-word.plr");
         let errs = build_sv(src).expect_err("expected emission error");
         assert!(
             errs.iter().any(|e| matches!(

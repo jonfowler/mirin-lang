@@ -1254,6 +1254,7 @@ mod tests {
         let resolve = resolve_file(&file);
         assert!(resolve.errors.is_empty(), "resolve: {:?}", resolve.errors);
         let hir = lower_to_hir(&file, &resolve).expect("hir lowering");
+        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
         flatten_aggregates(&hir, &tc.expr_types)
@@ -1283,7 +1284,7 @@ mod tests {
 
     #[test]
     fn flattens_packet_struct() {
-        let source = include_str!("../../../../examples/packet_struct.plr");
+        let source = include_str!("../../../../examples/working/packet_struct.plr");
         let file = flatten_ok(source);
         let func = nth_fn(&file, 0);
 
@@ -1329,24 +1330,19 @@ mod tests {
     }
 
     #[test]
-    fn scalar_examples_pass_through() {
-        // For functions without ports/structs, flattening is the identity
-        // for the body shape (param count unchanged, statement count
-        // unchanged). Names get re-allocated but the structure stays.
-        let examples = [
-            include_str!("../../../../examples/accumulator.plr"),
-            include_str!("../../../../examples/add_constant.plr"),
-            include_str!("../../../../examples/counter.plr"),
-            include_str!("../../../../examples/mult_add.plr"),
-            include_str!("../../../../examples/pipeline.plr"),
-            include_str!("../../../../examples/shift_register.plr"),
-        ];
-        for src in examples {
-            let f = flatten_ok(src);
+    fn working_examples_flatten_without_aggregates() {
+        // For every working example, after flatten no `HirParam` should
+        // carry an aggregate type (port or struct). The pass is supposed to
+        // expose only scalar leaves at the function boundary.
+        for (name, source) in crate::test_support::working_examples() {
+            let f = flatten_ok(&source);
             for item in &f.items {
                 if let HirItem::Fn(func) = item {
                     for p in &func.params {
-                        assert!(!is_aggregate(&p.ty.kind));
+                        assert!(
+                            !is_aggregate(&p.ty.kind),
+                            "example `{name}` has aggregate param after flatten"
+                        );
                     }
                 }
             }
@@ -1355,52 +1351,23 @@ mod tests {
 
     #[test]
     fn typeck_passes_on_flattened_output() {
-        // Re-run typeck on the flattened HIR for each example. This sanity-
-        // checks that the pass produces type-correct HIR.
-        let examples = [
-            (
-                "packet_struct",
-                include_str!("../../../../examples/packet_struct.plr"),
-            ),
-            (
-                "accumulator",
-                include_str!("../../../../examples/accumulator.plr"),
-            ),
-            ("counter", include_str!("../../../../examples/counter.plr")),
-            (
-                "pipeline",
-                include_str!("../../../../examples/pipeline.plr"),
-            ),
-            (
-                "shift_register",
-                include_str!("../../../../examples/shift_register.plr"),
-            ),
-            (
-                "mult_add",
-                include_str!("../../../../examples/mult_add.plr"),
-            ),
-            (
-                "add_constant",
-                include_str!("../../../../examples/add_constant.plr"),
-            ),
-        ];
-        for (name, src) in examples {
-            let surface = parse_surface_source(src).expect("parse");
+        // Re-run typeck on the flattened HIR for each working example as a
+        // sanity check that the pass produces type-correct HIR.
+        for (name, source) in crate::test_support::working_examples() {
+            let surface = parse_surface_source(&source).expect("parse");
             let resolve = resolve_file(&surface);
             let hir = lower_to_hir(&surface, &resolve).expect("lower");
+            let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
             let tc = typeck::check_file(&hir, &resolve);
             assert!(tc.errors.is_empty(), "{name} typeck: {:?}", tc.errors);
             let flat = flatten_aggregates(&hir, &tc.expr_types)
                 .unwrap_or_else(|e| panic!("{name} flatten: {e:?}"));
-            // Re-run typeck on the flat output. Note: we don't have a
-            // fresh resolve for the synthetic locals, but typeck doesn't
-            // re-resolve — it just walks the types.
             let _tc2 = typeck::check_file(&flat, &resolve);
-            // We won't assert tc2.errors here because the flat HIR contains
-            // some types whose width expressions reference original HirIds
-            // not in this re-typeck's expr_types — this is a known limit of
-            // re-running typeck on already-typed HIR. The structural
-            // assertion above is the load-bearing check.
+            // We don't assert `_tc2.errors` is empty — the flat HIR
+            // contains synthetic locals whose width expressions reference
+            // HirIds not present in this re-typeck's expr_types. The
+            // structural assertion in `working_examples_flatten_without_aggregates`
+            // is the load-bearing check.
         }
     }
 }

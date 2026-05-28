@@ -211,36 +211,9 @@ mod tests {
     }
 
     #[test]
-    fn examples_pass_driver_check() {
-        let examples: &[(&str, &str)] = &[
-            (
-                "add_constant",
-                include_str!("../../../../examples/add_constant.plr"),
-            ),
-            (
-                "accumulator",
-                include_str!("../../../../examples/accumulator.plr"),
-            ),
-            ("counter", include_str!("../../../../examples/counter.plr")),
-            (
-                "mult_add",
-                include_str!("../../../../examples/mult_add.plr"),
-            ),
-            (
-                "packet_struct",
-                include_str!("../../../../examples/packet_struct.plr"),
-            ),
-            (
-                "pipeline",
-                include_str!("../../../../examples/pipeline.plr"),
-            ),
-            (
-                "shift_register",
-                include_str!("../../../../examples/shift_register.plr"),
-            ),
-        ];
-        for (name, source) in examples {
-            let errs = drivers(source);
+    fn working_examples_pass_driver_check() {
+        for (name, source) in crate::test_support::working_examples() {
+            let errs = drivers(&source);
             assert!(
                 errs.is_empty(),
                 "example `{name}` had driver errors: {errs:?}"

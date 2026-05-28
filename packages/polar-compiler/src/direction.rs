@@ -420,26 +420,9 @@ mod tests {
     }
 
     #[test]
-    fn success_examples_pass_direction_check() {
-        let examples: &[(&str, &str)] = &[
-            (
-                "add_constant",
-                include_str!("../../../examples/add_constant.plr"),
-            ),
-            (
-                "accumulator",
-                include_str!("../../../examples/accumulator.plr"),
-            ),
-            ("counter", include_str!("../../../examples/counter.plr")),
-            ("mult_add", include_str!("../../../examples/mult_add.plr")),
-            ("pipeline", include_str!("../../../examples/pipeline.plr")),
-            (
-                "shift_register",
-                include_str!("../../../examples/shift_register.plr"),
-            ),
-        ];
-        for (name, source) in examples {
-            let errors = check(source);
+    fn working_examples_pass_direction_check() {
+        for (name, source) in crate::test_support::working_examples() {
+            let errors = check(&source);
             assert!(
                 errors.is_empty(),
                 "example `{name}` had unexpected direction errors: {errors:?}",
@@ -449,7 +432,7 @@ mod tests {
 
     #[test]
     fn direction_fail_unknown_named_arg() {
-        let source = include_str!("../../../fail-examples/unknown-named-arg.plr");
+        let source = include_str!("../../../examples/fail-expected/unknown-named-arg.plr");
         let file = parse_surface_source(source).expect("parse failed");
         let resolve = resolve_file(&file);
         assert!(
@@ -468,7 +451,7 @@ mod tests {
 
     #[test]
     fn direction_fail_source_arrow_on_fn_param() {
-        let source = include_str!("../../../fail-examples/source-arrow-on-fn-param.plr");
+        let source = include_str!("../../../examples/fail-expected/source-arrow-on-fn-param.plr");
         let file = parse_surface_source(source).expect("parse failed");
         let resolve = resolve_file(&file);
         assert!(

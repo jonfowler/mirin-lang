@@ -1016,7 +1016,7 @@ mod tests {
 
     #[test]
     fn lowers_component_example_to_surface_ir() {
-        let source = include_str!("../../../examples/mult_add.plr");
+        let source = include_str!("../../../examples/working/mult_add.plr");
         let file = parse_surface_source(source).unwrap();
 
         assert_eq!(file.items.len(), 1);
@@ -1031,7 +1031,7 @@ mod tests {
 
     #[test]
     fn lowers_reg_call_positional_arguments() {
-        let source = include_str!("../../../examples/mult_add.plr");
+        let source = include_str!("../../../examples/working/mult_add.plr");
         let file = parse_surface_source(source).unwrap();
         let Item::Fn(component) = &file.items[0] else {
             panic!("expected fn");

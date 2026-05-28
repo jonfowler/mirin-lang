@@ -6,11 +6,11 @@ fn bin() -> Command {
 }
 
 fn examples() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/working")
 }
 
 fn fail_examples() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fail-examples")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/fail-expected")
 }
 
 /// Unique tempdir for SV output, scoped to the test binary's tmpdir so

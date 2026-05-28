@@ -172,7 +172,7 @@ pub fn lower_to_hir(
                 }
             }
             // `impl` lowering is deferred until method resolution + path
-            // expressions land; see todo-examples/impl_examples.plr.
+            // expressions land; see examples/todo/impl_examples.plr.
             Item::Impl(_) => {}
         }
     }
@@ -1580,41 +1580,9 @@ mod tests {
     // arguments are wired up.
 
     #[test]
-    fn lowers_first_pass_examples() {
-        let examples: &[(&str, &str)] = &[
-            (
-                "add_constant",
-                include_str!("../../../../examples/add_constant.plr"),
-            ),
-            (
-                "accumulator",
-                include_str!("../../../../examples/accumulator.plr"),
-            ),
-            ("counter", include_str!("../../../../examples/counter.plr")),
-            (
-                "mult_add",
-                include_str!("../../../../examples/mult_add.plr"),
-            ),
-            (
-                "packet_struct",
-                include_str!("../../../../examples/packet_struct.plr"),
-            ),
-            (
-                "pipeline",
-                include_str!("../../../../examples/pipeline.plr"),
-            ),
-            (
-                "shift_register",
-                include_str!("../../../../examples/shift_register.plr"),
-            ),
-            ("delay", include_str!("../../../../examples/delay.plr")),
-            (
-                "multi_call",
-                include_str!("../../../../examples/multi_call.plr"),
-            ),
-        ];
-        for (name, source) in examples {
-            let file = parse_surface_source(source)
+    fn lowers_working_examples() {
+        for (name, source) in crate::test_support::working_examples() {
+            let file = parse_surface_source(&source)
                 .unwrap_or_else(|e| panic!("example `{name}` failed to parse: {e}"));
             let resolve = resolve_file(&file);
             assert!(

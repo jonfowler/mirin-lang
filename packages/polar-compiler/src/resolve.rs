@@ -1088,32 +1088,15 @@ mod tests {
 
     #[test]
     fn resolves_example_file() {
-        let source = include_str!("../../../examples/mult_add.plr");
+        let source = include_str!("../../../examples/working/mult_add.plr");
         let r = resolve_file_source(source);
         assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
     }
 
     #[test]
-    fn resolves_success_examples() {
-        let examples: &[(&str, &str)] = &[
-            (
-                "add_constant",
-                include_str!("../../../examples/add_constant.plr"),
-            ),
-            (
-                "accumulator",
-                include_str!("../../../examples/accumulator.plr"),
-            ),
-            ("counter", include_str!("../../../examples/counter.plr")),
-            ("mult_add", include_str!("../../../examples/mult_add.plr")),
-            ("pipeline", include_str!("../../../examples/pipeline.plr")),
-            (
-                "shift_register",
-                include_str!("../../../examples/shift_register.plr"),
-            ),
-        ];
-        for (name, source) in examples {
-            let r = resolve_file_source(source);
+    fn resolves_working_examples() {
+        for (name, source) in crate::test_support::working_examples() {
+            let r = resolve_file_source(&source);
             assert!(
                 r.errors.is_empty(),
                 "example `{name}` had unexpected resolve errors: {:?}",
@@ -1124,7 +1107,7 @@ mod tests {
 
     #[test]
     fn name_resolution_fail_undefined_name() {
-        let source = include_str!("../../../fail-examples/undefined-name.plr");
+        let source = include_str!("../../../examples/fail-expected/undefined-name.plr");
         let r = resolve_file_source(source);
         assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
         assert!(
@@ -1137,7 +1120,7 @@ mod tests {
 
     #[test]
     fn name_resolution_fail_duplicate_def() {
-        let source = include_str!("../../../fail-examples/duplicate-def.plr");
+        let source = include_str!("../../../examples/fail-expected/duplicate-def.plr");
         let r = resolve_file_source(source);
         assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
         assert!(
@@ -1153,7 +1136,7 @@ mod tests {
 
     #[test]
     fn name_resolution_fail_duplicate_var() {
-        let source = include_str!("../../../fail-examples/duplicate-var.plr");
+        let source = include_str!("../../../examples/fail-expected/duplicate-var.plr");
         let r = resolve_file_source(source);
         assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
         assert!(
@@ -1169,7 +1152,7 @@ mod tests {
 
     #[test]
     fn name_resolution_fail_var_after_let() {
-        let source = include_str!("../../../fail-examples/var-after-let.plr");
+        let source = include_str!("../../../examples/fail-expected/var-after-let.plr");
         let r = resolve_file_source(source);
         assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
         assert!(

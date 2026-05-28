@@ -6,6 +6,8 @@ pub mod surface_ir;
 pub mod sv_emit;
 pub mod sv_ir;
 pub mod sv_lower;
+#[cfg(test)]
+pub mod test_support;
 pub mod typeck;
 
 pub use direction::{

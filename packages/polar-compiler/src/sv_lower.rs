@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn lowers_accumulator() {
-        let sv = lower(include_str!("../../../examples/accumulator.plr"));
+        let sv = lower(include_str!("../../../examples/working/accumulator.plr"));
         assert_eq!(sv.modules.len(), 1);
         let m = &sv.modules[0];
         assert_eq!(m.name, "accumulator");
@@ -680,7 +680,7 @@ mod tests {
 
     #[test]
     fn lowers_counter_with_parameter() {
-        let sv = lower(include_str!("../../../examples/counter.plr"));
+        let sv = lower(include_str!("../../../examples/working/counter.plr"));
         let m = &sv.modules[0];
         assert_eq!(m.parameters.len(), 1, "{:?}", m.parameters);
         assert_eq!(m.parameters[0].name, "bits");
@@ -688,7 +688,7 @@ mod tests {
 
     #[test]
     fn lowers_packet_struct_with_two_always_ff() {
-        let sv = lower(include_str!("../../../examples/packet_struct.plr"));
+        let sv = lower(include_str!("../../../examples/working/packet_struct.plr"));
         let m = &sv.modules[0];
         let always_ff: usize = m
             .items
@@ -703,20 +703,9 @@ mod tests {
     }
 
     #[test]
-    fn lowers_all_examples() {
-        let examples = [
-            include_str!("../../../examples/accumulator.plr"),
-            include_str!("../../../examples/add_constant.plr"),
-            include_str!("../../../examples/counter.plr"),
-            include_str!("../../../examples/delay.plr"),
-            include_str!("../../../examples/multi_call.plr"),
-            include_str!("../../../examples/mult_add.plr"),
-            include_str!("../../../examples/packet_struct.plr"),
-            include_str!("../../../examples/pipeline.plr"),
-            include_str!("../../../examples/shift_register.plr"),
-        ];
-        for src in examples {
-            let _sv = lower(src);
+    fn lowers_working_examples() {
+        for (_name, source) in crate::test_support::working_examples() {
+            let _sv = lower(&source);
         }
     }
 }
