@@ -574,10 +574,67 @@ impl<'a> FnFlattener<'a> {
             HirStmt::Equation(eq) => self.flatten_equation(eq, func, out),
             HirStmt::Return(e) => self.flatten_return(e, func, out),
             HirStmt::Expr(e) => {
-                if let Some(new_e) = self.remap_expr(e) {
-                    out.push(HirStmt::Expr(new_e));
-                }
+                let new_e = if let HirExprKind::Call(call) = &e.kind {
+                    self.expand_call_args(call, e)
+                } else {
+                    self.remap_expr(e).unwrap_or_else(|| e.clone())
+                };
+                out.push(HirStmt::Expr(new_e));
             }
+        }
+    }
+
+    /// Rewrite a `Call` expression's arguments so that any aggregate-typed
+    /// `Local` arg is replaced by N scalar `Local` args, one per leaf, in
+    /// declared field order. Used for user-function instance calls in
+    /// `HirStmt::Expr` position: the callee's params are flattened in
+    /// parallel, so each aggregate arg must expand to match.
+    fn expand_call_args(&mut self, call: &HirCall, whole: &HirExpr) -> HirExpr {
+        let mut new_args: Vec<HirArg> = Vec::with_capacity(call.args.len());
+        for arg in &call.args {
+            match arg {
+                HirArg::Inferable => new_args.push(HirArg::Inferable),
+                HirArg::Provided { expr, source } => match &expr.kind {
+                    HirExprKind::Local(id) => {
+                        if let Some(leaves) = self.expansion.get(id).cloned() {
+                            for leaf in &leaves {
+                                let leaf_expr =
+                                    self.local_expr(leaf.local, leaf.ty.clone(), expr.span.clone());
+                                new_args.push(HirArg::Provided {
+                                    expr: leaf_expr,
+                                    source: *source,
+                                });
+                            }
+                        } else {
+                            // No expansion recorded — pass the local through
+                            // unchanged.
+                            new_args.push(HirArg::Provided {
+                                expr: expr.clone(),
+                                source: *source,
+                            });
+                        }
+                    }
+                    _ => {
+                        // Other expression shapes: remap any nested Locals
+                        // (scalar substitutions only).
+                        let remapped = self.remap_expr(expr).unwrap_or_else(|| expr.clone());
+                        new_args.push(HirArg::Provided {
+                            expr: remapped,
+                            source: *source,
+                        });
+                    }
+                },
+            }
+        }
+        HirExpr {
+            kind: HirExprKind::Call(HirCall {
+                callee: call.callee,
+                args: new_args,
+                span: call.span.clone(),
+            }),
+            ty: whole.ty.clone(),
+            span: whole.span.clone(),
+            id: whole.id,
         }
     }
 

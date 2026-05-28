@@ -427,6 +427,7 @@ mod tests {
         let surface = parse_surface_source(src).expect("parse");
         let resolve = resolve_file(&surface);
         let hir = lower_to_hir(&surface, &resolve).expect("lower");
+        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let tc = typeck::check_file(&hir, &resolve);
         let flat = flatten_aggregates(&hir, &tc.expr_types).expect("flatten");
         let sv = lower_to_sv(&flat, &resolve);
@@ -506,11 +507,43 @@ mod tests {
     }
 
     #[test]
+    fn emits_multi_call_with_lifted_nested_calls() {
+        // multi_call.plr's `add9` writes `return add3(add3(x))` — a nested
+        // user-fn call. The out_args pass lifts the inner call into a
+        // synthetic temp; sv_lower emits three `add3` instances in `add9`.
+        let s = build_sv(include_str!("../../../examples/multi_call.plr")).expect("emit");
+        let instances = s.matches("add3 add3").count();
+        assert_eq!(
+            instances, 3,
+            "expected 3 add3 instances, got {instances} in:\n{s}"
+        );
+    }
+
+    #[test]
+    fn emits_delay_with_user_fn_instances() {
+        // delay.plr's `double_delay` instantiates `reg2` twice; flatten +
+        // out_args + sv_lower should produce two SV instance declarations.
+        let s = build_sv(include_str!("../../../examples/delay.plr")).expect("emit");
+        // Two `reg2` instances appear (one named `reg2`, one `reg2_1`).
+        assert!(s.contains("module reg2"), "{s}");
+        assert!(s.contains("module double_delay"), "{s}");
+        assert!(s.contains("reg2 reg2 ("), "{s}");
+        assert!(s.contains("reg2 reg2_1 ("), "{s}");
+        // Aggregate args expanded into per-leaf port connections.
+        assert!(s.contains(".a__valid(upstream__valid)"), "{s}");
+        assert!(s.contains(".a__payload(upstream__payload)"), "{s}");
+        assert!(s.contains(".result__valid(delay1__valid)"), "{s}");
+        assert!(s.contains(".result__payload(delay1__payload)"), "{s}");
+    }
+
+    #[test]
     fn emits_all_examples_without_errors() {
         let examples = [
             include_str!("../../../examples/accumulator.plr"),
             include_str!("../../../examples/add_constant.plr"),
             include_str!("../../../examples/counter.plr"),
+            include_str!("../../../examples/delay.plr"),
+            include_str!("../../../examples/multi_call.plr"),
             include_str!("../../../examples/mult_add.plr"),
             include_str!("../../../examples/packet_struct.plr"),
             include_str!("../../../examples/pipeline.plr"),

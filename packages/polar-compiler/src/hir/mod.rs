@@ -12,10 +12,12 @@
 pub mod check_drivers;
 pub mod flatten;
 pub mod lower;
+pub mod out_args;
 
 pub use check_drivers::{DriverError, DriverErrorKind, check_drivers, render_driver_errors};
 pub use flatten::{FlattenError, FlattenErrorKind, flatten_aggregates, render_flatten_errors};
 pub use lower::{HirLowerError, HirLowerErrorKind, lower_to_hir};
+pub use out_args::{OutArgsError, OutArgsErrorKind, desugar_user_calls};
 
 use crate::SourceSpan;
 use crate::resolve::{DefId, LocalKind};

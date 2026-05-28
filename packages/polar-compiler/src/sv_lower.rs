@@ -26,8 +26,8 @@ use crate::hir::{
 use crate::resolve::{DefId, ResolveResult};
 use crate::surface_ir::Direction;
 use crate::sv_ir::{
-    SvAlwaysFf, SvBinOp, SvExpr, SvFile, SvItem, SvLogicDecl, SvModule, SvParameter, SvPort,
-    SvPortDirection, SvSeqAssign, SvType,
+    SvAlwaysFf, SvBinOp, SvExpr, SvFile, SvInstance, SvItem, SvLogicDecl, SvModule, SvParameter,
+    SvPort, SvPortDirection, SvSeqAssign, SvType,
 };
 
 /// Lower a flattened HIR file to SV IR. `resolve` is used only to identify
@@ -59,10 +59,9 @@ struct BackendDefs<'a> {
     reg: Option<DefId>,
     add: Option<DefId>,
     mul: Option<DefId>,
-    /// Post-flatten user-defined functions, keyed by their `DefId`. Used by
-    /// the SV-instance lowering path (lands with the `out_args` pre-flatten
-    /// pass) to find the callee's flattened port list.
-    #[allow(dead_code)]
+    /// Post-flatten user-defined functions, keyed by their `DefId`. The SV
+    /// instance lowering path reads this to find the callee's flattened
+    /// port list (names, directions, types).
     user_fns: HashMap<DefId, &'a HirFn>,
 }
 
@@ -153,6 +152,7 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs<'_>) -> SvModule {
     }
 
     // --- Body ---
+    let mut instance_counts: HashMap<String, u32> = HashMap::new();
     lower_block(
         &func.body,
         func,
@@ -160,6 +160,7 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs<'_>) -> SvModule {
         &clock_names,
         &local_names,
         &mut local_types,
+        &mut instance_counts,
         &mut items,
     );
 
@@ -178,6 +179,7 @@ fn lower_block(
     clock_names: &HashMap<LocalId, String>,
     local_names: &HashMap<LocalId, String>,
     local_types: &mut HashMap<LocalId, SvType>,
+    instance_counts: &mut HashMap<String, u32>,
     items: &mut Vec<SvItem>,
 ) {
     for stmt in &block.statements {
@@ -188,6 +190,7 @@ fn lower_block(
             clock_names,
             local_names,
             local_types,
+            instance_counts,
             items,
         );
     }
@@ -200,6 +203,7 @@ fn lower_stmt(
     clock_names: &HashMap<LocalId, String>,
     local_names: &HashMap<LocalId, String>,
     local_types: &mut HashMap<LocalId, SvType>,
+    instance_counts: &mut HashMap<String, u32>,
     items: &mut Vec<SvItem>,
 ) {
     match stmt {
@@ -254,13 +258,94 @@ fn lower_stmt(
             // Scalar return → drive `result`.
             lower_assignment_into(e, "result", func, defs, clock_names, local_names, items);
         }
-        HirStmt::Expr(_) => {
-            // Side-effecting expressions are not in first-pass scope. Skip.
-            // (User-function calls in expression position with out-args will
-            // be lowered to `SvItem::Instance` here once the `out_args` pass
-            // lands.)
+        HirStmt::Expr(e) => {
+            // A `HirStmt::Expr` carrying a call to a known user function is a
+            // module instance — the `out_args` pre-flatten pass converts
+            // every user-fn call into this shape, with the binding(s) as
+            // trailing out-arguments. Anything else here is a side-effecting
+            // expression we don't support yet (skip).
+            if let HirExprKind::Call(call) = &e.kind
+                && let Some(callee) = defs.user_fns.get(&call.callee).copied()
+            {
+                lower_user_instance(
+                    call,
+                    callee,
+                    func,
+                    defs,
+                    local_names,
+                    instance_counts,
+                    items,
+                );
+            }
         }
     }
+}
+
+/// Emit a `SvItem::Instance` for a user-fn call. The callee's flattened
+/// param list dictates the port order; the call's args are paired against
+/// the params positionally. Inferable args (`#clk` slots) inherit the
+/// caller's binding for the same clock.
+fn lower_user_instance(
+    call: &HirCall,
+    callee: &HirFn,
+    func: &HirFn,
+    defs: &BackendDefs<'_>,
+    local_names: &HashMap<LocalId, String>,
+    instance_counts: &mut HashMap<String, u32>,
+    items: &mut Vec<SvItem>,
+) {
+    let instance_name = pick_instance_name(&callee.name, instance_counts);
+    let mut ports: Vec<(String, SvExpr)> = Vec::with_capacity(callee.params.len());
+    for (param, arg) in callee.params.iter().zip(call.args.iter()) {
+        let port_name = callee
+            .locals
+            .get(param.local.0 as usize)
+            .map(|li| li.name.clone())
+            .unwrap_or_else(|| format!("p{}", param.local.0));
+        let port_expr = match arg {
+            HirArg::Provided { expr, .. } => lower_expr(expr, func, defs, local_names),
+            HirArg::Inferable => {
+                // An inferable arg is conventionally a `dom clk` — bind it
+                // to the caller's clock-typed local of matching type. The
+                // first-pass functions have a single clock; the surrounding
+                // module's clock port is the destination.
+                SvExpr::Ident(caller_clock_name(func, local_names))
+            }
+        };
+        ports.push((port_name, port_expr));
+    }
+    items.push(SvItem::Instance(SvInstance {
+        module: callee.name.clone(),
+        name: instance_name,
+        ports,
+    }));
+}
+
+/// Choose a name for a SV instance. First-pass scheme: `<callee>_<i>`,
+/// where `i` counts instances per callee within the enclosing module.
+/// TODO: derive the name from the let-binding when possible (`let delay1 =
+/// …` should produce `delay1`); requires threading the binding name from
+/// `out_args` through `flatten` to here.
+fn pick_instance_name(callee_name: &str, instance_counts: &mut HashMap<String, u32>) -> String {
+    let n = instance_counts.entry(callee_name.to_owned()).or_insert(0);
+    let name = if *n == 0 {
+        callee_name.to_owned()
+    } else {
+        format!("{callee_name}_{n}")
+    };
+    *n += 1;
+    name
+}
+
+/// Pick a SV identifier for the caller's clock signal. Today functions have
+/// exactly one `Clock`-typed param; that's the only candidate.
+fn caller_clock_name(func: &HirFn, local_names: &HashMap<LocalId, String>) -> String {
+    for param in &func.params {
+        if matches!(param.ty.kind, HirTypeKind::Clock) {
+            return sv_name(local_names, func, param.local);
+        }
+    }
+    "clk".to_owned()
 }
 
 /// Emit either an `assign` or an `always_ff`, depending on whether `value`
@@ -567,6 +652,7 @@ mod tests {
         let resolve = resolve_file(&surface);
         assert!(resolve.errors.is_empty(), "resolve: {:?}", resolve.errors);
         let hir = lower_to_hir(&surface, &resolve).expect("lower");
+        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
         let flat = flatten_aggregates(&hir, &tc.expr_types).expect("flatten");
@@ -622,6 +708,8 @@ mod tests {
             include_str!("../../../examples/accumulator.plr"),
             include_str!("../../../examples/add_constant.plr"),
             include_str!("../../../examples/counter.plr"),
+            include_str!("../../../examples/delay.plr"),
+            include_str!("../../../examples/multi_call.plr"),
             include_str!("../../../examples/mult_add.plr"),
             include_str!("../../../examples/packet_struct.plr"),
             include_str!("../../../examples/pipeline.plr"),

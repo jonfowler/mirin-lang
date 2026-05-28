@@ -1249,6 +1249,10 @@ mod tests {
                 include_str!("../../../examples/shift_register.plr"),
             ),
             ("delay", include_str!("../../../examples/delay.plr")),
+            (
+                "multi_call",
+                include_str!("../../../examples/multi_call.plr"),
+            ),
         ];
         for (name, source) in examples {
             let r = check(source);

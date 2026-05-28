@@ -193,6 +193,29 @@ fn main() {
         process::exit(1);
     }
 
+    // Rewrite user-function calls to use out-arguments, so calls like
+    // `let x = f(args)` become `var x; f(args, x);`. After this pass each
+    // user-fn call sits at expression-statement position, which sv_lower
+    // emits as a single SV module instance.
+    let hir = match polar_compiler::desugar_user_calls(&hir) {
+        Ok(h) => h,
+        Err(errors) => {
+            for (i, err) in errors.iter().enumerate() {
+                if i > 0 {
+                    eprintln!();
+                }
+                eprintln!(
+                    "error: {} ({}:{}:{})",
+                    err.kind,
+                    args.input.display(),
+                    err.span.start.row + 1,
+                    err.span.start.column + 1,
+                );
+            }
+            process::exit(1);
+        }
+    };
+
     let tc = typeck::check_file(&hir, &result);
     if !tc.errors.is_empty() {
         let mut rendered = String::new();

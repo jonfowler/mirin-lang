@@ -1,0 +1,9 @@
+
+fn add3 (x : uint(8)) -> uint(8) {
+    return x + 3;
+}
+
+fn add9 (x : uint(8)) -> uint(8) {
+    let x = add3(x);
+    return add3(add3(x));
+}

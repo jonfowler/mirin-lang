@@ -13,8 +13,9 @@ pub use direction::{
     render_direction_errors,
 };
 pub use hir::{
-    DriverError, DriverErrorKind, FlattenError, FlattenErrorKind, check_drivers,
-    flatten_aggregates, render_driver_errors, render_flatten_errors,
+    DriverError, DriverErrorKind, FlattenError, FlattenErrorKind, OutArgsError, OutArgsErrorKind,
+    check_drivers, desugar_user_calls, flatten_aggregates, render_driver_errors,
+    render_flatten_errors,
 };
 pub use parser::tree_sitter::{
     Cst, CstChild, CstNode, ParseError, ParsedSource, SourceExcerpt, SourcePosition, SourceSpan,
