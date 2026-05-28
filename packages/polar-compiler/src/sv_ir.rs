@@ -196,8 +196,16 @@ impl SvType {
 }
 
 fn w_minus_1(w: &SvExpr) -> String {
-    // For literal widths emit "W-1" directly. For symbolic widths, keep the
-    // expression as-is and append `-1`.
+    // Concrete integer widths get pre-subtracted so the emitted SV looks
+    // idiomatic (`[7:0]` rather than `[8-1:0]`). Symbolic widths stay
+    // symbolic and rely on the SV elaborator.
+    if let SvExpr::Lit(s) = w {
+        if let Ok(n) = s.parse::<i64>() {
+            if n >= 1 {
+                return format!("{}", n - 1);
+            }
+        }
+    }
     format!("{w}-1")
 }
 
@@ -276,8 +284,8 @@ mod tests {
         };
         let s = format!("{m}");
         assert!(s.contains("module passthrough"), "{s}");
-        assert!(s.contains("input  logic [8-1:0] data"), "{s}");
-        assert!(s.contains("output logic [8-1:0] result"), "{s}");
+        assert!(s.contains("input  logic [7:0] data"), "{s}");
+        assert!(s.contains("output logic [7:0] result"), "{s}");
         assert!(s.contains("assign result = data;"), "{s}");
     }
 
