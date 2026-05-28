@@ -126,7 +126,7 @@ The safest initial rule: `var` is only legal in component bodies, not in `impl`
 method bodies. Methods that need stateful local signals should be expressed as
 sub-components.
 
-### 9. `#clk` inference through cyclic `var` equations
+### 9. `dom clk` inference through cyclic `var` equations
 
 For the common counter pattern:
 

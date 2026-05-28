@@ -136,7 +136,7 @@ This is where Polar surface syntax is simplified into a smaller semantic form.
 Responsibilities:
 
 - apply defaulted named arguments
-- solve inferable arguments such as `#clk` when there is a unique solution
+- solve inferable arguments such as `dom clk` when there is a unique solution
   (try to anchor from explicit `Reset @clk` arguments before falling back to
   a fixpoint pass over cyclic `var` equations)
 - desugar method syntax into ordinary intrinsic or function calls
@@ -186,7 +186,7 @@ Recommended core features:
 
 Surface features that should lower away:
 
-- inferable named arguments such as `#clk`
+- inferable named arguments such as `dom clk`
 - defaults on named arguments
 - method syntax
 - convenience sugar around record construction
@@ -307,7 +307,7 @@ Its pipeline uses entirely separate, purpose-built IR types for each phase:
 - **Distinct types per phase, not a parameterized shared tree.** The generic contagion cost (every node type becoming `Expr<I>`, `Item<I>`, etc.) far exceeds any reuse benefit. The transform between IRs is where real work happens and should be explicit. See `planning/surface_ir_discussion.md`.
 - **Intern identifiers early.** rustc interns identifier strings at lex time — the AST never carries heap-allocated strings. Polar's Surface IR currently uses `String` for simplicity, but moving to interned symbols before or during name resolution is the right long-term direction.
 - **Name resolution converts to opaque IDs.** After the AST, rustc never compares names as strings. `DefId` is a stable, unique identifier for each definition. Polar's elaborated IR should do the same — resolve names to IDs and use those for all subsequent passes.
-- **Monomorphisation is late.** rustc keeps generics parametric through HIR, THIR, and MIR, monomorphising only at codegen. For Polar, parameter elaboration (resolving `#clk`, widths, type parameters) is the equivalent step and should similarly happen as late as is practical — after type checking has had a chance to work on the parametric form.
+- **Monomorphisation is late.** rustc keeps generics parametric through HIR, THIR, and MIR, monomorphising only at codegen. For Polar, parameter elaboration (resolving `dom clk`, widths, type parameters) is the equivalent step and should similarly happen as late as is practical — after type checking has had a chance to work on the parametric form.
 
 ## Open questions
 

@@ -130,9 +130,9 @@ The walker computes a type for each expression and records it in `expr_types`. R
 | `Call(call)` for user fns | look up callee signature, zip args against params, unify each arg's inferred type against the param's declared type. |
 | `Call(call)` for a struct constructor | the struct's declared fields are the callee's positional params (HIR lowering already slotted user-named fields into declared order). Unify each arg's type against the field's declared type. Return `Value(Struct { def }, fresh_domain_var)`. |
 
-For `Call`, inferable named params (`#clk`) become *fresh `DomainVar`s* at the call site. Each arg's inferred domain unifies with the corresponding param's domain — which threads `#clk` through `rstn`'s `Reset @clk`, the receiver's `self @clk`, and the result's `uint(N) @clk` until they all agree.
+For `Call`, inferable named params (`dom clk`) become *fresh `DomainVar`s* at the call site. Each arg's inferred domain unifies with the corresponding param's domain — which threads `dom clk` through `rstn`'s `Reset @clk`, the receiver's `self @clk`, and the result's `uint(N) @clk` until they all agree.
 
-This is exactly the substitution rustc applies when instantiating a generic function: fresh variables stand in for each generic parameter, get unified with use sites, and the answer is read out at the end. Polar's "generics" right now are the inferable `#clk` named params and the `uint(N)` widths; parametric structs (`struct Bus(A: Type)`) will plug in here unchanged when they return — they just add more fresh-variable slots at instantiation.
+This is exactly the substitution rustc applies when instantiating a generic function: fresh variables stand in for each generic parameter, get unified with use sites, and the answer is read out at the end. Polar's "generics" right now are the inferable `dom clk` named params and the `uint(N)` widths; parametric structs (`struct Bus(A: Type)`) will plug in here unchanged when they return — they just add more fresh-variable slots at instantiation.
 
 Note that operators are also calls. `a + b` lowers to a `HirCall` against the prelude `+` DefId; `.reg(...)` likewise. There is no `HirExprKind::Binary` and no method-call shape at the HIR layer. Both `+` and `reg` have polymorphic signatures that the current substitution machinery doesn't fully handle (implicit width parameter `N`, domain `D`); for now they take bespoke paths (`infer_arith_call`, `infer_reg_call`) inside `infer_call`. Both paths use the same width-placeholder and unification primitives the general path will use once value-level type parameters are first-class.
 
@@ -235,7 +235,7 @@ To keep the first implementation bounded, the following are punted:
 
 When `struct Bus(A: Type)` returns, the work is small:
 
-- A struct's `DefId` gains a list of type/clock parameters (and later const parameters).
+- A struct's `DefId` gains a list of type/clock parameters (and later `param` bindings).
 - At a `Value(Struct { def, args })` use site, the type checker takes the struct's parameter list, allocates a fresh `TypeVar` / `DomainVar` per parameter, substitutes them into the struct's field types, and proceeds. This is the same machinery already used for inferable named params.
 - Unification of two `Value(Struct { def, args })`s requires `args` to unify element-wise — identical to how rustc unifies generic instances.
 

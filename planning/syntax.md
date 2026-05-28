@@ -20,8 +20,8 @@ This document defines the small Polar surface syntax subset that current example
 - Use Rust-like spacing for bindings and fields: `name: Type`
 - Use trailing commas inside braced lists and record literals
 - Keep named interface arguments in braces and ordinary value arguments in parentheses
-- Use `#` only for arguments that may be omitted because they are inferred at instantiation
-- Use ordinary defaults for optional arguments with fallback values; defaults do not imply inference
+- Use the `param` keyword for compile-time parameters and `dom` for clock-domain bindings; both place the name into the type environment as well as the value environment
+- A named `param`/`dom` without a default is inferred from the call site; with a default, the default is the single fallback (no inference). Positional `param`/`dom` must always be supplied explicitly.
 
 ## Domains
 
@@ -41,7 +41,7 @@ Components use:
 
 ```rust
 fn multAdd
-  { #clk: Clock, rstn: Reset @clk = high, c: uint[8] @clk = 0, }
+  { dom clk: Clock, rstn: Reset @clk = high, c: uint[8] @clk = 0, }
   ( a: uint[8] @clk, b: uint[8] @clk )
   -> uint[8] @clk
   {
@@ -72,7 +72,7 @@ Ports can carry directions on individual fields and may themselves take named pa
 
 ```rust
 port Stream8
-  { #clk: Clock }
+  { dom clk: Clock }
   {
     out valid: bool @clk,
     out data: uint[8] @clk,
@@ -88,7 +88,7 @@ port Stream8
 
 ```rust
 fn connectStream
-  { #clk: Clock }
+  { dom clk: Clock }
   ( upstream: Stream8{clk}, out downstream: Stream8{clk} )
   {
     downstream.valid = upstream.valid;
@@ -135,7 +135,7 @@ The `in`/`out` direction keywords are optional and checked for consistency when 
 
 ## Open questions kept out of the first parser slice
 
-- exact inference rules for `#clk`
+- exact inference rules for `dom clk`
 - generics and const generics beyond simple examples
 - generalized metadata syntax
 - clock inference for cyclic `var` equations: inferring the clock domain of a `var` from its own equation requires a fixpoint pass, not a simple forward walk. See `planning/known_issues.md`.

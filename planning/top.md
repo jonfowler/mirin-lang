@@ -37,14 +37,14 @@ We are creating a HDL language, currently named polar.
 
 - big endian vs little endian, how to specify the order of bits in a signal
 - syntax for metadata
-- how inferable arguments like `#clk` should work, especially once generics are introduced
+- how inferable arguments like `dom clk` should work, especially once generics are introduced
 
 
 Example multAdd
 ``` rust
 fn multAdd // fn introduces a component
   // keyword named section (optional):
-  { #clk: Clock, // # indicates this can be elided when instantiating
+  { dom clk: Clock, // # indicates this can be elided when instantiating
     rstn: Reset @clk = high, // reset associated with clk, default active value
     c: uint[8] @clk = 0, // a uint of width 8, associated with the clock domain clk, with a default value of 0
   }
@@ -66,8 +66,8 @@ fn multAdd // fn introduces a component
 Example counter
 ``` rust
 fn counter
-  { #clk: Clock, rstn: Reset @clk = high }
-  ( const bits: usize )
+  { dom clk: Clock, rstn: Reset @clk = high }
+  ( param bits: usize )
   -> uint[bits] @clk
   {
     // Doesn't make sense at the moment

@@ -46,11 +46,11 @@ module add #(parameter int N = 8) (
 endmodule
 ```
 
-So a Polar function `fn add{const N: usize}(a: uint(N), b: uint(N)) -> uint(N)`
+So a Polar function `fn add{param N: usize}(a: uint(N), b: uint(N)) -> uint(N)`
 maps directly to one SV module with `parameter int N` — not one stamped module
 per instantiation. This means:
 
-- `const N: usize` parameters pass straight through to SV `parameter`
+- `param N: usize` parameters pass straight through to SV `parameter`
   declarations.
 - `uint(N) @clk` becomes `logic [N-1:0]` in SV, with `N` referring to the
   module's parameter.
@@ -291,14 +291,14 @@ by being literally constructed). So `split` for ports reduces to the
 Source:
 
 ```polar
-port Stream8 { #clk: Clock } = stream8 {
+port Stream8 { dom clk: Clock } = stream8 {
   out valid: bool @clk,
   out data: uint(8) @clk,
   in  ready: bool @clk,
 }
 
 fn connectStream
-  { #clk: Clock }
+  { dom clk: Clock }
   ( upstream: Stream8 @clk, out downstream: Stream8 @clk )
   {
     downstream = upstream;
@@ -321,7 +321,7 @@ second; preserving Polar order):
 
 ```
 fn connectStream {
-    #clk: Clock,
+    dom clk: Clock,
 } (
     upstream__valid: bool @clk,
     upstream__data:  uint(8) @clk,
@@ -371,7 +371,7 @@ collides with a SV reserved word; the negative case lives in
 struct Packet = packet { valid: bool, payload: uint(8) }
 
 fn registerPacket
-  { #clk: Clock, rstn: Reset @clk = high }
+  { dom clk: Clock, rstn: Reset @clk = high }
   ( inp: Packet @clk )
   -> Packet @clk
   {
@@ -433,12 +433,12 @@ To check the algorithm generalises, consider:
 
 ```polar
 struct Inner = inner { a: bool, b: uint(4) }
-port  Outer { #clk: Clock } = outer {
+port  Outer { dom clk: Clock } = outer {
   out wrapped: Inner @clk,
   in  ack: bool @clk,
 }
 
-fn passthrough { #clk: Clock } ( p: Outer @clk, out q: Outer @clk ) {
+fn passthrough { dom clk: Clock } ( p: Outer @clk, out q: Outer @clk ) {
   q = p;
 }
 ```
@@ -472,7 +472,7 @@ value type.
 
 ```polar
 fn accumulator
-  { #clk: Clock, rstn: Reset @clk = high }
+  { dom clk: Clock, rstn: Reset @clk = high }
   ( data: uint(8) @clk )
   -> uint(8) @clk
   {
@@ -509,19 +509,19 @@ module accumulator (
 endmodule
 ```
 
-### Worked example 5 — `counter.plr` (const parameter)
+### Worked example 5 — `counter.plr` (`param` binding)
 
 Source:
 
 ```polar
 fn counter
-  { #clk: Clock, rstn: Reset @clk = high }
-  ( const bits: usize )
+  { dom clk: Clock, rstn: Reset @clk = high }
+  ( param bits: usize )
   -> uint(bits) @clk
   { … }
 ```
 
-`const bits: usize` does not flatten (it's not an aggregate) and is not
+`param bits: usize` does not flatten (it's not an aggregate) and is not
 monomorphised. It becomes a SV `parameter int`:
 
 ```systemverilog
@@ -612,7 +612,7 @@ In scope:
   verilator or slang and behaves identically to the Polar source (verified
   by either a small simulation harness or visual inspection of the diff,
   pending verifier infrastructure).
-- `const` parameters lower to SV `parameter`.
+- `param` bindings lower to SV `parameter`.
 - Aggregate flattening (ports and structs) at all positions: params, locals,
   returns, register operands, struct constructors.
 - `reg` lowers to inline `always_ff` with synchronous active-low reset.

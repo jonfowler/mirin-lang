@@ -55,7 +55,7 @@ struct Bus(A: Type) = bus {
 
 ```rust
 port DF
-  { #clk: Clock }
+  { dom clk: Clock }
   ( A: Type )
   = df {
     in ready: bool @clk,
@@ -78,7 +78,7 @@ Structs and ports should support the same parameter split already used elsewhere
 
 Current intended roles:
 
-- named parameters are good for inferable or configuration-style parameters such as `#clk`
+- named parameters are good for inferable or configuration-style parameters such as `dom clk`
 - positional parameters are good for type-level parameters such as `A: Type`
 
 That makes this layering natural:
@@ -128,7 +128,7 @@ A parameterized port example:
 
 ```rust
 port DF
-  { #clk: Clock }
+  { dom clk: Clock }
   ( A: Type )
   = df {
     in ready: bool @clk,

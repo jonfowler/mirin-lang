@@ -45,14 +45,14 @@ Components can have:
 
 Named arguments split into two kinds:
 
-- inferable arguments marked with `#`, currently intended mainly for clocks
+- `param`/`dom` bindings, which place the name into both the type and value environment and (without a default) are inferred at the call site
 - defaulted arguments that may be omitted because they have fallback values
 
 Example:
 
 ```rust
 fn multAdd
-  { #clk: Clock, rstn: Reset @clk = high, c: uint[8] @clk = 0, }
+  { dom clk: Clock, rstn: Reset @clk = high, c: uint[8] @clk = 0, }
   ( a: uint[8] @clk, b: uint[8] @clk )
   -> uint[8] @clk
   {
@@ -195,7 +195,7 @@ This stage should desugar the user-facing language into a smaller semantic model
 Key responsibilities:
 
 - apply defaulted named arguments
-- solve inferable arguments like `#clk` when uniquely determined
+- solve inferable arguments like `dom clk` when uniquely determined
 - lower method syntax
 - normalize record construction and field access
 - preserve explicit cyclic binding structure (`var`; see `planning/cycles_and_scoping.md`)
@@ -231,7 +231,7 @@ It should include:
 
 It should not need to preserve:
 
-- inferable `#` arguments
+- inferable `param`/`dom` arguments
 - defaults
 - method syntax sugar
 - other surface conveniences
@@ -296,7 +296,7 @@ This validates the language direction without requiring the whole language up fr
 
 The main open design questions still visible from the current work are:
 
-- exact inference rules for `#clk`
+- exact inference rules for `dom clk`
 - how generics and const generics should interact with named parameter inference
 - whether generalized metadata should ever extend beyond clock domains
 - the eventual surface syntax for component instantiation

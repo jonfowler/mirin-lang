@@ -23,7 +23,7 @@ The subtyping lattice above governs where domains sit relative to each other in 
 This is bounded polymorphism, in the System F-sub tradition. A signature like
 
 ```
-fn reg_no_reset{#clk: Clock}(self @clk) -> uint(N) @clk
+fn reg_no_reset{dom clk: Clock}(self @clk) -> uint(N) @clk
 ```
 
 requires its domain parameter to inhabit `Clock`, so a fully-`const` call such as `1.reg_no_reset()` is rejected at the type level. `@const` is still a supertype in the value lattice — it just doesn't satisfy the `Clock` kind. Clash uses the same scheme via its `KnownDomain dom` constraint.
@@ -55,7 +55,7 @@ var c = a + b;
 In the second example, the literal `1` has type `uint(8) @const`. The `.reg` signature is
 
 ```
-fn reg{#clk}(self @clk, rst: Reset @clk, reset_val: uint(N)) -> uint(N) @clk
+fn reg{dom clk}(self @clk, rst: Reset @clk, reset_val: uint(N)) -> uint(N) @clk
 ```
 
 so the call's `@clk` is anchored by `rstn: Reset @clk`. The `self` argument (`1`) is `@const`, which is compatible with `@clk` via the subtyping rule. The result is `uint(8) @clk`, which then unifies with `a`'s domain when computing `c`.
