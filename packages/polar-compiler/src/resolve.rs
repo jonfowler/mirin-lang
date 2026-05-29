@@ -273,15 +273,15 @@ impl ResolveResult {
 /// HIR lowering, which converts surface-level operator syntax into a `HirCall`
 /// against the corresponding prelude `DefId`. The user cannot name them
 /// directly because they don't tokenise as identifiers.
-const PRELUDE_FN_NAMES: &[&str] = &["reg", "+", "*"];
+const PRELUDE_FN_NAMES: &[&str] = &["reg", "+", "*", "posedge"];
 
 /// Builtin primitive types that get a `DefId` in the prelude so they can act
 /// as `impl_methods` owners. The surface parser treats these as keywords in
 /// type position; they're never resolved by name from a type expression.
-/// Pre-seeded methods (e.g. `uint::reg`) live in `impl_methods` so method
-/// dispatch on `recv.method(...)` flows through the same path for primitives
-/// and user types alike.
-const PRELUDE_TYPE_NAMES: &[&str] = &["uint", "bool"];
+/// Pre-seeded methods (e.g. `uint::reg`, `Clock::posedge`) live in
+/// `impl_methods` so method dispatch on `recv.method(...)` flows through the
+/// same path for primitives and user types alike.
+const PRELUDE_TYPE_NAMES: &[&str] = &["uint", "bool", "Clock", "Event"];
 
 /// Identifier-shaped literals (`true`, `false`, `high`, `low`). The resolver
 /// neither errors on them nor emits a `Res` — HIR lowering recognises them by
@@ -355,6 +355,20 @@ impl Ctx {
             ctx.global_defs
                 .insert(name.to_owned(), (DefKind::BuiltinType, id));
         }
+        // Seed `Clock::posedge`. Like `uint::reg`, the prelude method has
+        // no user-visible `HirFn` — typeck recognises the callee `DefId`
+        // and applies a hand-rolled signature (`Clock @D -> Event @D`).
+        let clock_def_id = ctx
+            .result
+            .def_id("Clock")
+            .expect("`Clock` was just added to the prelude");
+        let posedge_def_id = ctx
+            .result
+            .def_id("posedge")
+            .expect("`posedge` was just added to the prelude");
+        ctx.result
+            .impl_methods
+            .insert((clock_def_id, "posedge".to_owned()), posedge_def_id);
         ctx
     }
 
@@ -830,6 +844,18 @@ impl BlockCtx<'_> {
                     }
                     self.let_scope.truncate(scope_start);
                 }
+            }
+            Expression::When(when_expr) => {
+                self.resolve_expr(&when_expr.event);
+                let scope_start = self.let_scope.len();
+                self.prescan_vars(&when_expr.body);
+                for stmt in &when_expr.body.statements {
+                    self.resolve_statement(stmt);
+                }
+                if let Some(tail) = &when_expr.body.tail {
+                    self.resolve_expr(tail);
+                }
+                self.let_scope.truncate(scope_start);
             }
         }
     }

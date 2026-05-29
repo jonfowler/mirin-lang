@@ -113,8 +113,10 @@ fn validate_item(item: &SvItem, module: &str, errors: &mut Vec<EmitError>) {
             if is_reserved(&a.clock) {
                 push_err(errors, &a.clock, module);
             }
-            if is_reserved(&a.reset) {
-                push_err(errors, &a.reset, module);
+            if let Some(rst) = &a.reset
+                && is_reserved(rst)
+            {
+                push_err(errors, rst, module);
             }
             for s in &a.reset_body {
                 validate_expr_idents(&s.lhs, module, errors);
@@ -624,6 +626,28 @@ mod tests {
         assert_eq!(assigns_a, 1, "expected exactly one `= a;` in:\n{s}");
         assert_eq!(assigns_b, 1, "expected exactly one `= b;` in:\n{s}");
         assert!(s.contains("assign result = __block_"), "{s}");
+    }
+
+    #[test]
+    fn emits_when_counter_as_reset_less_always_ff() {
+        // `when clk.posedge() { count + 1 }` lowers to a reset-less
+        // `always_ff @(posedge clk) __block_N <= (count + 1);` plus a
+        // continuous `assign count = __block_N;` that ties the result
+        // back to the user's `var count`.
+        let s = build_sv(include_str!("../../../examples/working/when_counter.plr")).expect("emit");
+        assert!(s.contains("always_ff @(posedge clk) begin"), "{s}");
+        // No `if (!rstn)` for the reset-less when form.
+        assert!(
+            !s.contains("if (!rstn)"),
+            "expected no reset clause in:\n{s}"
+        );
+        assert!(s.contains("__block_"), "{s}");
+        // The synthetic var is driven by always_ff and then assigned to count.
+        let regex_assigns = s.matches("<= (count + 1);").count();
+        assert_eq!(
+            regex_assigns, 1,
+            "expected `__block_N <= (count + 1)` in:\n{s}"
+        );
     }
 
     #[test]

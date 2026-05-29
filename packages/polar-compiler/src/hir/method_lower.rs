@@ -119,6 +119,12 @@ fn rewrite_stmt(stmt: &HirStmt, ctx: &RewriteCtx<'_>) -> HirStmt {
             else_branch: rewrite_block(&i.else_branch, ctx),
             span: i.span.clone(),
         }),
+        HirStmt::AlwaysFf(a) => HirStmt::AlwaysFf(super::HirAlwaysFfStmt {
+            clock: a.clock,
+            dest: a.dest,
+            d_input: rewrite_expr(&a.d_input, ctx),
+            span: a.span.clone(),
+        }),
     }
 }
 
@@ -146,13 +152,13 @@ fn rewrite_expr(expr: &HirExpr, ctx: &RewriteCtx<'_>) -> HirExpr {
             id: expr.id,
         },
         HirExprKind::MethodCall(mc) => rewrite_method_call(mc, expr, ctx),
-        HirExprKind::Block(_) | HirExprKind::If(_) => {
+        HirExprKind::Block(_) | HirExprKind::If(_) | HirExprKind::When(_) => {
             // `lower_block_expressions` runs before `method_lower` and
-            // removes every block/if expression from HIR. Reaching here
-            // means the pipeline order changed and this pass is being asked
-            // to walk an unflattened tree — a bug.
+            // removes every block/if/when expression from HIR. Reaching
+            // here means the pipeline order changed and this pass is being
+            // asked to walk an unflattened tree — a bug.
             unreachable!(
-                "HirExprKind::Block/If should be flattened by lower_block_expressions \
+                "HirExprKind::Block/If/When should be flattened by lower_block_expressions \
                  before method_lower runs"
             );
         }

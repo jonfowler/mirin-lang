@@ -215,6 +215,12 @@ pub enum Expression {
     /// `{` can't be parsed as a record-constructor; complex conditions go
     /// in parens.
     If(Box<IfExpression>),
+    /// `when EVENT { … }` — Polar's primitive for registered state. The
+    /// event slot is typed `Event @D` (typically `clk.posedge()`); the
+    /// body is a block-expression whose tail value is the register's
+    /// D-input. The expression's value is the held register output, in
+    /// the same clock domain D.
+    When(Box<WhenExpression>),
 }
 
 impl Expression {
@@ -228,6 +234,7 @@ impl Expression {
             Self::RecordConstructor(node) => &node.span,
             Self::Block(node) => &node.span,
             Self::If(node) => &node.span,
+            Self::When(node) => &node.span,
         }
     }
 }
@@ -238,6 +245,13 @@ pub struct IfExpression {
     pub condition: Box<Expression>,
     pub then_branch: Block,
     pub else_branch: Block,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhenExpression {
+    pub span: SourceSpan,
+    pub event: Box<Expression>,
+    pub body: Block,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -826,6 +840,11 @@ impl<'a> Lowerer<'a> {
                 ),
                 then_branch: self.lower_required_block(node, "then_branch")?,
                 else_branch: self.lower_required_block(node, "else_branch")?,
+            }))),
+            "when_expression" => Ok(Expression::When(Box::new(WhenExpression {
+                span: node.span.clone(),
+                event: Box::new(self.lower_expression(lower_required_field(node, "event")?)?),
+                body: self.lower_required_block(node, "body")?,
             }))),
             _ => Err(unexpected_node(node, "expression")),
         }

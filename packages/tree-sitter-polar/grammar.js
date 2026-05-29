@@ -168,6 +168,7 @@ module.exports = grammar({
         $.parenthesized_expression,
         $.block_expression,
         $.if_expression,
+        $.when_expression,
       ),
 
     // `block_expression` is a block used in expression position. Same shape
@@ -201,6 +202,32 @@ module.exports = grammar({
         $.identifier,
         $.number,
         $.path_expression,
+        $.parenthesized_expression,
+      ),
+
+    // `when EVENT { … }` — Polar's primitive for registered state. EVENT
+    // is conventionally `clk.posedge()`, but any expression yielding a
+    // value of type `Event @D` works. The event slot uses the same
+    // restricted form as if-conditions for the same reason: a trailing
+    // `{` opens the body block, so the event expression must end before
+    // the parser sees `{`.
+    when_expression: ($) =>
+      seq(
+        "when",
+        field("event", $._when_event),
+        field("body", $.block),
+      ),
+
+    // Restricted event expression. A field-access chain (`clk.posedge()`)
+    // is the common case; complex events go in parens. Note: we DO allow
+    // `postfix_expression` here because the common case `clk.posedge()`
+    // is a postfix that ends with `)` — the parser can tell where the
+    // event ends before `{ … }` begins.
+    _when_event: ($) =>
+      choice(
+        $.identifier,
+        $.path_expression,
+        $.postfix_expression,
         $.parenthesized_expression,
       ),
 

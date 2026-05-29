@@ -313,6 +313,24 @@ fn lower_stmt(
                 );
             }
         }
+        HirStmt::AlwaysFf(a) => {
+            // `always_ff @(posedge clk) dest <= d_input;` — no reset.
+            // The dest var should already have a `logic` declaration
+            // (emitted by the VarDecl that preceded this in the late
+            // lowering pass).
+            let clock_name = sv_name(local_names, func, a.clock);
+            let dest_name = sv_name(local_names, func, a.dest);
+            let d_input = lower_expr(&a.d_input, func, defs, local_names);
+            items.push(SvItem::AlwaysFf(SvAlwaysFf {
+                clock: clock_name,
+                reset: None,
+                reset_body: Vec::new(),
+                clocked_body: vec![SvSeqAssign {
+                    lhs: SvExpr::Ident(dest_name),
+                    rhs: d_input,
+                }],
+            }));
+        }
         HirStmt::If(i) => {
             // `if`-statements (introduced by lower_block_expressions for
             // every if-expression used as a value) emit as a single
@@ -487,7 +505,7 @@ fn lower_assignment_into(
             };
             items.push(SvItem::AlwaysFf(SvAlwaysFf {
                 clock,
-                reset,
+                reset: Some(reset),
                 reset_body: vec![SvSeqAssign {
                     lhs: SvExpr::Ident(lhs_name.to_owned()),
                     rhs: lower_expr(reset_val_expr, func, defs, local_names),
@@ -557,8 +575,10 @@ fn lower_expr(
         HirExprKind::MethodCall(_) => unreachable!(
             "MethodCall should be lowered to Call by `hir::method_lower` before sv_lower"
         ),
-        HirExprKind::Block(_) | HirExprKind::If(_) => {
-            unreachable!("Block/If should be flattened by lower_block_expressions before sv_lower")
+        HirExprKind::Block(_) | HirExprKind::If(_) | HirExprKind::When(_) => {
+            unreachable!(
+                "Block/If/When should be flattened by lower_block_expressions before sv_lower"
+            )
         }
     }
 }
@@ -624,6 +644,11 @@ fn sv_type_for_value(
             let w = lower_width_expr(width, func, defs, local_names);
             SvType::uint(w)
         }
+        // `Event` has no runtime representation — `when EVENT { … }`
+        // consumes it at lower_block_expressions time, so by sv_lower an
+        // Event-typed value should never reach a port/decl. Fall back to
+        // 1-bit if one ever slips through.
+        ValueKind::Event => SvType::bit(),
         ValueKind::Struct { .. } => {
             // Should not survive flattening; fall back to 1-bit.
             SvType::bit()
@@ -649,7 +674,9 @@ fn lower_width_expr(
         // cannot appear here in well-typed HIR; pick a safe placeholder.
         HirExprKind::Field(_) => SvExpr::Lit("0".to_owned()),
         HirExprKind::MethodCall(_) => SvExpr::Lit("0".to_owned()),
-        HirExprKind::Block(_) | HirExprKind::If(_) => SvExpr::Lit("0".to_owned()),
+        HirExprKind::Block(_) | HirExprKind::If(_) | HirExprKind::When(_) => {
+            SvExpr::Lit("0".to_owned())
+        }
     }
 }
 
@@ -691,7 +718,7 @@ fn infer_sv_type(
         // If one slips through, fall back to a bit-wide type.
         HirExprKind::Field(_) => SvType::bit(),
         HirExprKind::MethodCall(_) => SvType::bit(),
-        HirExprKind::Block(_) | HirExprKind::If(_) => SvType::bit(),
+        HirExprKind::Block(_) | HirExprKind::If(_) | HirExprKind::When(_) => SvType::bit(),
     }
 }
 

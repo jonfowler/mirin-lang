@@ -179,6 +179,10 @@
         {
           "type": "record_constructor_expression",
           "named": true
+        },
+        {
+          "type": "when_expression",
+          "named": true
         }
       ]
     }
@@ -1184,6 +1188,44 @@
     }
   },
   {
+    "type": "when_expression",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "event": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
+            "named": true
+          },
+          {
+            "type": "postfix_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "(",
     "named": false
   },
@@ -1302,6 +1344,10 @@
   },
   {
     "type": "var",
+    "named": false
+  },
+  {
+    "type": "when",
     "named": false
   },
   {

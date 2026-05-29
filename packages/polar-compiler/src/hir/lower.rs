@@ -581,6 +581,15 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
+            Expression::When(when_expr) => {
+                self.prescan_expr_for_implicits(&when_expr.event);
+                for stmt in &when_expr.body.statements {
+                    self.prescan_stmt_for_locals(stmt);
+                }
+                if let Some(tail) = &when_expr.body.tail {
+                    self.prescan_expr_for_implicits(tail);
+                }
+            }
             Expression::Identifier(_) | Expression::Number(_) | Expression::Path(_) => {}
         }
     }
@@ -782,6 +791,21 @@ impl<'a> Lowerer<'a> {
             Expression::RecordConstructor(r) => self.lower_record_constructor(r),
             Expression::Block(b) => self.lower_block_expression(b),
             Expression::If(if_expr) => self.lower_if_expression(if_expr),
+            Expression::When(when_expr) => self.lower_when_expression(when_expr),
+        }
+    }
+
+    /// Lower `when EVENT { body }` to a HIR `When` expression. Stays
+    /// tree-shaped through typeck; a later pass flattens it to a result
+    /// var + always_ff statement.
+    fn lower_when_expression(&mut self, when_expr: &crate::surface_ir::WhenExpression) -> HirExpr {
+        let event = self.lower_expr(&when_expr.event);
+        let body = self.lower_branch_block(&when_expr.body);
+        HirExpr {
+            kind: HirExprKind::When(Box::new(super::HirWhenExpr { event, body })),
+            ty: None,
+            span: when_expr.span.clone(),
+            id: self.next_hir_id(),
         }
     }
 
@@ -1308,6 +1332,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             "usize" => self.value_type(ValueKind::Usize, domain_annotation, ty.span.clone()),
+            "Event" => self.value_type(ValueKind::Event, domain_annotation, ty.span.clone()),
             "Self" => {
                 // `self @clk` shorthand: the parameter lowerer in surface_ir
                 // synthesises this type. Outside an `impl` it's nonsensical.

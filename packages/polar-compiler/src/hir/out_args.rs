@@ -249,6 +249,18 @@ fn desugar_stmt_into(stmt: &HirStmt, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStm
                 span: i.span.clone(),
             }));
         }
+        HirStmt::AlwaysFf(a) => {
+            // `lift_user_calls` can lift any user-fn call inside the
+            // D-input expression into preceding statements; the always_ff
+            // statement itself is preserved.
+            let d_input = lift_user_calls(&a.d_input, ctx, out);
+            out.push(HirStmt::AlwaysFf(super::HirAlwaysFfStmt {
+                clock: a.clock,
+                dest: a.dest,
+                d_input,
+                span: a.span.clone(),
+            }));
+        }
     }
 }
 
@@ -397,8 +409,10 @@ fn lift_user_calls(expr: &HirExpr, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStmt>
         HirExprKind::MethodCall(_) => unreachable!(
             "MethodCall should be lowered to Call by `hir::method_lower` before out_args"
         ),
-        HirExprKind::Block(_) | HirExprKind::If(_) => {
-            unreachable!("Block/If should be flattened by lower_block_expressions before out_args")
+        HirExprKind::Block(_) | HirExprKind::If(_) | HirExprKind::When(_) => {
+            unreachable!(
+                "Block/If/When should be flattened by lower_block_expressions before out_args"
+            )
         }
     }
 }
@@ -462,6 +476,7 @@ fn walk_block_max(block: &HirBlock, max: &mut u32) {
                 walk_block_max(&i.then_branch, max);
                 walk_block_max(&i.else_branch, max);
             }
+            HirStmt::AlwaysFf(a) => walk_expr_max(&a.d_input, max),
         }
     }
 }

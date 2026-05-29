@@ -23,9 +23,9 @@
 use std::collections::HashMap;
 
 use super::{
-    HirArg, HirBlock, HirBlockExpr, HirCall, HirEquation, HirExpr, HirExprKind, HirFieldAccess,
-    HirFn, HirId, HirIfExpr, HirIfStmt, HirItem, HirLet, HirLocalInfo, HirMethodCall,
-    HirSourceFile, HirStmt, HirType, HirVarDecl, LocalId,
+    HirAlwaysFfStmt, HirArg, HirBlock, HirBlockExpr, HirCall, HirEquation, HirExpr, HirExprKind,
+    HirFieldAccess, HirFn, HirId, HirIfExpr, HirIfStmt, HirItem, HirLet, HirLocalInfo,
+    HirMethodCall, HirSourceFile, HirStmt, HirType, HirVarDecl, HirWhenExpr, LocalId,
 };
 use crate::SourceSpan;
 
@@ -167,9 +167,9 @@ impl<'a> FnCtx<'a> {
                 out.extend(pre);
                 out.push(HirStmt::Expr(value));
             }
-            HirStmt::If(_) => {
-                // `HirStmt::If` is only produced by this pass itself. Reaching
-                // it on input means we ran twice; treat as a clone.
+            HirStmt::If(_) | HirStmt::AlwaysFf(_) => {
+                // Both statement forms are only produced by this pass.
+                // Re-encountering them means we ran twice — preserve.
                 out.push(stmt.clone());
             }
         }
@@ -266,6 +266,7 @@ impl<'a> FnCtx<'a> {
             }
             HirExprKind::Block(b) => self.lower_block_expr(b, &expr.span),
             HirExprKind::If(if_expr) => self.lower_if_expr(if_expr, expr.id, &expr.span),
+            HirExprKind::When(when_expr) => self.lower_when_expr(when_expr, expr.id, &expr.span),
         }
     }
 
@@ -356,6 +357,82 @@ impl<'a> FnCtx<'a> {
         )
     }
 
+    /// `when EVENT { body }`: synthesise a `var __block_N` of the
+    /// when-expression's type, lower the body's prelude into the caller's
+    /// pending list, then emit `HirStmt::AlwaysFf { clock, dest, d_input }`
+    /// where `clock` is extracted from the event's `recv.posedge()` shape.
+    /// The expression's value is `Local(__block_N)`.
+    fn lower_when_expr(
+        &mut self,
+        when_expr: &HirWhenExpr,
+        when_hir_id: HirId,
+        span: &SourceSpan,
+    ) -> (Vec<HirStmt>, HirExpr) {
+        // Extract the clock LocalId from the event. The event is expected
+        // to be `clock.posedge()` — i.e. a MethodCall whose receiver is a
+        // Local of clock-domain type. If we can't see that shape, fall
+        // back to a sentinel LocalId so downstream passes have something
+        // to emit; typeck has already type-checked the event and would
+        // have flagged shape problems earlier.
+        let clock_local = extract_event_clock(&when_expr.event).unwrap_or(LocalId(u32::MAX));
+
+        // Look up the when-expression's type for the synthetic register.
+        let result_ty = self
+            .expr_types
+            .get(&when_hir_id)
+            .cloned()
+            .unwrap_or_else(|| HirType {
+                kind: super::HirTypeKind::Value(super::ValueType {
+                    kind: super::ValueKind::Bool,
+                    domain: super::Domain::Unspecified,
+                }),
+                span: span.clone(),
+            });
+
+        let result_local = self.alloc_result_var(result_ty.clone(), span.clone());
+
+        // Lower the body. Statements (combinational) and tail (D-input).
+        let mut pre = Vec::new();
+        for stmt in &when_expr.body.block.statements {
+            self.lower_stmt(stmt, &mut pre);
+        }
+        let d_input = match &when_expr.body.tail {
+            Some(t) => {
+                let (tail_pre, val) = self.lower_expr(t);
+                pre.extend(tail_pre);
+                val
+            }
+            None => HirExpr {
+                kind: HirExprKind::Const(super::ConstValue::Integer(0)),
+                ty: None,
+                span: span.clone(),
+                id: self.fresh_hir_id(),
+            },
+        };
+
+        pre.push(HirStmt::VarDecl(HirVarDecl {
+            local: result_local,
+            ty: Some(result_ty),
+            span: span.clone(),
+        }));
+        pre.push(HirStmt::AlwaysFf(HirAlwaysFfStmt {
+            clock: clock_local,
+            dest: result_local,
+            d_input,
+            span: span.clone(),
+        }));
+
+        (
+            pre,
+            HirExpr {
+                kind: HirExprKind::Local(result_local),
+                ty: None,
+                span: span.clone(),
+                id: self.fresh_hir_id(),
+            },
+        )
+    }
+
     /// Lower one branch of an if-expression into a `HirBlock` whose last
     /// statement is an `Equation` assigning the branch's tail value to the
     /// shared result local.
@@ -389,6 +466,24 @@ impl<'a> FnCtx<'a> {
     }
 }
 
+/// Peel a `when EVENT { … }`'s event expression to identify the clock
+/// local. The supported shape is a method call against the prelude
+/// `posedge`, whose receiver is a `Local` referring to a Clock-typed
+/// parameter. Returns `None` for shapes outside that — typeck would have
+/// already flagged anything weird; this is just a structural extraction.
+fn extract_event_clock(event: &HirExpr) -> Option<LocalId> {
+    match &event.kind {
+        HirExprKind::MethodCall(mc) => match &mc.receiver.kind {
+            HirExprKind::Local(id) => Some(*id),
+            _ => None,
+        },
+        // Direct `Local` would only appear if some future Event ctor took a
+        // clock without the .posedge() syntax. Not used today.
+        HirExprKind::Local(id) => Some(*id),
+        _ => None,
+    }
+}
+
 /// Walk a HirBlock recursively to find the maximum HirId so the pass can
 /// allocate fresh ids without collisions.
 fn scan_max_hir_id_block(block: &HirBlock, max: &mut u32) {
@@ -407,6 +502,9 @@ fn scan_max_hir_id_stmt(stmt: &HirStmt, max: &mut u32) {
             scan_max_hir_id_expr(&i.condition, max);
             scan_max_hir_id_block(&i.then_branch, max);
             scan_max_hir_id_block(&i.else_branch, max);
+        }
+        HirStmt::AlwaysFf(a) => {
+            scan_max_hir_id_expr(&a.d_input, max);
         }
     }
 }
@@ -447,6 +545,13 @@ fn scan_max_hir_id_expr(expr: &HirExpr, max: &mut u32) {
             }
             scan_max_hir_id_block(&if_expr.else_branch.block, max);
             if let Some(t) = &if_expr.else_branch.tail {
+                scan_max_hir_id_expr(t, max);
+            }
+        }
+        HirExprKind::When(when_expr) => {
+            scan_max_hir_id_expr(&when_expr.event, max);
+            scan_max_hir_id_block(&when_expr.body.block, max);
+            if let Some(t) = &when_expr.body.tail {
                 scan_max_hir_id_expr(t, max);
             }
         }

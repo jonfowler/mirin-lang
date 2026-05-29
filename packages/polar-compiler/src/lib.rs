@@ -39,7 +39,7 @@ pub use surface_ir::{
     PortDefinition, PortField, PostfixExpression, PostfixOperation, RecordConstructorExpression,
     RecordFieldType, RecordFieldValue, ReturnStatement, SinkArgument, SourceArgument, SourceFile,
     Statement, StructDefinition, SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix,
-    VarStatement, lower_cst, parse_surface_file, parse_surface_source,
+    VarStatement, WhenExpression, lower_cst, parse_surface_file, parse_surface_source,
 };
 pub use sv_emit::{EmitError, EmitErrorKind, emit as emit_sv, render_emit_errors};
 pub use sv_lower::lower_to_sv;

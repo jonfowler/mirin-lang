@@ -683,6 +683,31 @@ impl<'a> FnFlattener<'a> {
                     span: i.span.clone(),
                 }));
             }
+            HirStmt::AlwaysFf(a) => {
+                // `dest` is the synthetic register var. The expansion table
+                // remaps the old LocalIds (assigned by lower_block_expressions)
+                // to the new ones flatten allocates. Both `clock` and `dest`
+                // are scalar single-leaf locals here.
+                let clock = self
+                    .expansion
+                    .get(&a.clock)
+                    .and_then(|leaves| leaves.first().map(|l| l.local))
+                    .unwrap_or(a.clock);
+                let dest = self
+                    .expansion
+                    .get(&a.dest)
+                    .and_then(|leaves| leaves.first().map(|l| l.local))
+                    .unwrap_or(a.dest);
+                let d_input = self
+                    .remap_expr(&a.d_input)
+                    .unwrap_or_else(|| a.d_input.clone());
+                out.push(HirStmt::AlwaysFf(super::HirAlwaysFfStmt {
+                    clock,
+                    dest,
+                    d_input,
+                    span: a.span.clone(),
+                }));
+            }
         }
     }
 
@@ -1063,8 +1088,8 @@ impl<'a> FnFlattener<'a> {
             HirExprKind::MethodCall(_) => unreachable!(
                 "MethodCall should be lowered to Call by `hir::method_lower` before flatten"
             ),
-            HirExprKind::Block(_) | HirExprKind::If(_) => unreachable!(
-                "Block/If should be flattened by lower_block_expressions before flatten"
+            HirExprKind::Block(_) | HirExprKind::If(_) | HirExprKind::When(_) => unreachable!(
+                "Block/If/When should be flattened by lower_block_expressions before flatten"
             ),
         }
     }
@@ -1224,8 +1249,8 @@ impl<'a> FnFlattener<'a> {
             HirExprKind::MethodCall(_) => unreachable!(
                 "MethodCall should be lowered to Call by `hir::method_lower` before flatten"
             ),
-            HirExprKind::Block(_) | HirExprKind::If(_) => unreachable!(
-                "Block/If should be flattened by lower_block_expressions before flatten"
+            HirExprKind::Block(_) | HirExprKind::If(_) | HirExprKind::When(_) => unreachable!(
+                "Block/If/When should be flattened by lower_block_expressions before flatten"
             ),
         };
         Some(HirExpr {
@@ -1339,6 +1364,7 @@ fn walk_block_for_max(block: &HirBlock, max: &mut u32) {
                 walk_block_for_max(&i.then_branch, max);
                 walk_block_for_max(&i.else_branch, max);
             }
+            HirStmt::AlwaysFf(a) => walk_expr_for_max(&a.d_input, max),
         }
     }
 }

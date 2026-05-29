@@ -176,6 +176,25 @@ pub enum HirStmt {
     /// (`Equation`) to the destination local. Maps directly to SV
     /// `if (cond) begin … end else begin … end` inside an `always_comb`.
     If(HirIfStmt),
+    /// Statement-form clocked register update. Produced by
+    /// `lower_block_expressions` from `HirExprKind::When`: the
+    /// `dest` local takes on `d_input`'s value at each `posedge clock`.
+    /// Maps to SV `always_ff @(posedge clk) dest <= d_input;` with no
+    /// reset clause.
+    AlwaysFf(HirAlwaysFfStmt),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirAlwaysFfStmt {
+    /// The clock-domain local (the `dom clk: Clock` parameter, or
+    /// whichever local the `when`'s event resolved to).
+    pub clock: LocalId,
+    /// The register's output local — a synthetic `var` allocated by the
+    /// late lowering pass.
+    pub dest: LocalId,
+    /// The D-input expression — the body's tail value, fully lowered.
+    pub d_input: HirExpr,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +270,12 @@ pub enum HirExprKind {
     /// type-checking unifies both branches' types; the late flattening
     /// pass converts it into `var r; if (cond) r = a; else r = b;` form.
     If(Box<HirIfExpr>),
+    /// `when EVENT { body }` — Polar's primitive for registered state.
+    /// The event identifies the clock domain & edge; the body's tail
+    /// value is the D-input; the expression's value is the held output.
+    /// Late flattening converts this into `var r; <comb body>; always_ff
+    /// @(edge) r <= d_input;` and substitutes `Local(r)` at the site.
+    When(Box<HirWhenExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +291,15 @@ pub struct HirIfExpr {
     pub condition: HirExpr,
     pub then_branch: HirBlockExpr,
     pub else_branch: HirBlockExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirWhenExpr {
+    /// Event expression — typically a `Clock::posedge` call. Late
+    /// lowering peels the callee and clock arg out of this to drive an
+    /// `always_ff`.
+    pub event: HirExpr,
+    pub body: HirBlockExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -376,6 +410,10 @@ pub enum ValueKind {
     Struct {
         def: DefId,
     },
+    /// `Event` — a clock-edge marker value, the result of methods like
+    /// `Clock::posedge()`. Has no runtime representation in SV; consumed
+    /// only by `when` expressions to identify which edge to register on.
+    Event,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

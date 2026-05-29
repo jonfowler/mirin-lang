@@ -228,6 +228,10 @@ fn check_expr<'a>(
             check_block(&if_expr.then_branch, callees, resolve, errors);
             check_block(&if_expr.else_branch, callees, resolve, errors);
         }
+        Expression::When(when_expr) => {
+            check_expr(&when_expr.event, callees, resolve, errors);
+            check_block(&when_expr.body, callees, resolve, errors);
+        }
     }
 }
 

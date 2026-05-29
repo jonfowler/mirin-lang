@@ -322,6 +322,12 @@ struct FileCtx<'hir> {
     /// primitives flows through the same path as user-defined `impl T`.
     uint_def_id: Option<DefId>,
     bool_def_id: Option<DefId>,
+    /// `DefId` of the prelude `Clock` type. Used so `clk.posedge()` etc.
+    /// resolve via `impl_methods` like every other method call.
+    clock_def_id: Option<DefId>,
+    /// `DefId` of the prelude `posedge` primitive. Recognised in
+    /// `infer_method_call` to apply a hand-rolled signature.
+    posedge_def_id: Option<DefId>,
     errors: Vec<TypeError>,
     residual_obligations: Vec<Obligation>,
     expr_types: HashMap<HirId, HirType>,
@@ -357,6 +363,8 @@ impl<'hir> FileCtx<'hir> {
             mul_def_id: resolve.def_id("*"),
             uint_def_id: resolve.def_id("uint"),
             bool_def_id: resolve.def_id("bool"),
+            clock_def_id: resolve.def_id("Clock"),
+            posedge_def_id: resolve.def_id("posedge"),
             errors: Vec::new(),
             residual_obligations: Vec::new(),
             expr_types: HashMap::new(),
@@ -602,6 +610,7 @@ impl InferCtxt {
             (ValueKind::Bool, ValueKind::Bool) => true,
             (ValueKind::Reset, ValueKind::Reset) => true,
             (ValueKind::Usize, ValueKind::Usize) => true,
+            (ValueKind::Event, ValueKind::Event) => true,
             (ValueKind::UInt { width: wa }, ValueKind::UInt { width: wb }) => {
                 self.unify_widths(wa, wb, span);
                 true
@@ -733,6 +742,12 @@ impl InferCtxt {
             HirStmt::Expr(e) => {
                 let _ = self.infer_expr(e, file);
             }
+            HirStmt::AlwaysFf(_) => {
+                // Produced by `lower_block_expressions` after typeck.
+                // Re-typeck on already-flattened HIR (test harnesses) just
+                // walks past — the original typeck pass already validated
+                // the source `when` form.
+            }
             HirStmt::If(i) => {
                 // `HirStmt::If` is normally produced by
                 // `lower_block_expressions`, which runs strictly after the
@@ -764,6 +779,9 @@ impl InferCtxt {
             }
             HirExprKind::Block(b) => self.infer_block_expr(b, expr.span.clone(), file),
             HirExprKind::If(if_expr) => self.infer_if_expr(if_expr, expr.span.clone(), file),
+            HirExprKind::When(when_expr) => {
+                self.infer_when_expr(when_expr, expr.span.clone(), file)
+            }
         };
         self.expr_types.insert(expr.id, ty.clone());
         ty
@@ -818,6 +836,35 @@ impl InferCtxt {
         let else_ty = self.infer_block_expr(&if_expr.else_branch, span.clone(), file);
         self.unify_types(&then_ty, &else_ty, span);
         self.resolve_type(&then_ty)
+    }
+
+    /// `when EVENT { body }`: the event unifies with `Event @D` (fresh
+    /// domain D), the body's type T flows through unchanged. The
+    /// when-expression's type is T — the body's tail value type, in the
+    /// same clock domain.
+    fn infer_when_expr(
+        &mut self,
+        when_expr: &super::hir::HirWhenExpr,
+        span: SourceSpan,
+        file: &FileCtx<'_>,
+    ) -> HirType {
+        let event_ty = self.infer_expr(&when_expr.event, file);
+        let domain = self.fresh_domain_var();
+        let expected_event = HirType {
+            kind: HirTypeKind::Value(ValueType {
+                kind: ValueKind::Event,
+                domain: domain.clone(),
+            }),
+            span: when_expr.event.span.clone(),
+        };
+        self.unify_types(&expected_event, &event_ty, when_expr.event.span.clone());
+
+        let body_ty = self.infer_block_expr(&when_expr.body, span.clone(), file);
+        // Tie the body's domain to the event's domain so they agree.
+        if let HirTypeKind::Value(vt) = &body_ty.kind {
+            self.unify_domains(&domain, &vt.domain, span);
+        }
+        self.resolve_type(&body_ty)
     }
 
     fn const_type(&mut self, c: &ConstValue, span: SourceSpan) -> HirType {
@@ -1193,6 +1240,7 @@ impl InferCtxt {
                 _ => None,
             },
             HirTypeKind::Port(p) => Some(p.def),
+            HirTypeKind::Clock => file.clock_def_id,
             _ => None,
         };
 
@@ -1228,6 +1276,25 @@ impl InferCtxt {
             }
             return self.fresh_type_var(span);
         };
+
+        // Prelude `posedge` is hand-rolled like `reg`: receiver `Clock`,
+        // result `Event @<receiver-clock>`. The Event's domain is the
+        // clock itself — we read the receiver's `LocalId` and produce
+        // `Event @clk`.
+        if Some(method_def) == file.posedge_def_id {
+            self.method_resolutions.insert(expr_id, method_def);
+            let domain = match &mc.receiver.kind {
+                HirExprKind::Local(id) => Domain::Clock(*id),
+                _ => self.fresh_domain_var(),
+            };
+            return HirType {
+                kind: HirTypeKind::Value(ValueType {
+                    kind: ValueKind::Event,
+                    domain,
+                }),
+                span,
+            };
+        }
 
         // Prelude `reg` has no `HirFn` — it's a virtual builtin whose
         // signature can't yet be written in surface Polar (width tied
@@ -1412,6 +1479,7 @@ fn describe_type(ty: &HirType) -> String {
                 ValueKind::Bool => "bool".to_owned(),
                 ValueKind::Reset => "Reset".to_owned(),
                 ValueKind::Usize => "usize".to_owned(),
+                ValueKind::Event => "Event".to_owned(),
                 ValueKind::Struct { def } => format!("struct#{}", def.0),
             };
             let dom = describe_domain(&vt.domain);

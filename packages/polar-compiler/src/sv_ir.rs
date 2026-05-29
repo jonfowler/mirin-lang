@@ -128,13 +128,16 @@ pub struct SvAlwaysFf {
     /// The clock signal (just the identifier — sensitivity is fixed to
     /// `posedge`).
     pub clock: String,
-    /// The reset signal (just the identifier — polarity is fixed to
-    /// active-low for first pass: the emitter writes `if (!rstn)`).
-    pub reset: String,
+    /// Optional active-low reset signal (`if (!rstn) … else …` wrapper).
+    /// `None` produces a reset-less `always_ff @(posedge clk) begin <body>
+    /// end`. The Polar `when` primitive lowers to the reset-less form;
+    /// `reg(rst, init)` keeps the reset.
+    pub reset: Option<String>,
     /// Non-blocking assignment(s) executed when reset is asserted.
+    /// Ignored when `reset` is `None`.
     pub reset_body: Vec<SvSeqAssign>,
     /// Non-blocking assignment(s) executed on the clock edge when reset is
-    /// not asserted.
+    /// not asserted (or unconditionally, when `reset` is `None`).
     pub clocked_body: Vec<SvSeqAssign>,
 }
 
@@ -293,15 +296,24 @@ fn fmt_comb_stmt(f: &mut fmt::Formatter<'_>, stmt: &SvCombStmt, indent: usize) -
 impl fmt::Display for SvAlwaysFf {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "    always_ff @(posedge {}) begin", self.clock)?;
-        writeln!(f, "        if (!{}) begin", self.reset)?;
-        for a in &self.reset_body {
-            writeln!(f, "            {} <= {};", a.lhs, a.rhs)?;
+        match &self.reset {
+            Some(rst) => {
+                writeln!(f, "        if (!{rst}) begin")?;
+                for a in &self.reset_body {
+                    writeln!(f, "            {} <= {};", a.lhs, a.rhs)?;
+                }
+                writeln!(f, "        end else begin")?;
+                for a in &self.clocked_body {
+                    writeln!(f, "            {} <= {};", a.lhs, a.rhs)?;
+                }
+                writeln!(f, "        end")?;
+            }
+            None => {
+                for a in &self.clocked_body {
+                    writeln!(f, "        {} <= {};", a.lhs, a.rhs)?;
+                }
+            }
         }
-        writeln!(f, "        end else begin")?;
-        for a in &self.clocked_body {
-            writeln!(f, "            {} <= {};", a.lhs, a.rhs)?;
-        }
-        writeln!(f, "        end")?;
         writeln!(f, "    end")
     }
 }
@@ -384,7 +396,7 @@ mod tests {
     fn renders_always_ff() {
         let a = SvAlwaysFf {
             clock: "clk".to_owned(),
-            reset: "rstn".to_owned(),
+            reset: Some("rstn".to_owned()),
             reset_body: vec![SvSeqAssign {
                 lhs: SvExpr::Ident("acc".to_owned()),
                 rhs: SvExpr::Lit("'0".to_owned()),
