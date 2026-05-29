@@ -137,10 +137,9 @@ fn excerpt_for_span(source: &str, span: &SourceSpan) -> Option<SourceExcerpt> {
 
 /// Run the direction-checking pass over a resolved file.
 ///
-/// Per `planning/compiler_architecture.md` §4 and `planning/known_issues.md` #5,
-/// this is a structural pass that runs after name resolution and before type
-/// inference. Field directions on ports and named parameters are explicit, so
-/// the check does not depend on type information.
+/// Structural pass that runs after name resolution and before HIR lowering
+/// (see `planning/ir_pipeline.md`). Field directions on ports and named
+/// parameters are explicit, so the check does not depend on type information.
 ///
 /// For the first pass this covers calls to top-level `fn` definitions. Method
 /// calls (`x.method(...)`) and path-rooted calls (`Type::member(...)`) are

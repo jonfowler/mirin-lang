@@ -12,8 +12,7 @@
 //! - Whole-port equations and aggregate `let`s have been split into one
 //!   driver per leaf, with the LHS chosen by the port's per-field direction.
 //!
-//! Sees `planning/system_verilog_backend.md` for the design rationale and
-//! worked examples.
+//! See `planning/ir_pipeline.md` for the surrounding pipeline.
 //!
 //! ## Scope
 //!

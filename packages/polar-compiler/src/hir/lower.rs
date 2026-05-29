@@ -1,7 +1,7 @@
 //! Surface IR → HIR lowering.
 //!
 //! Runs after name resolution and direction checking. Does three things in a
-//! single walk per `planning/hir.md`:
+//! single walk:
 //!
 //! - Bakes name resolutions into HIR nodes (no more side-table lookups by
 //!   later passes).

@@ -267,7 +267,7 @@ impl ResolveResult {
 
 /// Builtin functions made available to every source file. These are pre-populated
 /// in the def table so that calls to them go through the same `DefId`-based path
-/// as user-defined functions. See `planning/hir.md` ("Prelude").
+/// as user-defined functions.
 ///
 /// The entries with non-identifier names (`+`, `*`, ...) are reachable only via
 /// HIR lowering, which converts surface-level operator syntax into a `HirCall`

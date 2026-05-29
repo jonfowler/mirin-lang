@@ -1,10 +1,10 @@
 //! High-level Intermediate Representation.
 //!
-//! See `planning/hir.md` for the design rationale. HIR is the first IR that is
-//! structured for semantic analysis rather than for matching source syntax:
-//! name resolution is baked in, method-call sugar is desugared, named and
-//! positional arguments are unified into a single per-callee slot list, and
-//! `var` declarations are split from the equations that drive them.
+//! HIR is the first IR structured for semantic analysis rather than for
+//! matching source syntax: name resolution is baked in, method-call sugar is
+//! desugared, named and positional arguments are unified into a single
+//! per-callee slot list, and `var` declarations are split from the equations
+//! that drive them. See `planning/ir_pipeline.md` for the surrounding pipeline.
 //!
 //! This module defines the data types only. Lowering from Surface IR lives in
 //! the [`lower`] submodule.

@@ -5,10 +5,10 @@
 //! deterministically, and just enough type information to drive
 //! `[N-1:0]`-style declarations. Analysis lives in earlier passes, not here.
 //!
-//! The first-pass scope (see `planning/system_verilog_backend.md`) covers
-//! parametric scalar modules with combinational `assign`s and clocked
-//! `always_ff` blocks using synchronous active-low reset. Module instances
-//! land later when user-function calls cross module boundaries.
+//! The first-pass scope covers parametric scalar modules with combinational
+//! `assign`s and clocked `always_ff` blocks using synchronous active-low
+//! reset. Module instances land later when user-function calls cross module
+//! boundaries. See `planning/ir_pipeline.md` for the surrounding pipeline.
 
 use std::fmt;
 

@@ -92,7 +92,7 @@ The error is reported at the connection site (here, the `+`).
 
 ### Cyclic `var` equations
 
-Inferring the domain of a `var` whose equation references itself (e.g. `var count; count = (count + 1).reg(rstn, 0);`) generally needs a fixpoint pass. In practice the domain can almost always be resolved from an external anchor — most commonly the reset passed to `.reg` — without solving the cycle. See `known_issues.md` #9.
+Inferring the domain of a `var` whose equation references itself (e.g. `var count; count = (count + 1).reg(rstn, 0);`) generally needs a fixpoint pass. In practice the domain can almost always be resolved from an external anchor — most commonly the reset passed to `.reg` — without solving the cycle.
 
 ## Future work
 

@@ -1,8 +1,8 @@
 //! Flattened HIR → SV IR.
 //!
-//! Per `planning/system_verilog_backend.md`, this pass walks every `HirFn` in
-//! a flattened HIR file and builds one `SvModule` per function. The transform
-//! is structural: there is no analysis here, just shape mapping.
+//! Walks every `HirFn` in a flattened HIR file and builds one `SvModule` per
+//! function. The transform is structural: there is no analysis here, just
+//! shape mapping. See `planning/ir_pipeline.md` for the wider pipeline.
 //!
 //! Notable rules:
 //!

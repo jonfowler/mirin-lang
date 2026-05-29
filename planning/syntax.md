@@ -131,12 +131,14 @@ The `in`/`out` direction keywords are optional and checked for consistency when 
 
 ## `impl` blocks
 
-`impl` syntax is part of the current surface-language direction, but it is not required in the first parser slice. The current proposal is documented in `planning/impl.md`.
+Methods are introduced via `impl TypeName { ... }` blocks. Resolver populates
+`impl_methods: (owner_def, method_name) → method_def`; calls dispatch through
+that table. See the resolver and `planning/ir_pipeline.md` for the wiring.
 
 ## Open questions kept out of the first parser slice
 
 - exact inference rules for `dom clk`
 - generics and const generics beyond simple examples
 - generalized metadata syntax
-- clock inference for cyclic `var` equations: inferring the clock domain of a `var` from its own equation requires a fixpoint pass, not a simple forward walk. See `planning/known_issues.md`.
+- clock inference for cyclic `var` equations: inferring the clock domain of a `var` from its own equation requires a fixpoint pass. In practice the domain can almost always be resolved from an external anchor (the reset passed to `.reg`); see `planning/domain_checking.md`.
 - `inline fn` as a modifier and keyword reservation.
