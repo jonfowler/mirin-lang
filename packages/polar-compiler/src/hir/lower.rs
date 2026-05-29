@@ -33,8 +33,8 @@ use crate::surface_ir::{
     AssignmentStatement, BinaryOperator, Block, Expression, FunctionDefinition, Item, LetStatement,
     NamedArgument, NamedParameter, NodeId, ParamKind, Parameter, PortDefinition,
     PositionalArgument, PostfixExpression, PostfixOperation, RecordConstructorExpression,
-    ReturnStatement, SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix,
-    VarStatement,
+    ReturnStatement, SourceFile, Statement, StructDefinition, TypeArgument, TypeExpression,
+    TypeSuffix, VarStatement,
 };
 
 #[derive(Debug, Clone)]
@@ -199,6 +199,12 @@ struct Lowerer<'a> {
     /// any. Set when entering an impl item; cleared when leaving. Used by
     /// `lower_type` to substitute `Self` in method signatures and bodies.
     current_impl_target: Option<DefId>,
+    /// Map from a generic parameter's introducing `NodeId` to its index in
+    /// the enclosing item's `generic_params` list. Populated on entry to
+    /// each struct/port (and, once fn-generic-over-type lands, fn). Used by
+    /// `lower_type` to emit `HirTypeKind::Param(i)` when a field/return
+    /// type names one of the enclosing item's generic params.
+    current_generic_params: HashMap<NodeId, u32>,
     errors: Vec<HirLowerError>,
 }
 
@@ -246,8 +252,25 @@ impl<'a> Lowerer<'a> {
             next_hir_id: 0,
             fn_state: FnState::default(),
             current_impl_target: None,
+            current_generic_params: HashMap::new(),
             errors: Vec::new(),
         }
+    }
+
+    /// Populate `current_generic_params` from the def's recorded generic
+    /// parameters. Called on entry to each parametric-shaped item; the map
+    /// is cleared again on exit.
+    fn enter_generic_scope(&mut self, def_id: DefId) {
+        self.current_generic_params.clear();
+        if let Some(info) = self.resolve.defs.get(def_id.0 as usize) {
+            for (i, gp) in info.generic_params.iter().enumerate() {
+                self.current_generic_params.insert(gp.local, i as u32);
+            }
+        }
+    }
+
+    fn leave_generic_scope(&mut self) {
+        self.current_generic_params.clear();
     }
 
     fn next_hir_id(&mut self) -> HirId {
@@ -376,10 +399,10 @@ impl<'a> Lowerer<'a> {
             _ => return None,
         };
         // Reset per-fn state — struct fields can reference parameters declared
-        // on the struct itself (parametric structs are out of basic-first-pass
-        // scope, but the locals table needs to exist for `lower_type` to use
-        // the same machinery).
+        // on the struct itself, which `lower_type` resolves via the generic
+        // scope below.
         self.fn_state = FnState::default();
+        self.enter_generic_scope(def_id);
         let fields = s
             .fields
             .iter()
@@ -389,6 +412,7 @@ impl<'a> Lowerer<'a> {
                 span: f.span.clone(),
             })
             .collect();
+        self.leave_generic_scope();
         Some(HirStruct {
             def_id,
             name: s.name.text.clone(),
@@ -403,6 +427,7 @@ impl<'a> Lowerer<'a> {
             _ => return None,
         };
         self.fn_state = FnState::default();
+        self.enter_generic_scope(def_id);
         // Parameters must be lowered before field types so `@clk` annotations
         // on fields can resolve to the port's named parameter. The shape
         // mirrors `HirFn::params` — named section first, then positional.
@@ -423,6 +448,7 @@ impl<'a> Lowerer<'a> {
                 span: f.span.clone(),
             })
             .collect();
+        self.leave_generic_scope();
         Some(HirPort {
             def_id,
             name: p.name.text.clone(),
@@ -1295,14 +1321,54 @@ impl<'a> Lowerer<'a> {
     fn lower_type(&mut self, ty: &TypeExpression) -> HirType {
         // A type-head can be one of: a primitive (`uint`/`bool`/`Reset`/`Clock`/
         // `usize`), `Self` (synthesised by the parameter lowerer for `self @clk`
-        // shorthand), or a user-defined struct/port name. The latter is resolved
-        // by looking up the head in the def table.
+        // shorthand), a reference to one of the enclosing item's generic
+        // parameters (`A` inside `struct Bus(A: Type)`), or a user-defined
+        // struct/port name.
         let domain_annotation = ty.domain.as_ref().and_then(|d| self.lower_domain(d));
+
+        // Generic-param reference: the resolver mapped this identifier to a
+        // local that's listed in the enclosing item's `generic_params`. Emit
+        // `Param(i)` so later passes substitute the right arg.
+        if let Some(&Res::Local(node_id)) = self.resolve.resolutions.get(&ty.name.id) {
+            if let Some(&index) = self.current_generic_params.get(&node_id) {
+                if !ty.suffixes.is_empty() {
+                    self.error(
+                        HirLowerErrorKind::Unsupported {
+                            what: "type-argument suffixes on a generic parameter reference",
+                        },
+                        ty.span.clone(),
+                    );
+                }
+                if domain_annotation.is_some() {
+                    self.error(
+                        HirLowerErrorKind::Unsupported {
+                            what: "`@` domain annotation on a generic parameter reference",
+                        },
+                        ty.span.clone(),
+                    );
+                }
+                return HirType {
+                    kind: HirTypeKind::Param(index),
+                    span: ty.span.clone(),
+                };
+            }
+        }
 
         match ty.name.text.as_str() {
             "uint" => {
                 let width = match ty.suffixes.first() {
-                    Some(TypeSuffix::Index(idx)) => self.lower_expr(&idx.index),
+                    Some(TypeSuffix::Index(idx)) if idx.args.len() == 1 => {
+                        self.lower_width_arg(&idx.args[0])
+                    }
+                    Some(TypeSuffix::Index(idx)) => {
+                        self.error(
+                            HirLowerErrorKind::Unsupported {
+                                what: "`uint` with more than one argument",
+                            },
+                            idx.span.clone(),
+                        );
+                        self.placeholder_expr(ty.span.clone())
+                    }
                     None => {
                         self.error(
                             HirLowerErrorKind::Unsupported {
@@ -1398,19 +1464,19 @@ impl<'a> Lowerer<'a> {
                         .get(id.0 as usize)
                         .map(|info| (info.kind, id))
                 }) {
-                    Some((DefKind::Struct, def_id)) => self.value_type(
-                        ValueKind::Struct {
-                            def: def_id,
-                            args: GenericArgs::empty(),
-                        },
-                        domain_annotation,
-                        ty.span.clone(),
-                    ),
+                    Some((DefKind::Struct, def_id)) => {
+                        let args = self.lower_generic_args(def_id, &ty.suffixes, &ty.span);
+                        self.value_type(
+                            ValueKind::Struct { def: def_id, args },
+                            domain_annotation,
+                            ty.span.clone(),
+                        )
+                    }
                     Some((DefKind::Port, def_id)) => {
-                        // Ports don't carry a top-level domain. Clock bindings
-                        // are supplied as type arguments (`Stream8(clk)` —
-                        // syntax pending). An `@clk` annotation here is a
-                        // category error and is rejected.
+                        // Ports don't carry a top-level domain. Clock
+                        // bindings are supplied as type arguments
+                        // (`DF{clk}(uint(8))`). An `@clk` annotation in this
+                        // position is a category error.
                         if domain_annotation.is_some() {
                             self.error(
                                 HirLowerErrorKind::DomainOnPortType {
@@ -1419,11 +1485,9 @@ impl<'a> Lowerer<'a> {
                                 ty.span.clone(),
                             );
                         }
+                        let args = self.lower_generic_args(def_id, &ty.suffixes, &ty.span);
                         HirType {
-                            kind: HirTypeKind::Port(PortTypeRef {
-                                def: def_id,
-                                args: GenericArgs::empty(),
-                            }),
+                            kind: HirTypeKind::Port(PortTypeRef { def: def_id, args }),
                             span: ty.span.clone(),
                         }
                     }
@@ -1478,6 +1542,153 @@ impl<'a> Lowerer<'a> {
             Some(Res::Def(_, _)) => None,
             None => None,
         }
+    }
+
+    /// Lower a `uint(...)` width argument into an `HirExpr`. The arg is
+    /// either a numeric literal or a bare identifier resolving to a
+    /// compile-time integer binding (e.g. `param N: usize`).
+    fn lower_width_arg(&mut self, arg: &TypeArgument) -> HirExpr {
+        match arg {
+            TypeArgument::Number(n) => {
+                let value = n.text.parse::<u64>().unwrap_or(0);
+                HirExpr {
+                    kind: HirExprKind::Const(ConstValue::Integer(value)),
+                    ty: None,
+                    span: n.span.clone(),
+                    id: self.next_hir_id(),
+                }
+            }
+            TypeArgument::Type(t) => {
+                if !t.suffixes.is_empty() || t.domain.is_some() {
+                    self.error(
+                        HirLowerErrorKind::Unsupported {
+                            what: "width arguments must be bare names or literals",
+                        },
+                        t.span.clone(),
+                    );
+                    return self.placeholder_expr(t.span.clone());
+                }
+                // Resolve the head as a name use. Mirrors how plain
+                // identifiers are lowered in value expressions.
+                match self.resolve.resolutions.get(&t.name.id) {
+                    Some(&Res::Local(decl_node)) => {
+                        let Some(local) = self.local_for(decl_node) else {
+                            return self.placeholder_expr(t.span.clone());
+                        };
+                        HirExpr {
+                            kind: HirExprKind::Local(local),
+                            ty: None,
+                            span: t.span.clone(),
+                            id: self.next_hir_id(),
+                        }
+                    }
+                    _ => {
+                        self.error(
+                            HirLowerErrorKind::UnknownType(t.name.text.clone()),
+                            t.span.clone(),
+                        );
+                        self.placeholder_expr(t.span.clone())
+                    }
+                }
+            }
+        }
+    }
+
+    /// Lower a generic-argument list against a struct/port def's declared
+    /// `generic_params`. Each declared param's kind decides which
+    /// `GenericArg` variant the arg lowers to:
+    ///
+    /// - `Type`: the arg must be a type expression, lowered to `HirType`.
+    /// - `Const`: the arg is a numeric literal or `param N: usize` reference.
+    /// - `Domain`: the arg is a bare identifier resolving to a Clock binding.
+    ///
+    /// If no suffix is present, returns empty args. Arity and kind mismatches
+    /// are reported but the lowering produces a best-effort `GenericArgs` so
+    /// later passes have something to work with.
+    fn lower_generic_args(
+        &mut self,
+        def_id: DefId,
+        suffixes: &[TypeSuffix],
+        head_span: &SourceSpan,
+    ) -> GenericArgs {
+        let params: Vec<crate::resolve::GenericParamInfo> = self
+            .resolve
+            .defs
+            .get(def_id.0 as usize)
+            .map(|info| info.generic_params.clone())
+            .unwrap_or_default();
+
+        let suffix = suffixes.first();
+        let args = match suffix {
+            Some(TypeSuffix::Index(idx)) => idx.args.as_slice(),
+            None => &[],
+        };
+
+        if params.is_empty() && args.is_empty() {
+            return GenericArgs::empty();
+        }
+        if params.len() != args.len() {
+            self.error(
+                HirLowerErrorKind::Unsupported {
+                    what: "generic argument count does not match declared parameter count",
+                },
+                head_span.clone(),
+            );
+            return GenericArgs::empty();
+        }
+
+        let mut out = Vec::with_capacity(params.len());
+        for (param, arg) in params.iter().zip(args.iter()) {
+            let lowered = match param.kind {
+                crate::resolve::GenericParamKind::Type => match arg {
+                    TypeArgument::Type(t) => super::GenericArg::Type(self.lower_type(t)),
+                    TypeArgument::Number(_) => {
+                        self.error(
+                            HirLowerErrorKind::Unsupported {
+                                what: "expected a type argument, got a numeric literal",
+                            },
+                            arg.span().clone(),
+                        );
+                        super::GenericArg::Type(self.value_type(
+                            ValueKind::Usize,
+                            None,
+                            arg.span().clone(),
+                        ))
+                    }
+                },
+                crate::resolve::GenericParamKind::Const => {
+                    super::GenericArg::Const(self.lower_width_arg(arg))
+                }
+                crate::resolve::GenericParamKind::Domain => match arg {
+                    TypeArgument::Type(t) if t.suffixes.is_empty() && t.domain.is_none() => {
+                        match self.resolve.resolutions.get(&t.name.id) {
+                            Some(&Res::Local(decl_node)) => match self.local_for(decl_node) {
+                                Some(local) => super::GenericArg::Domain(Domain::Clock(local)),
+                                None => super::GenericArg::Domain(Domain::Unspecified),
+                            },
+                            _ => {
+                                self.error(
+                                    HirLowerErrorKind::UnknownType(t.name.text.clone()),
+                                    t.span.clone(),
+                                );
+                                super::GenericArg::Domain(Domain::Unspecified)
+                            }
+                        }
+                    }
+                    _ => {
+                        self.error(
+                            HirLowerErrorKind::Unsupported {
+                                what: "expected a clock identifier for a `dom`-kinded parameter",
+                            },
+                            arg.span().clone(),
+                        );
+                        super::GenericArg::Domain(Domain::Unspecified)
+                    }
+                },
+            };
+            out.push(lowered);
+        }
+        GenericArgs(out)
     }
 }
 
@@ -1916,6 +2127,56 @@ mod tests {
         };
         assert_eq!(field.name, "b");
         assert_eq!(mc.args.len(), 2);
+    }
+
+    #[test]
+    fn parametric_struct_field_uses_param_ref() {
+        let file = lower_ok("struct Bus(A: Type) = bus { valid: bool, data: A }");
+        let s = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Struct(s) => Some(s),
+                _ => None,
+            })
+            .expect("struct item");
+        let data = s
+            .fields
+            .iter()
+            .find(|f| f.name == "data")
+            .expect("`data` field");
+        assert!(
+            matches!(data.ty.kind, HirTypeKind::Param(0)),
+            "expected `data: A` to lower to Param(0), got {:?}",
+            data.ty.kind
+        );
+    }
+
+    #[test]
+    fn struct_use_with_type_arg_carries_args() {
+        let file = lower_ok(
+            "struct Bus(A: Type) = bus { valid: bool, data: A }\n\
+             fn pipeline ( b: Bus(uint(8)) @clk ) -> uint(8) @clk { return b.data; }",
+        );
+        let pipeline = first_fn(&file);
+        let param_ty = &pipeline.params[0].ty;
+        let HirTypeKind::Value(vt) = &param_ty.kind else {
+            panic!("expected Value, got {:?}", param_ty.kind);
+        };
+        let ValueKind::Struct { args, .. } = &vt.kind else {
+            panic!("expected Struct, got {:?}", vt.kind);
+        };
+        assert_eq!(args.len(), 1);
+        // The single arg should be a type — `uint(8)`.
+        match &args.0[0] {
+            crate::hir::GenericArg::Type(t) => {
+                let HirTypeKind::Value(inner_vt) = &t.kind else {
+                    panic!("expected Value inside Type arg");
+                };
+                assert!(matches!(inner_vt.kind, ValueKind::UInt { .. }));
+            }
+            other => panic!("expected Type arg, got {other:?}"),
+        }
     }
 
     #[test]

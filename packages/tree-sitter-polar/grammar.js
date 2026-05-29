@@ -155,7 +155,16 @@ module.exports = grammar({
         ),
       ),
 
-    type_index: ($) => seq("(", field("index", $.expression), ")"),
+    // Parenthesised list of type arguments after a type name:
+    //   uint(8)        — width literal (Number)
+    //   uint(N)        — width as a `param N: usize` identifier (TypeExpression)
+    //   Bus(uint(8))   — type argument (TypeExpression)
+    //   Bus(A)         — type-kinded parameter reference (TypeExpression)
+    // For now, args are bare type expressions or number literals; arithmetic
+    // widths (`uint(N+1)`) are not yet in scope.
+    type_index: ($) => seq("(", commaSep1($.type_argument), ")"),
+
+    type_argument: ($) => choice($.type_expression, $.number),
 
     expression: ($) =>
       choice(

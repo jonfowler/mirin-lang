@@ -5,8 +5,8 @@ use std::path::Path;
 use crate::surface_ir::{
     Block, Expression, FunctionDefinition, Identifier, ImplBlock, Item, LetStatement,
     NamedArgument, NamedParameter, NodeId, Parameter, PortDefinition, PositionalArgument,
-    PostfixOperation, SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix,
-    VarStatement,
+    PostfixOperation, SourceFile, Statement, StructDefinition, TypeArgument, TypeExpression,
+    TypeSuffix, VarStatement,
 };
 use crate::{SourceExcerpt, SourcePosition, SourceSpan};
 
@@ -811,7 +811,14 @@ impl Ctx {
         }
         for suffix in &ty.suffixes {
             match suffix {
-                TypeSuffix::Index(idx) => self.resolve_expr_in_params(&idx.index, params),
+                TypeSuffix::Index(idx) => {
+                    for arg in &idx.args {
+                        match arg {
+                            TypeArgument::Type(inner) => self.resolve_type_expr(inner, params),
+                            TypeArgument::Number(_) => {}
+                        }
+                    }
+                }
             }
         }
     }
@@ -1147,7 +1154,14 @@ impl BlockCtx<'_> {
         }
         for suffix in &ty.suffixes {
             match suffix {
-                TypeSuffix::Index(idx) => self.resolve_expr(&idx.index),
+                TypeSuffix::Index(idx) => {
+                    for arg in &idx.args {
+                        match arg {
+                            TypeArgument::Type(inner) => self.resolve_type(inner),
+                            TypeArgument::Number(_) => {}
+                        }
+                    }
+                }
             }
         }
     }

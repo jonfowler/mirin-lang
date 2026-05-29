@@ -35,7 +35,7 @@ fn multAdd
         type: (type_expression
           name: (identifier)
           (type_index
-            index: (expression
+            (type_argument
               (number)))
           domain: (identifier))
         default: (expression
@@ -46,7 +46,7 @@ fn multAdd
         type: (type_expression
           name: (identifier)
           (type_index
-            index: (expression
+            (type_argument
               (number)))
           domain: (identifier)))
       (parameter
@@ -54,13 +54,13 @@ fn multAdd
         type: (type_expression
           name: (identifier)
           (type_index
-            index: (expression
+            (type_argument
               (number)))
           domain: (identifier))))
     return_type: (type_expression
       name: (identifier)
       (type_index
-        index: (expression
+        (type_argument
           (number)))
       domain: (identifier))
     body: (block
@@ -121,14 +121,14 @@ fn f() {
           type: (type_expression
             name: (identifier)
             (type_index
-              index: (expression
-                (number))))
+              (type_argument
+              (number))))
           value: (expression
             (binary_expression
               left: (expression
                 (identifier))
               right: (expression
-                (number)))))))))
+              (number)))))))))
 
 ========================================
 impl block with self parameter
@@ -165,12 +165,12 @@ impl Reg {
             type: (type_expression
               name: (identifier)
               (type_index
-                index: (expression
-                  (number))))))
+                (type_argument
+                (number))))))
         return_type: (type_expression
           name: (identifier)
           (type_index
-            index: (expression
+            (type_argument
               (number)))
           domain: (identifier))
         body: (block)))))

@@ -398,7 +398,29 @@ pub enum TypeSuffix {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeIndex {
     pub span: SourceSpan,
-    pub index: Expression,
+    /// One or more type arguments inside `(...)`. For builtin width slots
+    /// like `uint(8)` the list has a single `Number` or `Type(ident)` entry.
+    /// For parametric structs/ports each entry corresponds positionally to
+    /// one of the def's generic parameters.
+    pub args: Vec<TypeArgument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeArgument {
+    /// A type-shaped argument: a struct/port reference, a primitive type
+    /// (`uint(8)`), or a parameter name (`A`).
+    Type(TypeExpression),
+    /// A bare integer literal — used for widths (`uint(8)`).
+    Number(NumberLiteral),
+}
+
+impl TypeArgument {
+    pub fn span(&self) -> &SourceSpan {
+        match self {
+            TypeArgument::Type(t) => &t.span,
+            TypeArgument::Number(n) => &n.span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -946,10 +968,7 @@ impl<'a> Lowerer<'a> {
         for child in &node.children {
             let child = &child.node;
             match child.kind.as_str() {
-                "type_index" => suffixes.push(TypeSuffix::Index(TypeIndex {
-                    span: child.span.clone(),
-                    index: self.lower_expression(lower_required_field(child, "index")?)?,
-                })),
+                "type_index" => suffixes.push(TypeSuffix::Index(self.lower_type_index(child)?)),
                 "identifier"
                     if child_by_field(node, "domain")
                         .map(|domain_node| domain_node.span == child.span)
@@ -966,6 +985,45 @@ impl<'a> Lowerer<'a> {
             name: self.lower_required_identifier(node, "name")?,
             suffixes,
             domain,
+        })
+    }
+
+    fn lower_type_index(&mut self, node: &CstNode) -> Result<TypeIndex, LowerError> {
+        expect_kind(node, "type_index")?;
+        let mut args = Vec::new();
+        for child in &node.children {
+            let child = &child.node;
+            match child.kind.as_str() {
+                "type_argument" => args.push(self.lower_type_argument(child)?),
+                _ => {}
+            }
+        }
+        Ok(TypeIndex {
+            span: node.span.clone(),
+            args,
+        })
+    }
+
+    fn lower_type_argument(&mut self, node: &CstNode) -> Result<TypeArgument, LowerError> {
+        expect_kind(node, "type_argument")?;
+        for child in &node.children {
+            let child = &child.node;
+            match child.kind.as_str() {
+                "type_expression" => {
+                    return Ok(TypeArgument::Type(self.lower_type_expression(child)?));
+                }
+                "number" => {
+                    return Ok(TypeArgument::Number(NumberLiteral {
+                        span: child.span.clone(),
+                        text: text(child, self.source)?.to_owned(),
+                    }));
+                }
+                _ => {}
+            }
+        }
+        Err(LowerError {
+            message: "type_argument with no recognised child".to_owned(),
+            span: Some(node.span.clone()),
         })
     }
 
