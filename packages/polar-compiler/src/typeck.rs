@@ -733,6 +733,17 @@ impl InferCtxt {
             HirStmt::Expr(e) => {
                 let _ = self.infer_expr(e, file);
             }
+            HirStmt::If(i) => {
+                // `HirStmt::If` is normally produced by
+                // `lower_block_expressions`, which runs strictly after the
+                // main typeck pass. The flatten/sv_lower test harnesses
+                // re-run typeck on already-lowered HIR as a sanity check —
+                // walk the branches but don't enforce any additional
+                // constraints beyond what the original typeck already did.
+                let _ = self.infer_expr(&i.condition, file);
+                self.check_block(&i.then_branch, expected_return, file);
+                self.check_block(&i.else_branch, expected_return, file);
+            }
         }
     }
 
@@ -751,9 +762,62 @@ impl InferCtxt {
             HirExprKind::MethodCall(mc) => {
                 self.infer_method_call(mc, expr.id, expr.span.clone(), file)
             }
+            HirExprKind::Block(b) => self.infer_block_expr(b, expr.span.clone(), file),
+            HirExprKind::If(if_expr) => self.infer_if_expr(if_expr, expr.span.clone(), file),
         };
         self.expr_types.insert(expr.id, ty.clone());
         ty
+    }
+
+    /// A block-expression's type is the type of its tail. Statements inside
+    /// are type-checked for side effects (let bindings, var declarations,
+    /// equations); they don't contribute to the block's value type. A
+    /// block with no tail has no value — typeck rejects that in any
+    /// position that expects a value.
+    fn infer_block_expr(
+        &mut self,
+        block: &super::hir::HirBlockExpr,
+        span: SourceSpan,
+        file: &FileCtx<'_>,
+    ) -> HirType {
+        // The block's tail (if any) carries the value type; statements
+        // inside don't `return` to the enclosing function, so the expected
+        // return type is `None` here.
+        self.check_block(&block.block, None, file);
+        match &block.tail {
+            Some(tail) => self.infer_expr(tail, file),
+            None => {
+                // A value-position block with no tail is ill-typed. Use a
+                // fresh type var so unification with the expected context
+                // produces a meaningful error elsewhere.
+                self.fresh_type_var(span)
+            }
+        }
+    }
+
+    /// `if cond { … } else { … }`. The condition must unify with `bool @D`
+    /// (for some domain D); both branches' types must unify; the
+    /// if-expression's type is the unified branch type.
+    fn infer_if_expr(
+        &mut self,
+        if_expr: &super::hir::HirIfExpr,
+        span: SourceSpan,
+        file: &FileCtx<'_>,
+    ) -> HirType {
+        let cond_ty = self.infer_expr(&if_expr.condition, file);
+        let expected_cond = HirType {
+            kind: HirTypeKind::Value(ValueType {
+                kind: ValueKind::Bool,
+                domain: self.fresh_domain_var(),
+            }),
+            span: if_expr.condition.span.clone(),
+        };
+        self.unify_types(&expected_cond, &cond_ty, if_expr.condition.span.clone());
+
+        let then_ty = self.infer_block_expr(&if_expr.then_branch, span.clone(), file);
+        let else_ty = self.infer_block_expr(&if_expr.else_branch, span.clone(), file);
+        self.unify_types(&then_ty, &else_ty, span);
+        self.resolve_type(&then_ty)
     }
 
     fn const_type(&mut self, c: &ConstValue, span: SourceSpan) -> HirType {

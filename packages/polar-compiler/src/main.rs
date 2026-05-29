@@ -222,6 +222,14 @@ fn main() {
     let _ = width_check.unresolved_widths;
     let _ = width_check.unresolved_domain_kinds;
 
+    // Flatten block/if expressions into a result-local + statement-form
+    // `if`. After this, no `HirExprKind::Block` / `HirExprKind::If`
+    // remains in HIR; downstream passes only see `HirStmt::If`.
+    let block_lowered =
+        polar_compiler::lower_block_expressions(&hir, &tc.expr_types, &tc.local_types);
+    let hir = block_lowered.file;
+    let local_types = block_lowered.local_types;
+
     // Rewrite each `HirExprKind::MethodCall` into a regular `Call` against
     // the resolved method's `DefId`. After this pass no `MethodCall`
     // remains in HIR; downstream passes treat methods like user fns.
@@ -254,7 +262,7 @@ fn main() {
             print!("{}", parsed.cst);
         }
         EmitMode::Sv => {
-            let flat = match flatten_aggregates(&hir, &tc.expr_types, &tc.local_types) {
+            let flat = match flatten_aggregates(&hir, &tc.expr_types, &local_types) {
                 Ok(f) => f,
                 Err(errors) => {
                     let mut rendered = String::new();

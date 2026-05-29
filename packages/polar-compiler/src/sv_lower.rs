@@ -313,7 +313,65 @@ fn lower_stmt(
                 );
             }
         }
+        HirStmt::If(i) => {
+            // `if`-statements (introduced by lower_block_expressions for
+            // every if-expression used as a value) emit as a single
+            // `always_comb begin if (cond) … else … end` block.
+            let cond_expr = lower_expr(&i.condition, func, defs, local_names);
+            let then_body = lower_comb_branch(&i.then_branch, func, defs, clock_names, local_names);
+            let else_body = lower_comb_branch(&i.else_branch, func, defs, clock_names, local_names);
+            items.push(SvItem::AlwaysComb(crate::sv_ir::SvAlwaysComb {
+                body: vec![crate::sv_ir::SvCombStmt::If(crate::sv_ir::SvCombIf {
+                    cond: cond_expr,
+                    then_branch: then_body,
+                    else_branch: else_body,
+                })],
+            }));
+        }
     }
+}
+
+/// Lower one branch of a `HirStmt::If` into a `Vec<SvCombStmt>` for the
+/// `always_comb` body. Statements inside the branch are either equations
+/// (→ blocking assigns) or nested ifs (→ nested SV ifs). Anything else
+/// would be a flatten / out_args artifact and is skipped.
+fn lower_comb_branch(
+    block: &HirBlock,
+    func: &HirFn,
+    defs: &BackendDefs<'_>,
+    clock_names: &HashMap<LocalId, String>,
+    local_names: &HashMap<LocalId, String>,
+) -> Vec<crate::sv_ir::SvCombStmt> {
+    let mut out = Vec::new();
+    for stmt in &block.statements {
+        match stmt {
+            HirStmt::Equation(eq) => {
+                let lhs_name = sv_name(local_names, func, eq.lhs);
+                let rhs = lower_expr(&eq.rhs, func, defs, local_names);
+                out.push(crate::sv_ir::SvCombStmt::Assign {
+                    lhs: SvExpr::Ident(lhs_name),
+                    rhs,
+                });
+            }
+            HirStmt::If(inner) => {
+                let cond = lower_expr(&inner.condition, func, defs, local_names);
+                let then_body =
+                    lower_comb_branch(&inner.then_branch, func, defs, clock_names, local_names);
+                let else_body =
+                    lower_comb_branch(&inner.else_branch, func, defs, clock_names, local_names);
+                out.push(crate::sv_ir::SvCombStmt::If(crate::sv_ir::SvCombIf {
+                    cond,
+                    then_branch: then_body,
+                    else_branch: else_body,
+                }));
+            }
+            // Let / VarDecl / Return / Expr shouldn't appear inside the
+            // synthesised branches; lower_block_expressions only emits
+            // Equations and nested Ifs. Skip if they do.
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Emit a `SvItem::Instance` for a user-fn call. The callee's flattened
@@ -499,6 +557,9 @@ fn lower_expr(
         HirExprKind::MethodCall(_) => unreachable!(
             "MethodCall should be lowered to Call by `hir::method_lower` before sv_lower"
         ),
+        HirExprKind::Block(_) | HirExprKind::If(_) => {
+            unreachable!("Block/If should be flattened by lower_block_expressions before sv_lower")
+        }
     }
 }
 
@@ -588,6 +649,7 @@ fn lower_width_expr(
         // cannot appear here in well-typed HIR; pick a safe placeholder.
         HirExprKind::Field(_) => SvExpr::Lit("0".to_owned()),
         HirExprKind::MethodCall(_) => SvExpr::Lit("0".to_owned()),
+        HirExprKind::Block(_) | HirExprKind::If(_) => SvExpr::Lit("0".to_owned()),
     }
 }
 
@@ -629,6 +691,7 @@ fn infer_sv_type(
         // If one slips through, fall back to a bit-wide type.
         HirExprKind::Field(_) => SvType::bit(),
         HirExprKind::MethodCall(_) => SvType::bit(),
+        HirExprKind::Block(_) | HirExprKind::If(_) => SvType::bit(),
     }
 }
 
@@ -699,9 +762,16 @@ mod tests {
         let hir = lower_to_hir(&surface, &resolve).expect("lower");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
+        let block_lowered = crate::hir::lower_block_expressions::lower_block_expressions(
+            &hir,
+            &tc.expr_types,
+            &tc.local_types,
+        );
+        let hir = block_lowered.file;
+        let local_types = block_lowered.local_types;
         let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-        let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types).expect("flatten");
+        let flat = flatten_aggregates(&hir, &tc.expr_types, &local_types).expect("flatten");
         lower_to_sv(&flat, &resolve)
     }
 

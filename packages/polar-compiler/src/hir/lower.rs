@@ -463,7 +463,24 @@ impl<'a> Lowerer<'a> {
 
     // ----- blocks and statements -----
 
+    /// Lower a fn body block. Same as `lower_block_no_tail`, but a tail
+    /// expression becomes an implicit `HirStmt::Return` so it propagates as
+    /// the function's return value. Block-expressions used in expression
+    /// position go through `lower_block_no_tail` instead — their tail is
+    /// the expression's value, not a return.
     fn lower_block(&mut self, block: &Block) -> HirBlock {
+        let mut hir_block = self.lower_block_no_tail(block);
+        if let Some(tail) = &block.tail {
+            let value = self.lower_expr(tail);
+            hir_block.statements.push(HirStmt::Return(value));
+        }
+        hir_block
+    }
+
+    /// Lower only the statement list of a `Block` (no implicit-return on
+    /// the tail). Used as the shared lowering body; callers decide what to
+    /// do with the tail.
+    fn lower_block_no_tail(&mut self, block: &Block) -> HirBlock {
         // Prescan: allocate LocalIds for `var` declarations (block-wide
         // scope) AND for implicit vars introduced by source-arrow out-arg
         // targets (`f { name => x }(…)` where `x` is new). The resolver
@@ -476,13 +493,6 @@ impl<'a> Lowerer<'a> {
         let mut statements = Vec::new();
         for stmt in &block.statements {
             self.lower_stmt_into(stmt, &mut statements);
-        }
-        // A trailing expression on the block (Rust-style implicit return)
-        // lowers to `return tail;`. Lowering is identical to an explicit
-        // `return` statement after this point.
-        if let Some(tail) = &block.tail {
-            let value = self.lower_expr(tail);
-            statements.push(HirStmt::Return(value));
         }
         HirBlock {
             statements,
@@ -550,6 +560,25 @@ impl<'a> Lowerer<'a> {
             Expression::RecordConstructor(r) => {
                 for field in &r.fields {
                     self.prescan_expr_for_implicits(&field.value);
+                }
+            }
+            Expression::Block(b) => {
+                for stmt in &b.statements {
+                    self.prescan_stmt_for_locals(stmt);
+                }
+                if let Some(tail) = &b.tail {
+                    self.prescan_expr_for_implicits(tail);
+                }
+            }
+            Expression::If(if_expr) => {
+                self.prescan_expr_for_implicits(&if_expr.condition);
+                for branch in [&if_expr.then_branch, &if_expr.else_branch] {
+                    for stmt in &branch.statements {
+                        self.prescan_stmt_for_locals(stmt);
+                    }
+                    if let Some(tail) = &branch.tail {
+                        self.prescan_expr_for_implicits(tail);
+                    }
                 }
             }
             Expression::Identifier(_) | Expression::Number(_) | Expression::Path(_) => {}
@@ -751,7 +780,49 @@ impl<'a> Lowerer<'a> {
             Expression::Binary(b) => self.lower_binary(b),
             Expression::Postfix(p) => self.lower_postfix(p),
             Expression::RecordConstructor(r) => self.lower_record_constructor(r),
+            Expression::Block(b) => self.lower_block_expression(b),
+            Expression::If(if_expr) => self.lower_if_expression(if_expr),
         }
+    }
+
+    /// Lower a surface `{ stmts; tail }` block-expression to a HIR
+    /// `Block` expression. The block stays tree-shaped through typeck; a
+    /// later pass flattens it into a result-local plus inlined statements.
+    fn lower_block_expression(&mut self, block: &Block) -> HirExpr {
+        let span = block.span.clone();
+        let inner = self.lower_block_no_tail(block);
+        let tail = block.tail.as_ref().map(|t| self.lower_expr(t));
+        HirExpr {
+            kind: HirExprKind::Block(Box::new(super::HirBlockExpr { block: inner, tail })),
+            ty: None,
+            span,
+            id: self.next_hir_id(),
+        }
+    }
+
+    /// Lower `if cond { … } else { … }` to a HIR `If` expression. Each
+    /// branch is lowered as its own block-expression so the tail value is
+    /// available to the late flattening pass.
+    fn lower_if_expression(&mut self, if_expr: &crate::surface_ir::IfExpression) -> HirExpr {
+        let condition = self.lower_expr(&if_expr.condition);
+        let then_branch = self.lower_branch_block(&if_expr.then_branch);
+        let else_branch = self.lower_branch_block(&if_expr.else_branch);
+        HirExpr {
+            kind: HirExprKind::If(Box::new(super::HirIfExpr {
+                condition,
+                then_branch,
+                else_branch,
+            })),
+            ty: None,
+            span: if_expr.span.clone(),
+            id: self.next_hir_id(),
+        }
+    }
+
+    fn lower_branch_block(&mut self, block: &Block) -> super::HirBlockExpr {
+        let inner = self.lower_block_no_tail(block);
+        let tail = block.tail.as_ref().map(|t| self.lower_expr(t));
+        super::HirBlockExpr { block: inner, tail }
     }
 
     /// Desugar `a + b` / `a * b` into a `HirCall` against the prelude

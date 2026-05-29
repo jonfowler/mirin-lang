@@ -222,6 +222,12 @@ fn check_expr<'a>(
                 check_expr(&field.value, callees, resolve, errors);
             }
         }
+        Expression::Block(b) => check_block(b, callees, resolve, errors),
+        Expression::If(if_expr) => {
+            check_expr(&if_expr.condition, callees, resolve, errors);
+            check_block(&if_expr.then_branch, callees, resolve, errors);
+            check_block(&if_expr.else_branch, callees, resolve, errors);
+        }
     }
 }
 

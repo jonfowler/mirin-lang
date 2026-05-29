@@ -166,6 +166,42 @@ module.exports = grammar({
         $.identifier,
         $.number,
         $.parenthesized_expression,
+        $.block_expression,
+        $.if_expression,
+      ),
+
+    // `block_expression` is a block used in expression position. Same shape
+    // as a function body — `{ stmt; ...; tail }`. The tail (if present) is
+    // the block's value. Statements without a tail evaluate to unit-style
+    // (no value), which the type-checker rejects in value contexts.
+    block_expression: ($) =>
+      seq("{", repeat($.statement), optional(field("tail", $.expression)), "}"),
+
+    // Rust-style `if cond { … } else { … }`. Both branches are required;
+    // Polar has no statement-form `if`. The two branches must produce the
+    // same type, which is the if-expression's type. The condition uses
+    // `_expression_no_struct` so that `if Foo { x: 1 } { … }` doesn't
+    // parse `Foo { x: 1 }` as a record-constructor (Rust does the same).
+    if_expression: ($) =>
+      seq(
+        "if",
+        field("condition", $._if_condition),
+        field("then_branch", $.block),
+        "else",
+        field("else_branch", $.block),
+      ),
+
+    // The condition of an `if` is strictly limited so a trailing `{ … }`
+    // can't be ambiguously parsed as a record-constructor or a postfix
+    // named-args step. For any condition shape outside this set, wrap it
+    // in parens — the parenthesized form lets the inner expression be
+    // anything because `)` terminates the cond before the block opens.
+    _if_condition: ($) =>
+      choice(
+        $.identifier,
+        $.number,
+        $.path_expression,
+        $.parenthesized_expression,
       ),
 
     binary_expression: ($) =>

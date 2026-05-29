@@ -45,9 +45,16 @@ fn build_sv(src: &str) -> String {
     let resolve = resolve_file(&surface);
     let hir = lower_to_hir(&surface, &resolve).expect("lower");
     let tc = typeck::check_file(&hir, &resolve);
+    let block_lowered = crate::hir::lower_block_expressions::lower_block_expressions(
+        &hir,
+        &tc.expr_types,
+        &tc.local_types,
+    );
+    let hir = block_lowered.file;
+    let local_types = block_lowered.local_types;
     let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
     let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-    let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types).expect("flatten");
+    let flat = flatten_aggregates(&hir, &tc.expr_types, &local_types).expect("flatten");
     let sv = lower_to_sv(&flat, &resolve);
     emit(&sv).expect("emit")
 }

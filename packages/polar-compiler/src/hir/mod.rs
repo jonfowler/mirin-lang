@@ -12,6 +12,7 @@
 pub mod check_drivers;
 pub mod flatten;
 pub mod lower;
+pub mod lower_block_expressions;
 pub mod method_lower;
 pub mod out_args;
 
@@ -169,6 +170,20 @@ pub enum HirStmt {
     Equation(HirEquation),
     Return(HirExpr),
     Expr(HirExpr),
+    /// Statement-form `if`. Produced by `lower_block_expressions` from
+    /// expression-form `HirExprKind::If`; the branches each contain the
+    /// statements needed to compute the value, ending with an assignment
+    /// (`Equation`) to the destination local. Maps directly to SV
+    /// `if (cond) begin … end else begin … end` inside an `always_comb`.
+    If(HirIfStmt),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirIfStmt {
+    pub condition: HirExpr,
+    pub then_branch: HirBlock,
+    pub else_branch: HirBlock,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +242,30 @@ pub enum HirExprKind {
     /// into a regular `Call` against the resolved method's `DefId`. By the
     /// time `flatten` / `sv_lower` run, no `MethodCall` remains.
     MethodCall(HirMethodCall),
+    /// A block used as an expression: `{ stmts; tail }`. The block's value
+    /// is the tail expression. Kept tree-shaped through type-checking; a
+    /// late `lower_block_expressions` pass flattens it into a result-local
+    /// plus inlined statements, mirroring rustc's THIR→MIR layering.
+    Block(Box<HirBlockExpr>),
+    /// `if cond { … } else { … }`. Same tree-shaped layering as `Block` —
+    /// type-checking unifies both branches' types; the late flattening
+    /// pass converts it into `var r; if (cond) r = a; else r = b;` form.
+    If(Box<HirIfExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirBlockExpr {
+    pub block: HirBlock,
+    /// The block's value type (the type of its tail expression). Set by
+    /// typeck; `None` after lowering.
+    pub tail: Option<HirExpr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirIfExpr {
+    pub condition: HirExpr,
+    pub then_branch: HirBlockExpr,
+    pub else_branch: HirBlockExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

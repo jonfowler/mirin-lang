@@ -798,6 +798,39 @@ impl BlockCtx<'_> {
                     self.resolve_expr(&field.value);
                 }
             }
+            Expression::Block(b) => {
+                // A block-expression is a fresh let scope: inner `let`s
+                // don't leak outward. The `let_scope` is restored after the
+                // block ends. `var` declarations inside still belong to the
+                // enclosing function's var namespace (Polar `var`s are
+                // function-scoped today; revisit when block-scoped vars
+                // come up).
+                let scope_start = self.let_scope.len();
+                self.prescan_vars(b);
+                for stmt in &b.statements {
+                    self.resolve_statement(stmt);
+                }
+                if let Some(tail) = &b.tail {
+                    self.resolve_expr(tail);
+                }
+                self.let_scope.truncate(scope_start);
+            }
+            Expression::If(if_expr) => {
+                self.resolve_expr(&if_expr.condition);
+                // Each branch is its own fresh let scope, independent of the
+                // other and of code after the if.
+                for branch in [&if_expr.then_branch, &if_expr.else_branch] {
+                    let scope_start = self.let_scope.len();
+                    self.prescan_vars(branch);
+                    for stmt in &branch.statements {
+                        self.resolve_statement(stmt);
+                    }
+                    if let Some(tail) = &branch.tail {
+                        self.resolve_expr(tail);
+                    }
+                    self.let_scope.truncate(scope_start);
+                }
+            }
         }
     }
 

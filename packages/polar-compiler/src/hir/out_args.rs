@@ -235,6 +235,20 @@ fn desugar_stmt_into(stmt: &HirStmt, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStm
             let lifted = lift_user_calls(e, ctx, out);
             out.push(HirStmt::Expr(lifted));
         }
+        HirStmt::If(i) => {
+            // Recurse into both branches. The branches contain `Equation`s
+            // assigning to the if-result var; if their RHS includes a
+            // user-fn call, normal lifting applies. The whole if-statement
+            // stays put.
+            let then_branch = desugar_block(&i.then_branch, ctx);
+            let else_branch = desugar_block(&i.else_branch, ctx);
+            out.push(HirStmt::If(super::HirIfStmt {
+                condition: i.condition.clone(),
+                then_branch,
+                else_branch,
+                span: i.span.clone(),
+            }));
+        }
     }
 }
 
@@ -383,6 +397,9 @@ fn lift_user_calls(expr: &HirExpr, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStmt>
         HirExprKind::MethodCall(_) => unreachable!(
             "MethodCall should be lowered to Call by `hir::method_lower` before out_args"
         ),
+        HirExprKind::Block(_) | HirExprKind::If(_) => {
+            unreachable!("Block/If should be flattened by lower_block_expressions before out_args")
+        }
     }
 }
 
@@ -440,6 +457,11 @@ fn walk_block_max(block: &HirBlock, max: &mut u32) {
             HirStmt::Equation(eq) => walk_expr_max(&eq.rhs, max),
             HirStmt::Return(e) => walk_expr_max(e, max),
             HirStmt::Expr(e) => walk_expr_max(e, max),
+            HirStmt::If(i) => {
+                walk_expr_max(&i.condition, max);
+                walk_block_max(&i.then_branch, max);
+                walk_block_max(&i.else_branch, max);
+            }
         }
     }
 }

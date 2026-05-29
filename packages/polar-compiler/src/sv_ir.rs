@@ -77,10 +77,34 @@ pub enum SvItem {
     /// `always_ff @(posedge clk) begin if (!rstn) … else … end`. First pass
     /// is always synchronous active-low reset.
     AlwaysFf(SvAlwaysFf),
+    /// `always_comb begin … end` block. Combinational procedural block —
+    /// the body's blocking assignments (`x = a;`) and `if`/`else` describe
+    /// pure combinational logic that synthesises to muxes.
+    AlwaysComb(SvAlwaysComb),
     /// `module_name instance_name (.port_a(...), ...);`
     /// Lowered from `HirStmt::Instance` for user-function calls whose
     /// argument or return shape involves an aggregate.
     Instance(SvInstance),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SvAlwaysComb {
+    pub body: Vec<SvCombStmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SvCombStmt {
+    /// Blocking assignment in an always_comb body: `lhs = rhs;`.
+    Assign { lhs: SvExpr, rhs: SvExpr },
+    /// `if (cond) begin … end else begin … end` inside always_comb.
+    If(SvCombIf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SvCombIf {
+    pub cond: SvExpr,
+    pub then_branch: Vec<SvCombStmt>,
+    pub else_branch: Vec<SvCombStmt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +253,13 @@ impl fmt::Display for SvItem {
             Self::Logic(d) => writeln!(f, "    logic{} {};", d.ty.bracketed(), d.name),
             Self::Assign { lhs, rhs } => writeln!(f, "    assign {lhs} = {rhs};"),
             Self::AlwaysFf(a) => write!(f, "{a}"),
+            Self::AlwaysComb(a) => {
+                writeln!(f, "    always_comb begin")?;
+                for s in &a.body {
+                    fmt_comb_stmt(f, s, 8)?;
+                }
+                writeln!(f, "    end")
+            }
             Self::Instance(inst) => {
                 writeln!(f, "    {} {} (", inst.module, inst.name)?;
                 for (i, (port, expr)) in inst.ports.iter().enumerate() {
@@ -237,6 +268,24 @@ impl fmt::Display for SvItem {
                 }
                 writeln!(f, "    );")
             }
+        }
+    }
+}
+
+fn fmt_comb_stmt(f: &mut fmt::Formatter<'_>, stmt: &SvCombStmt, indent: usize) -> fmt::Result {
+    let pad = " ".repeat(indent);
+    match stmt {
+        SvCombStmt::Assign { lhs, rhs } => writeln!(f, "{pad}{lhs} = {rhs};"),
+        SvCombStmt::If(if_stmt) => {
+            writeln!(f, "{pad}if ({}) begin", if_stmt.cond)?;
+            for s in &if_stmt.then_branch {
+                fmt_comb_stmt(f, s, indent + 4)?;
+            }
+            writeln!(f, "{pad}end else begin")?;
+            for s in &if_stmt.else_branch {
+                fmt_comb_stmt(f, s, indent + 4)?;
+            }
+            writeln!(f, "{pad}end")
         }
     }
 }

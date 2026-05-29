@@ -206,6 +206,15 @@ pub enum Expression {
     Binary(BinaryExpression),
     Postfix(PostfixExpression),
     RecordConstructor(RecordConstructorExpression),
+    /// A block used as an expression: `{ stmts; ...; tail }`. Value is the
+    /// tail expression. HIR keeps this tree-shaped through type-checking; a
+    /// late pass flattens it into a result-local plus inlined statements.
+    Block(Box<Block>),
+    /// `if cond { … } else { … }`. Both branches must produce the same type.
+    /// Conditions are syntactically restricted in the grammar so a trailing
+    /// `{` can't be parsed as a record-constructor; complex conditions go
+    /// in parens.
+    If(Box<IfExpression>),
 }
 
 impl Expression {
@@ -217,8 +226,18 @@ impl Expression {
             Self::Binary(node) => &node.span,
             Self::Postfix(node) => &node.span,
             Self::RecordConstructor(node) => &node.span,
+            Self::Block(node) => &node.span,
+            Self::If(node) => &node.span,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfExpression {
+    pub span: SourceSpan,
+    pub condition: Box<Expression>,
+    pub then_branch: Block,
+    pub else_branch: Block,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -671,6 +690,13 @@ impl<'a> Lowerer<'a> {
 
     fn lower_block(&mut self, node: &CstNode) -> Result<Block, LowerError> {
         expect_kind(node, "block")?;
+        self.lower_block_like(node)
+    }
+
+    /// Shared body for `block` and `block_expression` (which have identical
+    /// shape — both produce a `Block` AST node). Callers are responsible for
+    /// checking the CST kind matches whichever they expect.
+    fn lower_block_like(&mut self, node: &CstNode) -> Result<Block, LowerError> {
         // Grammar puts the optional tail-expression on a "tail" field; every
         // other named child is a statement.
         let mut statements = Vec::new();
@@ -787,6 +813,20 @@ impl<'a> Lowerer<'a> {
                     .ok_or_else(|| missing_child(node, "expression"))?;
                 self.lower_expression(inner)
             }
+            "block_expression" => {
+                // `block_expression` has the same shape as `block`; reuse the
+                // block lowering and wrap it in `Expression::Block`.
+                let block = self.lower_block_like(node)?;
+                Ok(Expression::Block(Box::new(block)))
+            }
+            "if_expression" => Ok(Expression::If(Box::new(IfExpression {
+                span: node.span.clone(),
+                condition: Box::new(
+                    self.lower_expression(lower_required_field(node, "condition")?)?,
+                ),
+                then_branch: self.lower_required_block(node, "then_branch")?,
+                else_branch: self.lower_required_block(node, "else_branch")?,
+            }))),
             _ => Err(unexpected_node(node, "expression")),
         }
     }

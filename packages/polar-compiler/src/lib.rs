@@ -16,6 +16,7 @@ pub use direction::{
     DirectionError, DirectionErrorKind, NamedArgumentOperator, check_directions,
     render_direction_errors,
 };
+pub use hir::lower_block_expressions::{BlockExprLowering, lower_block_expressions};
 pub use hir::{
     DriverError, DriverErrorKind, FlattenError, FlattenErrorKind, OutArgsError, OutArgsErrorKind,
     check_drivers, desugar_user_calls, flatten_aggregates, lower_method_calls,
@@ -33,12 +34,12 @@ pub use resolve::{
 pub use surface_ir::{
     ArgumentList, AssignmentStatement, BinaryExpression, BinaryOperator, Block,
     ConnectionDirection, Expression, ExpressionStatement, FieldAccess, FunctionDefinition,
-    Identifier, ImplBlock, Item, LetStatement, LowerError, NamedArgument, NamedArgumentList,
-    NamedParameter, NodeId, NumberLiteral, ParamKind, Parameter, PathExpression, PortDefinition,
-    PortField, PostfixExpression, PostfixOperation, RecordConstructorExpression, RecordFieldType,
-    RecordFieldValue, ReturnStatement, SinkArgument, SourceArgument, SourceFile, Statement,
-    StructDefinition, SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix, VarStatement,
-    lower_cst, parse_surface_file, parse_surface_source,
+    Identifier, IfExpression, ImplBlock, Item, LetStatement, LowerError, NamedArgument,
+    NamedArgumentList, NamedParameter, NodeId, NumberLiteral, ParamKind, Parameter, PathExpression,
+    PortDefinition, PortField, PostfixExpression, PostfixOperation, RecordConstructorExpression,
+    RecordFieldType, RecordFieldValue, ReturnStatement, SinkArgument, SourceArgument, SourceFile,
+    Statement, StructDefinition, SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix,
+    VarStatement, lower_cst, parse_surface_file, parse_surface_source,
 };
 pub use sv_emit::{EmitError, EmitErrorKind, emit as emit_sv, render_emit_errors};
 pub use sv_lower::lower_to_sv;

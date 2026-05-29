@@ -658,6 +658,31 @@ impl<'a> FnFlattener<'a> {
                 };
                 out.push(HirStmt::Expr(new_e));
             }
+            HirStmt::If(i) => {
+                let cond = self
+                    .remap_expr(&i.condition)
+                    .unwrap_or_else(|| i.condition.clone());
+                let mut then_stmts = Vec::new();
+                for s in &i.then_branch.statements {
+                    self.flatten_stmt(s, func, &mut then_stmts);
+                }
+                let mut else_stmts = Vec::new();
+                for s in &i.else_branch.statements {
+                    self.flatten_stmt(s, func, &mut else_stmts);
+                }
+                out.push(HirStmt::If(super::HirIfStmt {
+                    condition: cond,
+                    then_branch: HirBlock {
+                        statements: then_stmts,
+                        span: i.then_branch.span.clone(),
+                    },
+                    else_branch: HirBlock {
+                        statements: else_stmts,
+                        span: i.else_branch.span.clone(),
+                    },
+                    span: i.span.clone(),
+                }));
+            }
         }
     }
 
@@ -1038,6 +1063,9 @@ impl<'a> FnFlattener<'a> {
             HirExprKind::MethodCall(_) => unreachable!(
                 "MethodCall should be lowered to Call by `hir::method_lower` before flatten"
             ),
+            HirExprKind::Block(_) | HirExprKind::If(_) => unreachable!(
+                "Block/If should be flattened by lower_block_expressions before flatten"
+            ),
         }
     }
 
@@ -1196,6 +1224,9 @@ impl<'a> FnFlattener<'a> {
             HirExprKind::MethodCall(_) => unreachable!(
                 "MethodCall should be lowered to Call by `hir::method_lower` before flatten"
             ),
+            HirExprKind::Block(_) | HirExprKind::If(_) => unreachable!(
+                "Block/If should be flattened by lower_block_expressions before flatten"
+            ),
         };
         Some(HirExpr {
             kind: new_kind,
@@ -1303,6 +1334,11 @@ fn walk_block_for_max(block: &HirBlock, max: &mut u32) {
             HirStmt::Equation(eq) => walk_expr_for_max(&eq.rhs, max),
             HirStmt::Return(e) => walk_expr_for_max(e, max),
             HirStmt::Expr(e) => walk_expr_for_max(e, max),
+            HirStmt::If(i) => {
+                walk_expr_for_max(&i.condition, max);
+                walk_block_for_max(&i.then_branch, max);
+                walk_block_for_max(&i.else_branch, max);
+            }
         }
     }
 }
@@ -1339,9 +1375,16 @@ mod tests {
         let hir = lower_to_hir(&file, &resolve).expect("hir lowering");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
+        let block_lowered = crate::hir::lower_block_expressions::lower_block_expressions(
+            &hir,
+            &tc.expr_types,
+            &tc.local_types,
+        );
+        let hir = block_lowered.file;
+        let local_types = block_lowered.local_types;
         let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-        flatten_aggregates(&hir, &tc.expr_types, &tc.local_types)
+        flatten_aggregates(&hir, &tc.expr_types, &local_types)
     }
 
     fn flatten_ok(source: &str) -> HirSourceFile {
@@ -1443,9 +1486,16 @@ mod tests {
             let hir = lower_to_hir(&surface, &resolve).expect("lower");
             let tc = typeck::check_file(&hir, &resolve);
             assert!(tc.errors.is_empty(), "{name} typeck: {:?}", tc.errors);
+            let block_lowered = crate::hir::lower_block_expressions::lower_block_expressions(
+                &hir,
+                &tc.expr_types,
+                &tc.local_types,
+            );
+            let hir = block_lowered.file;
+            let local_types = block_lowered.local_types;
             let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
             let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-            let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types)
+            let flat = flatten_aggregates(&hir, &tc.expr_types, &local_types)
                 .unwrap_or_else(|e| panic!("{name} flatten: {e:?}"));
             let _tc2 = typeck::check_file(&flat, &resolve);
             // We don't assert `_tc2.errors` is empty — the flat HIR

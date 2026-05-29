@@ -133,6 +133,29 @@ fn validate_item(item: &SvItem, module: &str, errors: &mut Vec<EmitError>) {
                 validate_expr_idents(expr, module, errors);
             }
         }
+        SvItem::AlwaysComb(a) => {
+            for stmt in &a.body {
+                validate_comb_stmt(stmt, module, errors);
+            }
+        }
+    }
+}
+
+fn validate_comb_stmt(stmt: &crate::sv_ir::SvCombStmt, module: &str, errors: &mut Vec<EmitError>) {
+    match stmt {
+        crate::sv_ir::SvCombStmt::Assign { lhs, rhs } => {
+            validate_expr_idents(lhs, module, errors);
+            validate_expr_idents(rhs, module, errors);
+        }
+        crate::sv_ir::SvCombStmt::If(if_stmt) => {
+            validate_expr_idents(&if_stmt.cond, module, errors);
+            for s in &if_stmt.then_branch {
+                validate_comb_stmt(s, module, errors);
+            }
+            for s in &if_stmt.else_branch {
+                validate_comb_stmt(s, module, errors);
+            }
+        }
     }
 }
 
@@ -428,9 +451,16 @@ mod tests {
         let resolve = resolve_file(&surface);
         let hir = lower_to_hir(&surface, &resolve).expect("lower");
         let tc = typeck::check_file(&hir, &resolve);
+        let block_lowered = crate::hir::lower_block_expressions::lower_block_expressions(
+            &hir,
+            &tc.expr_types,
+            &tc.local_types,
+        );
+        let hir = block_lowered.file;
+        let local_types = block_lowered.local_types;
         let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-        let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types).expect("flatten");
+        let flat = flatten_aggregates(&hir, &tc.expr_types, &local_types).expect("flatten");
         let sv = lower_to_sv(&flat, &resolve);
         emit(&sv)
     }
@@ -576,6 +606,24 @@ mod tests {
         assert!(s.contains(".a__payload(upstream__payload)"), "{s}");
         assert!(s.contains(".result__valid(delay1__valid)"), "{s}");
         assert!(s.contains(".result__payload(delay1__payload)"), "{s}");
+    }
+
+    #[test]
+    fn emits_if_expression_as_always_comb() {
+        // `if cond { a } else { b }` as a fn body's tail expression flattens
+        // to `var __block_N; always_comb begin if (cond) __block_N = a;
+        // else __block_N = b; end; assign result = __block_N;`.
+        let s =
+            build_sv(include_str!("../../../examples/working/if_expression.plr")).expect("emit");
+        assert!(s.contains("always_comb begin"), "{s}");
+        assert!(s.contains("if (cond) begin"), "{s}");
+        assert!(s.contains("end else begin"), "{s}");
+        // Both branches assign to the same synthetic var.
+        let assigns_a = s.matches("= a;").count();
+        let assigns_b = s.matches("= b;").count();
+        assert_eq!(assigns_a, 1, "expected exactly one `= a;` in:\n{s}");
+        assert_eq!(assigns_b, 1, "expected exactly one `= b;` in:\n{s}");
+        assert!(s.contains("assign result = __block_"), "{s}");
     }
 
     #[test]
