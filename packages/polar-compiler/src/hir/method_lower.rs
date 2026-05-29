@@ -19,10 +19,11 @@ use super::{
     HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind, HirFieldAccess,
     HirFn, HirId, HirItem, HirLet, HirMethodCall, HirSourceFile, HirStmt, ParamKind, ParamSection,
 };
-use crate::resolve::DefId;
+use crate::resolve::{DefId, ResolveResult};
 
 pub fn lower_method_calls(
     file: &HirSourceFile,
+    resolve: &ResolveResult,
     method_resolutions: &HashMap<HirId, DefId>,
 ) -> HirSourceFile {
     let mut callee_params: HashMap<DefId, Vec<CalleeParam>> = HashMap::new();
@@ -31,11 +32,16 @@ pub fn lower_method_calls(
             callee_params.insert(f.def_id, summarise_params(f));
         }
     }
+    let ctx = RewriteCtx {
+        method_resolutions,
+        callee_params: &callee_params,
+        reg_def_id: resolve.def_id("reg"),
+    };
     let mut new_items = Vec::with_capacity(file.items.len());
     for item in &file.items {
         match item {
             HirItem::Fn(f) => {
-                let new_body = rewrite_block(&f.body, method_resolutions, &callee_params);
+                let new_body = rewrite_block(&f.body, &ctx);
                 new_items.push(HirItem::Fn(HirFn {
                     body: new_body,
                     ..f.clone()
@@ -48,6 +54,16 @@ pub fn lower_method_calls(
         items: new_items,
         span: file.span.clone(),
     }
+}
+
+/// Bundles the per-pass lookups so the recursive rewriters don't need to pass
+/// each of them separately. `reg_def_id` lets us recognise calls that resolve
+/// to the prelude `reg`, which has a hand-built arg shape rather than a
+/// `HirFn`-summarised one.
+struct RewriteCtx<'a> {
+    method_resolutions: &'a HashMap<HirId, DefId>,
+    callee_params: &'a HashMap<DefId, Vec<CalleeParam>>,
+    reg_def_id: Option<DefId>,
 }
 
 /// Summarised callee shape used by `rewrite_call_for_method` to slot the
@@ -71,58 +87,42 @@ fn summarise_params(f: &HirFn) -> Vec<CalleeParam> {
         .collect()
 }
 
-fn rewrite_block(
-    block: &HirBlock,
-    method_resolutions: &HashMap<HirId, DefId>,
-    callee_params: &HashMap<DefId, Vec<CalleeParam>>,
-) -> HirBlock {
+fn rewrite_block(block: &HirBlock, ctx: &RewriteCtx<'_>) -> HirBlock {
     HirBlock {
         statements: block
             .statements
             .iter()
-            .map(|s| rewrite_stmt(s, method_resolutions, callee_params))
+            .map(|s| rewrite_stmt(s, ctx))
             .collect(),
         span: block.span.clone(),
     }
 }
 
-fn rewrite_stmt(
-    stmt: &HirStmt,
-    method_resolutions: &HashMap<HirId, DefId>,
-    callee_params: &HashMap<DefId, Vec<CalleeParam>>,
-) -> HirStmt {
+fn rewrite_stmt(stmt: &HirStmt, ctx: &RewriteCtx<'_>) -> HirStmt {
     match stmt {
         HirStmt::Let(l) => HirStmt::Let(HirLet {
             local: l.local,
-            value: rewrite_expr(&l.value, method_resolutions, callee_params),
+            value: rewrite_expr(&l.value, ctx),
             span: l.span.clone(),
         }),
         HirStmt::VarDecl(v) => HirStmt::VarDecl(v.clone()),
         HirStmt::Equation(eq) => HirStmt::Equation(HirEquation {
             lhs: eq.lhs,
-            rhs: rewrite_expr(&eq.rhs, method_resolutions, callee_params),
+            rhs: rewrite_expr(&eq.rhs, ctx),
             span: eq.span.clone(),
         }),
-        HirStmt::Return(e) => HirStmt::Return(rewrite_expr(e, method_resolutions, callee_params)),
-        HirStmt::Expr(e) => HirStmt::Expr(rewrite_expr(e, method_resolutions, callee_params)),
+        HirStmt::Return(e) => HirStmt::Return(rewrite_expr(e, ctx)),
+        HirStmt::Expr(e) => HirStmt::Expr(rewrite_expr(e, ctx)),
     }
 }
 
-fn rewrite_expr(
-    expr: &HirExpr,
-    method_resolutions: &HashMap<HirId, DefId>,
-    callee_params: &HashMap<DefId, Vec<CalleeParam>>,
-) -> HirExpr {
+fn rewrite_expr(expr: &HirExpr, ctx: &RewriteCtx<'_>) -> HirExpr {
     match &expr.kind {
         HirExprKind::Const(_) | HirExprKind::Local(_) => expr.clone(),
         HirExprKind::Call(call) => HirExpr {
             kind: HirExprKind::Call(HirCall {
                 callee: call.callee,
-                args: call
-                    .args
-                    .iter()
-                    .map(|a| rewrite_arg(a, method_resolutions, callee_params))
-                    .collect(),
+                args: call.args.iter().map(|a| rewrite_arg(a, ctx)).collect(),
                 span: call.span.clone(),
             }),
             ty: expr.ty.clone(),
@@ -131,11 +131,7 @@ fn rewrite_expr(
         },
         HirExprKind::Field(field) => HirExpr {
             kind: HirExprKind::Field(HirFieldAccess {
-                receiver: Box::new(rewrite_expr(
-                    &field.receiver,
-                    method_resolutions,
-                    callee_params,
-                )),
+                receiver: Box::new(rewrite_expr(&field.receiver, ctx)),
                 name: field.name.clone(),
                 name_span: field.name_span.clone(),
             }),
@@ -143,44 +139,53 @@ fn rewrite_expr(
             span: expr.span.clone(),
             id: expr.id,
         },
-        HirExprKind::MethodCall(mc) => {
-            rewrite_method_call(mc, expr, method_resolutions, callee_params)
-        }
+        HirExprKind::MethodCall(mc) => rewrite_method_call(mc, expr, ctx),
     }
 }
 
-fn rewrite_arg(
-    arg: &HirArg,
-    method_resolutions: &HashMap<HirId, DefId>,
-    callee_params: &HashMap<DefId, Vec<CalleeParam>>,
-) -> HirArg {
+fn rewrite_arg(arg: &HirArg, ctx: &RewriteCtx<'_>) -> HirArg {
     match arg {
         HirArg::Inferable => HirArg::Inferable,
         HirArg::Provided { expr, source } => HirArg::Provided {
-            expr: rewrite_expr(expr, method_resolutions, callee_params),
+            expr: rewrite_expr(expr, ctx),
             source: *source,
         },
     }
 }
 
-fn rewrite_method_call(
-    mc: &HirMethodCall,
-    whole: &HirExpr,
-    method_resolutions: &HashMap<HirId, DefId>,
-    callee_params: &HashMap<DefId, Vec<CalleeParam>>,
-) -> HirExpr {
+fn rewrite_method_call(mc: &HirMethodCall, whole: &HirExpr, ctx: &RewriteCtx<'_>) -> HirExpr {
     // Method calls with no resolution survived a typeck error; emit a
     // placeholder so downstream passes don't crash. The error was already
     // recorded.
-    let Some(&callee) = method_resolutions.get(&whole.id) else {
+    let Some(&callee) = ctx.method_resolutions.get(&whole.id) else {
         return whole.clone();
     };
-    let recv = rewrite_expr(&mc.receiver, method_resolutions, callee_params);
-    let mut user_args: Vec<HirArg> = mc
-        .args
-        .iter()
-        .map(|a| rewrite_arg(a, method_resolutions, callee_params))
-        .collect();
+    let recv = rewrite_expr(&mc.receiver, ctx);
+    let mut user_args: Vec<HirArg> = mc.args.iter().map(|a| rewrite_arg(a, ctx)).collect();
+
+    // The prelude `reg` has no `HirFn`, so `callee_params.get(&callee)`
+    // returns None. Its real shape is `[Inferable(#clk), self, rst, init]`;
+    // build that explicitly. Every other callee falls through to the
+    // signature-driven slotting below.
+    if Some(callee) == ctx.reg_def_id {
+        let mut args = Vec::with_capacity(2 + user_args.len());
+        args.push(HirArg::Inferable);
+        args.push(HirArg::Provided {
+            expr: recv,
+            source: HirArgSource::Given,
+        });
+        args.append(&mut user_args);
+        return HirExpr {
+            kind: HirExprKind::Call(HirCall {
+                callee,
+                args,
+                span: whole.span.clone(),
+            }),
+            ty: whole.ty.clone(),
+            span: whole.span.clone(),
+            id: whole.id,
+        };
+    }
 
     // Build the call's arg list to match the callee's signature shape.
     // Each named slot is filled with `Inferable` (for `param`/`dom` without
@@ -190,7 +195,7 @@ fn rewrite_method_call(
     // substitution to typeck's downstream pass. In practice, post-typeck
     // the only consumer is `out_args` + `flatten` + `sv_lower`, which
     // accept Inferable for the clock/param slots.
-    let params = match callee_params.get(&callee) {
+    let params = match ctx.callee_params.get(&callee) {
         Some(p) => p,
         None => {
             // Unknown callee — emit a Call with whatever we have so the
@@ -273,7 +278,7 @@ mod tests {
         let hir = lower_to_hir(&file, &resolve).expect("lower");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
-        lower_method_calls(&hir, &tc.method_resolutions)
+        lower_method_calls(&hir, &resolve, &tc.method_resolutions)
     }
 
     fn nth_fn(file: &HirSourceFile, n: usize) -> &HirFn {

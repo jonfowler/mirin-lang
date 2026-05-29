@@ -31,7 +31,8 @@ use crate::sv_ir::{
 };
 
 /// Lower a flattened HIR file to SV IR. `resolve` is used only to identify
-/// prelude defs (`reg`, `+`, `*`).
+/// prelude defs (`reg`, `+`, `*`) and to qualify method names with their
+/// owner type.
 pub fn lower_to_sv(file: &HirSourceFile, resolve: &ResolveResult) -> SvFile {
     let mut user_fns: HashMap<DefId, &HirFn> = HashMap::new();
     for item in &file.items {
@@ -39,11 +40,22 @@ pub fn lower_to_sv(file: &HirSourceFile, resolve: &ResolveResult) -> SvFile {
             user_fns.insert(func.def_id, func);
         }
     }
+    // Compute the SV module name for every user fn. Free functions keep
+    // their source name; methods get `<owner>__<method>` so different impls
+    // of the same method name don't collide and so single-word method names
+    // like `reg` don't collide with SV reserved words.
+    let mut module_names: HashMap<DefId, String> = HashMap::new();
+    for item in &file.items {
+        if let HirItem::Fn(func) = item {
+            module_names.insert(func.def_id, sv_module_name(func, resolve));
+        }
+    }
     let defs = BackendDefs {
         reg: resolve.def_id("reg"),
         add: resolve.def_id("+"),
         mul: resolve.def_id("*"),
         user_fns,
+        module_names,
     };
     let mut modules = Vec::new();
     for item in &file.items {
@@ -52,6 +64,20 @@ pub fn lower_to_sv(file: &HirSourceFile, resolve: &ResolveResult) -> SvFile {
         }
     }
     SvFile { modules }
+}
+
+/// Build the SV module name for a Polar function. Methods are qualified by
+/// their impl owner (e.g. `Option::reg` → `Option__reg`); free functions
+/// keep their bare name.
+fn sv_module_name(func: &HirFn, resolve: &ResolveResult) -> String {
+    let info = resolve.def_info(func.def_id);
+    match info.kind {
+        crate::resolve::DefKind::Method { owner } => {
+            let owner_name = &resolve.def_info(owner).name;
+            format!("{owner_name}__{}", func.name)
+        }
+        _ => func.name.clone(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +89,9 @@ struct BackendDefs<'a> {
     /// instance lowering path reads this to find the callee's flattened
     /// port list (names, directions, types).
     user_fns: HashMap<DefId, &'a HirFn>,
+    /// SV module name for each user fn (qualified for methods). Used both
+    /// at the module-definition site and at every instance use site.
+    module_names: HashMap<DefId, String>,
 }
 
 // ============================================================================
@@ -164,8 +193,14 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs<'_>) -> SvModule {
         &mut items,
     );
 
+    let module_name = defs
+        .module_names
+        .get(&func.def_id)
+        .cloned()
+        .unwrap_or_else(|| func.name.clone());
+
     SvModule {
-        name: func.name.clone(),
+        name: module_name,
         parameters,
         ports,
         items,
@@ -294,7 +329,12 @@ fn lower_user_instance(
     instance_counts: &mut HashMap<String, u32>,
     items: &mut Vec<SvItem>,
 ) {
-    let instance_name = pick_instance_name(&callee.name, instance_counts);
+    let callee_module_name = defs
+        .module_names
+        .get(&callee.def_id)
+        .cloned()
+        .unwrap_or_else(|| callee.name.clone());
+    let instance_name = pick_instance_name(&callee_module_name, instance_counts);
     let mut ports: Vec<(String, SvExpr)> = Vec::with_capacity(callee.params.len());
     for (param, arg) in callee.params.iter().zip(call.args.iter()) {
         let port_name = callee
@@ -315,7 +355,7 @@ fn lower_user_instance(
         ports.push((port_name, port_expr));
     }
     items.push(SvItem::Instance(SvInstance {
-        module: callee.name.clone(),
+        module: callee_module_name,
         name: instance_name,
         ports,
     }));
@@ -659,7 +699,7 @@ mod tests {
         let hir = lower_to_hir(&surface, &resolve).expect("lower");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
-        let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
+        let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types).expect("flatten");
         lower_to_sv(&flat, &resolve)

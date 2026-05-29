@@ -317,6 +317,11 @@ struct FileCtx<'hir> {
     /// by `infer_arith_call` until value-level type parameters land.
     add_def_id: Option<DefId>,
     mul_def_id: Option<DefId>,
+    /// `DefId`s of the prelude `uint` and `bool` primitive types. Used to map
+    /// scalar receivers to an `impl_methods` owner so method dispatch on
+    /// primitives flows through the same path as user-defined `impl T`.
+    uint_def_id: Option<DefId>,
+    bool_def_id: Option<DefId>,
     errors: Vec<TypeError>,
     residual_obligations: Vec<Obligation>,
     expr_types: HashMap<HirId, HirType>,
@@ -350,6 +355,8 @@ impl<'hir> FileCtx<'hir> {
             reg_def_id: resolve.def_id("reg"),
             add_def_id: resolve.def_id("+"),
             mul_def_id: resolve.def_id("*"),
+            uint_def_id: resolve.def_id("uint"),
+            bool_def_id: resolve.def_id("bool"),
             errors: Vec::new(),
             residual_obligations: Vec::new(),
             expr_types: HashMap::new(),
@@ -1109,11 +1116,16 @@ impl InferCtxt {
         let recv_ty = self.infer_expr(&mc.receiver, file);
         let resolved_recv = self.resolve_type(&recv_ty);
 
-        // Receiver must be a user-defined type (struct or port) — only those
-        // can have `impl` blocks.
+        // Map the receiver's type to an `impl_methods` owner. User-defined
+        // structs and ports carry their own `DefId`; primitive scalars
+        // (`uint(N)`, eventually `bool`) use the prelude `BuiltinType`
+        // DefId so prelude methods like `uint::reg` dispatch through the
+        // same table as `impl T { fn m … }`.
         let owner_def = match &resolved_recv.kind {
             HirTypeKind::Value(vt) => match &vt.kind {
                 ValueKind::Struct { def } => Some(*def),
+                ValueKind::UInt { .. } => file.uint_def_id,
+                ValueKind::Bool => file.bool_def_id,
                 _ => None,
             },
             HirTypeKind::Port(p) => Some(p.def),
@@ -1152,6 +1164,29 @@ impl InferCtxt {
             }
             return self.fresh_type_var(span);
         };
+
+        // Prelude `reg` has no `HirFn` — it's a virtual builtin whose
+        // signature can't yet be written in surface Polar (width tied
+        // between `self` and `reset_val`). Route through the dedicated
+        // `infer_reg_call` after recording the resolution.
+        if file.is_reg(method_def) {
+            self.method_resolutions.insert(expr_id, method_def);
+            let synthesised = HirCall {
+                callee: method_def,
+                args: {
+                    let mut v = Vec::with_capacity(2 + mc.args.len());
+                    v.push(HirArg::Inferable);
+                    v.push(HirArg::Provided {
+                        expr: (*mc.receiver).clone(),
+                        source: super::hir::HirArgSource::Given,
+                    });
+                    v.extend(mc.args.iter().cloned());
+                    v
+                },
+                span: span.clone(),
+            };
+            return self.infer_reg_call(&synthesised, file);
+        }
 
         let Some(callee) = file.lookup_fn(method_def) else {
             return self.fresh_type_var(span);

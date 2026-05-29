@@ -428,7 +428,7 @@ mod tests {
         let resolve = resolve_file(&surface);
         let hir = lower_to_hir(&surface, &resolve).expect("lower");
         let tc = typeck::check_file(&hir, &resolve);
-        let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
+        let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types).expect("flatten");
         let sv = lower_to_sv(&flat, &resolve);
@@ -523,15 +523,17 @@ mod tests {
 
     #[test]
     fn emits_delay_impl_with_chained_method_calls() {
-        // delay_impl.plr defines `reg2` as a method on `Option` and writes
-        // `upstream.reg2(rstn).reg2(rstn)` — chained method dispatch. The
-        // out_args + method_lower combo lifts the inner call into a temp
-        // and produces two reg2 instances.
+        // delay_impl.plr defines `reg` as a method on `Option` and writes
+        // `upstream.reg(rstn).reg(rstn)` — chained method dispatch. The
+        // method-name collides with the prelude `uint::reg`; per-type
+        // dispatch picks `Option::reg` because the receiver types as Option.
+        // The SV module is `Option__reg` (owner-qualified) so it avoids the
+        // SV `reg` reserved word.
         let s = build_sv(include_str!("../../../examples/working/delay_impl.plr")).expect("emit");
-        let instances = s.matches("reg2 reg2").count();
+        let instances = s.matches("Option__reg Option__reg").count();
         assert_eq!(
             instances, 2,
-            "expected 2 reg2 instances, got {instances} in:\n{s}"
+            "expected 2 Option__reg instances, got {instances} in:\n{s}"
         );
     }
 

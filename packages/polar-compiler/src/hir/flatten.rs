@@ -1339,7 +1339,7 @@ mod tests {
         let hir = lower_to_hir(&file, &resolve).expect("hir lowering");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
-        let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
+        let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         flatten_aggregates(&hir, &tc.expr_types, &tc.local_types)
     }
@@ -1443,7 +1443,7 @@ mod tests {
             let hir = lower_to_hir(&surface, &resolve).expect("lower");
             let tc = typeck::check_file(&hir, &resolve);
             assert!(tc.errors.is_empty(), "{name} typeck: {:?}", tc.errors);
-            let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
+            let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
             let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
             let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types)
                 .unwrap_or_else(|e| panic!("{name} flatten: {e:?}"));

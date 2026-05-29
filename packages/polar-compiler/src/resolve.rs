@@ -43,6 +43,13 @@ pub enum DefKind {
     Method {
         owner: DefId,
     },
+    /// A primitive type baked into the language (`uint`, `bool`, …). Exists
+    /// only so the def table can carry a `DefId` for the type — used as the
+    /// owner key in `impl_methods` so prelude methods like `uint::reg`
+    /// dispatch through the same table as user-defined `impl T { fn m … }`.
+    /// At type-expression sites the surface parser handles these as keywords;
+    /// the resolver never sees them in type position.
+    BuiltinType,
 }
 
 /// How a local binding was introduced.
@@ -268,6 +275,14 @@ impl ResolveResult {
 /// directly because they don't tokenise as identifiers.
 const PRELUDE_FN_NAMES: &[&str] = &["reg", "+", "*"];
 
+/// Builtin primitive types that get a `DefId` in the prelude so they can act
+/// as `impl_methods` owners. The surface parser treats these as keywords in
+/// type position; they're never resolved by name from a type expression.
+/// Pre-seeded methods (e.g. `uint::reg`) live in `impl_methods` so method
+/// dispatch on `recv.method(...)` flows through the same path for primitives
+/// and user types alike.
+const PRELUDE_TYPE_NAMES: &[&str] = &["uint", "bool"];
+
 /// Identifier-shaped literals (`true`, `false`, `high`, `low`). The resolver
 /// neither errors on them nor emits a `Res` — HIR lowering recognises them by
 /// name and emits a `Const` node directly.
@@ -297,6 +312,13 @@ pub fn resolve_file(file: &SourceFile) -> ResolveResult {
         ctx.resolve_item(item);
     }
 
+    // Pass 3: backfill the prelude `reg` entry for every value-shaped type
+    // that doesn't already have a user-defined `reg`. The prelude `reg`
+    // accepts any value type as `self`, so structs, ports, and the primitive
+    // `uint` all dispatch to it by default. A user-defined `impl T { fn reg }`
+    // wins because impl-block resolution (pass 2) ran first.
+    ctx.backfill_prelude_reg();
+
     ctx.result
 }
 
@@ -323,7 +345,42 @@ impl Ctx {
             });
             ctx.global_defs.insert(name.to_owned(), (DefKind::Fn, id));
         }
+        for &name in PRELUDE_TYPE_NAMES {
+            let id = DefId(ctx.result.defs.len() as u32);
+            ctx.result.defs.push(DefInfo {
+                kind: DefKind::BuiltinType,
+                name: name.to_owned(),
+                span: prelude_span(),
+            });
+            ctx.global_defs
+                .insert(name.to_owned(), (DefKind::BuiltinType, id));
+        }
         ctx
+    }
+
+    /// Wire the prelude `reg` method into every value-shaped def that doesn't
+    /// already have a user-defined `reg` entry. Run after impl-block
+    /// resolution so user `impl T { fn reg }` definitions take precedence.
+    fn backfill_prelude_reg(&mut self) {
+        let Some(reg_def_id) = self.result.def_id("reg") else {
+            return;
+        };
+        let value_def_ids: Vec<DefId> = self
+            .result
+            .defs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, info)| match info.kind {
+                DefKind::Struct | DefKind::Port | DefKind::BuiltinType => Some(DefId(i as u32)),
+                _ => None,
+            })
+            .collect();
+        for def in value_def_ids {
+            self.result
+                .impl_methods
+                .entry((def, "reg".to_owned()))
+                .or_insert(reg_def_id);
+        }
     }
 
     fn alloc_def(&mut self, kind: DefKind, ident: &Identifier) -> DefId {

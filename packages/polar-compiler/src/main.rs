@@ -225,7 +225,7 @@ fn main() {
     // Rewrite each `HirExprKind::MethodCall` into a regular `Call` against
     // the resolved method's `DefId`. After this pass no `MethodCall`
     // remains in HIR; downstream passes treat methods like user fns.
-    let hir = polar_compiler::lower_method_calls(&hir, &tc.method_resolutions);
+    let hir = polar_compiler::lower_method_calls(&hir, &result, &tc.method_resolutions);
 
     // Rewrite user-function calls into out-arg form so that, after flatten,
     // they sit at expression-statement position with binding leaves passed

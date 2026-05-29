@@ -45,7 +45,7 @@ fn build_sv(src: &str) -> String {
     let resolve = resolve_file(&surface);
     let hir = lower_to_hir(&surface, &resolve).expect("lower");
     let tc = typeck::check_file(&hir, &resolve);
-    let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
+    let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
     let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
     let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types).expect("flatten");
     let sv = lower_to_sv(&flat, &resolve);

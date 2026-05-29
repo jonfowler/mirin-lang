@@ -54,8 +54,6 @@ pub enum HirLowerErrorKind {
     },
     /// A method call references a method name that is not in the prelude.
     UnknownMethod { method: String },
-    /// `.reg(rst, reset_val)` did not receive exactly two positional args.
-    RegArity { got: usize },
     /// A bare definition was used in a value position (functions are not
     /// first-class values in the first pass).
     DefAsValue { name: String },
@@ -106,10 +104,6 @@ impl fmt::Display for HirLowerErrorKind {
                 "`{callee}` takes {expected} positional argument(s) but {got} were supplied"
             ),
             Self::UnknownMethod { method } => write!(f, "unknown method `.{method}`"),
-            Self::RegArity { got } => write!(
-                f,
-                "`.reg(rst, reset_val)` expects 2 positional arguments, got {got}"
-            ),
             Self::DefAsValue { name } => {
                 write!(f, "`{name}` is a function and cannot be used as a value")
             }
@@ -196,9 +190,6 @@ struct Lowerer<'a> {
     /// User-defined structs, keyed by `DefId`. Used to slot record-literal
     /// constructors against declared field order.
     user_structs: HashMap<DefId, &'a StructDefinition>,
-    /// `DefId` of the prelude `reg` primitive. Set once at startup; used for
-    /// every `.reg(...)` desugaring.
-    reg_def_id: Option<DefId>,
     /// Per-file counter for `HirId`s.
     next_hir_id: u32,
     /// Per-function state. Reset by [`Lowerer::lower_fn`].
@@ -251,7 +242,6 @@ impl<'a> Lowerer<'a> {
             resolve,
             user_fns,
             user_structs,
-            reg_def_id: resolve.def_id("reg"),
             next_hir_id: 0,
             fn_state: FnState::default(),
             current_impl_target: None,
@@ -1142,8 +1132,10 @@ impl<'a> Lowerer<'a> {
     /// - `.reg(rst, reset_val)` is special-cased and lowered directly to a
     ///   `HirCall` against the prelude `reg` def. The prelude method is
     ///   not associated with a specific receiver type.
-    /// - Every other `.method(...)` becomes a `HirExprKind::MethodCall`,
-    ///   which `typeck` later resolves via `ResolveResult::impl_methods`.
+    /// Every `.method(...)` becomes a `HirExprKind::MethodCall`. `typeck`
+    /// resolves the callee via `ResolveResult::impl_methods` keyed on the
+    /// receiver's type — including the prelude `uint::reg` entry, so the
+    /// receiver's type drives dispatch rather than the method's name.
     fn lower_method_step(
         &mut self,
         receiver: HirExpr,
@@ -1153,13 +1145,6 @@ impl<'a> Lowerer<'a> {
         let call_span = combine_spans(&receiver.span, &field.span);
         let exprs = self.materialise_positional_args(args);
 
-        if field.field.text == "reg" {
-            return self.lower_reg_call(receiver, &exprs, call_span);
-        }
-
-        // Deferred method dispatch: lower the args, emit `MethodCall`. The
-        // receiver's type is unknown here; `typeck` looks the method up by
-        // (receiver_type, name).
         let lowered_args: Vec<HirArg> = exprs
             .iter()
             .map(|e| hir_given(self.lower_expr(e)))
@@ -1188,54 +1173,6 @@ impl<'a> Lowerer<'a> {
                 PositionalArgument::OutBind(out) => Expression::Identifier(out.target.clone()),
             })
             .collect()
-    }
-
-    /// Lower `<receiver>.reg(rst, reset_val)` into a direct `HirCall` against
-    /// the prelude `reg` def. `reg` is the only method baked into the
-    /// language; everything else dispatches via `HirExprKind::MethodCall`.
-    fn lower_reg_call(
-        &mut self,
-        receiver: HirExpr,
-        args: &[Expression],
-        call_span: SourceSpan,
-    ) -> HirExpr {
-        let Some(reg_def_id) = self.reg_def_id else {
-            self.error(
-                HirLowerErrorKind::InternalUnresolved("prelude `reg` def".to_owned()),
-                call_span.clone(),
-            );
-            return self.placeholder_expr(call_span);
-        };
-        if args.len() != 2 {
-            self.error(
-                HirLowerErrorKind::RegArity { got: args.len() },
-                call_span.clone(),
-            );
-        }
-        let rst = args
-            .first()
-            .map(|e| self.lower_expr(e))
-            .unwrap_or_else(|| self.placeholder_expr(call_span.clone()));
-        let reset_val = args
-            .get(1)
-            .map(|e| self.lower_expr(e))
-            .unwrap_or_else(|| self.placeholder_expr(call_span.clone()));
-        let hir_args = vec![
-            HirArg::Inferable,   // #clk
-            hir_given(receiver), // self
-            hir_given(rst),
-            hir_given(reset_val),
-        ];
-        HirExpr {
-            kind: HirExprKind::Call(HirCall {
-                callee: reg_def_id,
-                args: hir_args,
-                span: call_span.clone(),
-            }),
-            ty: None,
-            span: call_span,
-            id: self.next_hir_id(),
-        }
     }
 
     fn placeholder_expr(&mut self, span: SourceSpan) -> HirExpr {
@@ -1373,7 +1310,12 @@ impl<'a> Lowerer<'a> {
                     }
                     Some((DefKind::Fn, _))
                     | Some((DefKind::Impl, _))
-                    | Some((DefKind::Method { .. }, _)) => {
+                    | Some((DefKind::Method { .. }, _))
+                    | Some((DefKind::BuiltinType, _)) => {
+                        // `uint`/`bool` reach this arm when written verbatim
+                        // (e.g. `let x: uint`) — primitive types must be
+                        // written with their required suffix (`uint(N)`) and
+                        // are handled by the literal `"uint"` arm above.
                         self.error(
                             HirLowerErrorKind::UnknownType(other.to_owned()),
                             ty.name.span.clone(),
@@ -1559,7 +1501,10 @@ mod tests {
     }
 
     #[test]
-    fn method_call_to_reg_desugars() {
+    fn method_call_to_reg_lowers_to_method_call() {
+        // HIR lowering emits `MethodCall` for every `.method(...)`, including
+        // `.reg(...)`. The method-lower pass (driven by typeck's resolution
+        // table) rewrites it into a `HirCall` against the prelude `reg`.
         let file = lower_ok(
             "fn f(rstn: Reset @clk, data: uint(8) @clk) -> uint(8) @clk { let r = data.reg(rstn, 0); return r; }",
         );
@@ -1567,33 +1512,13 @@ mod tests {
         let HirStmt::Let(l) = &func.body.statements[0] else {
             panic!("expected Let");
         };
-        let HirExprKind::Call(call) = &l.value.kind else {
-            panic!("expected Call, got {:?}", l.value.kind);
+        let HirExprKind::MethodCall(mc) = &l.value.kind else {
+            panic!("expected MethodCall, got {:?}", l.value.kind);
         };
-        // reg's args = [#clk: Inferable, self: Given(data), rst: Given(rstn), reset_val: Given(0)]
-        assert_eq!(call.args.len(), 4);
-        assert!(matches!(call.args[0], HirArg::Inferable));
-        assert!(matches!(
-            call.args[1],
-            HirArg::Provided {
-                source: HirArgSource::Given,
-                ..
-            }
-        ));
-        assert!(matches!(
-            call.args[2],
-            HirArg::Provided {
-                source: HirArgSource::Given,
-                ..
-            }
-        ));
-        assert!(matches!(
-            call.args[3],
-            HirArg::Provided {
-                source: HirArgSource::Given,
-                ..
-            }
-        ));
+        assert_eq!(mc.name, "reg");
+        // Two user-supplied args: rst and reset_val. The receiver is in `mc.receiver`,
+        // and the `#clk` inferable slot is prepended by method_lower (not here).
+        assert_eq!(mc.args.len(), 2);
     }
 
     #[test]
@@ -1832,7 +1757,7 @@ mod tests {
     }
 
     #[test]
-    fn chained_field_then_reg_lowers_to_call_on_field_access() {
+    fn chained_field_then_reg_lowers_to_method_call_on_field_access() {
         let file = lower_ok(
             "struct Pair = pair { a: bool, b: uint(8) }\n\
              fn f(rstn: Reset @clk, p: Pair @clk) -> uint(8) @clk { return p.b.reg(rstn, 0); }",
@@ -1841,19 +1766,18 @@ mod tests {
         let HirStmt::Return(ret) = &func.body.statements[0] else {
             panic!("expected return statement");
         };
-        // `p.b.reg(rstn, 0)` should lower to a Call whose self arg (slot 1)
-        // is a Field(Local(p), "b").
-        let HirExprKind::Call(call) = &ret.kind else {
-            panic!("expected Call, got {:?}", ret.kind);
+        // `p.b.reg(rstn, 0)` lowers to a MethodCall whose receiver is
+        // `Field(Local(p), "b")`. method_lower (driven by typeck) rewrites
+        // the MethodCall into a HirCall against the prelude `reg`.
+        let HirExprKind::MethodCall(mc) = &ret.kind else {
+            panic!("expected MethodCall, got {:?}", ret.kind);
         };
-        assert_eq!(call.args.len(), 4);
-        let HirArg::Provided { expr: self_arg, .. } = &call.args[1] else {
-            panic!("expected Provided self");
-        };
-        let HirExprKind::Field(field) = &self_arg.kind else {
-            panic!("expected Field at self slot, got {:?}", self_arg.kind);
+        assert_eq!(mc.name, "reg");
+        let HirExprKind::Field(field) = &mc.receiver.kind else {
+            panic!("expected Field receiver, got {:?}", mc.receiver.kind);
         };
         assert_eq!(field.name, "b");
+        assert_eq!(mc.args.len(), 2);
     }
 
     #[test]

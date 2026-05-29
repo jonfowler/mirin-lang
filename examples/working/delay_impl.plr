@@ -6,7 +6,7 @@ struct Option {
 }
 
 impl Option {
-    fn reg2{ dom clk: Clock }(self @clk, rstn: Reset @clk) -> Option @clk {
+    fn reg{ dom clk: Clock }(self @clk, rstn: Reset @clk) -> Option @clk {
     let payloadd = self.payload.reg(rstn, 0);
     return Option {
         valid: self.valid,
@@ -19,5 +19,5 @@ fn double_delay
     { dom clk: Clock, rstn: Reset @clk}
     ( in upstream: Option @clk, out downstream: Option @clk )
     {
-        downstream = upstream.reg2(rstn).reg2(rstn);
+        downstream = upstream.reg(rstn).reg(rstn);
     }
