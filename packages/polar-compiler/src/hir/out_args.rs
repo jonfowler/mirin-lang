@@ -133,7 +133,10 @@ fn desugar_fn(
     let result_local = f.return_type.as_ref().map(|rt| {
         let local = LocalId(new_locals.len() as u32);
         new_locals.push(HirLocalInfo {
-            kind: LocalKind::Param { owner: f.def_id },
+            kind: LocalKind::Param {
+                owner: f.def_id,
+                direction: Some(Direction::Out),
+            },
             name: "result".to_owned(),
             span: rt.span.clone(),
             // Synthetic — no surface node. Picked to avoid clashing with

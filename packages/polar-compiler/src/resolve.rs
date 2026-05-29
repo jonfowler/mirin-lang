@@ -3,11 +3,12 @@ use std::fmt;
 use std::path::Path;
 
 use crate::surface_ir::{
-    Block, Expression, FunctionDefinition, ImplBlock, Item, LetStatement, NamedArgument,
-    NamedParameter, NodeId, Parameter, PortDefinition, PostfixOperation, SourceArgument,
-    SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix, VarStatement,
+    Block, Expression, FunctionDefinition, Identifier, ImplBlock, Item, LetStatement,
+    NamedArgument, NamedParameter, NodeId, Parameter, PortDefinition, PositionalArgument,
+    PostfixOperation, SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix,
+    VarStatement,
 };
-use crate::{Identifier, SourceExcerpt, SourcePosition, SourceSpan};
+use crate::{SourceExcerpt, SourcePosition, SourceSpan};
 
 /// Unique ID for a top-level definition (component, struct, port, impl).
 ///
@@ -47,8 +48,13 @@ pub enum DefKind {
 /// How a local binding was introduced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalKind {
-    /// Parameter (named or positional) of the owning def.
-    Param { owner: DefId },
+    /// Parameter (named or positional) of the owning def. `direction`
+    /// mirrors the surface `in`/`out` keyword; later passes use it to
+    /// decide whether a param is writable from inside the function body.
+    Param {
+        owner: DefId,
+        direction: Option<crate::surface_ir::Direction>,
+    },
     /// `let x = ...` — sequential, forward-only scope, supports shadowing.
     Let,
     /// `var x` — block-wide scope via pre-scan; participates in equations.
@@ -472,7 +478,13 @@ impl Ctx {
     ) {
         let mut params = outer_params.clone();
         for np in &func.named_parameters {
-            self.alloc_local(LocalKind::Param { owner }, &np.name);
+            self.alloc_local(
+                LocalKind::Param {
+                    owner,
+                    direction: np.direction,
+                },
+                &np.name,
+            );
             params.insert(np.name.text.clone(), np.name.id);
             self.result
                 .resolutions
@@ -485,7 +497,13 @@ impl Ctx {
             }
         }
         for p in &func.parameters {
-            self.alloc_local(LocalKind::Param { owner }, &p.name);
+            self.alloc_local(
+                LocalKind::Param {
+                    owner,
+                    direction: p.direction,
+                },
+                &p.name,
+            );
             params.insert(p.name.text.clone(), p.name.id);
             self.result
                 .resolutions
@@ -509,7 +527,13 @@ impl Ctx {
     ) -> HashMap<String, NodeId> {
         let mut scope = HashMap::new();
         for np in named {
-            self.alloc_local(LocalKind::Param { owner }, &np.name);
+            self.alloc_local(
+                LocalKind::Param {
+                    owner,
+                    direction: np.direction,
+                },
+                &np.name,
+            );
             scope.insert(np.name.text.clone(), np.name.id);
             self.result
                 .resolutions
@@ -522,7 +546,13 @@ impl Ctx {
             }
         }
         for p in positional {
-            self.alloc_local(LocalKind::Param { owner }, &p.name);
+            self.alloc_local(
+                LocalKind::Param {
+                    owner,
+                    direction: p.direction,
+                },
+                &p.name,
+            );
             scope.insert(p.name.text.clone(), p.name.id);
             self.result
                 .resolutions
@@ -720,8 +750,13 @@ impl BlockCtx<'_> {
                 }
             }
             PostfixOperation::Arguments(args) => {
-                for expr in &args.arguments {
-                    self.resolve_expr(expr);
+                for arg in &args.arguments {
+                    match arg {
+                        PositionalArgument::Value(expr) => self.resolve_expr(expr),
+                        PositionalArgument::OutBind(out) => {
+                            self.resolve_out_target(&out.target);
+                        }
+                    }
                 }
             }
         }
@@ -731,49 +766,63 @@ impl BlockCtx<'_> {
         match arg {
             // arg.name is a port/param field name — deferred to type checking
             NamedArgument::Sink(s) => self.resolve_expr(&s.value),
-            NamedArgument::Source(s) => self.resolve_source_target(s),
+            NamedArgument::Source(s) => self.resolve_out_target(&s.target),
         }
     }
 
-    fn resolve_source_target(&mut self, s: &SourceArgument) {
-        match self.lookup_name(&s.target.text) {
+    /// Resolve the `target` identifier of an out-arg binding (named or
+    /// positional source arrow). The target must be a `var`/`ImplicitVar`,
+    /// or absent — in which case we introduce a fresh implicit var. `let`
+    /// bindings and definitions are rejected.
+    fn resolve_out_target(&mut self, target: &Identifier) {
+        match self.lookup_name(&target.text) {
             Some(Res::Local(id)) => {
                 let kind = self.ctx.result.locals[&id].kind;
                 match kind {
                     LocalKind::Let => {
                         self.ctx.result.errors.push(ResolveError {
-                            kind: ResolveErrorKind::SourceOnLetBinding(s.target.text.clone()),
-                            span: s.target.span.clone(),
+                            kind: ResolveErrorKind::SourceOnLetBinding(target.text.clone()),
+                            span: target.span.clone(),
                         });
                     }
                     LocalKind::Var | LocalKind::ImplicitVar => {
                         self.ctx
                             .result
                             .resolutions
-                            .insert(s.target.id, Res::Local(id));
+                            .insert(target.id, Res::Local(id));
                     }
-                    LocalKind::Param { .. } => {
-                        self.ctx.result.errors.push(ResolveError {
-                            kind: ResolveErrorKind::InvalidSourceTarget(s.target.text.clone()),
-                            span: s.target.span.clone(),
-                        });
+                    LocalKind::Param { direction, .. } => {
+                        // Only `out`-direction params are writable from
+                        // inside the function body; everything else is a
+                        // read-only input.
+                        if matches!(direction, Some(crate::surface_ir::Direction::Out)) {
+                            self.ctx
+                                .result
+                                .resolutions
+                                .insert(target.id, Res::Local(id));
+                        } else {
+                            self.ctx.result.errors.push(ResolveError {
+                                kind: ResolveErrorKind::InvalidSourceTarget(target.text.clone()),
+                                span: target.span.clone(),
+                            });
+                        }
                     }
                 }
             }
             Some(Res::Def(..)) => {
                 self.ctx.result.errors.push(ResolveError {
-                    kind: ResolveErrorKind::InvalidSourceTarget(s.target.text.clone()),
-                    span: s.target.span.clone(),
+                    kind: ResolveErrorKind::InvalidSourceTarget(target.text.clone()),
+                    span: target.span.clone(),
                 });
             }
             None => {
                 // Not in scope: introduce a forward-only implicit var binding.
-                self.ctx.alloc_local(LocalKind::ImplicitVar, &s.target);
+                self.ctx.alloc_local(LocalKind::ImplicitVar, target);
                 self.ctx
                     .result
                     .resolutions
-                    .insert(s.target.id, Res::Local(s.target.id));
-                self.let_scope.push((s.target.text.clone(), s.target.id));
+                    .insert(target.id, Res::Local(target.id));
+                self.let_scope.push((target.text.clone(), target.id));
             }
         }
     }

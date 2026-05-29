@@ -430,7 +430,7 @@ mod tests {
         let tc = typeck::check_file(&hir, &resolve);
         let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-        let flat = flatten_aggregates(&hir, &tc.expr_types).expect("flatten");
+        let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types).expect("flatten");
         let sv = lower_to_sv(&flat, &resolve);
         emit(&sv)
     }
@@ -532,6 +532,30 @@ mod tests {
         assert_eq!(
             instances, 2,
             "expected 2 reg2 instances, got {instances} in:\n{s}"
+        );
+    }
+
+    #[test]
+    fn emits_delay_with_out_arg_call_syntax() {
+        // delay.plr exercises `out`-direction params at the call site,
+        // both named (`f { downstream => ds }(…)`) and positional
+        // (`f(…, out => ds)`). Each form should connect the callee's
+        // out-direction port to a caller-side local.
+        let s = build_sv(include_str!("../../../examples/working/delay.plr")).expect("emit");
+        // Implicit-var `ds` introduced by the source-arrow becomes two
+        // logic decls (per-leaf of `Option @clk`).
+        assert!(s.contains("logic ds__valid;"), "{s}");
+        assert!(s.contains("logic [7:0] ds__payload;"), "{s}");
+        // Named-source-arrow call wires the callee's `downstream__*`
+        // output to the caller's `ds__*` leaves.
+        assert!(
+            s.contains(".downstream__valid(ds__valid)"),
+            "expected named-source-arrow connection, in:\n{s}"
+        );
+        // Positional out-arg call wires the same way.
+        assert!(
+            s.contains(".downstream__payload(ds__payload)"),
+            "expected positional out-arg connection, in:\n{s}"
         );
     }
 

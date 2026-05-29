@@ -72,6 +72,10 @@ pub struct FunctionDefinition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedParameter {
     pub span: SourceSpan,
+    /// `in`/`out` annotation, currently meaningful for port- or struct-typed
+    /// named parameters. Treated the same way as the corresponding flag on
+    /// `Parameter`.
+    pub direction: Option<Direction>,
     pub kind: ParamKind,
     pub name: Identifier,
     pub ty: Option<TypeExpression>,
@@ -322,7 +326,23 @@ pub struct NamedArgumentList {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArgumentList {
     pub span: SourceSpan,
-    pub arguments: Vec<Expression>,
+    pub arguments: Vec<PositionalArgument>,
+}
+
+/// A positional argument at a call site. Either a plain value expression
+/// (`f(x + 1)`) or an out-arg binding (`f(out => y)` / `f(=> y)`), which
+/// connects a caller-side local to a callee's positional `out`-direction
+/// parameter — the positional analogue of `f { name => target }(...)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PositionalArgument {
+    Value(Expression),
+    OutBind(OutArgument),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutArgument {
+    pub span: SourceSpan,
+    pub target: Identifier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -543,6 +563,9 @@ impl<'a> Lowerer<'a> {
         expect_kind(node, "named_parameter")?;
         Ok(NamedParameter {
             span: node.span.clone(),
+            direction: child_by_field(node, "direction")
+                .map(lower_direction)
+                .transpose()?,
             kind: lower_param_kind(node)?,
             name: self.lower_required_identifier(node, "name")?,
             ty: child_by_field(node, "type")
@@ -749,6 +772,19 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn lower_positional_argument(
+        &mut self,
+        node: &CstNode,
+    ) -> Result<PositionalArgument, LowerError> {
+        match node.kind.as_str() {
+            "out_argument" => Ok(PositionalArgument::OutBind(OutArgument {
+                span: node.span.clone(),
+                target: self.lower_required_identifier(node, "target")?,
+            })),
+            _ => Ok(PositionalArgument::Value(self.lower_expression(node)?)),
+        }
+    }
+
     fn lower_postfix_operation(&mut self, node: &CstNode) -> Result<PostfixOperation, LowerError> {
         match node.kind.as_str() {
             "field_access" => Ok(PostfixOperation::Field(FieldAccess {
@@ -762,7 +798,7 @@ impl<'a> Lowerer<'a> {
             "argument_list" => Ok(PostfixOperation::Arguments(ArgumentList {
                 span: node.span.clone(),
                 arguments: named_children(node)
-                    .map(|child| self.lower_expression(child))
+                    .map(|child| self.lower_positional_argument(child))
                     .collect::<Result<Vec<_>, _>>()?,
             })),
             _ => Err(unexpected_node(node, "postfix operation")),
@@ -1053,11 +1089,11 @@ mod tests {
             panic!("expected argument list");
         };
         assert_eq!(args.arguments.len(), 2);
-        let Expression::Identifier(rst) = &args.arguments[0] else {
+        let PositionalArgument::Value(Expression::Identifier(rst)) = &args.arguments[0] else {
             panic!("expected identifier for rst");
         };
         assert_eq!(rst.text, "rstn");
-        let Expression::Number(reset_val) = &args.arguments[1] else {
+        let PositionalArgument::Value(Expression::Number(reset_val)) = &args.arguments[1] else {
             panic!("expected number for reset_val");
         };
         assert_eq!(reset_val.text, "0");

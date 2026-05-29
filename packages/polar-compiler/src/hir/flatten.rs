@@ -166,6 +166,7 @@ fn excerpt_for_span(source: &str, span: &SourceSpan) -> Option<SourceExcerpt> {
 pub fn flatten_aggregates(
     file: &HirSourceFile,
     expr_types: &HashMap<HirId, HirType>,
+    local_types: &HashMap<LocalId, HirType>,
 ) -> Result<HirSourceFile, Vec<FlattenError>> {
     let mut ports: HashMap<DefId, &HirPort> = HashMap::new();
     let mut structs: HashMap<DefId, &HirStruct> = HashMap::new();
@@ -192,6 +193,7 @@ pub fn flatten_aggregates(
                     ports: &ports,
                     structs: &structs,
                     expr_types,
+                    local_types,
                     new_locals: Vec::new(),
                     next_local_id: 0,
                     next_hir_id: max_hir_id + 1,
@@ -229,6 +231,7 @@ struct FnFlattener<'a> {
     ports: &'a HashMap<DefId, &'a HirPort>,
     structs: &'a HashMap<DefId, &'a HirStruct>,
     expr_types: &'a HashMap<HirId, HirType>,
+    local_types: &'a HashMap<LocalId, HirType>,
 
     /// New locals being built for the output `HirFn`. Indexed by the new
     /// `LocalId.0`.
@@ -558,12 +561,86 @@ impl<'a> FnFlattener<'a> {
 
     fn flatten_block(&mut self, block: &HirBlock, func: &HirFn) -> HirBlock {
         let mut out = Vec::new();
+        // Emit `VarDecl`s for implicit vars introduced by source-arrow
+        // out-arg targets. The resolver/HIR lowering placed them in
+        // `func.locals` with `LocalKind::ImplicitVar` but didn't synthesise
+        // statements for them; we declare them here so flatten can split
+        // aggregates and sv_lower can emit `logic` decls. The driving call
+        // appears later in the body and the out-arg writes them.
+        for (i, info) in func.locals.iter().enumerate() {
+            if matches!(info.kind, LocalKind::ImplicitVar) {
+                let local = LocalId(i as u32);
+                let ty = self.local_types.get(&local).cloned();
+                self.declare_implicit_var(local, &info.name, info.span.clone(), ty, &mut out);
+            }
+        }
         for stmt in &block.statements {
             self.flatten_stmt(stmt, func, &mut out);
         }
         HirBlock {
             statements: out,
             span: block.span.clone(),
+        }
+    }
+
+    /// Emit `VarDecl` statements for an implicit-var local (a source-arrow
+    /// target with no `var` statement). If aggregate, the var is split into
+    /// per-leaf `VarDecl`s and registered in `expansion`; if scalar, a
+    /// single `VarDecl` is emitted.
+    fn declare_implicit_var(
+        &mut self,
+        local: LocalId,
+        name: &str,
+        span: SourceSpan,
+        ty: Option<HirType>,
+        out: &mut Vec<HirStmt>,
+    ) {
+        let Some(ty) = ty else {
+            // No type known — skip; sv_lower will fall back to a 1-bit
+            // logic decl if the local is referenced.
+            return;
+        };
+        if is_aggregate(&ty.kind) {
+            let leaves = match self.expand_type_to_leaves(
+                &ty,
+                name,
+                Vec::new(),
+                None,
+                LocalKind::Var,
+                &span,
+            ) {
+                Ok(l) => l,
+                Err(err) => {
+                    self.errors.push(err);
+                    return;
+                }
+            };
+            for leaf in &leaves {
+                out.push(HirStmt::VarDecl(HirVarDecl {
+                    local: leaf.local,
+                    ty: Some(leaf.ty.clone()),
+                    span: span.clone(),
+                }));
+            }
+            self.expansion.insert(local, leaves);
+        } else {
+            // Scalar: emit a single VarDecl using a fresh leaf local so the
+            // existing remap_expr path resolves references through expansion.
+            let new_local = self.alloc_local(name.to_owned(), span.clone(), LocalKind::Var);
+            out.push(HirStmt::VarDecl(HirVarDecl {
+                local: new_local,
+                ty: Some(ty.clone()),
+                span: span.clone(),
+            }));
+            self.expansion.insert(
+                local,
+                vec![Leaf {
+                    local: new_local,
+                    ty,
+                    path: Vec::new(),
+                    fn_body_dir: None,
+                }],
+            );
         }
     }
 
@@ -1264,7 +1341,7 @@ mod tests {
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
         let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-        flatten_aggregates(&hir, &tc.expr_types)
+        flatten_aggregates(&hir, &tc.expr_types, &tc.local_types)
     }
 
     fn flatten_ok(source: &str) -> HirSourceFile {
@@ -1368,7 +1445,7 @@ mod tests {
             assert!(tc.errors.is_empty(), "{name} typeck: {:?}", tc.errors);
             let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
             let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-            let flat = flatten_aggregates(&hir, &tc.expr_types)
+            let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types)
                 .unwrap_or_else(|e| panic!("{name} flatten: {e:?}"));
             let _tc2 = typeck::check_file(&flat, &resolve);
             // We don't assert `_tc2.errors` is empty — the flat HIR

@@ -661,7 +661,7 @@ mod tests {
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
         let hir = crate::hir::lower_method_calls(&hir, &tc.method_resolutions);
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-        let flat = flatten_aggregates(&hir, &tc.expr_types).expect("flatten");
+        let flat = flatten_aggregates(&hir, &tc.expr_types, &tc.local_types).expect("flatten");
         lower_to_sv(&flat, &resolve)
     }
 

@@ -30,9 +30,10 @@ use crate::SourceSpan;
 use crate::resolve::{DefId, DefKind, LocalKind, Res, ResolveResult};
 use crate::surface_ir::{
     AssignmentStatement, BinaryOperator, Block, Expression, FunctionDefinition, Item, LetStatement,
-    NamedArgument, NamedParameter, NodeId, ParamKind, Parameter, PortDefinition, PostfixExpression,
-    PostfixOperation, RecordConstructorExpression, ReturnStatement, SourceFile, Statement,
-    StructDefinition, TypeExpression, TypeSuffix, VarStatement,
+    NamedArgument, NamedParameter, NodeId, ParamKind, Parameter, PortDefinition,
+    PositionalArgument, PostfixExpression, PostfixOperation, RecordConstructorExpression,
+    ReturnStatement, SourceFile, Statement, StructDefinition, TypeExpression, TypeSuffix,
+    VarStatement,
 };
 
 #[derive(Debug, Clone)]
@@ -356,7 +357,7 @@ impl<'a> Lowerer<'a> {
             local,
             section: ParamSection::Named,
             kind: lower_param_kind(np.kind),
-            direction: None,
+            direction: np.direction,
             ty,
             default,
             span: np.span.clone(),
@@ -473,14 +474,13 @@ impl<'a> Lowerer<'a> {
     // ----- blocks and statements -----
 
     fn lower_block(&mut self, block: &Block) -> HirBlock {
-        // Prescan: allocate LocalIds for all `var` declarations so subsequent
-        // uses can resolve them, matching the resolver's block-wide-scope rule.
+        // Prescan: allocate LocalIds for `var` declarations (block-wide
+        // scope) AND for implicit vars introduced by source-arrow out-arg
+        // targets (`f { name => x }(…)` where `x` is new). The resolver
+        // tagged these as `LocalKind::ImplicitVar`; we mirror its alloc
+        // here so subsequent references resolve.
         for stmt in &block.statements {
-            if let Statement::Var(v) = stmt {
-                for name in &v.names {
-                    self.alloc_local(name.id, &name.text, &name.span);
-                }
-            }
+            self.prescan_stmt_for_locals(stmt);
         }
 
         let mut statements = Vec::new();
@@ -490,6 +490,85 @@ impl<'a> Lowerer<'a> {
         HirBlock {
             statements,
             span: block.span.clone(),
+        }
+    }
+
+    /// Walk a statement and allocate `LocalId`s for any binding that needs
+    /// to be in scope before the statement is lowered: `var` declarations
+    /// and implicit vars introduced by source-arrow out-arg targets.
+    fn prescan_stmt_for_locals(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::Var(v) => {
+                for name in &v.names {
+                    self.alloc_local(name.id, &name.text, &name.span);
+                }
+            }
+            Statement::Let(l) => self.prescan_expr_for_implicits(&l.value),
+            Statement::Return(r) => self.prescan_expr_for_implicits(&r.value),
+            Statement::Assignment(a) => {
+                self.prescan_expr_for_implicits(&a.left);
+                self.prescan_expr_for_implicits(&a.right);
+            }
+            Statement::Expression(e) => self.prescan_expr_for_implicits(&e.value),
+        }
+    }
+
+    /// Walk an expression, allocating `LocalId`s for any implicit-var target
+    /// the resolver introduced. Each call shape (postfix free-call, postfix
+    /// method-call) can host out-arg bindings in its named or positional
+    /// section; we visit all of them.
+    fn prescan_expr_for_implicits(&mut self, expr: &Expression) {
+        match expr {
+            Expression::Postfix(p) => {
+                self.prescan_expr_for_implicits(&p.receiver);
+                for op in &p.operations {
+                    match op {
+                        PostfixOperation::NamedArguments(list) => {
+                            for arg in &list.arguments {
+                                if let NamedArgument::Source(s) = arg {
+                                    self.maybe_alloc_implicit_var(&s.target);
+                                }
+                            }
+                        }
+                        PostfixOperation::Arguments(list) => {
+                            for arg in &list.arguments {
+                                match arg {
+                                    PositionalArgument::Value(e) => {
+                                        self.prescan_expr_for_implicits(e);
+                                    }
+                                    PositionalArgument::OutBind(out) => {
+                                        self.maybe_alloc_implicit_var(&out.target);
+                                    }
+                                }
+                            }
+                        }
+                        PostfixOperation::Field(_) => {}
+                    }
+                }
+            }
+            Expression::Binary(b) => {
+                self.prescan_expr_for_implicits(&b.left);
+                self.prescan_expr_for_implicits(&b.right);
+            }
+            Expression::RecordConstructor(r) => {
+                for field in &r.fields {
+                    self.prescan_expr_for_implicits(&field.value);
+                }
+            }
+            Expression::Identifier(_) | Expression::Number(_) | Expression::Path(_) => {}
+        }
+    }
+
+    /// Allocate a `LocalId` for an implicit-var target if (a) the resolver
+    /// classified the target's surface node as `LocalKind::ImplicitVar` (the
+    /// introduction site), and (b) we haven't already allocated for it.
+    fn maybe_alloc_implicit_var(&mut self, target: &crate::surface_ir::Identifier) {
+        if self.fn_state.node_to_local.contains_key(&target.id) {
+            return;
+        }
+        let info = self.resolve.locals.get(&target.id);
+        if matches!(info.map(|i| i.kind), Some(LocalKind::ImplicitVar)) {
+            self.alloc_local(target.id, &target.text, &target.span);
         }
     }
 
@@ -828,7 +907,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_free_call(&mut self, p: &PostfixExpression, def_id: DefId) -> HirExpr {
         let mut named_block: Option<&[NamedArgument]> = None;
-        let mut positional_block: Option<&[Expression]> = None;
+        let mut positional_block: Option<&[PositionalArgument]> = None;
         for op in &p.operations {
             match op {
                 PostfixOperation::Field(field) => {
@@ -875,26 +954,47 @@ impl<'a> Lowerer<'a> {
             return self.placeholder_expr(p.span.clone());
         };
 
-        // Index the user's named args by name.
-        let mut user_named: HashMap<&str, &Expression> = HashMap::new();
+        // Index the user's named args by name. Both sink (`name = value`)
+        // and source (`name => target`) forms supply an expression; the
+        // source form materialises an identifier from the target local.
+        let mut user_named: HashMap<&str, Expression> = HashMap::new();
         if let Some(args) = named_block {
             for arg in args {
-                if let NamedArgument::Sink(s) = arg {
-                    user_named.insert(s.name.text.as_str(), &s.value);
+                match arg {
+                    NamedArgument::Sink(s) => {
+                        user_named.insert(s.name.text.as_str(), s.value.clone());
+                    }
+                    NamedArgument::Source(s) => {
+                        user_named.insert(
+                            s.name.text.as_str(),
+                            Expression::Identifier(s.target.clone()),
+                        );
+                    }
                 }
-                // Source (`=>`) on a fn named param was already rejected by
-                // direction checking; ignore it here.
             }
         }
 
-        let positional = positional_block.unwrap_or(&[]);
+        // Materialise positional arguments to a uniform `Expression` shape.
+        // Out-bind forms (`out => target`) become an identifier expression
+        // referencing the target local; the callee's positional slot's
+        // direction (Out) is what actually gives them their out-arg semantics.
+        let positional_exprs: Vec<Expression> = match positional_block {
+            Some(args) => args
+                .iter()
+                .map(|arg| match arg {
+                    PositionalArgument::Value(e) => e.clone(),
+                    PositionalArgument::OutBind(out) => Expression::Identifier(out.target.clone()),
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         let positional_param_count = callee.parameters.len();
-        if positional.len() > positional_param_count {
+        if positional_exprs.len() > positional_param_count {
             self.error(
                 HirLowerErrorKind::TooManyPositionalArgs {
                     callee: callee.name.text.clone(),
                     expected: positional_param_count,
-                    got: positional.len(),
+                    got: positional_exprs.len(),
                 },
                 p.span.clone(),
             );
@@ -905,7 +1005,7 @@ impl<'a> Lowerer<'a> {
         // Named-section slots. A named `param`/`dom` with no default is
         // inferable from call-site usage.
         for np in &callee.named_parameters {
-            let supplied = user_named.get(np.name.text.as_str()).copied();
+            let supplied = user_named.get(np.name.text.as_str());
             let inferable = matches!(np.kind, ParamKind::Param | ParamKind::Dom);
             args.push(self.slot_arg(
                 supplied,
@@ -919,7 +1019,7 @@ impl<'a> Lowerer<'a> {
         // Positional-section slots. Positional `param`/`dom` are never
         // inferable — they must be supplied at the call site.
         for (i, pp) in callee.parameters.iter().enumerate() {
-            let supplied = positional.get(i);
+            let supplied = positional_exprs.get(i);
             args.push(self.slot_arg(
                 supplied,
                 pp.default.as_ref(),
@@ -1048,19 +1148,22 @@ impl<'a> Lowerer<'a> {
         &mut self,
         receiver: HirExpr,
         field: &crate::surface_ir::FieldAccess,
-        args: &[Expression],
+        args: &[PositionalArgument],
     ) -> HirExpr {
         let call_span = combine_spans(&receiver.span, &field.span);
+        let exprs = self.materialise_positional_args(args);
 
         if field.field.text == "reg" {
-            return self.lower_reg_call(receiver, args, call_span);
+            return self.lower_reg_call(receiver, &exprs, call_span);
         }
 
         // Deferred method dispatch: lower the args, emit `MethodCall`. The
         // receiver's type is unknown here; `typeck` looks the method up by
         // (receiver_type, name).
-        let lowered_args: Vec<HirArg> =
-            args.iter().map(|e| hir_given(self.lower_expr(e))).collect();
+        let lowered_args: Vec<HirArg> = exprs
+            .iter()
+            .map(|e| hir_given(self.lower_expr(e)))
+            .collect();
         HirExpr {
             kind: HirExprKind::MethodCall(super::HirMethodCall {
                 receiver: Box::new(receiver),
@@ -1072,6 +1175,19 @@ impl<'a> Lowerer<'a> {
             span: call_span,
             id: self.next_hir_id(),
         }
+    }
+
+    /// Convert each `PositionalArgument` to an `Expression`: values pass
+    /// through verbatim; out-binds materialise to an identifier expression
+    /// referencing the target local. Used by every postfix-call lowering
+    /// path so the rest of the code sees a uniform shape.
+    fn materialise_positional_args(&mut self, args: &[PositionalArgument]) -> Vec<Expression> {
+        args.iter()
+            .map(|a| match a {
+                PositionalArgument::Value(e) => e.clone(),
+                PositionalArgument::OutBind(out) => Expression::Identifier(out.target.clone()),
+            })
+            .collect()
     }
 
     /// Lower `<receiver>.reg(rst, reset_val)` into a direct `HirCall` against

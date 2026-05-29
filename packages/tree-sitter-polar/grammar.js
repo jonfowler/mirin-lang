@@ -75,6 +75,7 @@ module.exports = grammar({
       prec(
         1,
         seq(
+          optional(field("direction", choice("in", "out"))),
           optional(field("kind", choice("param", "dom"))),
           field("name", $.identifier),
           optional(seq(":", field("type", $.type_expression))),
@@ -218,7 +219,23 @@ module.exports = grammar({
         field("name", $.identifier),
       ),
 
-    argument_list: ($) => seq("(", commaSep($.expression), optional(","), ")"),
+    argument_list: ($) =>
+      seq(
+        "(",
+        commaSep(choice($.expression, $.out_argument)),
+        optional(","),
+        ")",
+      ),
+
+    // Positional out-arg: `[out] => target`. Binds a caller-side local to
+    // an `out`-direction positional parameter on the callee. The `out`
+    // keyword is optional — `=>` unambiguously means source-arrow.
+    out_argument: ($) =>
+      seq(
+        optional(field("direction", "out")),
+        "=>",
+        field("target", $.identifier),
+      ),
 
     record_constructor_expression: ($) =>
       seq(field("constructor", $.identifier), field("body", $.record_literal)),

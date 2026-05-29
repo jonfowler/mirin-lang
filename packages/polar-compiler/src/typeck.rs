@@ -126,6 +126,11 @@ pub struct TypeCheckResult {
     /// keyed by the MethodCall's `HirId`. Consumed by the `method_lower` pass
     /// to rewrite each `MethodCall` into a regular `Call`.
     pub method_resolutions: HashMap<HirId, DefId>,
+    /// Inferred type for each local, keyed by `LocalId`. Includes params,
+    /// `let`s, `var`s, and implicit vars introduced by source-arrows. Used
+    /// by `flatten` to decide whether to split an aggregate-typed local
+    /// that wasn't declared via a `var` statement.
+    pub local_types: HashMap<LocalId, HirType>,
 }
 
 /// Run type and domain checking on a lowered HIR file.
@@ -150,6 +155,7 @@ pub fn check_file(file: &HirSourceFile, resolve: &ResolveResult) -> TypeCheckRes
         residual_obligations: ctx.residual_obligations,
         expr_types: ctx.expr_types,
         method_resolutions: ctx.method_resolutions,
+        local_types: ctx.local_types,
     }
 }
 
@@ -315,6 +321,7 @@ struct FileCtx<'hir> {
     residual_obligations: Vec<Obligation>,
     expr_types: HashMap<HirId, HirType>,
     method_resolutions: HashMap<HirId, DefId>,
+    local_types: HashMap<LocalId, HirType>,
 }
 
 impl<'hir> FileCtx<'hir> {
@@ -347,6 +354,7 @@ impl<'hir> FileCtx<'hir> {
             residual_obligations: Vec::new(),
             expr_types: HashMap::new(),
             method_resolutions: HashMap::new(),
+            local_types: HashMap::new(),
         }
     }
 
@@ -358,6 +366,9 @@ impl<'hir> FileCtx<'hir> {
         }
         for (id, def) in infer.method_resolutions.drain() {
             self.method_resolutions.insert(id, def);
+        }
+        for (id, ty) in infer.locals.drain() {
+            self.local_types.insert(id, ty);
         }
     }
 

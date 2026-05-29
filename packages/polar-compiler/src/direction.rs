@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::resolve::{DefId, DefKind, Res, ResolveResult};
 use crate::surface_ir::{
     Block, ConnectionDirection, Expression, FunctionDefinition, Item, NamedArgument,
-    PostfixExpression, PostfixOperation, SourceFile, Statement,
+    PositionalArgument, PostfixExpression, PostfixOperation, SourceFile, Statement,
 };
 use crate::{SourceExcerpt, SourceSpan};
 
@@ -266,7 +266,18 @@ fn check_postfix<'a>(
             PostfixOperation::Arguments(list) => {
                 consumed_call = true;
                 for inner in &list.arguments {
-                    check_expr(inner, callees, resolve, errors);
+                    match inner {
+                        PositionalArgument::Value(expr) => {
+                            check_expr(expr, callees, resolve, errors);
+                        }
+                        PositionalArgument::OutBind(_) => {
+                            // The `target` identifier is a Local reference,
+                            // resolved by the resolver. Direction check has
+                            // nothing extra to do here — the callee's slot
+                            // direction is read at the call shape level
+                            // (TODO: validate that slot has Out direction).
+                        }
+                    }
                 }
             }
         }
@@ -292,7 +303,7 @@ fn check_named_arg(
         });
     }
 
-    let Some(_param) = callee
+    let Some(param) = callee
         .named_parameters
         .iter()
         .find(|p| p.name.text == name.text)
@@ -307,10 +318,11 @@ fn check_named_arg(
         return;
     };
 
-    // Named parameters on a top-level fn don't carry a port direction, so a
-    // source arrow (`=>`) is always wrong here. Once port `out` fields can
-    // appear in named-argument position this check broadens.
-    if matches!(operator, NamedArgumentOperator::Source) {
+    // Source-arrow (`=>`) requires an `out`-direction named param on the
+    // callee — that's the only thing the function writes back through the
+    // named slot. Sink-arrow (`=`) is the inverse.
+    let param_is_out = matches!(param.direction, Some(crate::surface_ir::Direction::Out));
+    if matches!(operator, NamedArgumentOperator::Source) && !param_is_out {
         errors.push(DirectionError {
             kind: DirectionErrorKind::SourceArrowOnSink {
                 callee: callee.name.text.clone(),
