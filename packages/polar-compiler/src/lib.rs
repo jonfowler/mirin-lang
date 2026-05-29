@@ -9,6 +9,8 @@ pub mod sv_lower;
 #[cfg(test)]
 pub mod test_support;
 pub mod typeck;
+#[cfg(test)]
+mod verilator_lint;
 
 pub use direction::{
     DirectionError, DirectionErrorKind, NamedArgumentOperator, check_directions,

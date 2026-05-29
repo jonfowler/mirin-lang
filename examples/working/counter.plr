@@ -1,3 +1,4 @@
+// verilator: -Gbits=8
 fn counter
   { dom clk: Clock, rstn: Reset @clk = high }
   ( param bits: usize )
