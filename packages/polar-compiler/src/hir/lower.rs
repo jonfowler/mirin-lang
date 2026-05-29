@@ -890,8 +890,11 @@ impl<'a> Lowerer<'a> {
     /// well-formed call (with one `Given` arg per declared field) and only
     /// needs to verify value types.
     fn lower_record_constructor(&mut self, r: &RecordConstructorExpression) -> HirExpr {
+        // The constructor name resolves to a `DefKind::Ctor { owner }`. We
+        // dispatch through the owner — the struct's `DefId` is what stores
+        // the field list and what later `HirCall`s reference.
         let struct_def_id = match self.resolve.resolutions.get(&r.constructor.id) {
-            Some(&Res::Def(DefKind::Struct, def_id)) => def_id,
+            Some(&Res::Def(DefKind::Ctor { owner }, _)) => owner,
             _ => {
                 self.error(
                     HirLowerErrorKind::RecordConstructorNotStruct {
@@ -1414,7 +1417,8 @@ impl<'a> Lowerer<'a> {
                     Some((DefKind::Fn, _))
                     | Some((DefKind::Impl, _))
                     | Some((DefKind::Method { .. }, _))
-                    | Some((DefKind::BuiltinType, _)) => {
+                    | Some((DefKind::BuiltinType, _))
+                    | Some((DefKind::Ctor { .. }, _)) => {
                         // `uint`/`bool` reach this arm when written verbatim
                         // (e.g. `let x: uint`) — primitive types must be
                         // written with their required suffix (`uint(N)`) and

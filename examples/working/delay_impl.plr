@@ -1,6 +1,6 @@
 
 
-struct Option {
+struct Option = option {
     valid: bool,
     payload: uint(8),
 }
@@ -8,7 +8,7 @@ struct Option {
 impl Option {
     fn reg{ dom clk: Clock }(self @clk, rstn: Reset @clk) -> Option @clk {
     let payloadd = self.payload.reg(rstn, 0);
-    return Option {
+    return option {
         valid: self.valid,
         payload: payloadd,
     };

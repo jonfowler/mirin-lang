@@ -50,6 +50,41 @@ pub enum DefKind {
     /// At type-expression sites the surface parser handles these as keywords;
     /// the resolver never sees them in type position.
     BuiltinType,
+    /// Term-level constructor for a struct or port. Allocated for the name
+    /// after `=` in `struct Packet = packet { … }`. Mirrors rustc's
+    /// `DefKind::Ctor`: a separate def keeps the type/term split honest, so
+    /// `Packet` (the type) and `packet` (the constructor expression) resolve
+    /// to distinct entries. `owner` is the struct or port `DefId`.
+    Ctor {
+        owner: DefId,
+    },
+}
+
+/// Kind of a generic parameter on a struct, port, or fn.
+///
+/// Mirrors rustc's `GenericParamDefKind` but with HDL-flavoured options. Type
+/// params introduce a name that can appear in field types (`struct Bus(A: Type)`).
+/// Const params are compile-time integers passed in (`param N: usize`). Domain
+/// params bind a clock (`dom clk: Clock`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenericParamKind {
+    Type,
+    Const,
+    Domain,
+}
+
+/// One entry in a def's generic parameter list.
+///
+/// The `local` field points to the parameter name's `NodeId` (the same id the
+/// resolver registered as a local). HIR lowering uses it to translate
+/// param-name references in field/return types into the right
+/// `HirTypeKind::Param(index)`.
+#[derive(Debug, Clone)]
+pub struct GenericParamInfo {
+    pub name: String,
+    pub kind: GenericParamKind,
+    pub local: NodeId,
+    pub span: SourceSpan,
 }
 
 /// How a local binding was introduced.
@@ -79,6 +114,11 @@ pub struct DefInfo {
     pub kind: DefKind,
     pub name: String,
     pub span: SourceSpan,
+    /// Generic parameters declared on this def — type, const, and domain
+    /// kinds, in declaration order. Empty for everything except `Struct`,
+    /// `Port`, and (eventually) `Fn`. The position in this list is the index
+    /// referenced by `HirTypeKind::Param(i)`.
+    pub generic_params: Vec<GenericParamInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +152,12 @@ pub enum ResolveErrorKind {
     SelfOutsideImpl,
     /// An `impl` block targets a name that has no preceding struct/port definition.
     ImplOfUnknownType(String),
+    /// A `struct` or `port` declaration is missing its `= constructor` clause.
+    /// Polar requires every nominal type to declare its term-level constructor
+    /// name explicitly, the way `struct Foo<T> { … }` in Rust pairs with the
+    /// `Foo { … }` constructor — except Polar uses a distinct constructor name
+    /// (e.g. `struct Bus(A: Type) = bus { … }`).
+    MissingConstructor(String),
 }
 
 impl fmt::Display for ResolveErrorKind {
@@ -154,6 +200,13 @@ impl fmt::Display for ResolveErrorKind {
                 write!(
                     f,
                     "cannot `impl` `{name}`: no struct or port with that name"
+                )
+            }
+            ResolveErrorKind::MissingConstructor(name) => {
+                write!(
+                    f,
+                    "`{name}` is missing its `= constructor` clause; add one like `struct {name} = {} {{ … }}`",
+                    name.to_lowercase()
                 )
             }
         }
@@ -281,13 +334,27 @@ const PRELUDE_FN_NAMES: &[&str] = &["reg", "+", "*", "posedge"];
 /// Pre-seeded methods (e.g. `uint::reg`, `Clock::posedge`) live in
 /// `impl_methods` so method dispatch on `recv.method(...)` flows through the
 /// same path for primitives and user types alike.
-const PRELUDE_TYPE_NAMES: &[&str] = &["uint", "bool", "Clock", "Event"];
+///
+/// `Type` is the kind name for type-kinded generic parameters. It appears
+/// only in parameter position (`struct Bus(A: Type)`); the resolver
+/// recognises it there and tags the parameter as `GenericParamKind::Type`.
+const PRELUDE_TYPE_NAMES: &[&str] = &["uint", "bool", "Clock", "Event", "Type"];
 
 /// Identifier-shaped literals (`true`, `false`, `high`, `low`). The resolver
 /// neither errors on them nor emits a `Res` — HIR lowering recognises them by
 /// name and emits a `Const` node directly.
 fn is_builtin_literal(name: &str) -> bool {
     matches!(name, "true" | "false" | "high" | "low")
+}
+
+/// Whether a parameter's declared type is the literal `Type` builtin — used
+/// to identify type-kinded generic parameters. The type expression must be
+/// the bare identifier `Type` with no suffixes or domain annotation.
+fn is_type_kind_annotation(ty: Option<&TypeExpression>) -> bool {
+    let Some(ty) = ty else {
+        return false;
+    };
+    ty.name.text == "Type" && ty.suffixes.is_empty() && ty.domain.is_none()
 }
 
 fn prelude_span() -> SourceSpan {
@@ -342,6 +409,7 @@ impl Ctx {
                 kind: DefKind::Fn,
                 name: name.to_owned(),
                 span: prelude_span(),
+                generic_params: Vec::new(),
             });
             ctx.global_defs.insert(name.to_owned(), (DefKind::Fn, id));
         }
@@ -351,6 +419,7 @@ impl Ctx {
                 kind: DefKind::BuiltinType,
                 name: name.to_owned(),
                 span: prelude_span(),
+                generic_params: Vec::new(),
             });
             ctx.global_defs
                 .insert(name.to_owned(), (DefKind::BuiltinType, id));
@@ -403,6 +472,7 @@ impl Ctx {
             kind,
             name: ident.text.clone(),
             span: ident.span.clone(),
+            generic_params: Vec::new(),
         });
         id
     }
@@ -422,10 +492,10 @@ impl Ctx {
         // `impl` blocks extend an existing type rather than introducing a new
         // top-level name. They are handled in pass 2 (`resolve_impl`), which
         // looks up the underlying struct/port DefId.
-        let (kind, ident, constructor) = match item {
-            Item::Fn(f) => (DefKind::Fn, &f.name, None),
-            Item::Struct(s) => (DefKind::Struct, &s.name, s.constructor.as_ref()),
-            Item::Port(p) => (DefKind::Port, &p.name, p.constructor.as_ref()),
+        let (kind, ident, constructor, requires_ctor) = match item {
+            Item::Fn(f) => (DefKind::Fn, &f.name, None, false),
+            Item::Struct(s) => (DefKind::Struct, &s.name, s.constructor.as_ref(), true),
+            Item::Port(p) => (DefKind::Port, &p.name, p.constructor.as_ref(), true),
             Item::Impl(_) => return,
         };
         if self.global_defs.contains_key(&ident.text) {
@@ -439,22 +509,35 @@ impl Ctx {
         self.global_defs.insert(ident.text.clone(), (kind, id));
         self.result.resolutions.insert(ident.id, Res::Def(kind, id));
 
-        // Register the constructor alias if one was declared with `= name`.
-        // It points back to the same DefId so `Packet @clk` and the
-        // constructor `packet { ... }` both resolve to the same definition.
-        if let Some(ctor) = constructor {
-            if ctor.text == ident.text {
-                // Same identifier as the type name; already inserted.
-                self.result.resolutions.insert(ctor.id, Res::Def(kind, id));
-            } else if self.global_defs.contains_key(&ctor.text) {
-                self.result.errors.push(ResolveError {
-                    kind: ResolveErrorKind::DuplicateDef(ctor.text.clone()),
-                    span: ctor.span.clone(),
-                });
-            } else {
-                self.global_defs.insert(ctor.text.clone(), (kind, id));
-                self.result.resolutions.insert(ctor.id, Res::Def(kind, id));
+        // Register the term-level constructor as a distinct `DefKind::Ctor`
+        // pointing back at the owning type. Mirrors rustc's split between
+        // `DefKind::Struct` (the type) and `DefKind::Ctor` (the constructor
+        // value). Struct and port definitions always require an explicit
+        // constructor name to keep the type/term distinction consistent.
+        match constructor {
+            Some(ctor) => {
+                let ctor_kind = DefKind::Ctor { owner: id };
+                if self.global_defs.contains_key(&ctor.text) && ctor.text != ident.text {
+                    self.result.errors.push(ResolveError {
+                        kind: ResolveErrorKind::DuplicateDef(ctor.text.clone()),
+                        span: ctor.span.clone(),
+                    });
+                } else {
+                    let ctor_id = self.alloc_def(ctor_kind, ctor);
+                    self.global_defs
+                        .insert(ctor.text.clone(), (ctor_kind, ctor_id));
+                    self.result
+                        .resolutions
+                        .insert(ctor.id, Res::Def(ctor_kind, ctor_id));
+                }
             }
+            None if requires_ctor => {
+                self.result.errors.push(ResolveError {
+                    kind: ResolveErrorKind::MissingConstructor(ident.text.clone()),
+                    span: ident.span.clone(),
+                });
+            }
+            None => {}
         }
     }
 
@@ -486,6 +569,7 @@ impl Ctx {
             return;
         };
         let params = self.collect_params(def_id, &[], &s.parameters);
+        self.populate_generic_params(def_id, &[], &s.parameters);
         for field in &s.fields {
             self.resolve_type_expr(&field.ty, &params);
         }
@@ -496,9 +580,82 @@ impl Ctx {
             return;
         };
         let params = self.collect_params(def_id, &p.named_parameters, &p.parameters);
+        self.populate_generic_params(def_id, &p.named_parameters, &p.parameters);
         for field in &p.fields {
             self.resolve_type_expr(&field.ty, &params);
         }
+    }
+
+    /// Classify each declared parameter on a struct or port and record it as
+    /// a `GenericParamInfo` on the owning def. The classification is:
+    ///
+    /// - `kind == ParamKind::Dom`  →  `GenericParamKind::Domain`
+    /// - `kind == ParamKind::Param` →  `GenericParamKind::Const`
+    /// - `kind == ParamKind::Value` and type head is the `Type` builtin →
+    ///   `GenericParamKind::Type`
+    /// - anything else → not a generic param (runtime value); skipped
+    ///
+    /// Named parameters come first in the list, followed by positionals — this
+    /// matches `HirFn::params` ordering and what later passes expect when
+    /// looking up the index of `HirTypeKind::Param(i)`.
+    fn populate_generic_params(
+        &mut self,
+        def_id: DefId,
+        named: &[NamedParameter],
+        positional: &[Parameter],
+    ) {
+        let mut out: Vec<GenericParamInfo> = Vec::new();
+        for np in named {
+            if let Some(info) = self.classify_named_param(np) {
+                out.push(info);
+            }
+        }
+        for p in positional {
+            if let Some(info) = self.classify_positional_param(p) {
+                out.push(info);
+            }
+        }
+        self.result.defs[def_id.0 as usize].generic_params = out;
+    }
+
+    fn classify_named_param(&self, np: &NamedParameter) -> Option<GenericParamInfo> {
+        let kind = match np.kind {
+            crate::surface_ir::ParamKind::Dom => GenericParamKind::Domain,
+            crate::surface_ir::ParamKind::Param => GenericParamKind::Const,
+            crate::surface_ir::ParamKind::Value => {
+                if is_type_kind_annotation(np.ty.as_ref()) {
+                    GenericParamKind::Type
+                } else {
+                    return None;
+                }
+            }
+        };
+        Some(GenericParamInfo {
+            name: np.name.text.clone(),
+            kind,
+            local: np.name.id,
+            span: np.name.span.clone(),
+        })
+    }
+
+    fn classify_positional_param(&self, p: &Parameter) -> Option<GenericParamInfo> {
+        let kind = match p.kind {
+            crate::surface_ir::ParamKind::Dom => GenericParamKind::Domain,
+            crate::surface_ir::ParamKind::Param => GenericParamKind::Const,
+            crate::surface_ir::ParamKind::Value => {
+                if is_type_kind_annotation(Some(&p.ty)) {
+                    GenericParamKind::Type
+                } else {
+                    return None;
+                }
+            }
+        };
+        Some(GenericParamInfo {
+            name: p.name.text.clone(),
+            kind,
+            local: p.name.id,
+            span: p.name.span.clone(),
+        })
     }
 
     fn resolve_impl(&mut self, impl_block: &ImplBlock) {
@@ -1280,6 +1437,57 @@ mod tests {
             r.errors[0].kind.to_string(),
             "`inp` is not a valid source arrow target; only `var` signals may be wired this way"
         );
+    }
+
+    // --- generic params / Ctor ---
+
+    #[test]
+    fn struct_constructor_is_separate_ctor_def() {
+        let r = resolve("struct Packet = packet { valid: bool, payload: uint(8) }");
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+        let packet_id = r.def_id("Packet").expect("type def");
+        let ctor_id = r.def_id("packet").expect("ctor def");
+        assert_ne!(packet_id, ctor_id, "ctor must be a separate DefId");
+        assert!(matches!(r.def_info(packet_id).kind, DefKind::Struct));
+        assert!(matches!(r.def_info(ctor_id).kind, DefKind::Ctor { owner } if owner == packet_id));
+    }
+
+    #[test]
+    fn struct_without_constructor_is_error() {
+        let r = resolve("struct Packet { valid: bool, payload: uint(8) }");
+        assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
+        assert!(matches!(
+            &r.errors[0].kind,
+            ResolveErrorKind::MissingConstructor(n) if n == "Packet"
+        ));
+    }
+
+    #[test]
+    fn struct_records_type_generic_param() {
+        let r = resolve("struct Bus(A: Type) = bus { valid: bool, data: A }");
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+        let bus = r.def_info(r.def_id("Bus").unwrap());
+        assert_eq!(bus.generic_params.len(), 1);
+        assert_eq!(bus.generic_params[0].name, "A");
+        assert_eq!(bus.generic_params[0].kind, GenericParamKind::Type);
+    }
+
+    #[test]
+    fn port_records_named_dom_and_positional_type_params() {
+        let r = resolve(
+            "port DF { dom clk: Clock } ( A: Type ) = df {\n\
+                 in ready: bool @clk,\n\
+                 out valid: bool @clk,\n\
+                 out data: A @clk,\n\
+             }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+        let df = r.def_info(r.def_id("DF").unwrap());
+        assert_eq!(df.generic_params.len(), 2);
+        assert_eq!(df.generic_params[0].name, "clk");
+        assert_eq!(df.generic_params[0].kind, GenericParamKind::Domain);
+        assert_eq!(df.generic_params[1].name, "A");
+        assert_eq!(df.generic_params[1].kind, GenericParamKind::Type);
     }
 
     // --- example file integration tests ---
