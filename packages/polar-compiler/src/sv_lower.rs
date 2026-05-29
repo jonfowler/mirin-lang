@@ -159,9 +159,11 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs<'_>) -> SvModule {
             HirTypeKind::Port(_) => {
                 // Should have been flattened away. Skip with no port emitted.
             }
-            HirTypeKind::Var(_) => {
-                // Unresolved inference variable; treat as 1-bit to keep the
-                // pass total. Real code should have fully resolved types.
+            HirTypeKind::Var(_) | HirTypeKind::Param(_) => {
+                // Unresolved inference variable or unsubstituted type-param
+                // reference. Both indicate an earlier pass didn't finish its
+                // job; treat as 1-bit to keep the SV lowering total. Real
+                // code should reach here with concrete value types only.
                 local_types.insert(param.local, SvType::bit());
             }
         }

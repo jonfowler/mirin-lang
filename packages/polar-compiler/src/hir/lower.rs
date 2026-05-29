@@ -21,10 +21,11 @@ use std::collections::HashMap;
 use std::fmt;
 
 use super::{
-    ConstValue, Domain, HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind,
-    HirFieldAccess, HirFn, HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirPortField,
-    HirSourceFile, HirStmt, HirStruct, HirStructField, HirType, HirTypeKind, HirVarDecl, LocalId,
-    ParamKind as HirParamKind, ParamSection, PortTypeRef, ValueKind, ValueType,
+    ConstValue, Domain, GenericArgs, HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr,
+    HirExprKind, HirFieldAccess, HirFn, HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort,
+    HirPortField, HirSourceFile, HirStmt, HirStruct, HirStructField, HirType, HirTypeKind,
+    HirVarDecl, LocalId, ParamKind as HirParamKind, ParamSection, PortTypeRef, ValueKind,
+    ValueType,
 };
 use crate::SourceSpan;
 use crate::resolve::{DefId, DefKind, LocalKind, Res, ResolveResult};
@@ -1356,7 +1357,10 @@ impl<'a> Lowerer<'a> {
                     .map(|info| info.kind);
                 match target_kind {
                     Some(DefKind::Struct) => self.value_type(
-                        ValueKind::Struct { def: target },
+                        ValueKind::Struct {
+                            def: target,
+                            args: GenericArgs::empty(),
+                        },
                         domain_annotation,
                         ty.span.clone(),
                     ),
@@ -1370,7 +1374,10 @@ impl<'a> Lowerer<'a> {
                             );
                         }
                         HirType {
-                            kind: HirTypeKind::Port(PortTypeRef { def: target }),
+                            kind: HirTypeKind::Port(PortTypeRef {
+                                def: target,
+                                args: GenericArgs::empty(),
+                            }),
                             span: ty.span.clone(),
                         }
                     }
@@ -1392,7 +1399,10 @@ impl<'a> Lowerer<'a> {
                         .map(|info| (info.kind, id))
                 }) {
                     Some((DefKind::Struct, def_id)) => self.value_type(
-                        ValueKind::Struct { def: def_id },
+                        ValueKind::Struct {
+                            def: def_id,
+                            args: GenericArgs::empty(),
+                        },
                         domain_annotation,
                         ty.span.clone(),
                     ),
@@ -1410,7 +1420,10 @@ impl<'a> Lowerer<'a> {
                             );
                         }
                         HirType {
-                            kind: HirTypeKind::Port(PortTypeRef { def: def_id }),
+                            kind: HirTypeKind::Port(PortTypeRef {
+                                def: def_id,
+                                args: GenericArgs::empty(),
+                            }),
                             span: ty.span.clone(),
                         }
                     }

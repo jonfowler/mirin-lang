@@ -17,9 +17,10 @@ use std::fmt;
 use std::path::Path;
 
 use crate::hir::{
-    ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFieldAccess, HirFn,
-    HirId, HirItem, HirMethodCall, HirParam, HirPort, HirSourceFile, HirStmt, HirStruct, HirType,
-    HirTypeKind, LocalId, ParamKind, ParamSection, PortTypeRef, TypeVar, ValueKind, ValueType,
+    ConstValue, Domain, GenericArgs, HirArg, HirBlock, HirCall, HirExpr, HirExprKind,
+    HirFieldAccess, HirFn, HirId, HirItem, HirMethodCall, HirParam, HirPort, HirSourceFile,
+    HirStmt, HirStruct, HirType, HirTypeKind, LocalId, ParamKind, ParamSection, PortTypeRef,
+    TypeVar, ValueKind, ValueType,
 };
 use crate::resolve::{DefId, ResolveResult};
 use crate::{Identifier, SourceExcerpt, SourceSpan};
@@ -586,12 +587,18 @@ impl InferCtxt {
                     });
                 }
             }
-            (HirTypeKind::Port(pa), HirTypeKind::Port(pb)) if pa.def == pb.def => {
-                // Port unification is currently def-equality only. Once
-                // positional type arguments land (`Stream8(clk)`), this arm
-                // unifies the per-argument domains.
+            (HirTypeKind::Port(pa), HirTypeKind::Port(pb))
+                if pa.def == pb.def && pa.args == pb.args =>
+            {
+                // Port unification is currently def-equality plus structural
+                // equality of generic args. Phase 4 will switch the args
+                // check to proper element-wise unification with inference
+                // variables; for now (no parametric uses reach typeck yet)
+                // both sides' args are empty and the equality check is
+                // trivially satisfied.
             }
             (HirTypeKind::Clock, HirTypeKind::Clock) => {}
+            (HirTypeKind::Param(ia), HirTypeKind::Param(ib)) if ia == ib => {}
             _ => {
                 self.errors.push(TypeError {
                     kind: TypeErrorKind::TypeMismatch {
@@ -615,7 +622,9 @@ impl InferCtxt {
                 self.unify_widths(wa, wb, span);
                 true
             }
-            (ValueKind::Struct { def: da }, ValueKind::Struct { def: db }) => da == db,
+            (ValueKind::Struct { def: da, args: aa }, ValueKind::Struct { def: db, args: ab }) => {
+                da == db && aa == ab
+            }
             _ => false,
         }
     }
@@ -1119,6 +1128,7 @@ impl InferCtxt {
             kind: HirTypeKind::Value(ValueType {
                 kind: ValueKind::Struct {
                     def: struct_def.def_id,
+                    args: GenericArgs::empty(),
                 },
                 domain,
             }),
@@ -1142,7 +1152,7 @@ impl InferCtxt {
 
         match &resolved.kind {
             HirTypeKind::Value(vt) => match &vt.kind {
-                ValueKind::Struct { def } => {
+                ValueKind::Struct { def, .. } => {
                     let Some(struct_def) = file.lookup_struct(*def) else {
                         // Resolver should have caught an undefined struct
                         // before this; downgrade to a fresh var so the walk
@@ -1234,7 +1244,7 @@ impl InferCtxt {
         // same table as `impl T { fn m … }`.
         let owner_def = match &resolved_recv.kind {
             HirTypeKind::Value(vt) => match &vt.kind {
-                ValueKind::Struct { def } => Some(*def),
+                ValueKind::Struct { def, .. } => Some(*def),
                 ValueKind::UInt { .. } => file.uint_def_id,
                 ValueKind::Bool => file.bool_def_id,
                 _ => None,
@@ -1435,7 +1445,10 @@ impl SigSubst {
                 kind: vt.kind.clone(),
                 domain: self.apply_to_domain(&vt.domain),
             }),
-            HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef { def: p.def }),
+            HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef {
+                def: p.def,
+                args: p.args.clone(),
+            }),
             other => other.clone(),
         };
         HirType {
@@ -1480,7 +1493,7 @@ fn describe_type(ty: &HirType) -> String {
                 ValueKind::Reset => "Reset".to_owned(),
                 ValueKind::Usize => "usize".to_owned(),
                 ValueKind::Event => "Event".to_owned(),
-                ValueKind::Struct { def } => format!("struct#{}", def.0),
+                ValueKind::Struct { def, .. } => format!("struct#{}", def.0),
             };
             let dom = describe_domain(&vt.domain);
             if dom.is_empty() {
@@ -1491,6 +1504,7 @@ fn describe_type(ty: &HirType) -> String {
         }
         HirTypeKind::Port(p) => format!("port#{}", p.def.0),
         HirTypeKind::Clock => "Clock".to_owned(),
+        HirTypeKind::Param(i) => format!("'P{i}"),
     }
 }
 

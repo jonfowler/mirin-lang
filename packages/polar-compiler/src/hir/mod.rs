@@ -385,6 +385,12 @@ pub enum HirTypeKind {
     /// Meta-kind: a clock domain itself (e.g. `#clk: Clock`). Never the type
     /// of a value-level expression.
     Clock,
+    /// Reference to the enclosing item's `i`-th generic parameter. `A` inside
+    /// `struct Bus(A: Type) = bus { data: A }` lowers to `Param(0)` in
+    /// `data`'s declared type. Substituted out by an `instantiate` step on
+    /// the way through typeck / flatten — never observed after monomorphic
+    /// usage sites are processed.
+    Param(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,9 +412,13 @@ pub enum ValueKind {
     /// Compile-time integer (e.g. `const bits: usize`). Not synthesisable, but
     /// still a value type so it can carry a domain (e.g. for use in tests).
     Usize,
-    /// A user-defined struct.
+    /// A user-defined struct. `args` are the type/const/domain arguments
+    /// supplied at this use site, one per `GenericParamInfo` on the def.
+    /// For a non-parametric struct (`struct Packet = packet { … }`), `args`
+    /// is empty.
     Struct {
         def: DefId,
+        args: GenericArgs,
     },
     /// `Event` — a clock-edge marker value, the result of methods like
     /// `Clock::posedge()`. Has no runtime representation in SV; consumed
@@ -419,10 +429,46 @@ pub enum ValueKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortTypeRef {
     pub def: DefId,
-    // Future: positional type arguments for parametric ports — the
-    // `Stream8(clk)` shape. The `@clk` annotation at use sites was a
-    // single-clock-only hack and has been removed (rejected at HIR
-    // lowering for port-typed names).
+    /// Generic arguments at this use site (e.g. `DF{clk}(uint(8))`). One
+    /// entry per `GenericParamInfo` on the port def. Empty for ports with
+    /// no parameters.
+    pub args: GenericArgs,
+}
+
+/// One generic argument supplied at a use site of a parametric struct or
+/// port. Each `GenericArg` positionally pairs with one `GenericParamInfo` on
+/// the owning def. Mirrors rustc's `GenericArgKind`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenericArg {
+    /// A `Type`-kind argument. Substituted into the def's
+    /// `HirTypeKind::Param(i)` references.
+    Type(HirType),
+    /// A `Const`-kind argument (compile-time integer, e.g. for `uint(N)`).
+    /// Kept as an `HirExpr` so a later const-eval pass can resolve it.
+    Const(HirExpr),
+    /// A `Domain`-kind argument (a clock binding).
+    Domain(Domain),
+}
+
+/// Positional list of generic arguments at a use site. Index `i` pairs with
+/// the def's `i`-th `GenericParamInfo`. Always empty for non-parametric
+/// defs; never carries inference variables (those live inside the
+/// `HirType` / `HirExpr` / `Domain` of each `GenericArg`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GenericArgs(pub Vec<GenericArg>);
+
+impl GenericArgs {
+    pub fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// Type-inference variable for the value-vs-port-vs-meta branch. Produced by

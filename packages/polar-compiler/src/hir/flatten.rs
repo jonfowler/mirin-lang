@@ -451,7 +451,7 @@ impl<'a> FnFlattener<'a> {
         match &ty.kind {
             HirTypeKind::Port(p) => self.expand_port(p, name, path, scope_dir, kind, span),
             HirTypeKind::Value(vt) => {
-                if let ValueKind::Struct { def } = &vt.kind {
+                if let ValueKind::Struct { def, .. } = &vt.kind {
                     self.expand_struct(*def, &vt.domain, name, path, scope_dir, kind, span)
                 } else {
                     // Scalar leaf.
@@ -478,6 +478,22 @@ impl<'a> FnFlattener<'a> {
             HirTypeKind::Var(_) => {
                 // Type-inference variables should have been resolved by
                 // typeck. Treat as a scalar leaf to keep the pass total.
+                let local = self.alloc_local(name.to_owned(), span.clone(), kind);
+                Ok(vec![Leaf {
+                    local,
+                    ty: ty.clone(),
+                    path,
+                    fn_body_dir: scope_dir,
+                }])
+            }
+            HirTypeKind::Param(_) => {
+                // `HirTypeKind::Param` references must be substituted out
+                // before flattening (by Phase 5's args-aware expansion of
+                // parametric structs/ports). Reaching this arm means
+                // expansion was attempted without supplying generic args —
+                // a bug in the lowering chain. Treat as a scalar leaf to
+                // keep flatten total; later phases will replace this with
+                // a hard error once substitution lands.
                 let local = self.alloc_local(name.to_owned(), span.clone(), kind);
                 Ok(vec![Leaf {
                     local,
@@ -1299,7 +1315,10 @@ fn substitute_clock_in_type(ty: &HirType, target: LocalId, replacement: &Domain)
                 other => other.clone(),
             },
         }),
-        HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef { def: p.def }),
+        HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef {
+            def: p.def,
+            args: p.args.clone(),
+        }),
         other => other.clone(),
     };
     HirType {
