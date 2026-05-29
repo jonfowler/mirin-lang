@@ -17,7 +17,7 @@ use std::fmt;
 use std::path::Path;
 
 use crate::hir::{
-    ConstValue, Domain, GenericArgs, HirArg, HirBlock, HirCall, HirExpr, HirExprKind,
+    ConstValue, Domain, GenericArg, GenericArgs, HirArg, HirBlock, HirCall, HirExpr, HirExprKind,
     HirFieldAccess, HirFn, HirId, HirItem, HirMethodCall, HirParam, HirPort, HirSourceFile,
     HirStmt, HirStruct, HirType, HirTypeKind, LocalId, ParamKind, ParamSection, PortTypeRef,
     TypeVar, ValueKind, ValueType,
@@ -469,6 +469,63 @@ impl InferCtxt {
         Domain::Var(id)
     }
 
+    /// Allocate a fresh `GenericArgs` for a use site of a parametric def.
+    /// Each declared generic param becomes a fresh inference variable of the
+    /// matching kind, so unification at the call/use site can pin it down.
+    /// Mirrors rustc's `fresh_args_for_def` in `hir_ty_lowering`.
+    fn fresh_args_for_def(
+        &mut self,
+        def_id: DefId,
+        span: &SourceSpan,
+        file: &FileCtx<'_>,
+    ) -> GenericArgs {
+        let params = file
+            .resolve
+            .defs
+            .get(def_id.0 as usize)
+            .map(|info| info.generic_params.clone())
+            .unwrap_or_default();
+        let mut args = Vec::with_capacity(params.len());
+        for param in &params {
+            args.push(match param.kind {
+                crate::resolve::GenericParamKind::Type => {
+                    GenericArg::Type(self.fresh_type_var(span.clone()))
+                }
+                crate::resolve::GenericParamKind::Const => GenericArg::Const(HirExpr {
+                    kind: HirExprKind::Const(ConstValue::Integer(0)),
+                    ty: None,
+                    span: span.clone(),
+                    id: HirId(u32::MAX),
+                }),
+                crate::resolve::GenericParamKind::Domain => {
+                    GenericArg::Domain(self.fresh_domain_var())
+                }
+            });
+        }
+        GenericArgs(args)
+    }
+
+    /// Substitute the enclosing def's `Param(i)` references in `ty` with the
+    /// matching entry from `args`. Mirrors rustc's `EarlyBinder::instantiate`:
+    /// a single walk over the type, replacing `Param(i)` slots with the
+    /// concrete (possibly inference-variable-bearing) argument.
+    ///
+    /// Only `Type`-kinded params substitute today; `Const` (width) and
+    /// `Domain` substitution are deferred until parametric widths and
+    /// parametric ports cross the typeck boundary.
+    fn instantiate(&self, ty: &HirType, args: &GenericArgs) -> HirType {
+        match &ty.kind {
+            HirTypeKind::Param(i) => match args.0.get(*i as usize) {
+                Some(GenericArg::Type(t)) => HirType {
+                    kind: t.kind.clone(),
+                    span: ty.span.clone(),
+                },
+                _ => ty.clone(),
+            },
+            _ => ty.clone(),
+        }
+    }
+
     // ---- resolution (follow substitution chains) ----
 
     fn resolve_type(&self, ty: &HirType) -> HirType {
@@ -587,15 +644,12 @@ impl InferCtxt {
                     });
                 }
             }
-            (HirTypeKind::Port(pa), HirTypeKind::Port(pb))
-                if pa.def == pb.def && pa.args == pb.args =>
-            {
-                // Port unification is currently def-equality plus structural
-                // equality of generic args. Phase 4 will switch the args
-                // check to proper element-wise unification with inference
-                // variables; for now (no parametric uses reach typeck yet)
-                // both sides' args are empty and the equality check is
-                // trivially satisfied.
+            (HirTypeKind::Port(pa), HirTypeKind::Port(pb)) if pa.def == pb.def => {
+                // Port unification: def-equality plus element-wise
+                // unification of generic args.
+                let aa = pa.args.clone();
+                let ab = pb.args.clone();
+                self.unify_generic_args(&aa, &ab, &span);
             }
             (HirTypeKind::Clock, HirTypeKind::Clock) => {}
             (HirTypeKind::Param(ia), HirTypeKind::Param(ib)) if ia == ib => {}
@@ -607,6 +661,42 @@ impl InferCtxt {
                     },
                     span,
                 });
+            }
+        }
+    }
+
+    /// Element-wise unify two `GenericArgs` lists. Length mismatch is treated
+    /// as a soft error: each arm of `unify_types` separately reports a
+    /// `TypeMismatch` for the kind change, so the args mismatch here is
+    /// silent. Within matched kinds (`Type` ~ `Type`, etc.) the underlying
+    /// types/exprs/domains are unified through the usual paths.
+    fn unify_generic_args(&mut self, a: &GenericArgs, b: &GenericArgs, span: &SourceSpan) {
+        if a.len() != b.len() {
+            // The outer kind-equality already passed, so the def is the same
+            // — having a different arg count means a bug in the HIR
+            // lowering. Report via `describe_type` at the caller.
+            return;
+        }
+        for (lhs, rhs) in a.0.iter().zip(b.0.iter()) {
+            match (lhs, rhs) {
+                (GenericArg::Type(ta), GenericArg::Type(tb)) => {
+                    self.unify_types(ta, tb, span.clone());
+                }
+                (GenericArg::Const(_), GenericArg::Const(_)) => {
+                    // TODO: const args (e.g. `param N: usize`) currently
+                    // unify via the width path inside containing types.
+                    // A standalone const obligation lands once parametric
+                    // widths surface at the top-level args list.
+                }
+                (GenericArg::Domain(da), GenericArg::Domain(db)) => {
+                    self.unify_domains(da, db, span.clone());
+                }
+                _ => {
+                    // Kind mismatch — already an HIR-lowering bug because
+                    // `lower_generic_args` validates kinds against the def's
+                    // declared params. Keep silent; outer unification will
+                    // already have noticed the wider type mismatch.
+                }
             }
         }
     }
@@ -623,7 +713,11 @@ impl InferCtxt {
                 true
             }
             (ValueKind::Struct { def: da, args: aa }, ValueKind::Struct { def: db, args: ab }) => {
-                da == db && aa == ab
+                if da != db {
+                    return false;
+                }
+                self.unify_generic_args(aa, ab, span);
+                true
             }
             _ => false,
         }
@@ -1112,10 +1206,17 @@ impl InferCtxt {
         // The proper fix is MLsub-style bound tracking — recording @const as
         // a lower bound but allowing concrete clocks to refine the variable.
         let domain = self.fresh_domain_var();
+        // Allocate fresh inference variables for the struct's generic
+        // parameters. Each declared field's type is substituted through
+        // `instantiate(...)` before unifying against the arg expression —
+        // a `data: A` field becomes `?T0` so the arg's actual type pins
+        // `?T0` for use at the result type.
+        let args = self.fresh_args_for_def(struct_def.def_id, &call.span, file);
         for (decl, arg) in struct_def.fields.iter().zip(call.args.iter()) {
             if let HirArg::Provided { expr, .. } = arg {
                 let value_ty = self.infer_expr(expr, file);
-                self.unify_types(&decl.ty, &value_ty, expr.span.clone());
+                let expected = self.instantiate(&decl.ty, &args);
+                self.unify_types(&expected, &value_ty, expr.span.clone());
                 // Propagate the field's domain up to the struct's domain so
                 // that e.g. `packet { valid: true, data: some_clk_signal }`
                 // infers @clk for the whole struct.
@@ -1128,7 +1229,7 @@ impl InferCtxt {
             kind: HirTypeKind::Value(ValueType {
                 kind: ValueKind::Struct {
                     def: struct_def.def_id,
-                    args: GenericArgs::empty(),
+                    args,
                 },
                 domain,
             }),
@@ -1152,7 +1253,7 @@ impl InferCtxt {
 
         match &resolved.kind {
             HirTypeKind::Value(vt) => match &vt.kind {
-                ValueKind::Struct { def, .. } => {
+                ValueKind::Struct { def, args } => {
                     let Some(struct_def) = file.lookup_struct(*def) else {
                         // Resolver should have caught an undefined struct
                         // before this; downgrade to a fresh var so the walk
@@ -1170,7 +1271,11 @@ impl InferCtxt {
                         });
                         return self.fresh_type_var(span);
                     };
-                    stamp_domain(&decl_field.ty, &vt.domain)
+                    // Substitute the receiver's generic args into the
+                    // declared field type so a `data: A` field on a
+                    // `Bus(uint(8))` receiver yields `uint(8)`.
+                    let instantiated = self.instantiate(&decl_field.ty, args);
+                    stamp_domain(&instantiated, &vt.domain)
                 }
                 _ => {
                     self.errors.push(TypeError {
@@ -1561,6 +1666,29 @@ mod tests {
         let r = check(
             "struct Packet = packet { valid: bool, payload: uint(8) }\n\
              fn idle() -> Packet { return packet { valid: false, payload: 0 }; }",
+        );
+        assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn type_checks_parametric_struct_use() {
+        // `Bus(uint(8))` at a param site, `b.data` access — the field type
+        // `A` in the struct decl becomes `Param(0)`; instantiating with the
+        // arg gives `uint(8)` for the field access result.
+        let r = check(
+            "struct Bus(A: Type) = bus { valid: bool, data: A }\n\
+             fn pick (b: Bus(uint(8)) @clk) -> uint(8) @clk { return b.data; }",
+        );
+        assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn type_checks_parametric_struct_constructor() {
+        // `bus { valid: true, data: x }` should unify `?A` with `x`'s type
+        // through the substituted field type, yielding `Bus(uint(8))`.
+        let r = check(
+            "struct Bus(A: Type) = bus { valid: bool, data: A }\n\
+             fn mk (x: uint(8) @clk) -> Bus(uint(8)) @clk { return bus { valid: true, data: x }; }",
         );
         assert!(r.errors.is_empty(), "unexpected errors: {:?}", r.errors);
     }
