@@ -477,6 +477,13 @@ impl<'a> Lowerer<'a> {
         for stmt in &block.statements {
             self.lower_stmt_into(stmt, &mut statements);
         }
+        // A trailing expression on the block (Rust-style implicit return)
+        // lowers to `return tail;`. Lowering is identical to an explicit
+        // `return` statement after this point.
+        if let Some(tail) = &block.tail {
+            let value = self.lower_expr(tail);
+            statements.push(HirStmt::Return(value));
+        }
         HirBlock {
             statements,
             span: block.span.clone(),
@@ -1463,6 +1470,24 @@ mod tests {
         assert_eq!(func.locals.len(), 2);
         assert!(matches!(func.body.statements[0], HirStmt::Let(_)));
         assert!(matches!(func.body.statements[1], HirStmt::Return(_)));
+    }
+
+    #[test]
+    fn tail_expression_lowers_to_implicit_return() {
+        // A fn body's trailing expression (no `;`) becomes an implicit
+        // `return tail;` in HIR. The lowered shape is identical to writing
+        // the explicit return.
+        let file = lower_ok("fn f(a: uint(8) @clk) -> uint(8) @clk { let r = a; r }");
+        let func = first_fn(&file);
+        assert!(matches!(func.body.statements[0], HirStmt::Let(_)));
+        let HirStmt::Return(ret) = &func.body.statements[1] else {
+            panic!(
+                "expected implicit Return, got {:?}",
+                func.body.statements[1]
+            );
+        };
+        // The return expression is the tail (`r`), a Local reference.
+        assert!(matches!(ret.kind, HirExprKind::Local(_)));
     }
 
     #[test]

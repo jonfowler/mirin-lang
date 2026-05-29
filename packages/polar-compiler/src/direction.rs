@@ -199,6 +199,9 @@ fn check_block<'a>(
             Statement::Expression(e) => check_expr(&e.value, callees, resolve, errors),
         }
     }
+    if let Some(tail) = &block.tail {
+        check_expr(tail, callees, resolve, errors);
+    }
 }
 
 fn check_expr<'a>(

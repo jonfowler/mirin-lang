@@ -691,6 +691,11 @@ impl BlockCtx<'_> {
         for stmt in &block.statements {
             self.resolve_statement(stmt);
         }
+        // Resolve the trailing expression (implicit-return tail) in the
+        // same scope as the last statement.
+        if let Some(tail) = &block.tail {
+            self.resolve_expr(tail);
+        }
     }
 
     fn prescan_vars(&mut self, block: &Block) {

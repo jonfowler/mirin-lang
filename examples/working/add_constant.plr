@@ -5,5 +5,5 @@ fn addConstant
   -> uint(8) @clk
   {
     let bumped = value + 3;
-    return bumped;
+    bumped
   }

@@ -149,6 +149,10 @@ pub struct PortField {
 pub struct Block {
     pub span: SourceSpan,
     pub statements: Vec<Statement>,
+    /// Optional trailing expression — the block's value, à la Rust. For fn
+    /// bodies, HIR lowering treats this as an implicit `return tail;`.
+    /// `None` if every interior item ended with `;`.
+    pub tail: Option<Expression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -667,11 +671,26 @@ impl<'a> Lowerer<'a> {
 
     fn lower_block(&mut self, node: &CstNode) -> Result<Block, LowerError> {
         expect_kind(node, "block")?;
+        // Grammar puts the optional tail-expression on a "tail" field; every
+        // other named child is a statement.
+        let mut statements = Vec::new();
+        for child in &node.children {
+            if !child.node.named || child.node.kind == "comment" {
+                continue;
+            }
+            if child.field_name.as_deref() == Some("tail") {
+                continue;
+            }
+            statements.push(self.lower_statement(&child.node)?);
+        }
+        let tail = match child_by_field(node, "tail") {
+            Some(t) => Some(self.lower_expression(t)?),
+            None => None,
+        };
         Ok(Block {
             span: node.span.clone(),
-            statements: named_children(node)
-                .map(|child| self.lower_statement(child))
-                .collect::<Result<Vec<_>, _>>()?,
+            statements,
+            tail,
         })
     }
 

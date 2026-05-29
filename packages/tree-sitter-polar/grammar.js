@@ -115,7 +115,8 @@ module.exports = grammar({
         field("type", $.type_expression),
       ),
 
-    block: ($) => seq("{", repeat($.statement), "}"),
+    block: ($) =>
+      seq("{", repeat($.statement), optional(field("tail", $.expression)), "}"),
 
     statement: ($) =>
       choice(
