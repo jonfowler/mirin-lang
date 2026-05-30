@@ -1197,22 +1197,6 @@ impl InferCtxt {
                 }
             }
         }
-        // Inferable-clock fallback: HirParams that are Named/Dom with no
-        // default and a `Clock` type — for fns that don't declare a
-        // matching `generic_params` entry (every user fn today).
-        for param in &callee.params {
-            let inferable = matches!(param.section, ParamSection::Named)
-                && matches!(param.kind, ParamKind::Dom | ParamKind::Param)
-                && param.default.is_none();
-            if inferable
-                && is_clock_type(&param.ty)
-                && !subst.domain_subst.contains_key(&param.local)
-            {
-                subst
-                    .domain_subst
-                    .insert(param.local, self.fresh_domain_var());
-            }
-        }
         subst
     }
 
@@ -1587,10 +1571,6 @@ impl SigSubst {
             other => other.clone(),
         }
     }
-}
-
-fn is_clock_type(ty: &HirType) -> bool {
-    matches!(ty.kind, HirTypeKind::Clock)
 }
 
 /// Sentinel: a width position that should be treated as "any width" for

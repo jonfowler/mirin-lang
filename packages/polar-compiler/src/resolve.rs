@@ -741,6 +741,11 @@ impl Ctx {
         owner: DefId,
         outer_params: &HashMap<String, NodeId>,
     ) {
+        // Classify the fn's own params into generic_params so typeck's
+        // `build_sig_subst` finds them via the same path as struct/port
+        // generics. Defaulted params and plain `Value` params don't
+        // contribute — they're runtime values, not generic-arg slots.
+        self.populate_generic_params(owner, &func.named_parameters, &func.parameters);
         let mut params = outer_params.clone();
         for np in &func.named_parameters {
             self.alloc_local(
