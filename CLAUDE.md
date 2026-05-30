@@ -49,6 +49,7 @@ Tree-sitter owns concrete syntax; Rust owns CST-to-AST lowering, elaboration, an
 - Keep generated naming deterministic; leave room for users to force explicit names.
 - Treat clock/reset/domain information as core semantics, not optional decoration.
 - Before making design decisions, read the relevant file in `planning/`. `planning/ir_pipeline.md` is the source of truth for compiler stages.
+- Keep `planning/ir_pipeline.md` in sync when you edit the compiler — adding/removing a pass, introducing a new IR type, or otherwise changing stage shape. Keep the doc concise: one paragraph per IR, one row per pass, no implementation details that live in the code.
 
 ## Commit cadence
 

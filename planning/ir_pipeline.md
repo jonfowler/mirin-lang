@@ -60,6 +60,11 @@ First IR structured for semantic analysis.
   `lower_block_expressions` pass rewrites them into `HirStmt::If` /
   `HirStmt::AlwaysFf` with a synthetic result-local. After block lowering,
   no `Block`/`If`/`When` expressions remain.
+- Parametric types (`Struct { def, args }`, `PortTypeRef { def, args }`)
+  carry `GenericArgs` — a positional list of `GenericArg::{Type, Const,
+  Domain}` matching the def's `generic_params`. Field declarations use
+  `HirTypeKind::Param(i)` to reference the enclosing item's i-th param;
+  later passes substitute these out.
 
 ### SV IR — `sv_ir.rs`
 Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
@@ -72,21 +77,21 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 
 | Pass | File | What it does |
 |---|---|---|
-| `resolve_file` | `resolve.rs` | Build `DefId` table for top-level items and impl methods. Build per-fn locals table from `let`/`var`/params. Seed the prelude (`reg`, `posedge`, `+`, `*`, `Clock`, `Event`, `uint`, `bool`). Populate `impl_methods: (owner_def, method_name) → method_def`. Walk `Block`/`If`/`When` with fresh `let` scopes. |
+| `resolve_file` | `resolve.rs` | Build `DefId` table for top-level items, term-level constructors (`DefKind::Ctor`), and impl methods. Classify struct/port parameters as Type / Const / Domain and record them in `generic_params`. Build per-fn locals table from `let`/`var`/params. Seed the prelude (`reg`, `posedge`, `+`, `*`, `Clock`, `Event`, `Type`, `uint`, `bool`). Populate `impl_methods: (owner_def, method_name) → method_def`. Walk `Block`/`If`/`When` with fresh `let` scopes. |
 | `check_directions` | `direction.rs` | Verify connection operators agree with port field direction: `=` for `in`, `=>` for `out`. Reject `=>` on `let`. |
 
 ### HIR (untyped)
 
 | Pass | File | What it does |
 |---|---|---|
-| `lower_to_hir` | `hir/lower.rs` | Bake in name resolution. Desugar method calls into `HirCall` with the method's `DefId`. Slot defaults into call sites. Split `var` decls from equations. |
+| `lower_to_hir` | `hir/lower.rs` | Bake in name resolution. Desugar method calls into `HirCall` with the method's `DefId`. Slot defaults into call sites. Split `var` decls from equations. Enter each struct/port's `generic_params` scope so field types resolve `A`-style names to `HirTypeKind::Param(i)` and type-application syntax (`Bus(uint(8))`) lowers to populated `GenericArgs`. |
 | `check_drivers` | `hir/check_drivers.rs` | Every `var` must have exactly one driver (`Equation` or `=>` source). Zero is undriven; two is multiple-driver. |
 
 ### HIR (typed)
 
 | Pass | File | What it does |
 |---|---|---|
-| `typeck::check_file` | `typeck.rs` | Eager unification walk. Per-fn `InferCtxt` carries type/domain var pools and an obligation queue. Writes back via `expr_types`, `local_types`, `method_resolutions`. Queues `WidthEq` obligations for symbolic widths. See `planning/type_inference.md`. |
+| `typeck::check_file` | `typeck.rs` | Eager unification walk. Per-fn `InferCtxt` carries type/domain var pools and an obligation queue. Writes back via `expr_types`, `local_types`, `method_resolutions`. Queues `WidthEq` obligations for symbolic widths. Use sites of parametric defs allocate fresh `GenericArgs` (`fresh_args_for_def`) and substitute via `instantiate` — rustc's `EarlyBinder::instantiate` shape. See `planning/type_inference.md`. |
 | `check_width_obligations` | `typeck.rs` | Discharge `WidthEq` obligations where both sides are now ground. Surviving residuals carry forward (currently no-op; ready for parametric widths). |
 
 ### HIR (typed) → HIR (lowered)
@@ -101,7 +106,7 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 
 | Pass | File | What it does |
 |---|---|---|
-| `flatten_aggregates` | `hir/flatten.rs` | Erase port and struct types at value positions. Each aggregate local splits into per-field locals named `p__field` (recursive for nested aggregates). Whole-aggregate equations split into per-field equations with direction-aware LHS/RHS pairing. LocalId remap is owned by an `expansion: HashMap<LocalId, Vec<Leaf>>` table consulted by downstream rewrites — including the `clock` and `dest` fields of `HirStmt::AlwaysFf`. |
+| `flatten_aggregates` | `hir/flatten.rs` | Erase port and struct types at value positions. Each aggregate local splits into per-field locals named `p__field` (recursive for nested aggregates). For parametric aggregates, `instantiate_type` substitutes the receiver's `GenericArgs` into each field's `Param(i)` references before flattening. Whole-aggregate equations split into per-field equations with direction-aware LHS/RHS pairing. LocalId remap is owned by an `expansion: HashMap<LocalId, Vec<Leaf>>` table consulted by downstream rewrites — including the `clock` and `dest` fields of `HirStmt::AlwaysFf`. |
 
 ### SV
 
