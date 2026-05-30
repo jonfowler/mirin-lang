@@ -130,7 +130,7 @@ fn rewrite_stmt(stmt: &HirStmt, ctx: &RewriteCtx<'_>) -> HirStmt {
 
 fn rewrite_expr(expr: &HirExpr, ctx: &RewriteCtx<'_>) -> HirExpr {
     match &expr.kind {
-        HirExprKind::Const(_) | HirExprKind::Local(_) => expr.clone(),
+        HirExprKind::Const(_) | HirExprKind::Local(_) | HirExprKind::Param(_) => expr.clone(),
         HirExprKind::Call(call) => HirExpr {
             kind: HirExprKind::Call(HirCall {
                 callee: call.callee,

@@ -357,7 +357,7 @@ impl<'a> Lowerer<'a> {
     /// `fn reg { A: Type, dom clk: Clock }(self: A @clk, rst: Reset @clk,
     /// reset_val: A) -> A @clk`. `A` is `ValueKind::Param(0)`; `clk` is the
     /// `LocalId` of the `clk` HirParam, used in `Domain::Clock(...)` slots
-    /// so typeck's `SigSubst` substitutes them when handling a call site.
+    /// so typeck's `Substitution` substitutes them when handling a call site.
     /// The body is empty: `reg` is intrinsic — `sv_lower` lowers calls to
     /// it inline as `always_ff` and skips the `HirFn` itself when emitting
     /// modules.
@@ -534,6 +534,10 @@ impl<'a> Lowerer<'a> {
         };
 
         self.fn_state = FnState::default();
+        // Enter the fn's generic scope so width references to `param N: usize`
+        // (and future Type-kind references in param positions) lower as
+        // `Param(i)` rather than `Local`. Mirrors the struct/port path.
+        self.enter_generic_scope(def_id);
 
         let mut params = Vec::new();
         for np in &func.named_parameters {
@@ -546,6 +550,8 @@ impl<'a> Lowerer<'a> {
         let return_type = func.return_type.as_ref().map(|ty| self.lower_type(ty));
         let body = self.lower_block(&func.body);
         let locals = std::mem::take(&mut self.fn_state.locals);
+
+        self.leave_generic_scope();
 
         Some(HirFn {
             def_id,
@@ -1792,18 +1798,30 @@ impl<'a> Lowerer<'a> {
                     );
                     return self.placeholder_expr(t.span.clone());
                 }
-                // Resolve the head as a name use. Mirrors how plain
-                // identifiers are lowered in value expressions.
+                // Resolve the head as a name use. If it names one of the
+                // enclosing item's generic params, lower as `Param(i)` so
+                // the parametric substitution path (typeck `apply_substitution`
+                // / flatten `instantiate_type`) substitutes it. Otherwise
+                // it's a regular local reference.
                 match self.resolve.resolutions.get(&t.name.id) {
                     Some(&Res::Local(decl_node)) => {
-                        let Some(local) = self.local_for(decl_node) else {
-                            return self.placeholder_expr(t.span.clone());
-                        };
-                        HirExpr {
-                            kind: HirExprKind::Local(local),
-                            ty: None,
-                            span: t.span.clone(),
-                            id: self.next_hir_id(),
+                        if let Some(&index) = self.current_generic_params.get(&decl_node) {
+                            HirExpr {
+                                kind: HirExprKind::Param(index),
+                                ty: None,
+                                span: t.span.clone(),
+                                id: self.next_hir_id(),
+                            }
+                        } else {
+                            let Some(local) = self.local_for(decl_node) else {
+                                return self.placeholder_expr(t.span.clone());
+                            };
+                            HirExpr {
+                                kind: HirExprKind::Local(local),
+                                ty: None,
+                                span: t.span.clone(),
+                                id: self.next_hir_id(),
+                            }
                         }
                     }
                     _ => {

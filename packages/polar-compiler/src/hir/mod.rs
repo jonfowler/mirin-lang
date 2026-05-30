@@ -255,6 +255,14 @@ pub struct HirExpr {
 pub enum HirExprKind {
     Const(ConstValue),
     Local(LocalId),
+    /// Reference to the enclosing item's `i`-th generic parameter, in the
+    /// const-value position. Mirrors `ValueKind::Param(i)` for the type
+    /// position: `N` inside `uint(N)` where `N` is a `param N: usize` on
+    /// the enclosing fn/struct/port lowers to `HirExprKind::Param(i)`.
+    /// Substituted out via the enclosing def's `GenericArgs` by typeck's
+    /// `apply_substitution` and flatten's `instantiate_type`. Never observed
+    /// after monomorphic use sites are processed.
+    Param(u32),
     /// Calls cover everything callable: user-defined functions, prelude
     /// operators and primitives (`+`, `*`, `reg`), and struct constructors.
     /// HIR lowering desugars `a + b`, `x.reg(...)`, and

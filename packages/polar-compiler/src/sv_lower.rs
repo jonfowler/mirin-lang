@@ -62,6 +62,7 @@ pub fn lower_to_sv(file: &HirSourceFile, resolve: &ResolveResult) -> SvFile {
         mul: resolve.def_id("*"),
         user_fns,
         module_names,
+        resolve,
     };
     let mut modules = Vec::new();
     for item in &file.items {
@@ -101,6 +102,29 @@ struct BackendDefs<'a> {
     /// SV module name for each user fn (qualified for methods). Used both
     /// at the module-definition site and at every instance use site.
     module_names: HashMap<DefId, String>,
+    /// Used to look up the enclosing def's `generic_params` when emitting
+    /// `HirExprKind::Param(i)` inside widths (e.g. `uint(N)` where N is a
+    /// `param N: usize` on the parametric def).
+    resolve: &'a ResolveResult,
+}
+
+/// Find the `LocalId` for the i-th generic param of `func`. The generic
+/// param's name (recorded in `resolve.def_info`) matches one of `func`'s
+/// HirParam slots; we use that to look up the LocalId.
+fn local_for_generic_param(i: u32, func: &HirFn, defs: &BackendDefs<'_>) -> Option<LocalId> {
+    let gp = defs
+        .resolve
+        .def_info(func.def_id)
+        .generic_params
+        .get(i as usize)?;
+    func.params.iter().find_map(|p| {
+        let name = &func.locals.get(p.local.0 as usize)?.name;
+        if name == &gp.name {
+            Some(p.local)
+        } else {
+            None
+        }
+    })
 }
 
 // ============================================================================
@@ -576,6 +600,15 @@ fn lower_expr(
             }),
         },
         HirExprKind::Local(id) => SvExpr::Ident(sv_name(local_names, func, *id)),
+        // `Param(i)` references the i-th generic param of the enclosing
+        // def. In a parametric module's own body, this becomes the SV
+        // parameter's name (translated via `local_for_generic_param`).
+        // If the def has no matching generic param, fall back to a
+        // placeholder so downstream tooling can flag it.
+        HirExprKind::Param(i) => match local_for_generic_param(*i, func, defs) {
+            Some(local) => SvExpr::Ident(sv_name(local_names, func, local)),
+            None => SvExpr::Ident("__unsubstituted_param__".to_owned()),
+        },
         HirExprKind::Call(call) => lower_call(call, func, defs, local_names),
         // After `flatten_aggregates` runs, every field access on a flattened
         // aggregate is rewritten to a `Local`. A `Field` reaching here means
@@ -685,6 +718,13 @@ fn lower_width_expr(
         HirExprKind::Local(id) => SvExpr::Ident(sv_name(local_names, func, *id)),
         HirExprKind::Call(_) => lower_expr(width, func, defs, local_names),
         HirExprKind::Const(ConstValue::Bool(_)) => SvExpr::Lit("1".to_owned()),
+        // `Param(i)` in a parametric module's own widths becomes the SV
+        // parameter's identifier (e.g. `uint(N)` in a `param N: usize`
+        // module emits `[N-1:0]`).
+        HirExprKind::Param(i) => match local_for_generic_param(*i, func, defs) {
+            Some(local) => SvExpr::Ident(sv_name(local_names, func, local)),
+            None => SvExpr::Lit("0".to_owned()),
+        },
         // Widths are `usize`, so field access (a struct/port field result)
         // cannot appear here in well-typed HIR; pick a safe placeholder.
         HirExprKind::Field(_) => SvExpr::Lit("0".to_owned()),
@@ -713,6 +753,7 @@ fn infer_sv_type(
     match &expr.kind {
         HirExprKind::Const(ConstValue::Bool(_)) => SvType::bit(),
         HirExprKind::Const(ConstValue::Integer(_)) => SvType::bit(),
+        HirExprKind::Param(_) => SvType::bit(),
         HirExprKind::Local(id) => local_types.get(id).cloned().unwrap_or_else(SvType::bit),
         HirExprKind::Call(call) => {
             // Binary op result has the same type as either operand.

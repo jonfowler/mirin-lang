@@ -64,11 +64,12 @@ First IR structured for semantic analysis.
   carry `GenericArgs` — a positional list of `GenericArg::{Type, Const,
   Domain}` matching the def's `generic_params`. Field declarations use
   `ValueKind::Param(i)` inside a `Value` to reference the enclosing item's
-  i-th param (the outer `ValueType.domain` carries any `@`-annotation);
-  typeck additionally produces `ValueKind::Var(_)` placeholders when a
-  parametric callsite needs a structural inference variable independent of
-  its domain (e.g. `reg`'s `self: A @clk`). Both are substituted out by
-  typeck / flatten.
+  i-th param in type position (the outer `ValueType.domain` carries any
+  `@`-annotation), and `HirExprKind::Param(i)` inside `uint(N)` widths to
+  reference the same param in const position. Typeck additionally produces
+  `ValueKind::Var(_)` placeholders when a parametric callsite needs a
+  structural inference variable independent of its domain (e.g. `reg`'s
+  `self: A @clk`). All three are substituted out by typeck / flatten.
 - `HirFn::is_prelude` flags synthesised intrinsic signatures (currently
   `reg`). Such fns drive typeck's arg slotting via the general user-fn
   path but are skipped by every later pass — their call sites lower
@@ -99,7 +100,7 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 
 | Pass | File | What it does |
 |---|---|---|
-| `typeck::check_file` | `typeck.rs` | Eager unification walk. Per-fn `InferCtxt` carries type/domain var pools and an obligation queue. Writes back via `expr_types`, `local_types`, `method_resolutions`. Queues `WidthEq` obligations for symbolic widths. Use sites of parametric defs allocate fresh `GenericArgs` (`fresh_args_for_def`) and substitute via `instantiate` — rustc's `EarlyBinder::instantiate` shape. See `planning/type_inference.md`. |
+| `typeck::check_file` | `typeck.rs` | Eager unification walk. Per-fn `InferCtxt` carries type/domain var pools and an obligation queue. Writes back via `expr_types`, `local_types`, `method_resolutions`. Queues `WidthEq` obligations for symbolic widths. Use sites of parametric defs allocate fresh `GenericArgs` (`fresh_args_for_def`) and substitute via `instantiate` (rustc's `EarlyBinder::instantiate` shape); call sites build the same `Substitution { args: GenericArgs, domain_locals }` shape with fresh inference variables. See `planning/type_inference.md` and `planning/parametricity.md`. |
 | `check_width_obligations` | `typeck.rs` | Discharge `WidthEq` obligations where both sides are now ground. Surviving residuals carry forward (currently no-op; ready for parametric widths). |
 
 ### HIR (typed) → HIR (lowered)
@@ -114,7 +115,7 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 
 | Pass | File | What it does |
 |---|---|---|
-| `flatten_aggregates` | `hir/flatten.rs` | Erase port and struct types at value positions. Each aggregate local splits into per-field locals named `p__field` (recursive for nested aggregates). For parametric aggregates, `instantiate_type` substitutes the receiver's `GenericArgs` into each field's `Param(i)` references before flattening. Struct and single-domain-port instances stamp their `domain` over each field's `Unspecified` slot via `apply_struct_domain` / `apply_port_domain`. Whole-aggregate equations split into per-field equations with direction-aware LHS/RHS pairing (port field directions compose with the param's `in`/`out` direction). LocalId remap is owned by an `expansion: HashMap<LocalId, Vec<Leaf>>` table consulted by downstream rewrites — including the `clock` and `dest` fields of `HirStmt::AlwaysFf`. |
+| `flatten_aggregates` | `hir/flatten.rs` | Erase port and struct types at value positions. Each aggregate local splits into per-field locals named `p__field` (recursive for nested aggregates). For parametric aggregates, `instantiate_type` substitutes the receiver's `GenericArgs` into `ValueKind::Param(i)` (type position) and `HirExprKind::Param(i)` inside `uint(N)` widths (const position); Domain-kind args are pre-resolved into a `LocalId → Domain` map for `Domain::Clock(local)` lookups. Struct and single-domain-port instances stamp their `domain` over each field's `Unspecified` slot via `apply_struct_domain` / `apply_port_domain`. Whole-aggregate equations split into per-field equations with direction-aware LHS/RHS pairing (port field directions compose with the param's `in`/`out` direction). LocalId remap is owned by an `expansion: HashMap<LocalId, Vec<Leaf>>` table consulted by downstream rewrites — including the `clock` and `dest` fields of `HirStmt::AlwaysFf`. |
 
 ### SV
 

@@ -183,7 +183,9 @@ impl<'a> FnCtx<'a> {
     /// Pure expressions (no nested block/if) return an empty prelude.
     fn lower_expr(&mut self, expr: &HirExpr) -> (Vec<HirStmt>, HirExpr) {
         match &expr.kind {
-            HirExprKind::Const(_) | HirExprKind::Local(_) => (Vec::new(), expr.clone()),
+            HirExprKind::Const(_) | HirExprKind::Local(_) | HirExprKind::Param(_) => {
+                (Vec::new(), expr.clone())
+            }
             HirExprKind::Call(call) => {
                 let mut pre = Vec::new();
                 let mut new_args = Vec::with_capacity(call.args.len());
@@ -518,7 +520,7 @@ fn scan_max_hir_id_expr(expr: &HirExpr, max: &mut u32) {
         *max = expr.id.0;
     }
     match &expr.kind {
-        HirExprKind::Const(_) | HirExprKind::Local(_) => {}
+        HirExprKind::Const(_) | HirExprKind::Local(_) | HirExprKind::Param(_) => {}
         HirExprKind::Call(call) => {
             for arg in &call.args {
                 if let HirArg::Provided { expr, .. } = arg {

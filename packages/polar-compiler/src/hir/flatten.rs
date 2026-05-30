@@ -521,38 +521,29 @@ impl<'a> FnFlattener<'a> {
             }
         };
 
-        // Multi-domain / multi-const port substitution: build LocalId →
-        // Domain and LocalId → HirExpr maps from the port's
-        // `generic_params` and the args supplied at this use site. Each
-        // Domain/Const-kind generic_param's name matches one of the port's
-        // HirParams; that HirParam's LocalId is what the field types
-        // reference in `Domain::Clock(local)` / `Local(local)` width slots.
+        // Multi-domain port substitution: build a LocalId → Domain map
+        // from the port's `generic_params` and the args supplied at this
+        // use site. Each Domain-kind generic_param's name matches one of
+        // the port's HirParams; that HirParam's LocalId is what the field
+        // types reference in `Domain::Clock(local)`. Const-kind params no
+        // longer need a parallel map — widths reference `Param(i)`
+        // directly and `instantiate_type` looks them up in `args`.
         let port_info = self.resolve.def_info(port_ref.def);
         let mut domain_subst: HashMap<LocalId, Domain> = HashMap::new();
-        let mut const_subst: HashMap<LocalId, HirExpr> = HashMap::new();
         for (i, gp) in port_info.generic_params.iter().enumerate() {
-            let arg = port_ref.args.0.get(i);
+            if !matches!(gp.kind, crate::resolve::GenericParamKind::Domain) {
+                continue;
+            }
+            let Some(super::GenericArg::Domain(d)) = port_ref.args.0.get(i) else {
+                continue;
+            };
             for hp in &p.params {
                 if p.locals
                     .get(hp.local.0 as usize)
                     .map(|info| info.name == gp.name)
                     .unwrap_or(false)
                 {
-                    match (gp.kind, arg) {
-                        (
-                            crate::resolve::GenericParamKind::Domain,
-                            Some(super::GenericArg::Domain(d)),
-                        ) => {
-                            domain_subst.insert(hp.local, d.clone());
-                        }
-                        (
-                            crate::resolve::GenericParamKind::Const,
-                            Some(super::GenericArg::Const(c)),
-                        ) => {
-                            const_subst.insert(hp.local, c.clone());
-                        }
-                        _ => {}
-                    }
+                    domain_subst.insert(hp.local, d.clone());
                     break;
                 }
             }
@@ -576,8 +567,7 @@ impl<'a> FnFlattener<'a> {
             // `Domain::Clock(local)` → `args[i].Domain`. Then stamp the
             // port's implicit domain over any Unspecified slot — the
             // `DF @clk` single-domain shorthand.
-            let after_args =
-                instantiate_type(&field.ty, &port_ref.args, &domain_subst, &const_subst);
+            let after_args = instantiate_type(&field.ty, &port_ref.args, &domain_subst);
             let field_ty = apply_port_domain(&after_args, &port_ref.domain);
             let mut field_path = path.clone();
             field_path.push(field.name.clone());
@@ -625,7 +615,7 @@ impl<'a> FnFlattener<'a> {
             // on a `Bus(uint(8))` becomes `uint(8) @clk`. Structs carry
             // no Domain-kind generics, so the domain substitution is a
             // no-op (empty map).
-            let substituted = instantiate_type(&field.ty, args, &HashMap::new(), &HashMap::new());
+            let substituted = instantiate_type(&field.ty, args, &HashMap::new());
             let field_ty = apply_struct_domain(&substituted, domain);
             let mut field_path = path.clone();
             field_path.push(field.name.clone());
@@ -1152,10 +1142,10 @@ impl<'a> FnFlattener<'a> {
                 Ok(self.local_expr(leaf.local, leaf.ty.clone(), expr.span.clone()))
             }
             HirExprKind::Call(call) => self.extract_from_call(call, expr, path),
-            HirExprKind::Const(_) => {
-                // A `Const` in an aggregate position would have to be a record
-                // literal, which lowers to a `Call`. Bare `Const`s here are a
-                // shape error.
+            HirExprKind::Const(_) | HirExprKind::Param(_) => {
+                // A `Const` or `Param` in an aggregate position would have to
+                // be a record literal, which lowers to a `Call`. Bare const
+                // expressions here are a shape error.
                 Err(FlattenError {
                     kind: FlattenErrorKind::UnsupportedAggregateExpr,
                     span: expr.span.clone(),
@@ -1293,7 +1283,7 @@ impl<'a> FnFlattener<'a> {
     /// changes were necessary; the caller may fall back to `expr.clone()`.
     fn remap_expr(&mut self, expr: &HirExpr) -> Option<HirExpr> {
         let new_kind = match &expr.kind {
-            HirExprKind::Const(_) => return Some(expr.clone()),
+            HirExprKind::Const(_) | HirExprKind::Param(_) => return Some(expr.clone()),
             HirExprKind::Local(id) => {
                 let leaves = self.expansion.get(id)?;
                 if leaves.len() != 1 {
@@ -1414,7 +1404,6 @@ fn instantiate_type(
     ty: &HirType,
     args: &GenericArgs,
     domain_subst: &HashMap<LocalId, Domain>,
-    const_subst: &HashMap<LocalId, HirExpr>,
 ) -> HirType {
     match &ty.kind {
         HirTypeKind::Value(vt) => {
@@ -1427,8 +1416,7 @@ fn instantiate_type(
                 other => other.clone(),
             };
             // Then substitute the inner kind: ValueKind::Param via args,
-            // and `uint(N)` widths via const_subst when N is a Local
-            // reference into a `param N: usize` slot.
+            // and `uint(N)` widths via Param-indexed lookup into args.
             let inner_kind = match &vt.kind {
                 ValueKind::Param(i) => match args.0.get(*i as usize) {
                     Some(GenericArg::Type(t)) => match &t.kind {
@@ -1438,7 +1426,7 @@ fn instantiate_type(
                     _ => None,
                 },
                 ValueKind::UInt { width } => Some(ValueKind::UInt {
-                    width: Box::new(substitute_const_expr(width, const_subst)),
+                    width: Box::new(substitute_const_expr(width, args)),
                 }),
                 other => Some(other.clone()),
             };
@@ -1476,21 +1464,22 @@ fn instantiate_type(
     }
 }
 
-/// Substitute `Local(local)` references inside a width / const expression
-/// via `const_subst`. Returns the original expression if no substitution
-/// applies. Only handles bare `Local` and `Const` today; arithmetic
-/// `Binary` widths recurse into children.
-fn substitute_const_expr(expr: &HirExpr, subst: &HashMap<LocalId, HirExpr>) -> HirExpr {
-    if subst.is_empty() {
+/// Substitute `Param(i)` references inside a width / const expression with
+/// the matching `GenericArg::Const` payload from `args`. Returns the
+/// original expression if no substitution applies. Only handles bare
+/// `Param` today; arithmetic `+`/`*` widths will recurse into children
+/// once Phase B lands.
+fn substitute_const_expr(expr: &HirExpr, args: &GenericArgs) -> HirExpr {
+    if args.0.is_empty() {
         return expr.clone();
     }
     match &expr.kind {
-        HirExprKind::Local(id) => match subst.get(id) {
-            Some(replacement) => HirExpr {
+        HirExprKind::Param(i) => match args.0.get(*i as usize) {
+            Some(GenericArg::Const(c)) => HirExpr {
                 span: expr.span.clone(),
-                ..replacement.clone()
+                ..c.clone()
             },
-            None => expr.clone(),
+            _ => expr.clone(),
         },
         _ => expr.clone(),
     }
