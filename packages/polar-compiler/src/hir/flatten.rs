@@ -521,26 +521,39 @@ impl<'a> FnFlattener<'a> {
             }
         };
 
-        // Multi-domain port substitution: build a `LocalId → Domain` map
-        // from the port's generic_params and the args supplied at this
-        // use site. Each Domain-kind generic_param's name matches one of
-        // the port's HirParams; that HirParam's LocalId is what the field
-        // types reference in `Domain::Clock(local)` slots.
+        // Multi-domain / multi-const port substitution: build LocalId →
+        // Domain and LocalId → HirExpr maps from the port's
+        // `generic_params` and the args supplied at this use site. Each
+        // Domain/Const-kind generic_param's name matches one of the port's
+        // HirParams; that HirParam's LocalId is what the field types
+        // reference in `Domain::Clock(local)` / `Local(local)` width slots.
         let port_info = self.resolve.def_info(port_ref.def);
         let mut domain_subst: HashMap<LocalId, Domain> = HashMap::new();
+        let mut const_subst: HashMap<LocalId, HirExpr> = HashMap::new();
         for (i, gp) in port_info.generic_params.iter().enumerate() {
-            if let crate::resolve::GenericParamKind::Domain = gp.kind
-                && let Some(super::GenericArg::Domain(d)) = port_ref.args.0.get(i)
-            {
-                for hp in &p.params {
-                    if p.locals
-                        .get(hp.local.0 as usize)
-                        .map(|info| info.name == gp.name)
-                        .unwrap_or(false)
-                    {
-                        domain_subst.insert(hp.local, d.clone());
-                        break;
+            let arg = port_ref.args.0.get(i);
+            for hp in &p.params {
+                if p.locals
+                    .get(hp.local.0 as usize)
+                    .map(|info| info.name == gp.name)
+                    .unwrap_or(false)
+                {
+                    match (gp.kind, arg) {
+                        (
+                            crate::resolve::GenericParamKind::Domain,
+                            Some(super::GenericArg::Domain(d)),
+                        ) => {
+                            domain_subst.insert(hp.local, d.clone());
+                        }
+                        (
+                            crate::resolve::GenericParamKind::Const,
+                            Some(super::GenericArg::Const(c)),
+                        ) => {
+                            const_subst.insert(hp.local, c.clone());
+                        }
+                        _ => {}
                     }
+                    break;
                 }
             }
         }
@@ -563,7 +576,8 @@ impl<'a> FnFlattener<'a> {
             // `Domain::Clock(local)` → `args[i].Domain`. Then stamp the
             // port's implicit domain over any Unspecified slot — the
             // `DF @clk` single-domain shorthand.
-            let after_args = instantiate_type(&field.ty, &port_ref.args, &domain_subst);
+            let after_args =
+                instantiate_type(&field.ty, &port_ref.args, &domain_subst, &const_subst);
             let field_ty = apply_port_domain(&after_args, &port_ref.domain);
             let mut field_path = path.clone();
             field_path.push(field.name.clone());
@@ -611,7 +625,7 @@ impl<'a> FnFlattener<'a> {
             // on a `Bus(uint(8))` becomes `uint(8) @clk`. Structs carry
             // no Domain-kind generics, so the domain substitution is a
             // no-op (empty map).
-            let substituted = instantiate_type(&field.ty, args, &HashMap::new());
+            let substituted = instantiate_type(&field.ty, args, &HashMap::new(), &HashMap::new());
             let field_ty = apply_struct_domain(&substituted, domain);
             let mut field_path = path.clone();
             field_path.push(field.name.clone());
@@ -1400,6 +1414,7 @@ fn instantiate_type(
     ty: &HirType,
     args: &GenericArgs,
     domain_subst: &HashMap<LocalId, Domain>,
+    const_subst: &HashMap<LocalId, HirExpr>,
 ) -> HirType {
     match &ty.kind {
         HirTypeKind::Value(vt) => {
@@ -1411,40 +1426,73 @@ fn instantiate_type(
                     .unwrap_or_else(|| vt.domain.clone()),
                 other => other.clone(),
             };
-            // Then substitute the inner kind if it's a Param ref.
-            match &vt.kind {
+            // Then substitute the inner kind: ValueKind::Param via args,
+            // and `uint(N)` widths via const_subst when N is a Local
+            // reference into a `param N: usize` slot.
+            let inner_kind = match &vt.kind {
                 ValueKind::Param(i) => match args.0.get(*i as usize) {
                     Some(GenericArg::Type(t)) => match &t.kind {
-                        HirTypeKind::Value(arg_vt) => HirType {
-                            kind: HirTypeKind::Value(ValueType {
-                                kind: arg_vt.kind.clone(),
-                                domain: match domain {
-                                    Domain::Unspecified => arg_vt.domain.clone(),
-                                    other => other,
-                                },
-                            }),
-                            span: ty.span.clone(),
-                        },
-                        _ => t.clone(),
+                        HirTypeKind::Value(arg_vt) => Some(arg_vt.kind.clone()),
+                        _ => None,
                     },
-                    _ => HirType {
-                        kind: HirTypeKind::Value(ValueType {
-                            kind: vt.kind.clone(),
-                            domain,
-                        }),
-                        span: ty.span.clone(),
-                    },
+                    _ => None,
                 },
-                _ => HirType {
+                ValueKind::UInt { width } => Some(ValueKind::UInt {
+                    width: Box::new(substitute_const_expr(width, const_subst)),
+                }),
+                other => Some(other.clone()),
+            };
+            match inner_kind {
+                Some(kind) => HirType {
                     kind: HirTypeKind::Value(ValueType {
-                        kind: vt.kind.clone(),
-                        domain,
+                        kind,
+                        domain: match (&vt.kind, &domain) {
+                            // Param substitution inherits the arg's
+                            // domain when the field had Unspecified.
+                            (ValueKind::Param(i), Domain::Unspecified) => {
+                                if let Some(GenericArg::Type(t)) = args.0.get(*i as usize)
+                                    && let HirTypeKind::Value(arg_vt) = &t.kind
+                                {
+                                    arg_vt.domain.clone()
+                                } else {
+                                    domain
+                                }
+                            }
+                            _ => domain,
+                        },
                     }),
                     span: ty.span.clone(),
+                },
+                None => match &vt.kind {
+                    ValueKind::Param(i) => match args.0.get(*i as usize) {
+                        Some(GenericArg::Type(t)) => t.clone(),
+                        _ => ty.clone(),
+                    },
+                    _ => ty.clone(),
                 },
             }
         }
         _ => ty.clone(),
+    }
+}
+
+/// Substitute `Local(local)` references inside a width / const expression
+/// via `const_subst`. Returns the original expression if no substitution
+/// applies. Only handles bare `Local` and `Const` today; arithmetic
+/// `Binary` widths recurse into children.
+fn substitute_const_expr(expr: &HirExpr, subst: &HashMap<LocalId, HirExpr>) -> HirExpr {
+    if subst.is_empty() {
+        return expr.clone();
+    }
+    match &expr.kind {
+        HirExprKind::Local(id) => match subst.get(id) {
+            Some(replacement) => HirExpr {
+                span: expr.span.clone(),
+                ..replacement.clone()
+            },
+            None => expr.clone(),
+        },
+        _ => expr.clone(),
     }
 }
 
