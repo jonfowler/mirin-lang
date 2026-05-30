@@ -85,6 +85,10 @@ pub enum SvItem {
     /// Lowered from `HirStmt::Instance` for user-function calls whose
     /// argument or return shape involves an aggregate.
     Instance(SvInstance),
+    /// `initial begin assert (cond); end` — emits a SystemVerilog
+    /// elaboration-time assertion. Used by Phase D' to surface residual
+    /// constraints that survive to monomorphisation as elaboration checks.
+    InitialAssert { cond: SvExpr },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +169,8 @@ pub enum SvExpr {
 pub enum SvBinOp {
     Add,
     Mul,
+    /// `==` — used to emit residual-constraint checks as `initial assert(…)`.
+    Eq,
 }
 
 // ============================================================================
@@ -271,6 +277,11 @@ impl fmt::Display for SvItem {
                 }
                 writeln!(f, "    );")
             }
+            Self::InitialAssert { cond } => {
+                writeln!(f, "    initial begin")?;
+                writeln!(f, "        assert ({cond});")?;
+                writeln!(f, "    end")
+            }
         }
     }
 }
@@ -327,6 +338,7 @@ impl fmt::Display for SvExpr {
                 let op = match op {
                     SvBinOp::Add => "+",
                     SvBinOp::Mul => "*",
+                    SvBinOp::Eq => "==",
                 };
                 write!(f, "({l} {op} {r})")
             }

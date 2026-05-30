@@ -196,6 +196,10 @@ The `Unspecified` -> fresh-var step exists because the lowering pass emits `Doma
 ```rust
 pub enum Obligation {
     WidthEq { lhs: HirExpr, rhs: HirExpr, span: SourceSpan },
+    // Phase D: width predicates over normalised sum-of-monomials forms.
+    // Produced by `unify_widths` when normalised equality fails locally;
+    // simplified to fixpoint at end-of-fn and propagated to callers.
+    ConstEq { lhs: NormalConst, rhs: NormalConst, span: SourceSpan },
     DomainKind { domain: Domain, expected: DomainKind, span: SourceSpan },
     // Future: ConstEval(HirExpr), TraitLike(...), etc.
 }
@@ -203,9 +207,11 @@ pub enum Obligation {
 pub enum DomainKind { ClockDomain }   // currently only this; future: NegativeEdge, etc.
 ```
 
-`flush_obligations` runs after the walk, retries each obligation now that the substitution is richer, and either discharges it or records it as a `residual_obligation`. The const-eval pass and the domain-bound pass will read residual obligations and try to discharge their own.
+`discharge_obligations` runs after the walk as a fixpoint loop: each iteration simplifies every `ConstEq` obligation using current `const_vars` bindings (substituting bound vars into the normalised form, then canonicalising), and either discharges it (`lhs - rhs == 0`), errors (ground difference, non-zero), or keeps it for another iteration. What survives the fixpoint is the fn's residual constraint set — attached to `TypeCheckResult.fn_residuals` keyed by `DefId`.
 
-This is structurally the same as rustc's "select all obligations" loop in `FulfillmentContext`. It's not magic — it's just a small worklist that takes another swing once more is known.
+At a call site, the callee's residuals get their `Param(i)` references rewritten through the call's `GenericArgs`, then pushed as fresh `ConstEq` obligations in the caller's queue — the caller's own discharge loop handles them. This propagates residuals up the call graph until they hit a monomorphic instantiation, where `lower_to_sv` emits surviving residuals as `initial begin assert(lhs == rhs); end` (Phase D′).
+
+This is structurally the same as GHC's `Wanted` constraint solver and rustc's "select all obligations" loop in `FulfillmentContext`. The Polar twist: residuals that *do* survive to monomorphisation become SystemVerilog elaboration-time checks rather than runtime exceptions.
 
 ## Errors
 

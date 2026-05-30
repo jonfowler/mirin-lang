@@ -140,6 +140,9 @@ fn validate_item(item: &SvItem, module: &str, errors: &mut Vec<EmitError>) {
                 validate_comb_stmt(stmt, module, errors);
             }
         }
+        SvItem::InitialAssert { cond } => {
+            validate_expr_idents(cond, module, errors);
+        }
     }
 }
 
@@ -464,7 +467,7 @@ mod tests {
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let flat =
             flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types).expect("flatten");
-        let sv = lower_to_sv(&flat, &resolve);
+        let sv = lower_to_sv(&flat, &resolve, &tc.fn_residuals);
         emit(&sv)
     }
 

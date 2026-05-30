@@ -129,6 +129,38 @@ impl NormalConst {
         self.terms.retain(|(c, _)| *c != 0);
         self.terms.sort_by(|a, b| a.1.cmp(&b.1));
     }
+
+    /// `true` iff this normal form has no variable terms — purely a
+    /// constant integer. Use to gate the immediate-error check in
+    /// obligation discharge (both sides ground + unequal → false).
+    pub fn is_ground(&self) -> bool {
+        self.terms.is_empty()
+    }
+
+    /// Substitute each variable through the supplied callback, then
+    /// re-normalise. `resolve` returns `Some(replacement)` to substitute
+    /// or `None` to leave the variable in place. Idempotent: a fully
+    /// resolved expression returns itself unchanged.
+    pub fn simplify(&self, resolve: &mut dyn FnMut(&NormalVar) -> Option<NormalConst>) -> Self {
+        let mut out = NormalConst::constant(self.constant);
+        for (coeff, var) in &self.terms {
+            match resolve(var) {
+                Some(replacement) => {
+                    // Multiply replacement by coeff and add into out.
+                    // `mul` returns None only for multivar * multivar; we
+                    // build `coeff * replacement` which is constant * poly,
+                    // so it always succeeds.
+                    let scaled = NormalConst::constant(*coeff)
+                        .mul(replacement)
+                        .expect("constant * polynomial is always linear");
+                    out = out.add(scaled);
+                }
+                None => out.add_term(*coeff, var.clone()),
+            }
+        }
+        out.canonicalise();
+        out
+    }
 }
 
 /// Try to convert an `HirExpr` to a `NormalConst`. Recognises bare

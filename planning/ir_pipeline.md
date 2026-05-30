@@ -100,7 +100,7 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 
 | Pass | File | What it does |
 |---|---|---|
-| `typeck::check_file` | `typeck.rs` | Eager unification walk. Per-fn `InferCtxt` carries type/domain var pools and an obligation queue. Writes back via `expr_types`, `local_types`, `method_resolutions`. Queues `WidthEq` obligations for symbolic widths. Use sites of parametric defs allocate fresh `GenericArgs` (`fresh_args_for_def`) and substitute via `instantiate` (rustc's `EarlyBinder::instantiate` shape); call sites build the same `Substitution { args: GenericArgs, domain_locals }` shape with fresh inference variables. See `planning/type_inference.md` and `planning/parametricity.md`. |
+| `typeck::check_file` | `typeck.rs` | Eager unification walk. Per-fn `InferCtxt` carries type/domain/const var pools and an obligation queue. Writes back via `expr_types`, `local_types`, `method_resolutions`, `fn_residuals`. Queues `ConstEq` (normalised) obligations for symbolic widths; the fixpoint `discharge_obligations` pass at end-of-fn simplifies them via current bindings. Use sites of parametric defs allocate fresh `GenericArgs` (`fresh_args_for_def`) and substitute via `instantiate` (rustc's `EarlyBinder::instantiate` shape); call sites build the same `Substitution { args: GenericArgs, domain_locals }` shape with fresh inference variables, and propagate the callee's surviving residual constraints through the call. See `planning/type_inference.md` and `planning/parametricity.md`. |
 | `check_width_obligations` | `typeck.rs` | Discharge `WidthEq` obligations where both sides are now ground. Surviving residuals carry forward (currently no-op; ready for parametric widths). |
 
 ### HIR (typed) → HIR (lowered)
@@ -121,7 +121,7 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 
 | Pass | File | What it does |
 |---|---|---|
-| `lower_to_sv` | `sv_lower.rs` | Walk flattened HIR, build SV IR. `HirStmt::AlwaysFf` → `SvItem::AlwaysFf` (reset-less or with reset clause). `HirStmt::If` → `SvItem::AlwaysComb` with `SvCombIf`. Method-derived modules get names `<owner>__<method>` to avoid SV reserved-word collisions. |
+| `lower_to_sv` | `sv_lower.rs` | Walk flattened HIR, build SV IR. `HirStmt::AlwaysFf` → `SvItem::AlwaysFf` (reset-less or with reset clause). `HirStmt::If` → `SvItem::AlwaysComb` with `SvCombIf`. Method-derived modules get names `<owner>__<method>` to avoid SV reserved-word collisions. Phase D residuals from typeck become `SvItem::InitialAssert { cond: lhs == rhs }` items on the matching module — elaboration-time checks for constraints that survived monomorphic discharge. |
 | `emit_sv` | `sv_emit.rs` | Deterministic pretty-printer. Hard-errors on any user identifier that collides with an SV reserved word. |
 
 ### Test-only

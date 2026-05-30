@@ -23,17 +23,25 @@ use crate::hir::{
     ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFn, HirId, HirItem,
     HirSourceFile, HirStmt, HirTypeKind, LocalId, ParamKind, ValueKind, ValueType,
 };
+use crate::normal_const::{NormalConst, NormalVar};
 use crate::resolve::{DefId, ResolveResult};
 use crate::surface_ir::Direction;
 use crate::sv_ir::{
     SvAlwaysFf, SvBinOp, SvExpr, SvFile, SvInstance, SvItem, SvLogicDecl, SvModule, SvParameter,
     SvPort, SvPortDirection, SvSeqAssign, SvType,
 };
+use crate::typeck::FnResidual;
 
-/// Lower a flattened HIR file to SV IR. `resolve` is used only to identify
+/// Lower a flattened HIR file to SV IR. `resolve` is used to identify
 /// prelude defs (`reg`, `+`, `*`) and to qualify method names with their
-/// owner type.
-pub fn lower_to_sv(file: &HirSourceFile, resolve: &ResolveResult) -> SvFile {
+/// owner type. `fn_residuals` carries Phase D's per-fn residual
+/// constraints, which become elaboration-time `initial assert(…)` items
+/// on the matching module.
+pub fn lower_to_sv(
+    file: &HirSourceFile,
+    resolve: &ResolveResult,
+    fn_residuals: &std::collections::HashMap<DefId, Vec<FnResidual>>,
+) -> SvFile {
     // Prelude `HirFn`s (today: `reg`) carry a signature for typeck and
     // method_lower but must not become SV modules — their call sites
     // lower inline (e.g. `reg` → `always_ff`). Skip them everywhere we'd
@@ -70,7 +78,11 @@ pub fn lower_to_sv(file: &HirSourceFile, resolve: &ResolveResult) -> SvFile {
             if func.is_prelude {
                 continue;
             }
-            modules.push(lower_fn(func, &defs));
+            let residuals = fn_residuals
+                .get(&func.def_id)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            modules.push(lower_fn(func, &defs, residuals));
         }
     }
     SvFile { modules }
@@ -131,7 +143,7 @@ fn local_for_generic_param(i: u32, func: &HirFn, defs: &BackendDefs<'_>) -> Opti
 // Per-function lowering
 // ============================================================================
 
-fn lower_fn(func: &HirFn, defs: &BackendDefs<'_>) -> SvModule {
+fn lower_fn(func: &HirFn, defs: &BackendDefs<'_>, residuals: &[FnResidual]) -> SvModule {
     let mut parameters = Vec::new();
     let mut ports = Vec::new();
     let mut items = Vec::new();
@@ -227,6 +239,26 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs<'_>) -> SvModule {
         &mut items,
     );
 
+    // Phase D′: emit a residual constraint as `initial begin assert (lhs
+    // == rhs); end`. Each residual `(NormalConst, NormalConst)` reduces to
+    // a sum-of-monomials predicate over the module's SV parameters. If
+    // the difference normalises to zero the constraint is statically
+    // satisfied and we emit nothing.
+    for r in residuals {
+        let diff = r.lhs.clone().sub(r.rhs.clone());
+        if diff.is_ground() && diff.constant == 0 {
+            continue;
+        }
+        if let (Some(lhs), Some(rhs)) = (
+            normal_const_to_sv(&r.lhs, func, &defs),
+            normal_const_to_sv(&r.rhs, func, &defs),
+        ) {
+            items.push(SvItem::InitialAssert {
+                cond: SvExpr::BinOp(SvBinOp::Eq, Box::new(lhs), Box::new(rhs)),
+            });
+        }
+    }
+
     let module_name = defs
         .module_names
         .get(&func.def_id)
@@ -239,6 +271,42 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs<'_>) -> SvModule {
         ports,
         items,
     }
+}
+
+/// Render a `NormalConst` as an SV expression. `Param(i)` becomes the
+/// SV parameter name from the module's generic_params; constants and
+/// scaled vars build through `BinOp(Add)` / `BinOp(Mul)`. Returns `None`
+/// if any term references a variable that can't be named (e.g. a
+/// `ConstVar` that wasn't resolved — shouldn't happen post-finalisation).
+fn normal_const_to_sv(nc: &NormalConst, func: &HirFn, defs: &BackendDefs<'_>) -> Option<SvExpr> {
+    let mut parts: Vec<SvExpr> = Vec::new();
+    for (coeff, var) in &nc.terms {
+        let name = match var {
+            NormalVar::Param(i) => {
+                let local = local_for_generic_param(*i, func, defs)?;
+                let info = func.locals.get(local.0 as usize)?;
+                SvExpr::Ident(info.name.clone())
+            }
+            // ConstVar/Local shouldn't appear in a finalised residual.
+            NormalVar::ConstVar(_) | NormalVar::Local(_) => return None,
+        };
+        let term = if *coeff == 1 {
+            name
+        } else {
+            SvExpr::BinOp(
+                SvBinOp::Mul,
+                Box::new(SvExpr::Lit(coeff.to_string())),
+                Box::new(name),
+            )
+        };
+        parts.push(term);
+    }
+    if nc.constant != 0 || parts.is_empty() {
+        parts.push(SvExpr::Lit(nc.constant.to_string()));
+    }
+    parts
+        .into_iter()
+        .reduce(|acc, e| SvExpr::BinOp(SvBinOp::Add, Box::new(acc), Box::new(e)))
 }
 
 fn lower_block(
@@ -863,7 +931,7 @@ mod tests {
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
         let flat =
             flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types).expect("flatten");
-        lower_to_sv(&flat, &resolve)
+        lower_to_sv(&flat, &resolve, &tc.fn_residuals)
     }
 
     #[test]

@@ -277,7 +277,7 @@ fn main() {
                     process::exit(1);
                 }
             };
-            let sv_file = lower_to_sv(&flat, &result);
+            let sv_file = lower_to_sv(&flat, &result, &tc.fn_residuals);
             let sv_text = match emit_sv(&sv_file) {
                 Ok(s) => s,
                 Err(errors) => {
