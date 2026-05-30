@@ -515,10 +515,29 @@ impl InferCtxt {
     /// parametric ports cross the typeck boundary.
     fn instantiate(&self, ty: &HirType, args: &GenericArgs) -> HirType {
         match &ty.kind {
-            HirTypeKind::Param(i) => match args.0.get(*i as usize) {
-                Some(GenericArg::Type(t)) => HirType {
-                    kind: t.kind.clone(),
-                    span: ty.span.clone(),
+            HirTypeKind::Value(vt) => match &vt.kind {
+                ValueKind::Param(i) => match args.0.get(*i as usize) {
+                    // Substitute the structural part from the arg; keep the
+                    // outer domain. `data: A` field with Unspecified domain
+                    // takes the arg's full type only when later stamped by
+                    // the struct's domain. `self: A @clk` on reg keeps the
+                    // `@clk` slot for SigSubst to substitute via the
+                    // Domain-kind generic arg.
+                    Some(GenericArg::Type(t)) => match &t.kind {
+                        HirTypeKind::Value(arg_vt) => HirType {
+                            kind: HirTypeKind::Value(ValueType {
+                                kind: arg_vt.kind.clone(),
+                                domain: match &vt.domain {
+                                    Domain::Unspecified => arg_vt.domain.clone(),
+                                    other => other.clone(),
+                                },
+                            }),
+                            span: ty.span.clone(),
+                        },
+                        // Non-value Type arg (rare). Adopt it wholesale.
+                        _ => t.clone(),
+                    },
+                    _ => ty.clone(),
                 },
                 _ => ty.clone(),
             },
@@ -652,7 +671,6 @@ impl InferCtxt {
                 self.unify_generic_args(&aa, &ab, &span);
             }
             (HirTypeKind::Clock, HirTypeKind::Clock) => {}
-            (HirTypeKind::Param(ia), HirTypeKind::Param(ib)) if ia == ib => {}
             _ => {
                 self.errors.push(TypeError {
                     kind: TypeErrorKind::TypeMismatch {
@@ -719,6 +737,7 @@ impl InferCtxt {
                 self.unify_generic_args(aa, ab, span);
                 true
             }
+            (ValueKind::Param(a), ValueKind::Param(b)) => a == b,
             _ => false,
         }
     }
@@ -1599,6 +1618,7 @@ fn describe_type(ty: &HirType) -> String {
                 ValueKind::Usize => "usize".to_owned(),
                 ValueKind::Event => "Event".to_owned(),
                 ValueKind::Struct { def, .. } => format!("struct#{}", def.0),
+                ValueKind::Param(i) => format!("'P{i}"),
             };
             let dom = describe_domain(&vt.domain);
             if dom.is_empty() {
@@ -1609,7 +1629,6 @@ fn describe_type(ty: &HirType) -> String {
         }
         HirTypeKind::Port(p) => format!("port#{}", p.def.0),
         HirTypeKind::Clock => "Clock".to_owned(),
-        HirTypeKind::Param(i) => format!("'P{i}"),
     }
 }
 

@@ -486,22 +486,6 @@ impl<'a> FnFlattener<'a> {
                     fn_body_dir: scope_dir,
                 }])
             }
-            HirTypeKind::Param(_) => {
-                // `HirTypeKind::Param` references must be substituted out
-                // before flattening (by Phase 5's args-aware expansion of
-                // parametric structs/ports). Reaching this arm means
-                // expansion was attempted without supplying generic args —
-                // a bug in the lowering chain. Treat as a scalar leaf to
-                // keep flatten total; later phases will replace this with
-                // a hard error once substitution lands.
-                let local = self.alloc_local(name.to_owned(), span.clone(), kind);
-                Ok(vec![Leaf {
-                    local,
-                    ty: ty.clone(),
-                    path,
-                    fn_body_dir: scope_dir,
-                }])
-            }
         }
     }
 
@@ -1342,10 +1326,22 @@ fn substitute_clock_in_type(ty: &HirType, target: LocalId, replacement: &Domain)
 /// parametric port domains reach flatten with field-type references.
 fn instantiate_type(ty: &HirType, args: &GenericArgs) -> HirType {
     match &ty.kind {
-        HirTypeKind::Param(i) => match args.0.get(*i as usize) {
-            Some(GenericArg::Type(t)) => HirType {
-                kind: t.kind.clone(),
-                span: ty.span.clone(),
+        HirTypeKind::Value(vt) => match &vt.kind {
+            ValueKind::Param(i) => match args.0.get(*i as usize) {
+                Some(GenericArg::Type(t)) => match &t.kind {
+                    HirTypeKind::Value(arg_vt) => HirType {
+                        kind: HirTypeKind::Value(ValueType {
+                            kind: arg_vt.kind.clone(),
+                            domain: match &vt.domain {
+                                Domain::Unspecified => arg_vt.domain.clone(),
+                                other => other.clone(),
+                            },
+                        }),
+                        span: ty.span.clone(),
+                    },
+                    _ => t.clone(),
+                },
+                _ => ty.clone(),
             },
             _ => ty.clone(),
         },

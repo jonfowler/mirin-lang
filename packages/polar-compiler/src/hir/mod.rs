@@ -385,12 +385,6 @@ pub enum HirTypeKind {
     /// Meta-kind: a clock domain itself (e.g. `#clk: Clock`). Never the type
     /// of a value-level expression.
     Clock,
-    /// Reference to the enclosing item's `i`-th generic parameter. `A` inside
-    /// `struct Bus(A: Type) = bus { data: A }` lowers to `Param(0)` in
-    /// `data`'s declared type. Substituted out by an `instantiate` step on
-    /// the way through typeck / flatten — never observed after monomorphic
-    /// usage sites are processed.
-    Param(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -424,6 +418,15 @@ pub enum ValueKind {
     /// `Clock::posedge()`. Has no runtime representation in SV; consumed
     /// only by `when` expressions to identify which edge to register on.
     Event,
+    /// Reference to the enclosing item's `i`-th generic parameter. `A`
+    /// inside `struct Bus(A: Type) = bus { data: A }` lowers to
+    /// `Value { kind: Param(0), domain: Unspecified }` in `data`'s declared
+    /// type. The surrounding `ValueType.domain` provides the slot for
+    /// `A @clk`-style annotations (`reg`'s `self: A @clk` lowers to
+    /// `Value { kind: Param(0), domain: Clock(clk_local) }`). Substituted
+    /// out by an `instantiate` step on the way through typeck / flatten —
+    /// never observed after monomorphic usage sites are processed.
+    Param(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

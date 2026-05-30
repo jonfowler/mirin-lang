@@ -159,11 +159,10 @@ fn lower_fn(func: &HirFn, defs: &BackendDefs<'_>) -> SvModule {
             HirTypeKind::Port(_) => {
                 // Should have been flattened away. Skip with no port emitted.
             }
-            HirTypeKind::Var(_) | HirTypeKind::Param(_) => {
-                // Unresolved inference variable or unsubstituted type-param
-                // reference. Both indicate an earlier pass didn't finish its
-                // job; treat as 1-bit to keep the SV lowering total. Real
-                // code should reach here with concrete value types only.
+            HirTypeKind::Var(_) => {
+                // Unresolved inference variable; treat as 1-bit to keep the
+                // SV lowering total. Real code should reach here with
+                // concrete value types only.
                 local_types.insert(param.local, SvType::bit());
             }
         }
@@ -653,6 +652,11 @@ fn sv_type_for_value(
         ValueKind::Event => SvType::bit(),
         ValueKind::Struct { .. } => {
             // Should not survive flattening; fall back to 1-bit.
+            SvType::bit()
+        }
+        ValueKind::Param(_) => {
+            // Should have been substituted out by typeck/flatten; fall back
+            // to 1-bit if one slips through.
             SvType::bit()
         }
     }

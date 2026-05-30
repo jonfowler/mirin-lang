@@ -1328,7 +1328,9 @@ impl<'a> Lowerer<'a> {
 
         // Generic-param reference: the resolver mapped this identifier to a
         // local that's listed in the enclosing item's `generic_params`. Emit
-        // `Param(i)` so later passes substitute the right arg.
+        // a `Value { kind: Param(i), domain }` — the surrounding ValueType
+        // carries the domain (`A @clk` on `reg`'s `self`), so the @ is
+        // permitted here, unlike on a bare type-application head.
         if let Some(&Res::Local(node_id)) = self.resolve.resolutions.get(&ty.name.id) {
             if let Some(&index) = self.current_generic_params.get(&node_id) {
                 if !ty.suffixes.is_empty() {
@@ -1339,18 +1341,11 @@ impl<'a> Lowerer<'a> {
                         ty.span.clone(),
                     );
                 }
-                if domain_annotation.is_some() {
-                    self.error(
-                        HirLowerErrorKind::Unsupported {
-                            what: "`@` domain annotation on a generic parameter reference",
-                        },
-                        ty.span.clone(),
-                    );
-                }
-                return HirType {
-                    kind: HirTypeKind::Param(index),
-                    span: ty.span.clone(),
-                };
+                return self.value_type(
+                    ValueKind::Param(index),
+                    domain_annotation,
+                    ty.span.clone(),
+                );
             }
         }
 
@@ -2145,10 +2140,16 @@ mod tests {
             .iter()
             .find(|f| f.name == "data")
             .expect("`data` field");
+        let HirTypeKind::Value(vt) = &data.ty.kind else {
+            panic!(
+                "expected `data: A` to lower to Value, got {:?}",
+                data.ty.kind
+            );
+        };
         assert!(
-            matches!(data.ty.kind, HirTypeKind::Param(0)),
-            "expected `data: A` to lower to Param(0), got {:?}",
-            data.ty.kind
+            matches!(vt.kind, ValueKind::Param(0)),
+            "expected `data: A` to lower to ValueKind::Param(0), got {:?}",
+            vt.kind
         );
     }
 
