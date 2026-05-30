@@ -112,6 +112,12 @@ pub struct HirFn {
     pub locals: Vec<HirLocalInfo>,
     pub body: HirBlock,
     pub span: SourceSpan,
+    /// `true` when this `HirFn` was synthesised by the lowerer to carry a
+    /// prelude intrinsic's signature (currently just `reg`). The signature
+    /// drives typeck and method_lower's arg slotting, but flatten/sv_lower
+    /// skip the body — intrinsics lower at call sites, not as their own
+    /// modules. `false` for every user-defined function.
+    pub is_prelude: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -427,6 +433,12 @@ pub enum ValueKind {
     /// out by an `instantiate` step on the way through typeck / flatten —
     /// never observed after monomorphic usage sites are processed.
     Param(u32),
+    /// Inference variable at the `ValueKind` level. Produced by typeck
+    /// when a parametric callsite needs a placeholder for a Type-kind
+    /// generic argument's *structural* part while keeping the surrounding
+    /// `ValueType.domain` independently substitutable. Resolved by the
+    /// type checker; never produced by lowering.
+    Var(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -438,6 +438,32 @@ impl Ctx {
         ctx.result
             .impl_methods
             .insert((clock_def_id, "posedge".to_owned()), posedge_def_id);
+
+        // Declare reg's generic parameters so typeck's `fresh_args_for_def`
+        // allocates a fresh `?A` and `?clk` per call site.
+        // Signature: `fn reg { A: Type, dom clk: Clock }(self: A @clk,
+        // rst: Reset @clk, reset_val: A) -> A @clk`.
+        let reg_def_id = ctx
+            .result
+            .def_id("reg")
+            .expect("`reg` was just added to the prelude");
+        ctx.result.defs[reg_def_id.0 as usize].generic_params = vec![
+            GenericParamInfo {
+                name: "A".to_owned(),
+                kind: GenericParamKind::Type,
+                // Sentinel NodeIds: prelude generic params have no surface
+                // node. They are never looked up via `current_generic_params`
+                // because reg's HirFn is synthesised directly.
+                local: NodeId(u32::MAX),
+                span: prelude_span(),
+            },
+            GenericParamInfo {
+                name: "clk".to_owned(),
+                kind: GenericParamKind::Domain,
+                local: NodeId(u32::MAX - 1),
+                span: prelude_span(),
+            },
+        ];
         ctx
     }
 

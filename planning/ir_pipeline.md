@@ -63,8 +63,16 @@ First IR structured for semantic analysis.
 - Parametric types (`Struct { def, args }`, `PortTypeRef { def, args }`)
   carry `GenericArgs` — a positional list of `GenericArg::{Type, Const,
   Domain}` matching the def's `generic_params`. Field declarations use
-  `HirTypeKind::Param(i)` to reference the enclosing item's i-th param;
-  later passes substitute these out.
+  `ValueKind::Param(i)` inside a `Value` to reference the enclosing item's
+  i-th param (the outer `ValueType.domain` carries any `@`-annotation);
+  typeck additionally produces `ValueKind::Var(_)` placeholders when a
+  parametric callsite needs a structural inference variable independent of
+  its domain (e.g. `reg`'s `self: A @clk`). Both are substituted out by
+  typeck / flatten.
+- `HirFn::is_prelude` flags synthesised intrinsic signatures (currently
+  `reg`). Such fns drive typeck's arg slotting via the general user-fn
+  path but are skipped by every later pass — their call sites lower
+  inline (e.g. `always_ff`), not as separate SV modules.
 
 ### SV IR — `sv_ir.rs`
 Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,

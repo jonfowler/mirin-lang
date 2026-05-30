@@ -188,6 +188,15 @@ pub fn flatten_aggregates(
     for item in &file.items {
         match item {
             HirItem::Fn(func) => {
+                if func.is_prelude {
+                    // Pass through unchanged. Prelude intrinsics like `reg`
+                    // carry a signature for typeck/method_lower but their
+                    // body is empty — flatten has nothing to do, and
+                    // expanding `ValueKind::Param` params would confuse
+                    // the type-to-leaves walk.
+                    new_items.push(HirItem::Fn(func.clone()));
+                    continue;
+                }
                 let mut ctx = FnFlattener {
                     ports: &ports,
                     structs: &structs,
@@ -422,6 +431,7 @@ impl<'a> FnFlattener<'a> {
             locals: std::mem::take(&mut self.new_locals),
             body: new_body,
             span: func.span.clone(),
+            is_prelude: func.is_prelude,
         })
     }
 

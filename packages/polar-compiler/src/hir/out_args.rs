@@ -80,10 +80,14 @@ impl fmt::Display for OutArgsErrorKind {
 pub fn desugar_user_calls(file: &HirSourceFile) -> Result<HirSourceFile, Vec<OutArgsError>> {
     // Build the map of user-fn DefIds that have a return type. These are the
     // ones whose signatures we transform and whose call sites we rewrite.
-    // Calls to user fns that already return `()` are left alone.
+    // Calls to user fns that already return `()` are left alone. Prelude
+    // intrinsics (synthesised `HirFn`s like `reg`) are excluded: their call
+    // sites flatten inline as `always_ff`/etc., not as out-arg instance
+    // wiring.
     let mut transformed: HashMap<DefId, HirType> = HashMap::new();
     for item in &file.items {
         if let HirItem::Fn(f) = item
+            && !f.is_prelude
             && let Some(rt) = &f.return_type
         {
             transformed.insert(f.def_id, rt.clone());
@@ -96,6 +100,10 @@ pub fn desugar_user_calls(file: &HirSourceFile) -> Result<HirSourceFile, Vec<Out
 
     for item in &file.items {
         match item {
+            HirItem::Fn(f) if f.is_prelude => {
+                // Prelude intrinsics carry no body; nothing to rewrite.
+                new_items.push(HirItem::Fn(f.clone()));
+            }
             HirItem::Fn(f) => match desugar_fn(f, &transformed, &mut next_hir_id) {
                 Ok(new_fn) => new_items.push(HirItem::Fn(new_fn)),
                 Err(mut errs) => {
@@ -179,6 +187,7 @@ fn desugar_fn(
         },
         locals: new_locals,
         body: new_body,
+        is_prelude: f.is_prelude,
         span: f.span.clone(),
     })
 }

@@ -34,19 +34,25 @@ use crate::sv_ir::{
 /// prelude defs (`reg`, `+`, `*`) and to qualify method names with their
 /// owner type.
 pub fn lower_to_sv(file: &HirSourceFile, resolve: &ResolveResult) -> SvFile {
+    // Prelude `HirFn`s (today: `reg`) carry a signature for typeck and
+    // method_lower but must not become SV modules — their call sites
+    // lower inline (e.g. `reg` → `always_ff`). Skip them everywhere we'd
+    // emit module-shaped output.
     let mut user_fns: HashMap<DefId, &HirFn> = HashMap::new();
     for item in &file.items {
         if let HirItem::Fn(func) = item {
+            if func.is_prelude {
+                continue;
+            }
             user_fns.insert(func.def_id, func);
         }
     }
-    // Compute the SV module name for every user fn. Free functions keep
-    // their source name; methods get `<owner>__<method>` so different impls
-    // of the same method name don't collide and so single-word method names
-    // like `reg` don't collide with SV reserved words.
     let mut module_names: HashMap<DefId, String> = HashMap::new();
     for item in &file.items {
         if let HirItem::Fn(func) = item {
+            if func.is_prelude {
+                continue;
+            }
             module_names.insert(func.def_id, sv_module_name(func, resolve));
         }
     }
@@ -60,6 +66,9 @@ pub fn lower_to_sv(file: &HirSourceFile, resolve: &ResolveResult) -> SvFile {
     let mut modules = Vec::new();
     for item in &file.items {
         if let HirItem::Fn(func) = item {
+            if func.is_prelude {
+                continue;
+            }
             modules.push(lower_fn(func, &defs));
         }
     }
@@ -654,9 +663,9 @@ fn sv_type_for_value(
             // Should not survive flattening; fall back to 1-bit.
             SvType::bit()
         }
-        ValueKind::Param(_) => {
-            // Should have been substituted out by typeck/flatten; fall back
-            // to 1-bit if one slips through.
+        ValueKind::Param(_) | ValueKind::Var(_) => {
+            // Should have been substituted out by typeck/flatten; fall
+            // back to 1-bit if a placeholder slips through.
             SvType::bit()
         }
     }

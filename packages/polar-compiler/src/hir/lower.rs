@@ -172,6 +172,14 @@ pub fn lower_to_hir(
             }
         }
     }
+    // Append the synthetic prelude `reg` last so test helpers that select
+    // the first user fn from `items` continue to find it at index 0.
+    // typeck reads reg via its `DefId` regardless of position; `sv_lower`
+    // skips it explicitly because `reg` is intrinsic (inline `always_ff`,
+    // not a separate SV module).
+    if let Some(hir_fn) = ctx.synthesise_prelude_reg() {
+        items.push(HirItem::Fn(hir_fn));
+    }
     if ctx.errors.is_empty() {
         Ok(HirSourceFile {
             items,
@@ -255,6 +263,123 @@ impl<'a> Lowerer<'a> {
             current_generic_params: HashMap::new(),
             errors: Vec::new(),
         }
+    }
+
+    /// Synthesise the prelude `reg`'s `HirFn`. Returns `None` if `reg` is not
+    /// in the def table (shouldn't happen — the prelude always seeds it).
+    ///
+    /// The synthesised signature is
+    /// `fn reg { A: Type, dom clk: Clock }(self: A @clk, rst: Reset @clk,
+    /// reset_val: A) -> A @clk`. `A` is `ValueKind::Param(0)`; `clk` is the
+    /// `LocalId` of the `clk` HirParam, used in `Domain::Clock(...)` slots
+    /// so typeck's `SigSubst` substitutes them when handling a call site.
+    /// The body is empty: `reg` is intrinsic — `sv_lower` lowers calls to
+    /// it inline as `always_ff` and skips the `HirFn` itself when emitting
+    /// modules.
+    fn synthesise_prelude_reg(&mut self) -> Option<HirFn> {
+        let reg_def_id = self.resolve.def_id("reg")?;
+        let span = SourceSpan {
+            start_byte: 0,
+            end_byte: 0,
+            start: crate::SourcePosition { row: 0, column: 0 },
+            end: crate::SourcePosition { row: 0, column: 0 },
+        };
+        let make_local = |name: &str| HirLocalInfo {
+            kind: LocalKind::Param {
+                owner: reg_def_id,
+                direction: None,
+            },
+            name: name.to_owned(),
+            span: span.clone(),
+            // Sentinel — no surface node introduced this param. Diagnostics
+            // for prelude params shouldn't reach the surface anyway.
+            surface_node: NodeId(u32::MAX),
+        };
+        let clk_local = LocalId(0);
+        let self_local = LocalId(1);
+        let rst_local = LocalId(2);
+        let reset_val_local = LocalId(3);
+        let locals = vec![
+            make_local("clk"),
+            make_local("self"),
+            make_local("rst"),
+            make_local("reset_val"),
+        ];
+        let a_at_clk = HirType {
+            kind: HirTypeKind::Value(ValueType {
+                kind: ValueKind::Param(0),
+                domain: Domain::Clock(clk_local),
+            }),
+            span: span.clone(),
+        };
+        let reset_at_clk = HirType {
+            kind: HirTypeKind::Value(ValueType {
+                kind: ValueKind::Reset,
+                domain: Domain::Clock(clk_local),
+            }),
+            span: span.clone(),
+        };
+        let a_unspecified = HirType {
+            kind: HirTypeKind::Value(ValueType {
+                kind: ValueKind::Param(0),
+                domain: Domain::Unspecified,
+            }),
+            span: span.clone(),
+        };
+        let params = vec![
+            HirParam {
+                local: clk_local,
+                section: ParamSection::Named,
+                kind: HirParamKind::Dom,
+                direction: None,
+                ty: HirType {
+                    kind: HirTypeKind::Clock,
+                    span: span.clone(),
+                },
+                default: None,
+                span: span.clone(),
+            },
+            HirParam {
+                local: self_local,
+                section: ParamSection::Positional,
+                kind: HirParamKind::Value,
+                direction: None,
+                ty: a_at_clk.clone(),
+                default: None,
+                span: span.clone(),
+            },
+            HirParam {
+                local: rst_local,
+                section: ParamSection::Positional,
+                kind: HirParamKind::Value,
+                direction: None,
+                ty: reset_at_clk,
+                default: None,
+                span: span.clone(),
+            },
+            HirParam {
+                local: reset_val_local,
+                section: ParamSection::Positional,
+                kind: HirParamKind::Value,
+                direction: None,
+                ty: a_unspecified,
+                default: None,
+                span: span.clone(),
+            },
+        ];
+        Some(HirFn {
+            def_id: reg_def_id,
+            name: "reg".to_owned(),
+            params,
+            return_type: Some(a_at_clk),
+            locals,
+            body: HirBlock {
+                statements: Vec::new(),
+                span: span.clone(),
+            },
+            span,
+            is_prelude: true,
+        })
     }
 
     /// Populate `current_generic_params` from the def's recorded generic
@@ -345,6 +470,7 @@ impl<'a> Lowerer<'a> {
             locals,
             body,
             span: func.span.clone(),
+            is_prelude: false,
         })
     }
 

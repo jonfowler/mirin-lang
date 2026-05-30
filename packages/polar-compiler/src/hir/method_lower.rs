@@ -23,7 +23,7 @@ use crate::resolve::{DefId, ResolveResult};
 
 pub fn lower_method_calls(
     file: &HirSourceFile,
-    resolve: &ResolveResult,
+    _resolve: &ResolveResult,
     method_resolutions: &HashMap<HirId, DefId>,
 ) -> HirSourceFile {
     let mut callee_params: HashMap<DefId, Vec<CalleeParam>> = HashMap::new();
@@ -35,11 +35,14 @@ pub fn lower_method_calls(
     let ctx = RewriteCtx {
         method_resolutions,
         callee_params: &callee_params,
-        reg_def_id: resolve.def_id("reg"),
     };
     let mut new_items = Vec::with_capacity(file.items.len());
     for item in &file.items {
         match item {
+            HirItem::Fn(f) if f.is_prelude => {
+                // Prelude intrinsic: empty body, nothing to rewrite.
+                new_items.push(HirItem::Fn(f.clone()));
+            }
             HirItem::Fn(f) => {
                 let new_body = rewrite_block(&f.body, &ctx);
                 new_items.push(HirItem::Fn(HirFn {
@@ -56,14 +59,11 @@ pub fn lower_method_calls(
     }
 }
 
-/// Bundles the per-pass lookups so the recursive rewriters don't need to pass
-/// each of them separately. `reg_def_id` lets us recognise calls that resolve
-/// to the prelude `reg`, which has a hand-built arg shape rather than a
-/// `HirFn`-summarised one.
+/// Bundles the per-pass lookups so the recursive rewriters don't need to
+/// pass each of them separately.
 struct RewriteCtx<'a> {
     method_resolutions: &'a HashMap<HirId, DefId>,
     callee_params: &'a HashMap<DefId, Vec<CalleeParam>>,
-    reg_def_id: Option<DefId>,
 }
 
 /// Summarised callee shape used by `rewrite_call_for_method` to slot the
@@ -184,30 +184,6 @@ fn rewrite_method_call(mc: &HirMethodCall, whole: &HirExpr, ctx: &RewriteCtx<'_>
     };
     let recv = rewrite_expr(&mc.receiver, ctx);
     let mut user_args: Vec<HirArg> = mc.args.iter().map(|a| rewrite_arg(a, ctx)).collect();
-
-    // The prelude `reg` has no `HirFn`, so `callee_params.get(&callee)`
-    // returns None. Its real shape is `[Inferable(#clk), self, rst, init]`;
-    // build that explicitly. Every other callee falls through to the
-    // signature-driven slotting below.
-    if Some(callee) == ctx.reg_def_id {
-        let mut args = Vec::with_capacity(2 + user_args.len());
-        args.push(HirArg::Inferable);
-        args.push(HirArg::Provided {
-            expr: recv,
-            source: HirArgSource::Given,
-        });
-        args.append(&mut user_args);
-        return HirExpr {
-            kind: HirExprKind::Call(HirCall {
-                callee,
-                args,
-                span: whole.span.clone(),
-            }),
-            ty: whole.ty.clone(),
-            span: whole.span.clone(),
-            id: whole.id,
-        };
-    }
 
     // Build the call's arg list to match the callee's signature shape.
     // Each named slot is filled with `Inferable` (for `param`/`dom` without

@@ -47,6 +47,10 @@ pub fn lower_block_expressions(
 
     for item in &file.items {
         match item {
+            HirItem::Fn(func) if func.is_prelude => {
+                // Prelude intrinsic: empty body, nothing to lower.
+                new_items.push(HirItem::Fn(func.clone()));
+            }
             HirItem::Fn(func) => {
                 let mut ctx = FnCtx::new(func, expr_types, &mut all_local_types);
                 let new_body = ctx.lower_block(&func.body);
