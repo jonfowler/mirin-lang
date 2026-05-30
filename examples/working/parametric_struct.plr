@@ -1,0 +1,22 @@
+// Parametric struct used concretely inside a non-generic fn. Exercises
+// the full Phase 1–5 chain: type-arg syntax (`Bus(uint(8))`), the
+// separate term-level constructor (`bus`), `HirTypeKind::Param` for the
+// `data: A` field, args-aware substitution at field access, and flatten
+// expanding the struct through the substituted args into per-field
+// leaves (`b__valid`, `b__data`).
+struct Bus(A: Type) = bus {
+  valid: bool,
+  data: A,
+}
+
+fn pipeline
+  { dom clk: Clock, rstn: Reset @clk = high }
+  ( b: Bus(uint(8)) @clk )
+  -> Bus(uint(8)) @clk
+  {
+    let held = b.reg(rstn, bus {
+      valid: false,
+      data: 0,
+    });
+    return held;
+  }
