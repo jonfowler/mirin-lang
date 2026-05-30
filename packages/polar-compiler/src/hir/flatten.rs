@@ -28,10 +28,10 @@ use std::fmt;
 use std::path::Path;
 
 use super::{
-    Domain, HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind, HirFn,
-    HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirSourceFile, HirStmt, HirStruct,
-    HirType, HirTypeKind, HirVarDecl, LocalId, ParamKind, ParamSection, PortTypeRef, ValueKind,
-    ValueType,
+    Domain, GenericArg, GenericArgs, HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr,
+    HirExprKind, HirFn, HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirSourceFile,
+    HirStmt, HirStruct, HirType, HirTypeKind, HirVarDecl, LocalId, ParamKind, ParamSection,
+    PortTypeRef, ValueKind, ValueType,
 };
 use crate::resolve::{DefId, LocalKind};
 use crate::surface_ir::{Direction, NodeId};
@@ -451,8 +451,8 @@ impl<'a> FnFlattener<'a> {
         match &ty.kind {
             HirTypeKind::Port(p) => self.expand_port(p, name, path, scope_dir, kind, span),
             HirTypeKind::Value(vt) => {
-                if let ValueKind::Struct { def, .. } = &vt.kind {
-                    self.expand_struct(*def, &vt.domain, name, path, scope_dir, kind, span)
+                if let ValueKind::Struct { def, args } = &vt.kind {
+                    self.expand_struct(*def, args, &vt.domain, name, path, scope_dir, kind, span)
                 } else {
                     // Scalar leaf.
                     let local = self.alloc_local(name.to_owned(), span.clone(), kind);
@@ -534,6 +534,7 @@ impl<'a> FnFlattener<'a> {
     fn expand_struct(
         &mut self,
         def: DefId,
+        args: &GenericArgs,
         domain: &Domain,
         name: &str,
         path: Vec<String>,
@@ -555,7 +556,11 @@ impl<'a> FnFlattener<'a> {
         // passes through unchanged to nested expansions.
         let mut leaves = Vec::new();
         for field in &s.fields {
-            let field_ty = apply_struct_domain(&field.ty, domain);
+            // Substitute the receiver's generic args into the field's
+            // declared type before stamping the domain. A `data: A` field
+            // on a `Bus(uint(8))` becomes `uint(8) @clk`.
+            let substituted = instantiate_type(&field.ty, args);
+            let field_ty = apply_struct_domain(&substituted, domain);
             let mut field_path = path.clone();
             field_path.push(field.name.clone());
             let field_name = format!("{name}__{}", field.name);
@@ -1324,6 +1329,27 @@ fn substitute_clock_in_type(ty: &HirType, target: LocalId, replacement: &Domain)
     HirType {
         kind,
         span: ty.span.clone(),
+    }
+}
+
+/// Substitute the enclosing item's `Param(i)` references in `ty` with the
+/// corresponding entry from `args`. The flatten equivalent of typeck's
+/// `InferCtxt::instantiate` — post-typeck types are fully resolved (no
+/// inference variables), so this is a pure walk.
+///
+/// Only `Type`-kind args carry a `HirType` payload today. `Const` and
+/// `Domain` substitution will plug in here once parametric widths and
+/// parametric port domains reach flatten with field-type references.
+fn instantiate_type(ty: &HirType, args: &GenericArgs) -> HirType {
+    match &ty.kind {
+        HirTypeKind::Param(i) => match args.0.get(*i as usize) {
+            Some(GenericArg::Type(t)) => HirType {
+                kind: t.kind.clone(),
+                span: ty.span.clone(),
+            },
+            _ => ty.clone(),
+        },
+        _ => ty.clone(),
     }
 }
 
