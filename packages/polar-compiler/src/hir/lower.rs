@@ -172,12 +172,15 @@ pub fn lower_to_hir(
             }
         }
     }
-    // Append the synthetic prelude `reg` last so test helpers that select
+    // Append synthetic prelude HirFns last so test helpers that select
     // the first user fn from `items` continue to find it at index 0.
-    // typeck reads reg via its `DefId` regardless of position; `sv_lower`
-    // skips it explicitly because `reg` is intrinsic (inline `always_ff`,
-    // not a separate SV module).
+    // typeck reads these via their `DefId` regardless of position;
+    // `sv_lower` skips `is_prelude` fns since prelude intrinsics lower
+    // inline at call sites, not as separate SV modules.
     if let Some(hir_fn) = ctx.synthesise_prelude_reg() {
+        items.push(HirItem::Fn(hir_fn));
+    }
+    if let Some(hir_fn) = ctx.synthesise_prelude_posedge() {
         items.push(HirItem::Fn(hir_fn));
     }
     if ctx.errors.is_empty() {
@@ -263,6 +266,88 @@ impl<'a> Lowerer<'a> {
             current_generic_params: HashMap::new(),
             errors: Vec::new(),
         }
+    }
+
+    /// Synthesise the prelude `posedge`'s `HirFn`. Signature:
+    /// `fn posedge { dom clk: Clock }(self: Clock) -> Event @clk`.
+    /// `self`'s identity becomes the result's `@clk` via the existing
+    /// inferable-clock substitution path — at the call site method
+    /// dispatch unifies `self` against the Clock receiver, and `clk` is a
+    /// fresh DomainVar that the enclosing `when …` body pins down.
+    fn synthesise_prelude_posedge(&mut self) -> Option<HirFn> {
+        let def_id = self.resolve.def_id("posedge")?;
+        let span = SourceSpan {
+            start_byte: 0,
+            end_byte: 0,
+            start: crate::SourcePosition { row: 0, column: 0 },
+            end: crate::SourcePosition { row: 0, column: 0 },
+        };
+        let clk_local = LocalId(0);
+        let self_local = LocalId(1);
+        let locals = vec![
+            HirLocalInfo {
+                kind: LocalKind::Param {
+                    owner: def_id,
+                    direction: None,
+                },
+                name: "clk".to_owned(),
+                span: span.clone(),
+                surface_node: NodeId(u32::MAX),
+            },
+            HirLocalInfo {
+                kind: LocalKind::Param {
+                    owner: def_id,
+                    direction: None,
+                },
+                name: "self".to_owned(),
+                span: span.clone(),
+                surface_node: NodeId(u32::MAX),
+            },
+        ];
+        let clock_ty = HirType {
+            kind: HirTypeKind::Clock,
+            span: span.clone(),
+        };
+        let event_at_clk = HirType {
+            kind: HirTypeKind::Value(ValueType {
+                kind: ValueKind::Event,
+                domain: Domain::Clock(clk_local),
+            }),
+            span: span.clone(),
+        };
+        let params = vec![
+            HirParam {
+                local: clk_local,
+                section: ParamSection::Named,
+                kind: HirParamKind::Dom,
+                direction: None,
+                ty: clock_ty.clone(),
+                default: None,
+                span: span.clone(),
+            },
+            HirParam {
+                local: self_local,
+                section: ParamSection::Positional,
+                kind: HirParamKind::Value,
+                direction: None,
+                ty: clock_ty,
+                default: None,
+                span: span.clone(),
+            },
+        ];
+        Some(HirFn {
+            def_id,
+            name: "posedge".to_owned(),
+            params,
+            return_type: Some(event_at_clk),
+            locals,
+            body: HirBlock {
+                statements: Vec::new(),
+                span: span.clone(),
+            },
+            span,
+            is_prelude: true,
+        })
     }
 
     /// Synthesise the prelude `reg`'s `HirFn`. Returns `None` if `reg` is not

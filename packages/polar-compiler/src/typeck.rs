@@ -323,9 +323,6 @@ struct FileCtx<'hir> {
     /// `DefId` of the prelude `Clock` type. Used so `clk.posedge()` etc.
     /// resolve via `impl_methods` like every other method call.
     clock_def_id: Option<DefId>,
-    /// `DefId` of the prelude `posedge` primitive. Recognised in
-    /// `infer_method_call` to apply a hand-rolled signature.
-    posedge_def_id: Option<DefId>,
     errors: Vec<TypeError>,
     residual_obligations: Vec<Obligation>,
     expr_types: HashMap<HirId, HirType>,
@@ -361,7 +358,6 @@ impl<'hir> FileCtx<'hir> {
             uint_def_id: resolve.def_id("uint"),
             bool_def_id: resolve.def_id("bool"),
             clock_def_id: resolve.def_id("Clock"),
-            posedge_def_id: resolve.def_id("posedge"),
             errors: Vec::new(),
             residual_obligations: Vec::new(),
             expr_types: HashMap::new(),
@@ -1431,25 +1427,6 @@ impl InferCtxt {
             }
             return self.fresh_type_var(span);
         };
-
-        // Prelude `posedge` is hand-rolled like `reg`: receiver `Clock`,
-        // result `Event @<receiver-clock>`. The Event's domain is the
-        // clock itself — we read the receiver's `LocalId` and produce
-        // `Event @clk`.
-        if Some(method_def) == file.posedge_def_id {
-            self.method_resolutions.insert(expr_id, method_def);
-            let domain = match &mc.receiver.kind {
-                HirExprKind::Local(id) => Domain::Clock(*id),
-                _ => self.fresh_domain_var(),
-            };
-            return HirType {
-                kind: HirTypeKind::Value(ValueType {
-                    kind: ValueKind::Event,
-                    domain,
-                }),
-                span,
-            };
-        }
 
         let Some(callee) = file.lookup_fn(method_def) else {
             return self.fresh_type_var(span);

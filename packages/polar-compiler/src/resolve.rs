@@ -464,6 +464,17 @@ impl Ctx {
                 span: prelude_span(),
             },
         ];
+
+        // Declare posedge's generic parameter so typeck's general path
+        // handles it. Signature: `fn posedge { dom clk: Clock }(self: Clock)
+        // -> Event @clk`. The single `dom` arg lands the result's domain
+        // via the receiver's identity once method dispatch unifies `self`.
+        ctx.result.defs[posedge_def_id.0 as usize].generic_params = vec![GenericParamInfo {
+            name: "clk".to_owned(),
+            kind: GenericParamKind::Domain,
+            local: NodeId(u32::MAX - 2),
+            span: prelude_span(),
+        }];
         ctx
     }
 
