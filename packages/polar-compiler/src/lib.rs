@@ -1,5 +1,6 @@
 pub mod direction;
 pub mod hir;
+pub mod normal_const;
 pub mod parser;
 pub mod resolve;
 pub mod surface_ir;

@@ -609,6 +609,10 @@ fn lower_expr(
             Some(local) => SvExpr::Ident(sv_name(local_names, func, local)),
             None => SvExpr::Ident("__unsubstituted_param__".to_owned()),
         },
+        // `ConstVar` reaching here is a typeck residual — the var should
+        // have been resolved before SV lowering. Emit a placeholder so
+        // downstream tooling can flag it.
+        HirExprKind::ConstVar(_) => SvExpr::Ident("__unresolved_const_var__".to_owned()),
         HirExprKind::Call(call) => lower_call(call, func, defs, local_names),
         // After `flatten_aggregates` runs, every field access on a flattened
         // aggregate is rewritten to a `Local`. A `Field` reaching here means
@@ -725,6 +729,9 @@ fn lower_width_expr(
             Some(local) => SvExpr::Ident(sv_name(local_names, func, local)),
             None => SvExpr::Lit("0".to_owned()),
         },
+        // `ConstVar` should have been resolved by typeck. Fall back to "0"
+        // so the file still parses.
+        HirExprKind::ConstVar(_) => SvExpr::Lit("0".to_owned()),
         // Widths are `usize`, so field access (a struct/port field result)
         // cannot appear here in well-typed HIR; pick a safe placeholder.
         HirExprKind::Field(_) => SvExpr::Lit("0".to_owned()),
@@ -753,7 +760,7 @@ fn infer_sv_type(
     match &expr.kind {
         HirExprKind::Const(ConstValue::Bool(_)) => SvType::bit(),
         HirExprKind::Const(ConstValue::Integer(_)) => SvType::bit(),
-        HirExprKind::Param(_) => SvType::bit(),
+        HirExprKind::Param(_) | HirExprKind::ConstVar(_) => SvType::bit(),
         HirExprKind::Local(id) => local_types.get(id).cloned().unwrap_or_else(SvType::bit),
         HirExprKind::Call(call) => {
             // Binary op result has the same type as either operand.

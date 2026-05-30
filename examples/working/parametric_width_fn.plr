@@ -1,0 +1,13 @@
+// verilator: -Gn=8 -Wno-UNUSEDSIGNAL
+// User-defined parametric-width function. The body uses `+` whose
+// generic `N` is inferred from the operands' widths — `uint(n) @clk`,
+// where `n` is the enclosing fn's `param n: usize`. The const-var
+// inference machinery unifies `?N := Param(0)` so `a + b` returns
+// `uint(n) @clk` matching the declared return type.
+fn add_n
+  { dom clk: Clock }
+  ( param n: usize, a: uint(n) @clk, b: uint(n) @clk )
+  -> uint(n) @clk
+{
+  return a + b;
+}

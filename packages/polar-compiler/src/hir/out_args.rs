@@ -417,6 +417,7 @@ fn lift_user_calls(expr: &HirExpr, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStmt>
         HirExprKind::Const(_)
         | HirExprKind::Local(_)
         | HirExprKind::Param(_)
+        | HirExprKind::ConstVar(_)
         | HirExprKind::Field(_) => expr.clone(),
         HirExprKind::MethodCall(_) => unreachable!(
             "MethodCall should be lowered to Call by `hir::method_lower` before out_args"

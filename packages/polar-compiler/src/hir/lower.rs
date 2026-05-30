@@ -183,6 +183,12 @@ pub fn lower_to_hir(
     if let Some(hir_fn) = ctx.synthesise_prelude_posedge() {
         items.push(HirItem::Fn(hir_fn));
     }
+    if let Some(hir_fn) = ctx.synthesise_prelude_arith("+") {
+        items.push(HirItem::Fn(hir_fn));
+    }
+    if let Some(hir_fn) = ctx.synthesise_prelude_arith("*") {
+        items.push(HirItem::Fn(hir_fn));
+    }
     if ctx.errors.is_empty() {
         Ok(HirSourceFile {
             items,
@@ -274,6 +280,91 @@ impl<'a> Lowerer<'a> {
     /// inferable-clock substitution path — at the call site method
     /// dispatch unifies `self` against the Clock receiver, and `clk` is a
     /// fresh DomainVar that the enclosing `when …` body pins down.
+    /// Synthesise a prelude `HirFn` for `+` or `*`. Signature:
+    /// `fn op { N: usize, dom D: Clock }(a: uint(N) @D, b: uint(N) @D)
+    /// -> uint(N) @D`. Both generics are inferred from operand widths /
+    /// domains — they have no runtime HirParam, so the signature uses
+    /// `HirExprKind::Param(0)` for the width and `Domain::Param(1)` for
+    /// the domain. Body is empty; sv_lower emits arith inline.
+    fn synthesise_prelude_arith(&mut self, name: &str) -> Option<HirFn> {
+        let def_id = self.resolve.def_id(name)?;
+        let span = SourceSpan {
+            start_byte: 0,
+            end_byte: 0,
+            start: crate::SourcePosition { row: 0, column: 0 },
+            end: crate::SourcePosition { row: 0, column: 0 },
+        };
+        let lhs_local = LocalId(0);
+        let rhs_local = LocalId(1);
+        let locals = vec![
+            HirLocalInfo {
+                kind: LocalKind::Param {
+                    owner: def_id,
+                    direction: None,
+                },
+                name: "a".to_owned(),
+                span: span.clone(),
+                surface_node: NodeId(u32::MAX),
+            },
+            HirLocalInfo {
+                kind: LocalKind::Param {
+                    owner: def_id,
+                    direction: None,
+                },
+                name: "b".to_owned(),
+                span: span.clone(),
+                surface_node: NodeId(u32::MAX),
+            },
+        ];
+        let operand_ty = HirType {
+            kind: HirTypeKind::Value(ValueType {
+                kind: ValueKind::UInt {
+                    width: Box::new(HirExpr {
+                        kind: HirExprKind::Param(0),
+                        ty: None,
+                        span: span.clone(),
+                        id: HirId(u32::MAX),
+                    }),
+                },
+                domain: Domain::Param(1),
+            }),
+            span: span.clone(),
+        };
+        let params = vec![
+            HirParam {
+                local: lhs_local,
+                section: ParamSection::Positional,
+                kind: HirParamKind::Value,
+                direction: None,
+                ty: operand_ty.clone(),
+                default: None,
+                span: span.clone(),
+            },
+            HirParam {
+                local: rhs_local,
+                section: ParamSection::Positional,
+                kind: HirParamKind::Value,
+                direction: None,
+                ty: operand_ty.clone(),
+                default: None,
+                span: span.clone(),
+            },
+        ];
+        Some(HirFn {
+            def_id,
+            name: name.to_owned(),
+            params,
+            return_type: Some(operand_ty),
+            locals,
+            body: HirBlock {
+                statements: Vec::new(),
+                span: span.clone(),
+            },
+            span,
+            is_prelude: true,
+        })
+    }
+
     fn synthesise_prelude_posedge(&mut self) -> Option<HirFn> {
         let def_id = self.resolve.def_id("posedge")?;
         let span = SourceSpan {

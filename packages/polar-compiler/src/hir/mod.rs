@@ -27,7 +27,7 @@ use crate::resolve::{DefId, LocalKind};
 use crate::surface_ir::{Direction, NodeId};
 
 /// Index into a function's `locals` table. Dense and per-function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LocalId(pub u32);
 
 /// Identifier for an HIR node. Allocated from a per-source-file counter during
@@ -263,6 +263,12 @@ pub enum HirExprKind {
     /// `apply_substitution` and flatten's `instantiate_type`. Never observed
     /// after monomorphic use sites are processed.
     Param(u32),
+    /// Const-kind inference variable produced by typeck at a call site of a
+    /// fn with `param N: usize`-shaped generics. Sits inside a `uint(N)`
+    /// width slot; unification pins it via the call's operand widths. The
+    /// `u32` is an index into `InferCtxt::const_vars` (union-find resolution
+    /// chain). Resolved out before flatten — never observed by later passes.
+    ConstVar(u32),
     /// Calls cover everything callable: user-defined functions, prelude
     /// operators and primitives (`+`, `*`, `reg`), and struct constructors.
     /// HIR lowering desugars `a + b`, `x.reg(...)`, and
@@ -529,4 +535,11 @@ pub enum Domain {
     /// defaulted to `Const` if unbound) during type-check finalisation; should
     /// not appear in HIR after `check_file` returns.
     Var(u32),
+    /// Reference to the enclosing item's `i`-th generic parameter in domain
+    /// position. Mirrors `ValueKind::Param(i)` and `HirExprKind::Param(i)`:
+    /// used by synthesised parametric defs (`+`, `*`) whose Domain-kind
+    /// generics have no runtime HirParam to anchor a `Domain::Clock(local)`
+    /// against. Substituted via the enclosing def's `GenericArgs` by typeck's
+    /// `apply_substitution`; never observed after monomorphic use sites.
+    Param(u32),
 }

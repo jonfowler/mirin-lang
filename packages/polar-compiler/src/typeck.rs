@@ -309,12 +309,6 @@ struct FileCtx<'hir> {
     /// receivers (substituting the port's `#clk` parameter for the
     /// instance's actual clock).
     ports: HashMap<DefId, &'hir HirPort>,
-    /// `DefId`s of the prelude arithmetic operators. HIR lowering desugars
-    /// `a + b` into a `HirCall` against one of these. Their polymorphic
-    /// signature (`{N, D}(uint(N) @D, uint(N) @D) -> uint(N) @D`) is handled
-    /// by `infer_arith_call` until value-level type parameters land.
-    add_def_id: Option<DefId>,
-    mul_def_id: Option<DefId>,
     /// `DefId`s of the prelude `uint` and `bool` primitive types. Used to map
     /// scalar receivers to an `impl_methods` owner so method dispatch on
     /// primitives flows through the same path as user-defined `impl T`.
@@ -353,8 +347,6 @@ impl<'hir> FileCtx<'hir> {
             fns,
             structs,
             ports,
-            add_def_id: resolve.def_id("+"),
-            mul_def_id: resolve.def_id("*"),
             uint_def_id: resolve.def_id("uint"),
             bool_def_id: resolve.def_id("bool"),
             clock_def_id: resolve.def_id("Clock"),
@@ -398,10 +390,6 @@ impl<'hir> FileCtx<'hir> {
         self.ports.get(&def_id).copied()
     }
 
-    fn is_arith_op(&self, def_id: DefId) -> bool {
-        Some(def_id) == self.add_def_id || Some(def_id) == self.mul_def_id
-    }
-
     /// Lookup a `HirFn` local's source name by its `LocalId`. Used by the
     /// generic-args substitution to pair Domain-kind generic params (named
     /// `clk` etc.) with the matching `HirParam`'s LocalId.
@@ -426,6 +414,11 @@ struct InferCtxt {
     /// argument's structural part (so the surrounding `ValueType.domain`
     /// can be substituted independently from the kind). Index = `u32` id.
     value_kind_vars: Vec<Option<ValueKind>>,
+    /// Resolution table for const variables (Const-kind generic args).
+    /// Allocated by `build_sig_subst` for each `param N: usize`-shaped
+    /// generic param at a call site; pinned by `unify_widths` when an
+    /// operand width is concrete. Index = `u32` id.
+    const_vars: Vec<Option<HirExpr>>,
     /// Resolution table for domain variables.
     domain_vars: Vec<Option<Domain>>,
     /// Types of local bindings (params, lets, vars). Populated as the walker
@@ -446,6 +439,7 @@ impl InferCtxt {
         Self {
             type_vars: Vec::new(),
             value_kind_vars: Vec::new(),
+            const_vars: Vec::new(),
             domain_vars: Vec::new(),
             locals: HashMap::new(),
             expr_types: HashMap::new(),
@@ -480,6 +474,21 @@ impl InferCtxt {
         let id = self.value_kind_vars.len() as u32;
         self.value_kind_vars.push(None);
         id
+    }
+
+    /// Allocate a fresh const inference variable. Used by `build_sig_subst`
+    /// to populate `GenericArg::Const(ConstVar(?C))` for each Const-kind
+    /// generic param at a call site; `unify_widths` pins it via the call's
+    /// operand widths.
+    fn fresh_const_var(&mut self, span: SourceSpan) -> HirExpr {
+        let id = self.const_vars.len() as u32;
+        self.const_vars.push(None);
+        HirExpr {
+            kind: HirExprKind::ConstVar(id),
+            ty: None,
+            span,
+            id: HirId(u32::MAX),
+        }
     }
 
     /// Allocate a fresh `GenericArgs` for a use site of a parametric def.
@@ -653,6 +662,10 @@ impl InferCtxt {
                 .get(local)
                 .cloned()
                 .unwrap_or_else(|| d.clone()),
+            Domain::Param(i) => match subst.args.0.get(*i as usize) {
+                Some(GenericArg::Domain(dom)) => dom.clone(),
+                _ => d.clone(),
+            },
             other => other.clone(),
         }
     }
@@ -700,8 +713,9 @@ impl InferCtxt {
         }
     }
 
-    /// Follow substitution chain for a `ValueKind::Var`. `Var(n)` that
-    /// resolves to another `Var` walks the chain; unbound `Var` stays.
+    /// Follow substitution chains for a `ValueKind`: `Var(n)` chases the
+    /// `value_kind_vars` table; `UInt { width }` resolves any `ConstVar`
+    /// inside the width via `const_vars`.
     fn resolve_value_kind(&self, k: &ValueKind) -> ValueKind {
         match k {
             ValueKind::Var(i) => match self
@@ -712,7 +726,30 @@ impl InferCtxt {
                 Some(bound) => self.resolve_value_kind(bound),
                 None => k.clone(),
             },
+            ValueKind::UInt { width } => ValueKind::UInt {
+                width: Box::new(self.resolve_const_expr(width)),
+            },
             _ => k.clone(),
+        }
+    }
+
+    /// Follow substitution chain for a const expression. `ConstVar(n)` that
+    /// resolves to another `ConstVar` walks the chain; unbound stays as-is.
+    fn resolve_const_expr(&self, e: &HirExpr) -> HirExpr {
+        match &e.kind {
+            HirExprKind::ConstVar(i) => {
+                match self.const_vars.get(*i as usize).and_then(|r| r.as_ref()) {
+                    Some(bound) => {
+                        let r = self.resolve_const_expr(bound);
+                        HirExpr {
+                            span: e.span.clone(),
+                            ..r
+                        }
+                    }
+                    None => e.clone(),
+                }
+            }
+            _ => e.clone(),
         }
     }
 
@@ -917,30 +954,52 @@ impl InferCtxt {
         if is_width_placeholder(lhs) || is_width_placeholder(rhs) {
             return;
         }
-        if let (
-            HirExprKind::Const(ConstValue::Integer(a)),
-            HirExprKind::Const(ConstValue::Integer(b)),
-        ) = (&lhs.kind, &rhs.kind)
-        {
-            if a != b {
-                self.errors.push(TypeError {
-                    kind: TypeErrorKind::TypeMismatch {
-                        expected: format!("uint({a})"),
-                        got: format!("uint({b})"),
-                    },
-                    span: span.clone(),
-                });
+        let lhs = self.resolve_const_expr(lhs);
+        let rhs = self.resolve_const_expr(rhs);
+        match (&lhs.kind, &rhs.kind) {
+            // Same const var on both sides — already unified.
+            (HirExprKind::ConstVar(a), HirExprKind::ConstVar(b)) if a == b => {}
+            // Bind an unbound const var to the other side.
+            (HirExprKind::ConstVar(i), _) => {
+                self.const_vars[*i as usize] = Some(rhs.clone());
             }
-            return;
-        }
-        // Otherwise punt to const-eval.
-        self.obligations.push(Obligation {
-            kind: ObligationKind::WidthEq {
-                lhs: lhs.clone(),
-                rhs: rhs.clone(),
+            (_, HirExprKind::ConstVar(j)) => {
+                self.const_vars[*j as usize] = Some(lhs.clone());
+            }
+            // Ground-vs-ground (or any pair both of which normalise to a
+            // canonical form): compare via sum-of-monomials normal form so
+            // `M + N` ≡ `N + M`, `N + N` ≡ `2 * N`, etc. The current width
+            // grammar only emits bare literals / Param / Local refs, so
+            // normalisation reduces to identity comparisons today; the
+            // infrastructure is in place for Phase D's residual propagation
+            // through arithmetic.
+            _ => match (
+                crate::normal_const::normalise(&lhs),
+                crate::normal_const::normalise(&rhs),
+            ) {
+                (Some(a), Some(b)) if a == b => {}
+                (Some(_), Some(_)) => {
+                    self.errors.push(TypeError {
+                        kind: TypeErrorKind::TypeMismatch {
+                            expected: describe_width(&lhs),
+                            got: describe_width(&rhs),
+                        },
+                        span: span.clone(),
+                    });
+                }
+                _ => {
+                    // At least one side is opaque (non-linear or
+                    // unrecognised shape) — defer for Phase D.
+                    self.obligations.push(Obligation {
+                        kind: ObligationKind::WidthEq {
+                            lhs: lhs.clone(),
+                            rhs: rhs.clone(),
+                        },
+                        span: span.clone(),
+                    });
+                }
             },
-            span: span.clone(),
-        });
+        }
     }
 
     fn unify_domains(&mut self, expected: &Domain, got: &Domain, span: SourceSpan) {
@@ -1062,10 +1121,11 @@ impl InferCtxt {
                 .get(id)
                 .cloned()
                 .unwrap_or_else(|| self.fresh_type_var(expr.span.clone())),
-            // `Param(i)` only appears inside widths of declared types, not
-            // in body expressions. Reaching here means a width expression
-            // was walked as a value — return `usize` as the carrier type.
-            HirExprKind::Param(_) => HirType {
+            // `Param(i)` / `ConstVar(_)` only appear inside widths of
+            // declared types, not in body expressions. Reaching here means
+            // a width expression was walked as a value — return `usize` as
+            // the carrier type.
+            HirExprKind::Param(_) | HirExprKind::ConstVar(_) => HirType {
                 kind: HirTypeKind::Value(ValueType {
                     kind: ValueKind::Usize,
                     domain: Domain::Const,
@@ -1207,13 +1267,6 @@ impl InferCtxt {
     }
 
     fn infer_call(&mut self, call: &HirCall, file: &FileCtx<'_>) -> HirType {
-        // Prelude arithmetic operators have a polymorphic signature
-        // (`{N, D}(uint(N) @D, uint(N) @D) -> uint(N) @D`) that the
-        // general substitution path doesn't yet handle; keep the bespoke
-        // unifier for them.
-        if file.is_arith_op(call.callee) {
-            return self.infer_arith_call(call, file);
-        }
         if let Some(struct_def) = file.lookup_struct(call.callee) {
             return self.infer_struct_call(struct_def, call, file);
         }
@@ -1259,36 +1312,6 @@ impl InferCtxt {
         }
     }
 
-    /// Arithmetic operators have signature
-    /// `{N, D}(uint(N) @D, uint(N) @D) -> uint(N) @D`. The two operands
-    /// must agree on width and domain; the result is the unified type.
-    /// Today the implicit `N` and `D` parameters are unified by directly
-    /// equating the operand types; once value-level type/width parameters
-    /// land they fold into the standard substitution path.
-    fn infer_arith_call(&mut self, call: &HirCall, file: &FileCtx<'_>) -> HirType {
-        if call.args.len() != 2 {
-            self.errors.push(TypeError {
-                kind: TypeErrorKind::ArityMismatch {
-                    callee: "<arith>".to_owned(),
-                    expected: 2,
-                    got: call.args.len(),
-                },
-                span: call.span.clone(),
-            });
-            return self.fresh_type_var(call.span.clone());
-        }
-        let lhs_ty = match &call.args[0] {
-            HirArg::Provided { expr, .. } => self.infer_expr(expr, file),
-            HirArg::Inferable => self.fresh_type_var(call.span.clone()),
-        };
-        let rhs_ty = match &call.args[1] {
-            HirArg::Provided { expr, .. } => self.infer_expr(expr, file),
-            HirArg::Inferable => self.fresh_type_var(call.span.clone()),
-        };
-        self.unify_types(&lhs_ty, &rhs_ty, call.span.clone());
-        self.resolve_type(&lhs_ty)
-    }
-
     /// Build a `Substitution` for a call to `callee`. Allocates a fresh
     /// inference variable per declared `generic_param`: Type → a fresh
     /// `ValueKind::Var` wrapped in a `HirType`; Domain → a fresh
@@ -1332,15 +1355,7 @@ impl InferCtxt {
                     arg_list.push(GenericArg::Domain(fresh_d));
                 }
                 crate::resolve::GenericParamKind::Const => {
-                    // Phase A: Const-kind generic params still no-op the
-                    // call-site inference path. Phase B will allocate a
-                    // const inference variable here.
-                    arg_list.push(GenericArg::Const(HirExpr {
-                        kind: HirExprKind::Const(ConstValue::Integer(0)),
-                        ty: None,
-                        span: span.clone(),
-                        id: HirId(u32::MAX),
-                    }));
+                    arg_list.push(GenericArg::Const(self.fresh_const_var(span.clone())));
                 }
             }
         }
@@ -1680,9 +1695,14 @@ struct Substitution {
 
 /// Sentinel: a width position that should be treated as "any width" for
 /// unification purposes. Used for integer literals whose width is not yet
-/// known. Recognised by `HirId(u32::MAX)`.
+/// known. Recognised by the `(Const(Integer(0)), HirId::MAX)` shape — a
+/// concrete-looking width that the placeholder mechanism emits but no real
+/// `uint(0)` width could share, since `0` literals at width position aren't
+/// surface-writable on a value. Note: `ConstVar` and `Param` expressions
+/// also use `HirId::MAX`, so we check the kind explicitly instead of just
+/// the id.
 fn is_width_placeholder(e: &HirExpr) -> bool {
-    e.id == HirId(u32::MAX)
+    matches!(e.kind, HirExprKind::Const(ConstValue::Integer(0))) && e.id == HirId(u32::MAX)
 }
 
 fn describe_type(ty: &HirType) -> String {
@@ -1692,7 +1712,10 @@ fn describe_type(ty: &HirType) -> String {
             let body = match &vt.kind {
                 ValueKind::UInt { width } => match &width.kind {
                     HirExprKind::Const(ConstValue::Integer(n)) => format!("uint({n})"),
-                    _ => "uint(N)".to_owned(),
+                    HirExprKind::ConstVar(i) => format!("uint(?C{i})"),
+                    HirExprKind::Param(i) => format!("uint('P{i})"),
+                    HirExprKind::Local(l) => format!("uint(loc#{})", l.0),
+                    _ => "uint(?)".to_owned(),
                 },
                 ValueKind::Bool => "bool".to_owned(),
                 ValueKind::Reset => "Reset".to_owned(),
@@ -1714,12 +1737,23 @@ fn describe_type(ty: &HirType) -> String {
     }
 }
 
+fn describe_width(e: &HirExpr) -> String {
+    match &e.kind {
+        HirExprKind::Const(ConstValue::Integer(n)) => format!("uint({n})"),
+        HirExprKind::Param(i) => format!("uint('P{i})"),
+        HirExprKind::ConstVar(i) => format!("uint(?C{i})"),
+        HirExprKind::Local(l) => format!("uint(loc#{})", l.0),
+        _ => "uint(…)".to_owned(),
+    }
+}
+
 fn describe_domain(d: &Domain) -> String {
     match d {
         Domain::Const => "const".to_owned(),
         Domain::Clock(l) => format!("clk#{}", l.0),
         Domain::Unspecified => String::new(),
         Domain::Var(n) => format!("?D{n}"),
+        Domain::Param(i) => format!("'D{i}"),
     }
 }
 

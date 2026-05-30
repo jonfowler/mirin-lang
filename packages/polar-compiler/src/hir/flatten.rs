@@ -1142,10 +1142,10 @@ impl<'a> FnFlattener<'a> {
                 Ok(self.local_expr(leaf.local, leaf.ty.clone(), expr.span.clone()))
             }
             HirExprKind::Call(call) => self.extract_from_call(call, expr, path),
-            HirExprKind::Const(_) | HirExprKind::Param(_) => {
-                // A `Const` or `Param` in an aggregate position would have to
-                // be a record literal, which lowers to a `Call`. Bare const
-                // expressions here are a shape error.
+            HirExprKind::Const(_) | HirExprKind::Param(_) | HirExprKind::ConstVar(_) => {
+                // A `Const`/`Param`/`ConstVar` in an aggregate position would
+                // have to be a record literal, which lowers to a `Call`. Bare
+                // const expressions here are a shape error.
                 Err(FlattenError {
                     kind: FlattenErrorKind::UnsupportedAggregateExpr,
                     span: expr.span.clone(),
@@ -1283,7 +1283,9 @@ impl<'a> FnFlattener<'a> {
     /// changes were necessary; the caller may fall back to `expr.clone()`.
     fn remap_expr(&mut self, expr: &HirExpr) -> Option<HirExpr> {
         let new_kind = match &expr.kind {
-            HirExprKind::Const(_) | HirExprKind::Param(_) => return Some(expr.clone()),
+            HirExprKind::Const(_) | HirExprKind::Param(_) | HirExprKind::ConstVar(_) => {
+                return Some(expr.clone());
+            }
             HirExprKind::Local(id) => {
                 let leaves = self.expansion.get(id)?;
                 if leaves.len() != 1 {

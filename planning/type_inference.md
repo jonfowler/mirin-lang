@@ -52,6 +52,8 @@ pub struct DomainVar(pub u32);
 
 pub struct InferCtxt {
     type_vars: Vec<TypeResolution>,
+    value_kind_vars: Vec<Option<ValueKind>>,  // structural-only Type-kind vars
+    const_vars: Vec<Option<HirExpr>>,         // Const-kind vars (widths)
     domain_vars: Vec<DomainResolution>,
     obligations: Vec<Obligation>,
     locals: HashMap<LocalId, HirType>,
@@ -63,9 +65,9 @@ pub enum TypeResolution { Unbound, Bound(HirType) }
 pub enum DomainResolution { Unbound, Bound(Domain) }
 ```
 
-Both pools are dense `Vec`s; the variable's `u32` is its index. Lookup is union-find-by-path-compression (mirroring rustc's `UnificationTable`) — when we resolve `?T1` we walk the chain and shorten it for future lookups.
+All four pools are dense `Vec`s; the variable's `u32` is its index. Lookup is union-find-by-path-compression (mirroring rustc's `UnificationTable`) — when we resolve `?T1` we walk the chain and shorten it for future lookups.
 
-We deliberately separate the two pools rather than tagging a single "var" enum. Types and domains have different unification rules: types unify *structurally* (UInt ≡ UInt, not UInt ≡ Bool), domains form a subtyping lattice with `Const` as the top. Keeping them apart matches the OutsideIn(X) framing — one constraint generator, two solvers — and avoids accidentally cross-applying rules.
+We deliberately separate the pools rather than tagging a single "var" enum. Types, value-kind structural parts, widths, and domains have different unification rules: types unify *structurally* (UInt ≡ UInt, not UInt ≡ Bool); widths normalise to sum-of-monomials before equality; domains form a subtyping lattice with `Const` as the top. Keeping them apart matches the OutsideIn(X) framing — one constraint generator, multiple solvers — and avoids accidentally cross-applying rules.
 
 ### Why "Rust-style" eager unification
 
@@ -126,15 +128,14 @@ The walker computes a type for each expression and records it in `expr_types`. R
 | `Const(Integer(_))` | `Value(UInt { width: fresh_const_var }, Const)`. The width is left as a fresh `HirExpr` that const-eval will resolve from context. |
 | `Const(Bool(_))` | `Value(Bool, Const)` |
 | `Local(id)` | `locals[&id].clone()` |
-| `Call(call)` for `+`/`*` | infer both args, `unify_types(l_ty, r_ty)`, return the unified type. Operators are prelude `DefId`s; HIR lowering desugars `a + b` into a `HirCall` so the type checker has one code path. |
-| `Call(call)` for user fns | look up callee signature, zip args against params, unify each arg's inferred type against the param's declared type. |
+| `Call(call)` for user fns (and `+`/`*`) | look up callee signature, zip args against params, unify each arg's inferred type against the param's declared type. `+` and `*` are synthesised prelude HirFns with the same parametric shape (`{N: usize, dom D: Clock}(uint(N) @D, uint(N) @D) -> uint(N) @D`) — same code path as any other generic call. |
 | `Call(call)` for a struct constructor | the struct's declared fields are the callee's positional params (HIR lowering already slotted user-named fields into declared order). Unify each arg's type against the field's declared type. Return `Value(Struct { def }, fresh_domain_var)`. |
 
 For `Call`, inferable named params (`dom clk`) become *fresh `DomainVar`s* at the call site. Each arg's inferred domain unifies with the corresponding param's domain — which threads `dom clk` through `rstn`'s `Reset @clk`, the receiver's `self @clk`, and the result's `uint(N) @clk` until they all agree.
 
 This is exactly the substitution rustc applies when instantiating a generic function: fresh variables stand in for each generic parameter, get unified with use sites, and the answer is read out at the end. Polar's "generics" right now are the inferable `dom clk` named params and the `uint(N)` widths; parametric structs (`struct Bus(A: Type)`) will plug in here unchanged when they return — they just add more fresh-variable slots at instantiation.
 
-Note that operators are also calls. `a + b` lowers to a `HirCall` against the prelude `+` DefId; `.reg(...)` likewise. There is no `HirExprKind::Binary` and no method-call shape at the HIR layer. Both `+` and `reg` have polymorphic signatures that the current substitution machinery doesn't fully handle (implicit width parameter `N`, domain `D`); for now they take bespoke paths (`infer_arith_call`, `infer_reg_call`) inside `infer_call`. Both paths use the same width-placeholder and unification primitives the general path will use once value-level type parameters are first-class.
+Note that operators are also calls. `a + b` lowers to a `HirCall` against the prelude `+` DefId; `.reg(...)` likewise. There is no `HirExprKind::Binary` and no method-call shape at the HIR layer. `+`, `*`, `reg`, and `posedge` all have polymorphic signatures handled uniformly by the substitution path: each is a synthesised prelude `HirFn` with its `generic_params` declared on the resolve-side def, and `build_sig_subst` allocates fresh `ValueKind::Var`, `ConstVar`, or `DomainVar` per kind. No bespoke paths remain — see `planning/parametricity.md` for the const-kind inference design.
 
 ## Unification rules
 

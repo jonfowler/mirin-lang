@@ -483,6 +483,34 @@ impl Ctx {
             span: prelude_span(),
             from_named_section: true,
         }];
+
+        // Declare `+` and `*` generic parameters. Both share the signature
+        // `{ N: usize, dom D: Clock }(uint(N) @D, uint(N) @D) -> uint(N) @D`.
+        // Neither generic has a runtime HirParam: N is inferred from operand
+        // widths via the const-var chain, D is inferred from operand domains
+        // via `Domain::Param(1)` in the synthesised signature. Calls remain
+        // 2-arg as `lower_binary` produces them today.
+        for name in ["+", "*"] {
+            let Some(def_id) = ctx.result.def_id(name) else {
+                continue;
+            };
+            ctx.result.defs[def_id.0 as usize].generic_params = vec![
+                GenericParamInfo {
+                    name: "N".to_owned(),
+                    kind: GenericParamKind::Const,
+                    local: NodeId(u32::MAX),
+                    span: prelude_span(),
+                    from_named_section: true,
+                },
+                GenericParamInfo {
+                    name: "D".to_owned(),
+                    kind: GenericParamKind::Domain,
+                    local: NodeId(u32::MAX),
+                    span: prelude_span(),
+                    from_named_section: true,
+                },
+            ];
+        }
         ctx
     }
 
