@@ -54,7 +54,7 @@ fn build_sv(src: &str) -> String {
     let local_types = block_lowered.local_types;
     let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
     let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-    let flat = flatten_aggregates(&hir, &tc.expr_types, &local_types).expect("flatten");
+    let flat = flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types).expect("flatten");
     let sv = lower_to_sv(&flat, &resolve);
     emit(&sv).expect("emit")
 }

@@ -86,6 +86,11 @@ pub struct HirPort {
     /// Shape mirrors `HirFn::params` so callers can ask "what are this item's
     /// parameters?" without caring about item kind.
     pub params: Vec<HirParam>,
+    /// Locals owned by this port (its parameters). Indexed by `LocalId`.
+    /// Exposed so passes can look up a `HirParam`'s source name without
+    /// re-walking the surface IR — needed for substituting a port's
+    /// `dom clk` reference by `LocalId` at generic-arg sites.
+    pub locals: Vec<HirLocalInfo>,
     pub fields: Vec<HirPortField>,
     pub span: SourceSpan,
 }

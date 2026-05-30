@@ -85,6 +85,11 @@ pub struct GenericParamInfo {
     pub kind: GenericParamKind,
     pub local: NodeId,
     pub span: SourceSpan,
+    /// `true` if this param came from the def's named section (`{ … }`),
+    /// `false` if it came from the positional section (`( … )`). Use sites
+    /// match: `DF{clk}(uint(8))` binds named params to the `{…}` list and
+    /// positional ones to the `(…)` list, in declared order.
+    pub from_named_section: bool,
 }
 
 /// How a local binding was introduced.
@@ -456,12 +461,14 @@ impl Ctx {
                 // because reg's HirFn is synthesised directly.
                 local: NodeId(u32::MAX),
                 span: prelude_span(),
+                from_named_section: true,
             },
             GenericParamInfo {
                 name: "clk".to_owned(),
                 kind: GenericParamKind::Domain,
                 local: NodeId(u32::MAX - 1),
                 span: prelude_span(),
+                from_named_section: true,
             },
         ];
 
@@ -474,6 +481,7 @@ impl Ctx {
             kind: GenericParamKind::Domain,
             local: NodeId(u32::MAX - 2),
             span: prelude_span(),
+            from_named_section: true,
         }];
         ctx
     }
@@ -672,6 +680,7 @@ impl Ctx {
             kind,
             local: np.name.id,
             span: np.name.span.clone(),
+            from_named_section: true,
         })
     }
 
@@ -692,6 +701,7 @@ impl Ctx {
             kind,
             local: p.name.id,
             span: p.name.span.clone(),
+            from_named_section: false,
         })
     }
 
@@ -850,6 +860,11 @@ impl Ctx {
                 self.result.resolutions.insert(domain.id, Res::Local(id));
             }
             // else: builtin domain name — leave for later
+        }
+        for arg in &ty.named_args {
+            if let TypeArgument::Type(inner) = arg {
+                self.resolve_type_expr(inner, params);
+            }
         }
         for suffix in &ty.suffixes {
             match suffix {
@@ -1192,6 +1207,11 @@ impl BlockCtx<'_> {
                     .result
                     .resolutions
                     .insert(domain.id, Res::Local(id));
+            }
+        }
+        for arg in &ty.named_args {
+            if let TypeArgument::Type(inner) = arg {
+                self.resolve_type(inner);
             }
         }
         for suffix in &ty.suffixes {

@@ -386,6 +386,11 @@ pub struct OutArgument {
 pub struct TypeExpression {
     pub span: SourceSpan,
     pub name: Identifier,
+    /// Optional named-section type arguments (`DF{clk}` — applied to the
+    /// def's named-section generic params, typically `dom clk: Clock`).
+    /// Ordered positionally within the section, like Polar's other named
+    /// sections at the surface.
+    pub named_args: Vec<TypeArgument>,
     pub suffixes: Vec<TypeSuffix>,
     pub domain: Option<Identifier>,
 }
@@ -665,6 +670,7 @@ impl<'a> Lowerer<'a> {
                 ty: TypeExpression {
                     span: node.span.clone(),
                     name: self_type_name,
+                    named_args: Vec::new(),
                     suffixes: Vec::new(),
                     domain,
                 },
@@ -961,13 +967,34 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_type_expression(&mut self, node: &CstNode) -> Result<TypeExpression, LowerError> {
-        expect_kind(node, "type_expression")?;
+        // Accept both `type_expression` and the return-position variant
+        // `return_type_expression`, which is syntactically identical except
+        // it excludes `type_named_args` to avoid a `{`-ambiguity with the
+        // fn body.
+        if node.kind != "type_expression" && node.kind != "return_type_expression" {
+            return Err(LowerError {
+                message: format!(
+                    "expected `type_expression` or `return_type_expression`, got `{}`",
+                    node.kind
+                ),
+                span: Some(node.span.clone()),
+            });
+        }
         let mut suffixes = Vec::new();
+        let mut named_args = Vec::new();
         let mut domain = None;
 
         for child in &node.children {
             let child = &child.node;
             match child.kind.as_str() {
+                "type_named_args" => {
+                    for grandchild in &child.children {
+                        let g = &grandchild.node;
+                        if g.kind == "type_argument" {
+                            named_args.push(self.lower_type_argument(g)?);
+                        }
+                    }
+                }
                 "type_index" => suffixes.push(TypeSuffix::Index(self.lower_type_index(child)?)),
                 "identifier"
                     if child_by_field(node, "domain")
@@ -983,6 +1010,7 @@ impl<'a> Lowerer<'a> {
         Ok(TypeExpression {
             span: node.span.clone(),
             name: self.lower_required_identifier(node, "name")?,
+            named_args,
             suffixes,
             domain,
         })

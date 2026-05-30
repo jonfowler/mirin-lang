@@ -262,7 +262,7 @@ fn main() {
             print!("{}", parsed.cst);
         }
         EmitMode::Sv => {
-            let flat = match flatten_aggregates(&hir, &tc.expr_types, &local_types) {
+            let flat = match flatten_aggregates(&hir, &result, &tc.expr_types, &local_types) {
                 Ok(f) => f,
                 Err(errors) => {
                     let mut rendered = String::new();

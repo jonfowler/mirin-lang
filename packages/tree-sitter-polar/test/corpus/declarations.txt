@@ -57,7 +57,7 @@ fn multAdd
             (type_argument
               (number)))
           domain: (identifier))))
-    return_type: (type_expression
+    return_type: (return_type_expression
       name: (identifier)
       (type_index
         (type_argument
@@ -167,7 +167,7 @@ impl Reg {
               (type_index
                 (type_argument
                 (number))))))
-        return_type: (type_expression
+        return_type: (return_type_expression
           name: (identifier)
           (type_index
             (type_argument

@@ -18,8 +18,8 @@ use std::path::Path;
 
 use crate::hir::{
     ConstValue, Domain, GenericArg, GenericArgs, HirArg, HirBlock, HirCall, HirExpr, HirExprKind,
-    HirFieldAccess, HirFn, HirId, HirItem, HirMethodCall, HirParam, HirPort, HirSourceFile,
-    HirStmt, HirStruct, HirType, HirTypeKind, LocalId, ParamKind, ParamSection, PortTypeRef,
+    HirFieldAccess, HirFn, HirId, HirItem, HirLocalInfo, HirMethodCall, HirParam, HirPort,
+    HirSourceFile, HirStmt, HirStruct, HirType, HirTypeKind, LocalId, ParamSection, PortTypeRef,
     TypeVar, ValueKind, ValueType,
 };
 use crate::resolve::{DefId, ResolveResult};
@@ -526,33 +526,121 @@ impl InferCtxt {
     /// Only `Type`-kinded params substitute today; `Const` (width) and
     /// `Domain` substitution are deferred until parametric widths and
     /// parametric ports cross the typeck boundary.
-    fn instantiate(&self, ty: &HirType, args: &GenericArgs) -> HirType {
+    fn instantiate(
+        &self,
+        ty: &HirType,
+        def_id: DefId,
+        args: &GenericArgs,
+        file: &FileCtx<'_>,
+    ) -> HirType {
+        let subst = self.build_substitution(def_id, args, file);
+        self.apply_substitution(ty, &subst)
+    }
+
+    /// Build a `Substitution` from a def's `generic_params` paired with the
+    /// supplied `args`. Type-kind args feed `type_subst`; Domain-kind args
+    /// feed `domain_subst` keyed on the matching `HirParam`'s `LocalId` (so
+    /// `Domain::Clock(local)` references in field/return types resolve to
+    /// the caller's actual clock).
+    fn build_substitution(
+        &self,
+        def_id: DefId,
+        args: &GenericArgs,
+        file: &FileCtx<'_>,
+    ) -> Substitution {
+        let mut type_subst: HashMap<u32, HirType> = HashMap::new();
+        let mut domain_subst: HashMap<LocalId, Domain> = HashMap::new();
+        let generic_params = &file.resolve.def_info(def_id).generic_params;
+        // For Domain-kind params, find the matching HirParam's `LocalId`.
+        // Structs have no HirParams, so the lookup returns an empty slice
+        // and domain_subst stays empty — correct, since structs don't
+        // carry `dom` params today.
+        let (params, locals): (&[HirParam], &[HirLocalInfo]) =
+            if let Some(p) = file.lookup_port(def_id) {
+                (p.params.as_slice(), p.locals.as_slice())
+            } else if let Some(f) = file.lookup_fn(def_id) {
+                (f.params.as_slice(), f.locals.as_slice())
+            } else {
+                (&[], &[])
+            };
+        for (i, gp) in generic_params.iter().enumerate() {
+            match (gp.kind, args.0.get(i)) {
+                (crate::resolve::GenericParamKind::Type, Some(GenericArg::Type(t))) => {
+                    type_subst.insert(i as u32, t.clone());
+                }
+                (crate::resolve::GenericParamKind::Domain, Some(GenericArg::Domain(d))) => {
+                    for p in params {
+                        if locals
+                            .get(p.local.0 as usize)
+                            .map(|info| info.name == gp.name)
+                            .unwrap_or(false)
+                        {
+                            domain_subst.insert(p.local, d.clone());
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Substitution {
+            type_subst,
+            domain_subst,
+        }
+    }
+
+    /// Apply a `Substitution` recursively to a type. Substitutes
+    /// `ValueKind::Param(i)` via `type_subst` (keeping the outer domain
+    /// where set) and `Domain::Clock(local)` via `domain_subst`.
+    fn apply_substitution(&self, ty: &HirType, subst: &Substitution) -> HirType {
         match &ty.kind {
-            HirTypeKind::Value(vt) => match &vt.kind {
-                ValueKind::Param(i) => match args.0.get(*i as usize) {
-                    // Substitute the structural part from the arg; keep the
-                    // outer domain. The arg's value kind is what we want;
-                    // the outer ValueType.domain stays (the field-level @
-                    // annotation, or Unspecified if absent).
-                    Some(GenericArg::Type(t)) => match &t.kind {
-                        HirTypeKind::Value(arg_vt) => HirType {
-                            kind: HirTypeKind::Value(ValueType {
-                                kind: arg_vt.kind.clone(),
-                                domain: match &vt.domain {
-                                    Domain::Unspecified => arg_vt.domain.clone(),
-                                    other => other.clone(),
+            HirTypeKind::Value(vt) => {
+                let domain = self.substitute_domain(&vt.domain, subst);
+                let kind = match &vt.kind {
+                    ValueKind::Param(i) => match subst.type_subst.get(i) {
+                        Some(arg_ty) => {
+                            match &arg_ty.kind {
+                                HirTypeKind::Value(arg_vt) => HirType {
+                                    kind: HirTypeKind::Value(ValueType {
+                                        kind: arg_vt.kind.clone(),
+                                        domain: match &domain {
+                                            Domain::Unspecified => arg_vt.domain.clone(),
+                                            other => other.clone(),
+                                        },
+                                    }),
+                                    span: ty.span.clone(),
                                 },
-                            }),
-                            span: ty.span.clone(),
-                        },
-                        // Non-value Type arg (rare). Adopt it wholesale.
-                        _ => t.clone(),
+                                _ => arg_ty.clone(),
+                            }
+                            .kind
+                        }
+                        None => HirTypeKind::Value(ValueType {
+                            kind: vt.kind.clone(),
+                            domain,
+                        }),
                     },
-                    _ => ty.clone(),
-                },
-                _ => ty.clone(),
-            },
+                    _ => HirTypeKind::Value(ValueType {
+                        kind: vt.kind.clone(),
+                        domain,
+                    }),
+                };
+                HirType {
+                    kind,
+                    span: ty.span.clone(),
+                }
+            }
             _ => ty.clone(),
+        }
+    }
+
+    fn substitute_domain(&self, d: &Domain, subst: &Substitution) -> Domain {
+        match d {
+            Domain::Clock(local) => subst
+                .domain_subst
+                .get(local)
+                .cloned()
+                .unwrap_or_else(|| d.clone()),
+            other => other.clone(),
         }
     }
 
@@ -1243,7 +1331,7 @@ impl InferCtxt {
         for (decl, arg) in struct_def.fields.iter().zip(call.args.iter()) {
             if let HirArg::Provided { expr, .. } = arg {
                 let value_ty = self.infer_expr(expr, file);
-                let expected = self.instantiate(&decl.ty, &args);
+                let expected = self.instantiate(&decl.ty, struct_def.def_id, &args, file);
                 self.unify_types(&expected, &value_ty, expr.span.clone());
                 // Propagate the field's domain up to the struct's domain so
                 // that e.g. `packet { valid: true, data: some_clk_signal }`
@@ -1302,7 +1390,7 @@ impl InferCtxt {
                     // Substitute the receiver's generic args into the
                     // declared field type so a `data: A` field on a
                     // `Bus(uint(8))` receiver yields `uint(8)`.
-                    let instantiated = self.instantiate(&decl_field.ty, args);
+                    let instantiated = self.instantiate(&decl_field.ty, *def, args, file);
                     stamp_domain(&instantiated, &vt.domain)
                 }
                 _ => {
@@ -1329,11 +1417,14 @@ impl InferCtxt {
                     });
                     return self.fresh_type_var(span);
                 };
-                // The port's implicit domain (from `DF @clk`) stamps over
-                // the field's Unspecified slot. Multi-domain ports leave
-                // the field's domain referencing its `dom` param, which
-                // a future args-aware substitution will resolve.
-                stamp_domain(&decl_field.ty, &port_ref.domain)
+                // First substitute the port's generic args (Type-kind via
+                // `ValueKind::Param(i)`, Domain-kind via
+                // `Domain::Clock(local)`). Then stamp the port's implicit
+                // domain over any remaining Unspecified slot — the
+                // `DF @clk` single-domain shorthand.
+                let instantiated =
+                    self.instantiate(&decl_field.ty, port_ref.def, &port_ref.args, file);
+                stamp_domain(&instantiated, &port_ref.domain)
             }
             _ => {
                 self.errors.push(TypeError {
@@ -1516,6 +1607,19 @@ fn unused_identifier_marker(_: &Identifier) {}
 ///
 /// Two complementary tables matching the rustc shape — `EarlyBinder`
 /// instantiation for types, region/domain substitution for clocks.
+/// Substitution map applied to a parametric def's field/return types at a
+/// use site. Mirror of `SigSubst` but keyed for the use-site context (not
+/// the call-site signature): `type_subst` is indexed by generic-param
+/// position (since field types reference `ValueKind::Param(i)`), while
+/// `domain_subst` is keyed by the def's `HirParam.local` for the
+/// corresponding `dom` generic (since field types reference
+/// `Domain::Clock(local)`).
+#[derive(Default, Debug)]
+struct Substitution {
+    type_subst: HashMap<u32, HirType>,
+    domain_subst: HashMap<LocalId, Domain>,
+}
+
 #[derive(Default)]
 struct SigSubst {
     domain_subst: HashMap<LocalId, Domain>,

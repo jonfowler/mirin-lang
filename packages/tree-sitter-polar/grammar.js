@@ -63,8 +63,21 @@ module.exports = grammar({
         field("name", $.identifier),
         optional(field("named_parameters", $.named_parameter_section)),
         field("parameters", $.parameter_section),
-        optional(seq("->", field("return_type", $.type_expression))),
+        optional(seq("->", field("return_type", $.return_type_expression))),
         field("body", $.block),
+      ),
+
+    // Return-position type. Excludes `type_named_args` because a trailing
+    // `{` in return position opens the fn body, not a named-arg-application.
+    // Use parentheses to write a parametric return type (`-> DF(uint(8))`)
+    // and call sites supply the named bindings positionally elsewhere.
+    return_type_expression: ($) =>
+      prec.right(
+        seq(
+          field("name", $.identifier),
+          optional($.type_index),
+          optional(seq("@", field("domain", $.identifier))),
+        ),
       ),
 
     named_parameter_section: ($) => seq("{", commaSep($.named_parameter), optional(","), "}"),
@@ -150,10 +163,18 @@ module.exports = grammar({
       prec.right(
         seq(
           field("name", $.identifier),
+          optional($.type_named_args),
           optional($.type_index),
           optional(seq("@", field("domain", $.identifier))),
         ),
       ),
+
+    // Named-section type arguments — supply the def's named-section
+    // generic params (typically `dom clk: Clock`). Example: `DF{clk}` binds
+    // the port's `dom clk` to the local `clk`. The contents are
+    // type arguments in declared order, just like the positional `(…)`
+    // section, but applied to the def's named params.
+    type_named_args: ($) => seq("{", commaSep1($.type_argument), "}"),
 
     // Parenthesised list of type arguments after a type name:
     //   uint(8)        — width literal (Number)

@@ -164,6 +164,7 @@ fn excerpt_for_span(source: &str, span: &SourceSpan) -> Option<SourceExcerpt> {
 /// type of `Let` values (which have no explicit annotation in HIR).
 pub fn flatten_aggregates(
     file: &HirSourceFile,
+    resolve: &crate::resolve::ResolveResult,
     expr_types: &HashMap<HirId, HirType>,
     local_types: &HashMap<LocalId, HirType>,
 ) -> Result<HirSourceFile, Vec<FlattenError>> {
@@ -200,6 +201,7 @@ pub fn flatten_aggregates(
                 let mut ctx = FnFlattener {
                     ports: &ports,
                     structs: &structs,
+                    resolve,
                     expr_types,
                     local_types,
                     new_locals: Vec::new(),
@@ -237,6 +239,7 @@ pub fn flatten_aggregates(
 
 struct FnFlattener<'a> {
     ports: &'a HashMap<DefId, &'a HirPort>,
+    resolve: &'a crate::resolve::ResolveResult,
     structs: &'a HashMap<DefId, &'a HirStruct>,
     expr_types: &'a HashMap<HirId, HirType>,
     local_types: &'a HashMap<LocalId, HirType>,
@@ -518,6 +521,30 @@ impl<'a> FnFlattener<'a> {
             }
         };
 
+        // Multi-domain port substitution: build a `LocalId → Domain` map
+        // from the port's generic_params and the args supplied at this
+        // use site. Each Domain-kind generic_param's name matches one of
+        // the port's HirParams; that HirParam's LocalId is what the field
+        // types reference in `Domain::Clock(local)` slots.
+        let port_info = self.resolve.def_info(port_ref.def);
+        let mut domain_subst: HashMap<LocalId, Domain> = HashMap::new();
+        for (i, gp) in port_info.generic_params.iter().enumerate() {
+            if let crate::resolve::GenericParamKind::Domain = gp.kind
+                && let Some(super::GenericArg::Domain(d)) = port_ref.args.0.get(i)
+            {
+                for hp in &p.params {
+                    if p.locals
+                        .get(hp.local.0 as usize)
+                        .map(|info| info.name == gp.name)
+                        .unwrap_or(false)
+                    {
+                        domain_subst.insert(hp.local, d.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
         let mut leaves = Vec::new();
         for field in &p.fields {
             // Compose direction: the function-body direction depends on
@@ -531,12 +558,13 @@ impl<'a> FnFlattener<'a> {
             } else {
                 field.direction.flip()
             };
-            // Stamp the port's implicit domain over each field's
-            // `Unspecified` slot — the `DF @clk` single-domain case. For
-            // multi-domain ports the field already references the port's
-            // declared `dom` params and `port_ref.domain` stays
-            // Unspecified, so no stamping occurs.
-            let field_ty = apply_port_domain(&field.ty, &port_ref.domain);
+            // Substitute the port's args into each field type: Type-kind
+            // via `ValueKind::Param(i)` → `args[i].Type`, Domain-kind via
+            // `Domain::Clock(local)` → `args[i].Domain`. Then stamp the
+            // port's implicit domain over any Unspecified slot — the
+            // `DF @clk` single-domain shorthand.
+            let after_args = instantiate_type(&field.ty, &port_ref.args, &domain_subst);
+            let field_ty = apply_port_domain(&after_args, &port_ref.domain);
             let mut field_path = path.clone();
             field_path.push(field.name.clone());
             let field_name = format!("{name}__{}", field.name);
@@ -580,8 +608,10 @@ impl<'a> FnFlattener<'a> {
         for field in &s.fields {
             // Substitute the receiver's generic args into the field's
             // declared type before stamping the domain. A `data: A` field
-            // on a `Bus(uint(8))` becomes `uint(8) @clk`.
-            let substituted = instantiate_type(&field.ty, args);
+            // on a `Bus(uint(8))` becomes `uint(8) @clk`. Structs carry
+            // no Domain-kind generics, so the domain substitution is a
+            // no-op (empty map).
+            let substituted = instantiate_type(&field.ty, args, &HashMap::new());
             let field_ty = apply_struct_domain(&substituted, domain);
             let mut field_path = path.clone();
             field_path.push(field.name.clone());
@@ -1366,27 +1396,54 @@ fn substitute_clock_in_type(ty: &HirType, target: LocalId, replacement: &Domain)
 /// Only `Type`-kind args carry a `HirType` payload today. `Const` and
 /// `Domain` substitution will plug in here once parametric widths and
 /// parametric port domains reach flatten with field-type references.
-fn instantiate_type(ty: &HirType, args: &GenericArgs) -> HirType {
+fn instantiate_type(
+    ty: &HirType,
+    args: &GenericArgs,
+    domain_subst: &HashMap<LocalId, Domain>,
+) -> HirType {
     match &ty.kind {
-        HirTypeKind::Value(vt) => match &vt.kind {
-            ValueKind::Param(i) => match args.0.get(*i as usize) {
-                Some(GenericArg::Type(t)) => match &t.kind {
-                    HirTypeKind::Value(arg_vt) => HirType {
+        HirTypeKind::Value(vt) => {
+            // Substitute the outer domain first via `domain_subst`.
+            let domain = match &vt.domain {
+                Domain::Clock(l) => domain_subst
+                    .get(l)
+                    .cloned()
+                    .unwrap_or_else(|| vt.domain.clone()),
+                other => other.clone(),
+            };
+            // Then substitute the inner kind if it's a Param ref.
+            match &vt.kind {
+                ValueKind::Param(i) => match args.0.get(*i as usize) {
+                    Some(GenericArg::Type(t)) => match &t.kind {
+                        HirTypeKind::Value(arg_vt) => HirType {
+                            kind: HirTypeKind::Value(ValueType {
+                                kind: arg_vt.kind.clone(),
+                                domain: match domain {
+                                    Domain::Unspecified => arg_vt.domain.clone(),
+                                    other => other,
+                                },
+                            }),
+                            span: ty.span.clone(),
+                        },
+                        _ => t.clone(),
+                    },
+                    _ => HirType {
                         kind: HirTypeKind::Value(ValueType {
-                            kind: arg_vt.kind.clone(),
-                            domain: match &vt.domain {
-                                Domain::Unspecified => arg_vt.domain.clone(),
-                                other => other.clone(),
-                            },
+                            kind: vt.kind.clone(),
+                            domain,
                         }),
                         span: ty.span.clone(),
                     },
-                    _ => t.clone(),
                 },
-                _ => ty.clone(),
-            },
-            _ => ty.clone(),
-        },
+                _ => HirType {
+                    kind: HirTypeKind::Value(ValueType {
+                        kind: vt.kind.clone(),
+                        domain,
+                    }),
+                    span: ty.span.clone(),
+                },
+            }
+        }
         _ => ty.clone(),
     }
 }
@@ -1514,7 +1571,7 @@ mod tests {
         let local_types = block_lowered.local_types;
         let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
         let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-        flatten_aggregates(&hir, &tc.expr_types, &local_types)
+        flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types)
     }
 
     fn flatten_ok(source: &str) -> HirSourceFile {
@@ -1625,7 +1682,7 @@ mod tests {
             let local_types = block_lowered.local_types;
             let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
             let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
-            let flat = flatten_aggregates(&hir, &tc.expr_types, &local_types)
+            let flat = flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types)
                 .unwrap_or_else(|e| panic!("{name} flatten: {e:?}"));
             let _tc2 = typeck::check_file(&flat, &resolve);
             // We don't assert `_tc2.errors` is empty — the flat HIR

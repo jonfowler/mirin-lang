@@ -659,11 +659,13 @@ impl<'a> Lowerer<'a> {
                 span: f.span.clone(),
             })
             .collect();
+        let locals = std::mem::take(&mut self.fn_state.locals);
         self.leave_generic_scope();
         Some(HirPort {
             def_id,
             name: p.name.text.clone(),
             params,
+            locals,
             fields,
             span: p.span.clone(),
         })
@@ -1609,6 +1611,12 @@ impl<'a> Lowerer<'a> {
             }
             "usize" => self.value_type(ValueKind::Usize, domain_annotation, ty.span.clone()),
             "Event" => self.value_type(ValueKind::Event, domain_annotation, ty.span.clone()),
+            // `Type` only appears as a parameter-kind annotation on Type-kind
+            // generic params (`A: Type`). The resolver classifies the param
+            // via this annotation; later passes consult `generic_params`
+            // rather than the HirParam.ty. Lower to a `Usize` placeholder
+            // so the HirParam still has a well-formed type slot.
+            "Type" => self.value_type(ValueKind::Usize, domain_annotation, ty.span.clone()),
             "Self" => {
                 // `self @clk` shorthand: the parameter lowerer in surface_ir
                 // synthesises this type. Outside an `impl` it's nonsensical.
@@ -1662,7 +1670,8 @@ impl<'a> Lowerer<'a> {
                         .map(|info| (info.kind, id))
                 }) {
                     Some((DefKind::Struct, def_id)) => {
-                        let args = self.lower_generic_args(def_id, &ty.suffixes, &ty.span);
+                        let args =
+                            self.lower_generic_args(def_id, &ty.named_args, &ty.suffixes, &ty.span);
                         self.value_type(
                             ValueKind::Struct { def: def_id, args },
                             domain_annotation,
@@ -1690,7 +1699,8 @@ impl<'a> Lowerer<'a> {
                                 ty.span.clone(),
                             );
                         }
-                        let args = self.lower_generic_args(def_id, &ty.suffixes, &ty.span);
+                        let args =
+                            self.lower_generic_args(def_id, &ty.named_args, &ty.suffixes, &ty.span);
                         let domain = if has_dom_params {
                             Domain::Unspecified
                         } else {
@@ -1822,6 +1832,7 @@ impl<'a> Lowerer<'a> {
     fn lower_generic_args(
         &mut self,
         def_id: DefId,
+        named_args: &[TypeArgument],
         suffixes: &[TypeSuffix],
         head_span: &SourceSpan,
     ) -> GenericArgs {
@@ -1832,16 +1843,18 @@ impl<'a> Lowerer<'a> {
             .map(|info| info.generic_params.clone())
             .unwrap_or_default();
 
-        let suffix = suffixes.first();
-        let args = match suffix {
+        let positional_args = match suffixes.first() {
             Some(TypeSuffix::Index(idx)) => idx.args.as_slice(),
             None => &[],
         };
 
-        if params.is_empty() && args.is_empty() {
-            return GenericArgs::empty();
-        }
-        if params.len() != args.len() {
+        // Stitch named + positional in declared order: each entry in
+        // `params` comes from one of the def's surface sections; pair it
+        // with the matching use-site arg from `named_args` or
+        // `positional_args` in order.
+        let named_count = params.iter().filter(|p| p.from_named_section).count();
+        let positional_count = params.len() - named_count;
+        if named_args.len() != named_count || positional_args.len() != positional_count {
             self.error(
                 HirLowerErrorKind::Unsupported {
                     what: "generic argument count does not match declared parameter count",
@@ -1850,9 +1863,27 @@ impl<'a> Lowerer<'a> {
             );
             return GenericArgs::empty();
         }
+        if params.is_empty() {
+            return GenericArgs::empty();
+        }
 
+        let mut named_iter = named_args.iter();
+        let mut positional_iter = positional_args.iter();
         let mut out = Vec::with_capacity(params.len());
-        for (param, arg) in params.iter().zip(args.iter()) {
+        for param in &params {
+            let Some(arg) = (if param.from_named_section {
+                named_iter.next()
+            } else {
+                positional_iter.next()
+            }) else {
+                self.error(
+                    HirLowerErrorKind::Unsupported {
+                        what: "internal: generic arg pairing failed",
+                    },
+                    head_span.clone(),
+                );
+                return GenericArgs::empty();
+            };
             let lowered = match param.kind {
                 crate::resolve::GenericParamKind::Type => match arg {
                     TypeArgument::Type(t) => super::GenericArg::Type(self.lower_type(t)),
