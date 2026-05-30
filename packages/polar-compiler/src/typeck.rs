@@ -695,11 +695,15 @@ impl InferCtxt {
                 }
             }
             (HirTypeKind::Port(pa), HirTypeKind::Port(pb)) if pa.def == pb.def => {
-                // Port unification: def-equality plus element-wise
-                // unification of generic args.
+                // Port unification: def-equality plus element-wise arg
+                // unification, plus the implicit-domain unification for
+                // single-domain ports (`DF @clk`).
                 let aa = pa.args.clone();
                 let ab = pb.args.clone();
                 self.unify_generic_args(&aa, &ab, &span);
+                let da = pa.domain.clone();
+                let db = pb.domain.clone();
+                self.unify_domains(&da, &db, span.clone());
             }
             (HirTypeKind::Clock, HirTypeKind::Clock) => {}
             _ => {
@@ -1332,16 +1336,10 @@ impl InferCtxt {
                 }
             },
             HirTypeKind::Port(port_ref) => {
-                // Port field access depends on the port's clock binding being
-                // available so the field type can have its `#clk` parameter
-                // substituted out. That binding lived on `PortTypeRef.domain`
-                // (single-clock-only); it has been removed pending the
-                // `Stream8(clk)` positional type-argument syntax. Validate
-                // the field name to give a useful error, but the typed
-                // result is unrecoverable today.
-                if let Some(port_def) = file.lookup_port(port_ref.def)
-                    && !port_def.fields.iter().any(|f| f.name == field.name)
-                {
+                let Some(port_def) = file.lookup_port(port_ref.def) else {
+                    return self.fresh_type_var(span);
+                };
+                let Some(decl_field) = port_def.fields.iter().find(|f| f.name == field.name) else {
                     self.errors.push(TypeError {
                         kind: TypeErrorKind::UnknownField {
                             receiver_type: port_def.name.clone(),
@@ -1350,14 +1348,12 @@ impl InferCtxt {
                         span: field.name_span.clone(),
                     });
                     return self.fresh_type_var(span);
-                }
-                self.errors.push(TypeError {
-                    kind: TypeErrorKind::FieldAccessOnNonAggregate {
-                        receiver_type: describe_type(&resolved),
-                    },
-                    span: span.clone(),
-                });
-                self.fresh_type_var(span)
+                };
+                // The port's implicit domain (from `DF @clk`) stamps over
+                // the field's Unspecified slot. Multi-domain ports leave
+                // the field's domain referencing its `dom` param, which
+                // a future args-aware substitution will resolve.
+                stamp_domain(&decl_field.ty, &port_ref.domain)
             }
             _ => {
                 self.errors.push(TypeError {
@@ -1594,6 +1590,7 @@ impl SigSubst {
             HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef {
                 def: p.def,
                 args: p.args.clone(),
+                domain: self.apply_to_domain(&p.domain),
             }),
             other => other.clone(),
         };

@@ -502,27 +502,55 @@ impl<'a> FnFlattener<'a> {
     fn expand_port(
         &mut self,
         port_ref: &PortTypeRef,
-        _name: &str,
-        _path: Vec<String>,
-        _scope_dir: Option<Direction>,
-        _kind: LocalKind,
+        name: &str,
+        path: Vec<String>,
+        scope_dir: Option<Direction>,
+        kind: LocalKind,
         span: &SourceSpan,
     ) -> Result<Vec<Leaf>, FlattenError> {
-        // The clock binding used to live on `PortTypeRef.domain`, populated
-        // by the `Stream8 @clk` use-site syntax. That syntax has been removed
-        // pending the positional type-argument form (`Stream8(clk)`). Until
-        // it lands, port-typed locals cannot be flattened. The full field
-        // expansion (with `#clk` substitution and direction flipping) is in
-        // git history at the previous revision of this function.
-        let port_name = self
-            .ports
-            .get(&port_ref.def)
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "<unresolved>".to_owned());
-        Err(FlattenError {
-            kind: FlattenErrorKind::PortWithoutDomain { port: port_name },
-            span: span.clone(),
-        })
+        let p = match self.ports.get(&port_ref.def) {
+            Some(p) => *p,
+            None => {
+                return Err(FlattenError {
+                    kind: FlattenErrorKind::UnresolvedDef,
+                    span: span.clone(),
+                });
+            }
+        };
+
+        let mut leaves = Vec::new();
+        for field in &p.fields {
+            // Compose direction: the function-body direction depends on
+            // whether the param is passed `out` (scope_dir == Some(Out))
+            // and the field's declared in/out polarity. With no `out`,
+            // declared `out` reads as input and declared `in` reads as
+            // output (caller drives, callee reads — and vice versa). With
+            // `out`, both stay as-declared.
+            let fn_body_dir = if scope_dir == Some(Direction::Out) {
+                field.direction
+            } else {
+                field.direction.flip()
+            };
+            // Stamp the port's implicit domain over each field's
+            // `Unspecified` slot — the `DF @clk` single-domain case. For
+            // multi-domain ports the field already references the port's
+            // declared `dom` params and `port_ref.domain` stays
+            // Unspecified, so no stamping occurs.
+            let field_ty = apply_port_domain(&field.ty, &port_ref.domain);
+            let mut field_path = path.clone();
+            field_path.push(field.name.clone());
+            let field_name = format!("{name}__{}", field.name);
+            let nested = self.expand_type_to_leaves(
+                &field_ty,
+                &field_name,
+                field_path,
+                Some(fn_body_dir),
+                kind,
+                &field.span,
+            )?;
+            leaves.extend(nested);
+        }
+        Ok(leaves)
     }
 
     fn expand_struct(
@@ -1317,6 +1345,10 @@ fn substitute_clock_in_type(ty: &HirType, target: LocalId, replacement: &Domain)
         HirTypeKind::Port(p) => HirTypeKind::Port(PortTypeRef {
             def: p.def,
             args: p.args.clone(),
+            domain: match &p.domain {
+                Domain::Clock(l) if *l == target => replacement.clone(),
+                other => other.clone(),
+            },
         }),
         other => other.clone(),
     };
@@ -1356,6 +1388,28 @@ fn instantiate_type(ty: &HirType, args: &GenericArgs) -> HirType {
             _ => ty.clone(),
         },
         _ => ty.clone(),
+    }
+}
+
+/// Apply a port-instance domain to each of its field types. Single-domain
+/// ports declare their fields without `@`; the use site's `DF @clk`
+/// annotation populates `PortTypeRef.domain` and we stamp it onto each
+/// field's `Unspecified` slot here. Fields that name a `dom` parameter
+/// explicitly (multi-domain ports) keep their annotation.
+fn apply_port_domain(field_ty: &HirType, port_domain: &Domain) -> HirType {
+    let kind = match &field_ty.kind {
+        HirTypeKind::Value(vt) => HirTypeKind::Value(ValueType {
+            kind: vt.kind.clone(),
+            domain: match &vt.domain {
+                Domain::Unspecified | Domain::Const => port_domain.clone(),
+                other => other.clone(),
+            },
+        }),
+        other => other.clone(),
+    };
+    HirType {
+        kind,
+        span: field_ty.span.clone(),
     }
 }
 

@@ -448,6 +448,13 @@ pub struct PortTypeRef {
     /// entry per `GenericParamInfo` on the port def. Empty for ports with
     /// no parameters.
     pub args: GenericArgs,
+    /// Domain stamped over each field's `Unspecified` slot at flatten time.
+    /// Populated by use-site annotations like `DF @clk` when the port has
+    /// no declared `dom` parameters (the single-domain case — analogous to
+    /// `Packet @clk` for structs). Stays `Unspecified` for ports that
+    /// carry their own `dom` params: those fields refer to the params
+    /// directly and the args list provides the bindings.
+    pub domain: Domain,
 }
 
 /// One generic argument supplied at a use site of a parametric struct or

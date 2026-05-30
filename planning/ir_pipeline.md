@@ -114,7 +114,7 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 
 | Pass | File | What it does |
 |---|---|---|
-| `flatten_aggregates` | `hir/flatten.rs` | Erase port and struct types at value positions. Each aggregate local splits into per-field locals named `p__field` (recursive for nested aggregates). For parametric aggregates, `instantiate_type` substitutes the receiver's `GenericArgs` into each field's `Param(i)` references before flattening. Whole-aggregate equations split into per-field equations with direction-aware LHS/RHS pairing. LocalId remap is owned by an `expansion: HashMap<LocalId, Vec<Leaf>>` table consulted by downstream rewrites — including the `clock` and `dest` fields of `HirStmt::AlwaysFf`. |
+| `flatten_aggregates` | `hir/flatten.rs` | Erase port and struct types at value positions. Each aggregate local splits into per-field locals named `p__field` (recursive for nested aggregates). For parametric aggregates, `instantiate_type` substitutes the receiver's `GenericArgs` into each field's `Param(i)` references before flattening. Struct and single-domain-port instances stamp their `domain` over each field's `Unspecified` slot via `apply_struct_domain` / `apply_port_domain`. Whole-aggregate equations split into per-field equations with direction-aware LHS/RHS pairing (port field directions compose with the param's `in`/`out` direction). LocalId remap is owned by an `expansion: HashMap<LocalId, Vec<Leaf>>` table consulted by downstream rewrites — including the `clock` and `dest` fields of `HirStmt::AlwaysFf`. |
 
 ### SV
 

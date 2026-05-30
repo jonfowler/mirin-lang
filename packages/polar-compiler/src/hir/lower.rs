@@ -1551,23 +1551,14 @@ impl<'a> Lowerer<'a> {
                         domain_annotation,
                         ty.span.clone(),
                     ),
-                    Some(DefKind::Port) => {
-                        if domain_annotation.is_some() {
-                            self.error(
-                                HirLowerErrorKind::DomainOnPortType {
-                                    port: "Self".to_owned(),
-                                },
-                                ty.span.clone(),
-                            );
-                        }
-                        HirType {
-                            kind: HirTypeKind::Port(PortTypeRef {
-                                def: target,
-                                args: GenericArgs::empty(),
-                            }),
-                            span: ty.span.clone(),
-                        }
-                    }
+                    Some(DefKind::Port) => HirType {
+                        kind: HirTypeKind::Port(PortTypeRef {
+                            def: target,
+                            args: GenericArgs::empty(),
+                            domain: domain_annotation.unwrap_or(Domain::Unspecified),
+                        }),
+                        span: ty.span.clone(),
+                    },
                     _ => {
                         self.error(
                             HirLowerErrorKind::UnknownType("Self".to_owned()),
@@ -1594,11 +1585,19 @@ impl<'a> Lowerer<'a> {
                         )
                     }
                     Some((DefKind::Port, def_id)) => {
-                        // Ports don't carry a top-level domain. Clock
-                        // bindings are supplied as type arguments
-                        // (`DF{clk}(uint(8))`). An `@clk` annotation in this
-                        // position is a category error.
-                        if domain_annotation.is_some() {
+                        let info = self.resolve.defs.get(def_id.0 as usize);
+                        let has_dom_params = info
+                            .map(|i| {
+                                i.generic_params.iter().any(|gp| {
+                                    matches!(gp.kind, crate::resolve::GenericParamKind::Domain)
+                                })
+                            })
+                            .unwrap_or(false);
+                        // `DF @clk` is the implicit-domain shape — only
+                        // valid for ports with no declared `dom` params.
+                        // Multi-domain ports name their domain bindings
+                        // explicitly via `DF{...}` instead.
+                        if has_dom_params && domain_annotation.is_some() {
                             self.error(
                                 HirLowerErrorKind::DomainOnPortType {
                                     port: other.to_owned(),
@@ -1607,8 +1606,17 @@ impl<'a> Lowerer<'a> {
                             );
                         }
                         let args = self.lower_generic_args(def_id, &ty.suffixes, &ty.span);
+                        let domain = if has_dom_params {
+                            Domain::Unspecified
+                        } else {
+                            domain_annotation.unwrap_or(Domain::Unspecified)
+                        };
                         HirType {
-                            kind: HirTypeKind::Port(PortTypeRef { def: def_id, args }),
+                            kind: HirTypeKind::Port(PortTypeRef {
+                                def: def_id,
+                                args,
+                                domain,
+                            }),
                             span: ty.span.clone(),
                         }
                     }
