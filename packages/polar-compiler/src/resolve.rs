@@ -692,15 +692,18 @@ impl Ctx {
     }
 
     fn classify_named_param(&self, np: &NamedParameter) -> Option<GenericParamInfo> {
-        let kind = match np.kind {
-            crate::surface::ir::ParamKind::Dom => GenericParamKind::Domain,
-            crate::surface::ir::ParamKind::Param => GenericParamKind::Const,
-            crate::surface::ir::ParamKind::Value => {
-                if is_type_kind_annotation(np.ty.as_ref()) {
-                    GenericParamKind::Type
-                } else {
-                    return None;
-                }
+        // `param A: Type` and `A: Type` both mean a Type-kind generic — the
+        // type annotation is the distinguishing signal. `param N: usize`
+        // (Param without a Type annotation) is the Const-kind case. `dom`
+        // is always Domain. Plain `value: ty` without `param`/`dom`/`Type`
+        // is a runtime value, not a generic.
+        let kind = if is_type_kind_annotation(np.ty.as_ref()) {
+            GenericParamKind::Type
+        } else {
+            match np.kind {
+                crate::surface::ir::ParamKind::Dom => GenericParamKind::Domain,
+                crate::surface::ir::ParamKind::Param => GenericParamKind::Const,
+                crate::surface::ir::ParamKind::Value => return None,
             }
         };
         Some(GenericParamInfo {

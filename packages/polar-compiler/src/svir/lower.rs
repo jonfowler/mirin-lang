@@ -78,6 +78,14 @@ pub fn lower_to_sv(
             if func.is_prelude {
                 continue;
             }
+            // Fns with Type-kind generic parameters can't be emitted as
+            // standalone SV modules — there's no SV construct that
+            // represents a Type-polymorphic module. They're consumed by
+            // the monomorphise pass which emits one specialisation per
+            // concrete instantiation. Skip the template here.
+            if has_type_generic(func, resolve) {
+                continue;
+            }
             let residuals = fn_residuals
                 .get(&func.def_id)
                 .map(|v| v.as_slice())
@@ -86,6 +94,16 @@ pub fn lower_to_sv(
         }
     }
     SvFile { modules }
+}
+
+/// `true` if any of `func`'s generic_params is Type-kind. Such fns need
+/// monomorphic specialisation before they can be emitted to SV.
+fn has_type_generic(func: &HirFn, resolve: &ResolveResult) -> bool {
+    resolve
+        .def_info(func.def_id)
+        .generic_params
+        .iter()
+        .any(|gp| matches!(gp.kind, crate::resolve::GenericParamKind::Type))
 }
 
 /// Build the SV module name for a Polar function. Methods are qualified by

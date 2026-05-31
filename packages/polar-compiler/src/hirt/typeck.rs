@@ -1020,6 +1020,13 @@ impl InferCtxt {
         match (a, b) {
             (ValueKind::Bool, ValueKind::Bool) => true,
             (ValueKind::Reset, ValueKind::Reset) => true,
+            // `high`/`low` lower to `ConstValue::Bool` (the underlying repr),
+            // but they may appear in `Reset @clk` positions (parameter
+            // defaults, reset arguments). Accept the Bool↔Reset crossover
+            // for now; a future revision should split high/low into a
+            // dedicated `ConstValue::Reset(bool)` variant.
+            (ValueKind::Bool, ValueKind::Reset) => true,
+            (ValueKind::Reset, ValueKind::Bool) => true,
             (ValueKind::Usize, ValueKind::Usize) => true,
             (ValueKind::Event, ValueKind::Event) => true,
             (ValueKind::UInt { width: wa }, ValueKind::UInt { width: wb }) => {
@@ -1154,6 +1161,16 @@ impl InferCtxt {
     fn check_fn(&mut self, hir_fn: &HirFn, file: &FileCtx<'_>) {
         for param in &hir_fn.params {
             self.locals.insert(param.local, param.ty.clone());
+        }
+        // Type-check parameter defaults at definition time. Without this,
+        // a wrong default (e.g. `rstn: Reset @clk = 42`) would only error
+        // at call sites that omit the arg — so a fn with no callers ships
+        // a broken default silently.
+        for param in &hir_fn.params {
+            if let Some(default) = &param.default {
+                let default_ty = self.infer_expr(default, file);
+                self.unify_types(&param.ty, &default_ty, default.span.clone());
+            }
         }
         self.check_block(&hir_fn.body, hir_fn.return_type.as_ref(), file);
         self.discharge_obligations();
