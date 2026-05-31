@@ -10,21 +10,14 @@
 //! the [`lower`] submodule.
 
 pub mod check_drivers;
-pub mod flatten;
 pub mod lower;
-pub mod lower_block_expressions;
-pub mod method_lower;
-pub mod out_args;
 
 pub use check_drivers::{DriverError, DriverErrorKind, check_drivers, render_driver_errors};
-pub use flatten::{FlattenError, FlattenErrorKind, flatten_aggregates, render_flatten_errors};
 pub use lower::{HirLowerError, HirLowerErrorKind, lower_to_hir};
-pub use method_lower::lower_method_calls;
-pub use out_args::{OutArgsError, OutArgsErrorKind, desugar_user_calls};
 
 use crate::SourceSpan;
 use crate::resolve::{DefId, LocalKind};
-use crate::surface_ir::{Direction, NodeId};
+use crate::surface::ir::{Direction, NodeId};
 
 /// Index into a function's `locals` table. Dense and per-function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -145,7 +138,7 @@ pub struct HirParam {
 }
 
 /// What kind of binding a parameter introduces. Mirrors
-/// [`crate::surface_ir::ParamKind`].
+/// [`crate::surface::ir::ParamKind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
     Value,

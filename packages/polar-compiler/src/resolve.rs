@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 
-use crate::surface_ir::{
+use crate::surface::ir::{
     Block, Expression, FunctionDefinition, Identifier, ImplBlock, Item, LetStatement,
     NamedArgument, NamedParameter, NodeId, Parameter, PortDefinition, PositionalArgument,
     PostfixOperation, SourceFile, Statement, StructDefinition, TypeArgument, TypeExpression,
@@ -100,7 +100,7 @@ pub enum LocalKind {
     /// decide whether a param is writable from inside the function body.
     Param {
         owner: DefId,
-        direction: Option<crate::surface_ir::Direction>,
+        direction: Option<crate::surface::ir::Direction>,
     },
     /// `let x = ...` — sequential, forward-only scope, supports shadowing.
     Let,
@@ -693,9 +693,9 @@ impl Ctx {
 
     fn classify_named_param(&self, np: &NamedParameter) -> Option<GenericParamInfo> {
         let kind = match np.kind {
-            crate::surface_ir::ParamKind::Dom => GenericParamKind::Domain,
-            crate::surface_ir::ParamKind::Param => GenericParamKind::Const,
-            crate::surface_ir::ParamKind::Value => {
+            crate::surface::ir::ParamKind::Dom => GenericParamKind::Domain,
+            crate::surface::ir::ParamKind::Param => GenericParamKind::Const,
+            crate::surface::ir::ParamKind::Value => {
                 if is_type_kind_annotation(np.ty.as_ref()) {
                     GenericParamKind::Type
                 } else {
@@ -714,9 +714,9 @@ impl Ctx {
 
     fn classify_positional_param(&self, p: &Parameter) -> Option<GenericParamInfo> {
         let kind = match p.kind {
-            crate::surface_ir::ParamKind::Dom => GenericParamKind::Domain,
-            crate::surface_ir::ParamKind::Param => GenericParamKind::Const,
-            crate::surface_ir::ParamKind::Value => {
+            crate::surface::ir::ParamKind::Dom => GenericParamKind::Domain,
+            crate::surface::ir::ParamKind::Param => GenericParamKind::Const,
+            crate::surface::ir::ParamKind::Value => {
                 if is_type_kind_annotation(Some(&p.ty)) {
                     GenericParamKind::Type
                 } else {
@@ -1165,7 +1165,7 @@ impl BlockCtx<'_> {
                         // Only `out`-direction params are writable from
                         // inside the function body; everything else is a
                         // read-only input.
-                        if matches!(direction, Some(crate::surface_ir::Direction::Out)) {
+                        if matches!(direction, Some(crate::surface::ir::Direction::Out)) {
                             self.ctx
                                 .result
                                 .resolutions
@@ -1282,7 +1282,7 @@ impl BlockCtx<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::surface_ir::parse_surface_source;
+    use crate::surface::ir::parse_surface_source;
 
     fn resolve(source: &str) -> ResolveResult {
         let file = parse_surface_source(source).expect("parse failed");

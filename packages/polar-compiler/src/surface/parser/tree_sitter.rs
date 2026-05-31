@@ -509,10 +509,10 @@ mod tests {
     #[test]
     fn parses_component_examples_into_cst() {
         for source in [
-            include_str!("../../../../examples/working/add_constant.plr"),
-            include_str!("../../../../examples/working/mult_add.plr"),
-            include_str!("../../../../examples/working/counter.plr"),
-            include_str!("../../../../examples/working/shift_register.plr"),
+            include_str!("../../../../../examples/working/add_constant.plr"),
+            include_str!("../../../../../examples/working/mult_add.plr"),
+            include_str!("../../../../../examples/working/counter.plr"),
+            include_str!("../../../../../examples/working/shift_register.plr"),
         ] {
             let cst = parse_source(source).unwrap();
             assert_eq!(cst.root.kind, "source_file");
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn root_span_covers_full_source() {
-        let source = include_str!("../../../../examples/working/add_constant.plr");
+        let source = include_str!("../../../../../examples/working/add_constant.plr");
         let cst = parse_source(source).unwrap();
         assert_eq!(cst.root.span.start_byte, 0);
         assert_eq!(cst.root.span.end_byte, source.len());
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn reports_missing_named_section_closer_once() {
-        let source = include_str!("../../../../examples/fail-expected/missing-parenthesis.plr");
+        let source = include_str!("../../../../../examples/fail-expected/missing-parenthesis.plr");
         let error = parse_source(source).unwrap_err();
         let ParseError::Syntax(diagnostics) = error else {
             panic!("expected syntax diagnostics");
@@ -555,10 +555,10 @@ mod tests {
     #[test]
     fn rejects_all_failure_examples() {
         for source in [
-            include_str!("../../../../examples/fail-expected/missing-parenthesis.plr"),
-            include_str!("../../../../examples/fail-expected/missing-semicolon.plr"),
-            include_str!("../../../../examples/fail-expected/missing-struct-colon.plr"),
-            include_str!("../../../../examples/fail-expected/missing-port-comma.plr"),
+            include_str!("../../../../../examples/fail-expected/missing-parenthesis.plr"),
+            include_str!("../../../../../examples/fail-expected/missing-semicolon.plr"),
+            include_str!("../../../../../examples/fail-expected/missing-struct-colon.plr"),
+            include_str!("../../../../../examples/fail-expected/missing-port-comma.plr"),
         ] {
             let error = parse_source(source).unwrap_err();
             let ParseError::Syntax(diagnostics) = error else {
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn preserves_cst_when_reporting_diagnostics() {
-        let source = include_str!("../../../../examples/fail-expected/missing-semicolon.plr");
+        let source = include_str!("../../../../../examples/fail-expected/missing-semicolon.plr");
         let parsed = parse_source_with_diagnostics(source).unwrap();
 
         assert_eq!(parsed.cst.root.kind, "source_file");

@@ -30,14 +30,14 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use super::{
+use crate::SourceSpan;
+use crate::hir::{
     HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind, HirFn, HirId,
     HirItem, HirLocalInfo, HirParam, HirSourceFile, HirStmt, HirType, HirVarDecl, LocalId,
     ParamKind, ParamSection,
 };
-use crate::SourceSpan;
 use crate::resolve::{DefId, LocalKind};
-use crate::surface_ir::{Direction, NodeId};
+use crate::surface::ir::{Direction, NodeId};
 
 // ============================================================================
 // Errors
@@ -251,7 +251,7 @@ fn desugar_stmt_into(stmt: &HirStmt, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStm
             // stays put.
             let then_branch = desugar_block(&i.then_branch, ctx);
             let else_branch = desugar_block(&i.else_branch, ctx);
-            out.push(HirStmt::If(super::HirIfStmt {
+            out.push(HirStmt::If(crate::hir::HirIfStmt {
                 condition: i.condition.clone(),
                 then_branch,
                 else_branch,
@@ -263,7 +263,7 @@ fn desugar_stmt_into(stmt: &HirStmt, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStm
             // D-input expression into preceding statements; the always_ff
             // statement itself is preserved.
             let d_input = lift_user_calls(&a.d_input, ctx, out);
-            out.push(HirStmt::AlwaysFf(super::HirAlwaysFfStmt {
+            out.push(HirStmt::AlwaysFf(crate::hir::HirAlwaysFfStmt {
                 clock: a.clock,
                 dest: a.dest,
                 d_input,
@@ -273,7 +273,7 @@ fn desugar_stmt_into(stmt: &HirStmt, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStm
     }
 }
 
-fn desugar_let(l: &super::HirLet, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStmt>) {
+fn desugar_let(l: &crate::hir::HirLet, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStmt>) {
     // Lift nested user-fn calls inside the let's value first. This ensures
     // that by the time we look at the value, any inner user-fn calls have
     // been hoisted to preceding statements with their out-arg bindings.
@@ -297,7 +297,7 @@ fn desugar_let(l: &super::HirLet, ctx: &mut BodyCtx<'_>, out: &mut Vec<HirStmt>)
         return;
     }
     // Not a user-fn call (or void fn) — emit a let with the lifted value.
-    out.push(HirStmt::Let(super::HirLet {
+    out.push(HirStmt::Let(crate::hir::HirLet {
         local: l.local,
         value: lifted_value,
         span: l.span.clone(),
@@ -514,9 +514,9 @@ fn walk_expr_max(e: &HirExpr, max: &mut u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::lower_to_hir;
+    use crate::hir::{lower_to_hir, *};
     use crate::resolve::resolve_file;
-    use crate::surface_ir::parse_surface_source;
+    use crate::surface::ir::parse_surface_source;
 
     fn desugar(source: &str) -> HirSourceFile {
         let file = parse_surface_source(source).expect("parse");

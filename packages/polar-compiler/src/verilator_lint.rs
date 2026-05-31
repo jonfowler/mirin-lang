@@ -31,13 +31,14 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::hir::{flatten_aggregates, lower_to_hir};
+use crate::hir::lower_to_hir;
+use crate::hirt::typeck;
+use crate::hirtl::flatten::flatten_aggregates;
 use crate::resolve::resolve_file;
-use crate::surface_ir::parse_surface_source;
-use crate::sv_emit::emit;
-use crate::sv_lower::lower_to_sv;
+use crate::surface::ir::parse_surface_source;
+use crate::svir::emit::emit;
+use crate::svir::lower::lower_to_sv;
 use crate::test_support::working_examples;
-use crate::typeck;
 
 /// Pipeline an example all the way to SV text.
 fn build_sv(src: &str) -> String {
@@ -45,15 +46,16 @@ fn build_sv(src: &str) -> String {
     let resolve = resolve_file(&surface);
     let hir = lower_to_hir(&surface, &resolve).expect("lower");
     let tc = typeck::check_file(&hir, &resolve);
-    let block_lowered = crate::hir::lower_block_expressions::lower_block_expressions(
+    let block_lowered = crate::hirtl::lower_block_expressions::lower_block_expressions(
         &hir,
         &tc.expr_types,
         &tc.local_types,
     );
     let hir = block_lowered.file;
     let local_types = block_lowered.local_types;
-    let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
-    let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
+    let hir =
+        crate::hirtl::method_lower::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
+    let hir = crate::hirtl::out_args::desugar_user_calls(&hir).expect("desugar");
     let flat = flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types).expect("flatten");
     let sv = lower_to_sv(&flat, &resolve, &tc.fn_residuals);
     emit(&sv).expect("emit")

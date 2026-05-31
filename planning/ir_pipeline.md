@@ -8,27 +8,27 @@ of passes against it. This doc is the map; the code in
 
 ```
 source.plr
-  ─► tree-sitter parse              parser/tree_sitter.rs
+  ─► tree-sitter parse              surface/parser/tree_sitter.rs
 CST
-  ─► lower_cst                      surface_ir.rs
+  ─► lower_cst                      surface/ir.rs
 Surface IR
   ─► resolve_file                   resolve.rs
-  ─► check_directions               direction.rs
+  ─► check_directions               surface/direction.rs
   ─► lower_to_hir                   hir/lower.rs
 HIR (untyped)
   ─► check_drivers                  hir/check_drivers.rs
-  ─► typeck::check_file             typeck.rs
-  ─► check_width_obligations        typeck.rs
+  ─► typeck::check_file             hirt/typeck.rs
+  ─► check_width_obligations        hirt/typeck.rs
 HIR (typed)
-  ─► lower_block_expressions        hir/lower_block_expressions.rs
-  ─► lower_method_calls             hir/method_lower.rs
-  ─► desugar_user_calls             hir/out_args.rs
+  ─► lower_block_expressions        hirtl/lower_block_expressions.rs
+  ─► lower_method_calls             hirtl/method_lower.rs
+  ─► desugar_user_calls             hirtl/out_args.rs
 HIR (lowered)
-  ─► flatten_aggregates             hir/flatten.rs
+  ─► flatten_aggregates             hirtl/flatten.rs
 HIR (flat)
-  ─► lower_to_sv                    sv_lower.rs
+  ─► lower_to_sv                    svir/lower.rs
 SV IR
-  ─► emit_sv                        sv_emit.rs
+  ─► emit_sv                        svir/emit.rs
 .sv text
 ```
 
@@ -41,7 +41,7 @@ verilator.
 Produced by tree-sitter. Owns exact layout including trivia. Consumed by the
 Surface IR lowering and by editor tooling.
 
-### Surface IR — `surface_ir.rs`
+### Surface IR — `surface/ir.rs`
 Source-shaped AST. Identifiers are textual `String`s carrying spans. Method
 calls, named vs. positional arguments, `if`/`when`/block-expressions, and
 `var`/`let` distinctions are preserved as written.
@@ -75,7 +75,7 @@ First IR structured for semantic analysis.
   path but are skipped by every later pass — their call sites lower
   inline (e.g. `always_ff`), not as separate SV modules.
 
-### SV IR — `sv_ir.rs`
+### SV IR — `svir/ir.rs`
 Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 `ports`, and `items` (`Logic`, `Assign`, `AlwaysFf`, `AlwaysComb`,
 `Instance`). The emitter is a deterministic pretty-printer.
@@ -87,7 +87,7 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 | Pass | File | What it does |
 |---|---|---|
 | `resolve_file` | `resolve.rs` | Build `DefId` table for top-level items, term-level constructors (`DefKind::Ctor`), and impl methods. Classify struct/port parameters as Type / Const / Domain and record them in `generic_params`. Build per-fn locals table from `let`/`var`/params. Seed the prelude (`reg`, `posedge`, `+`, `*`, `Clock`, `Event`, `Type`, `uint`, `bool`). Populate `impl_methods: (owner_def, method_name) → method_def`. Walk `Block`/`If`/`When` with fresh `let` scopes. |
-| `check_directions` | `direction.rs` | Verify connection operators agree with port field direction: `=` for `in`, `=>` for `out`. Reject `=>` on `let`. |
+| `check_directions` | `surface/direction.rs` | Verify connection operators agree with port field direction: `=` for `in`, `=>` for `out`. Reject `=>` on `let`. |
 
 ### HIR (untyped)
 
@@ -100,29 +100,29 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 
 | Pass | File | What it does |
 |---|---|---|
-| `typeck::check_file` | `typeck.rs` | Eager unification walk. Per-fn `InferCtxt` carries type/domain/const var pools and an obligation queue. Writes back via `expr_types`, `local_types`, `method_resolutions`, `fn_residuals`. Queues `ConstEq` (normalised) obligations for symbolic widths; the fixpoint `discharge_obligations` pass at end-of-fn simplifies them via current bindings. Use sites of parametric defs allocate fresh `GenericArgs` (`fresh_args_for_def`) and substitute via `instantiate` (rustc's `EarlyBinder::instantiate` shape); call sites build the same `Substitution { args: GenericArgs, domain_locals }` shape with fresh inference variables, and propagate the callee's surviving residual constraints through the call. See `planning/type_inference.md` and `planning/parametricity.md`. |
-| `check_width_obligations` | `typeck.rs` | Discharge `WidthEq` obligations where both sides are now ground. Surviving residuals carry forward (currently no-op; ready for parametric widths). |
+| `typeck::check_file` | `hirt/typeck.rs` | Eager unification walk. Per-fn `InferCtxt` carries type/domain/const var pools and an obligation queue. Writes back via `expr_types`, `local_types`, `method_resolutions`, `fn_residuals`. Queues `ConstEq` (normalised) obligations for symbolic widths; the fixpoint `discharge_obligations` pass at end-of-fn simplifies them via current bindings. Use sites of parametric defs allocate fresh `GenericArgs` (`fresh_args_for_def`) and substitute via `instantiate` (rustc's `EarlyBinder::instantiate` shape); call sites build the same `Substitution { args: GenericArgs, domain_locals }` shape with fresh inference variables, and propagate the callee's surviving residual constraints through the call. See `planning/type_inference.md` and `planning/parametricity.md`. |
+| `check_width_obligations` | `hirt/typeck.rs` | Discharge `WidthEq` obligations where both sides are now ground. Surviving residuals carry forward (currently no-op; ready for parametric widths). |
 
 ### HIR (typed) → HIR (lowered)
 
 | Pass | File | What it does |
 |---|---|---|
-| `lower_block_expressions` | `hir/lower_block_expressions.rs` | Rewrite `Block`/`If`/`When` expressions into statement-form. `if` becomes `HirStmt::If` with each branch ending in `Equation { lhs: __block_N, rhs: tail }`. `when` becomes `HirStmt::AlwaysFf { clock, dest, d_input }`. The synthetic `__block_N` local replaces the original expression position. |
-| `lower_method_calls` | `hir/method_lower.rs` | Rewrite `HirExprKind::MethodCall` into a regular `HirCall` against the `DefId` from `method_resolutions`. No method-call shape remains after this. |
-| `desugar_user_calls` | `hir/out_args.rs` | Rewrite user-fn calls into expression-statement position with binding leaves passed as out-args. `sv_lower` then emits each as one SV instance. |
+| `lower_block_expressions` | `hirtl/lower_block_expressions.rs` | Rewrite `Block`/`If`/`When` expressions into statement-form. `if` becomes `HirStmt::If` with each branch ending in `Equation { lhs: __block_N, rhs: tail }`. `when` becomes `HirStmt::AlwaysFf { clock, dest, d_input }`. The synthetic `__block_N` local replaces the original expression position. |
+| `lower_method_calls` | `hirtl/method_lower.rs` | Rewrite `HirExprKind::MethodCall` into a regular `HirCall` against the `DefId` from `method_resolutions`. No method-call shape remains after this. |
+| `desugar_user_calls` | `hirtl/out_args.rs` | Rewrite user-fn calls into expression-statement position with binding leaves passed as out-args. `sv_lower` then emits each as one SV instance. |
 
 ### HIR (lowered) → HIR (flat)
 
 | Pass | File | What it does |
 |---|---|---|
-| `flatten_aggregates` | `hir/flatten.rs` | Erase port and struct types at value positions. Each aggregate local splits into per-field locals named `p__field` (recursive for nested aggregates). For parametric aggregates, `instantiate_type` substitutes the receiver's `GenericArgs` into `ValueKind::Param(i)` (type position) and `HirExprKind::Param(i)` inside `uint(N)` widths (const position); Domain-kind args are pre-resolved into a `LocalId → Domain` map for `Domain::Clock(local)` lookups. Struct and single-domain-port instances stamp their `domain` over each field's `Unspecified` slot via `apply_struct_domain` / `apply_port_domain`. Whole-aggregate equations split into per-field equations with direction-aware LHS/RHS pairing (port field directions compose with the param's `in`/`out` direction). LocalId remap is owned by an `expansion: HashMap<LocalId, Vec<Leaf>>` table consulted by downstream rewrites — including the `clock` and `dest` fields of `HirStmt::AlwaysFf`. |
+| `flatten_aggregates` | `hirtl/flatten.rs` | Erase port and struct types at value positions. Each aggregate local splits into per-field locals named `p__field` (recursive for nested aggregates). For parametric aggregates, `instantiate_type` substitutes the receiver's `GenericArgs` into `ValueKind::Param(i)` (type position) and `HirExprKind::Param(i)` inside `uint(N)` widths (const position); Domain-kind args are pre-resolved into a `LocalId → Domain` map for `Domain::Clock(local)` lookups. Struct and single-domain-port instances stamp their `domain` over each field's `Unspecified` slot via `apply_struct_domain` / `apply_port_domain`. Whole-aggregate equations split into per-field equations with direction-aware LHS/RHS pairing (port field directions compose with the param's `in`/`out` direction). LocalId remap is owned by an `expansion: HashMap<LocalId, Vec<Leaf>>` table consulted by downstream rewrites — including the `clock` and `dest` fields of `HirStmt::AlwaysFf`. |
 
 ### SV
 
 | Pass | File | What it does |
 |---|---|---|
-| `lower_to_sv` | `sv_lower.rs` | Walk flattened HIR, build SV IR. `HirStmt::AlwaysFf` → `SvItem::AlwaysFf` (reset-less or with reset clause). `HirStmt::If` → `SvItem::AlwaysComb` with `SvCombIf`. Method-derived modules get names `<owner>__<method>` to avoid SV reserved-word collisions. Phase D residuals from typeck become `SvItem::InitialAssert { cond: lhs == rhs }` items on the matching module — elaboration-time checks for constraints that survived monomorphic discharge. |
-| `emit_sv` | `sv_emit.rs` | Deterministic pretty-printer. Hard-errors on any user identifier that collides with an SV reserved word. |
+| `lower_to_sv` | `svir/lower.rs` | Walk flattened HIR, build SV IR. `HirStmt::AlwaysFf` → `SvItem::AlwaysFf` (reset-less or with reset clause). `HirStmt::If` → `SvItem::AlwaysComb` with `SvCombIf`. Method-derived modules get names `<owner>__<method>` to avoid SV reserved-word collisions. Phase D residuals from typeck become `SvItem::InitialAssert { cond: lhs == rhs }` items on the matching module — elaboration-time checks for constraints that survived monomorphic discharge. |
+| `emit_sv` | `svir/emit.rs` | Deterministic pretty-printer. Hard-errors on any user identifier that collides with an SV reserved word. |
 
 ### Test-only
 

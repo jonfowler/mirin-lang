@@ -23,14 +23,14 @@ use crate::hir::{
     ConstValue, Domain, HirArg, HirBlock, HirCall, HirExpr, HirExprKind, HirFn, HirId, HirItem,
     HirSourceFile, HirStmt, HirTypeKind, LocalId, ParamKind, ValueKind, ValueType,
 };
-use crate::normal_const::{NormalConst, NormalVar};
+use crate::hirt::normal_const::{NormalConst, NormalVar};
+use crate::hirt::typeck::FnResidual;
 use crate::resolve::{DefId, ResolveResult};
-use crate::surface_ir::Direction;
-use crate::sv_ir::{
+use crate::surface::ir::Direction;
+use crate::svir::ir::{
     SvAlwaysFf, SvBinOp, SvExpr, SvFile, SvInstance, SvItem, SvLogicDecl, SvModule, SvParameter,
     SvPort, SvPortDirection, SvSeqAssign, SvType,
 };
-use crate::typeck::FnResidual;
 
 /// Lower a flattened HIR file to SV IR. `resolve` is used to identify
 /// prelude defs (`reg`, `+`, `*`) and to qualify method names with their
@@ -440,8 +440,8 @@ fn lower_stmt(
             let cond_expr = lower_expr(&i.condition, func, defs, local_names);
             let then_body = lower_comb_branch(&i.then_branch, func, defs, clock_names, local_names);
             let else_body = lower_comb_branch(&i.else_branch, func, defs, clock_names, local_names);
-            items.push(SvItem::AlwaysComb(crate::sv_ir::SvAlwaysComb {
-                body: vec![crate::sv_ir::SvCombStmt::If(crate::sv_ir::SvCombIf {
+            items.push(SvItem::AlwaysComb(crate::svir::ir::SvAlwaysComb {
+                body: vec![crate::svir::ir::SvCombStmt::If(crate::svir::ir::SvCombIf {
                     cond: cond_expr,
                     then_branch: then_body,
                     else_branch: else_body,
@@ -461,14 +461,14 @@ fn lower_comb_branch(
     defs: &BackendDefs<'_>,
     clock_names: &HashMap<LocalId, String>,
     local_names: &HashMap<LocalId, String>,
-) -> Vec<crate::sv_ir::SvCombStmt> {
+) -> Vec<crate::svir::ir::SvCombStmt> {
     let mut out = Vec::new();
     for stmt in &block.statements {
         match stmt {
             HirStmt::Equation(eq) => {
                 let lhs_name = sv_name(local_names, func, eq.lhs);
                 let rhs = lower_expr(&eq.rhs, func, defs, local_names);
-                out.push(crate::sv_ir::SvCombStmt::Assign {
+                out.push(crate::svir::ir::SvCombStmt::Assign {
                     lhs: SvExpr::Ident(lhs_name),
                     rhs,
                 });
@@ -479,7 +479,7 @@ fn lower_comb_branch(
                     lower_comb_branch(&inner.then_branch, func, defs, clock_names, local_names);
                 let else_body =
                     lower_comb_branch(&inner.else_branch, func, defs, clock_names, local_names);
-                out.push(crate::sv_ir::SvCombStmt::If(crate::sv_ir::SvCombIf {
+                out.push(crate::svir::ir::SvCombStmt::If(crate::svir::ir::SvCombIf {
                     cond,
                     then_branch: then_body,
                     else_branch: else_body,
@@ -908,10 +908,11 @@ fn _hir_id_marker(_: HirId) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{flatten_aggregates, lower_to_hir};
+    use crate::hir::lower_to_hir;
+    use crate::hirt::typeck;
+    use crate::hirtl::flatten::flatten_aggregates;
     use crate::resolve::resolve_file;
-    use crate::surface_ir::parse_surface_source;
-    use crate::typeck;
+    use crate::surface::ir::parse_surface_source;
 
     fn lower(src: &str) -> SvFile {
         let surface = parse_surface_source(src).expect("parse");
@@ -920,15 +921,16 @@ mod tests {
         let hir = lower_to_hir(&surface, &resolve).expect("lower");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
-        let block_lowered = crate::hir::lower_block_expressions::lower_block_expressions(
+        let block_lowered = crate::hirtl::lower_block_expressions::lower_block_expressions(
             &hir,
             &tc.expr_types,
             &tc.local_types,
         );
         let hir = block_lowered.file;
         let local_types = block_lowered.local_types;
-        let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
-        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
+        let hir =
+            crate::hirtl::method_lower::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
+        let hir = crate::hirtl::out_args::desugar_user_calls(&hir).expect("desugar");
         let flat =
             flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types).expect("flatten");
         lower_to_sv(&flat, &resolve, &tc.fn_residuals)
@@ -936,7 +938,7 @@ mod tests {
 
     #[test]
     fn lowers_accumulator() {
-        let sv = lower(include_str!("../../../examples/working/accumulator.plr"));
+        let sv = lower(include_str!("../../../../examples/working/accumulator.plr"));
         assert_eq!(sv.modules.len(), 1);
         let m = &sv.modules[0];
         assert_eq!(m.name, "accumulator");
@@ -955,7 +957,7 @@ mod tests {
 
     #[test]
     fn lowers_counter_with_parameter() {
-        let sv = lower(include_str!("../../../examples/working/counter.plr"));
+        let sv = lower(include_str!("../../../../examples/working/counter.plr"));
         let m = &sv.modules[0];
         assert_eq!(m.parameters.len(), 1, "{:?}", m.parameters);
         assert_eq!(m.parameters[0].name, "bits");
@@ -963,7 +965,9 @@ mod tests {
 
     #[test]
     fn lowers_packet_struct_with_two_always_ff() {
-        let sv = lower(include_str!("../../../examples/working/packet_struct.plr"));
+        let sv = lower(include_str!(
+            "../../../../examples/working/packet_struct.plr"
+        ));
         let m = &sv.modules[0];
         let always_ff: usize = m
             .items

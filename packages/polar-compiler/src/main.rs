@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::{env, fs, process};
 
+use polar_compiler::hirt::typeck;
 use polar_compiler::{
     ParseError, check_directions, check_drivers, check_width_obligations, emit_sv,
     flatten_aggregates, hir, lower_cst, lower_to_sv, parse_source_with_diagnostics,
     render_direction_errors, render_driver_errors, render_emit_errors, render_parse_error,
-    render_resolve_errors, resolve_file, typeck,
+    render_resolve_errors, resolve_file,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

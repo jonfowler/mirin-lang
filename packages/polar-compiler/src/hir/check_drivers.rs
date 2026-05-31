@@ -159,7 +159,7 @@ mod tests {
     use super::*;
     use crate::hir::lower_to_hir;
     use crate::resolve::resolve_file;
-    use crate::surface_ir::parse_surface_source;
+    use crate::surface::ir::parse_surface_source;
 
     fn drivers(source: &str) -> Vec<DriverError> {
         let file = parse_surface_source(source).expect("parse failed");

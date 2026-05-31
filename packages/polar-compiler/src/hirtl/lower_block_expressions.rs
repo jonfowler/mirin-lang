@@ -22,12 +22,12 @@
 
 use std::collections::HashMap;
 
-use super::{
+use crate::SourceSpan;
+use crate::hir::{
     HirAlwaysFfStmt, HirArg, HirBlock, HirBlockExpr, HirCall, HirEquation, HirExpr, HirExprKind,
     HirFieldAccess, HirFn, HirId, HirIfExpr, HirIfStmt, HirItem, HirLet, HirLocalInfo,
     HirMethodCall, HirSourceFile, HirStmt, HirType, HirVarDecl, HirWhenExpr, LocalId,
 };
-use crate::SourceSpan;
 
 /// Result of the pass: the rewritten HIR plus extended `local_types`. The
 /// new locals introduced for if-expression results are added so downstream
@@ -121,7 +121,7 @@ impl<'a> FnCtx<'a> {
             span,
             // Synthetic local — no surface-level node introduced it.
             // Use a sentinel NodeId; diagnostics won't ever point here.
-            surface_node: crate::surface_ir::NodeId(u32::MAX),
+            surface_node: crate::surface::ir::NodeId(u32::MAX),
         });
         self.local_types.insert(local, ty);
         local
@@ -298,7 +298,7 @@ impl<'a> FnCtx<'a> {
                 (
                     pre,
                     HirExpr {
-                        kind: HirExprKind::Const(super::ConstValue::Integer(0)),
+                        kind: HirExprKind::Const(crate::hir::ConstValue::Integer(0)),
                         ty: None,
                         span: span.clone(),
                         id: self.fresh_hir_id(),
@@ -326,9 +326,9 @@ impl<'a> FnCtx<'a> {
             .get(&if_hir_id)
             .cloned()
             .unwrap_or_else(|| HirType {
-                kind: super::HirTypeKind::Value(super::ValueType {
-                    kind: super::ValueKind::Bool,
-                    domain: super::Domain::Unspecified,
+                kind: crate::hir::HirTypeKind::Value(crate::hir::ValueType {
+                    kind: crate::hir::ValueKind::Bool,
+                    domain: crate::hir::Domain::Unspecified,
                 }),
                 span: span.clone(),
             });
@@ -389,9 +389,9 @@ impl<'a> FnCtx<'a> {
             .get(&when_hir_id)
             .cloned()
             .unwrap_or_else(|| HirType {
-                kind: super::HirTypeKind::Value(super::ValueType {
-                    kind: super::ValueKind::Bool,
-                    domain: super::Domain::Unspecified,
+                kind: crate::hir::HirTypeKind::Value(crate::hir::ValueType {
+                    kind: crate::hir::ValueKind::Bool,
+                    domain: crate::hir::Domain::Unspecified,
                 }),
                 span: span.clone(),
             });
@@ -410,7 +410,7 @@ impl<'a> FnCtx<'a> {
                 val
             }
             None => HirExpr {
-                kind: HirExprKind::Const(super::ConstValue::Integer(0)),
+                kind: HirExprKind::Const(crate::hir::ConstValue::Integer(0)),
                 ty: None,
                 span: span.clone(),
                 id: self.fresh_hir_id(),
@@ -455,7 +455,7 @@ impl<'a> FnCtx<'a> {
                 val
             }
             None => HirExpr {
-                kind: HirExprKind::Const(super::ConstValue::Integer(0)),
+                kind: HirExprKind::Const(crate::hir::ConstValue::Integer(0)),
                 ty: None,
                 span: branch.block.span.clone(),
                 id: self.fresh_hir_id(),

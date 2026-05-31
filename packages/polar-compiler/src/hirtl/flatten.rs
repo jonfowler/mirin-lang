@@ -27,14 +27,14 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 
-use super::{
+use crate::hir::{
     Domain, GenericArg, GenericArgs, HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr,
     HirExprKind, HirFn, HirId, HirItem, HirLet, HirLocalInfo, HirParam, HirPort, HirSourceFile,
     HirStmt, HirStruct, HirType, HirTypeKind, HirVarDecl, LocalId, ParamKind, ParamSection,
     PortTypeRef, ValueKind, ValueType,
 };
 use crate::resolve::{DefId, LocalKind};
-use crate::surface_ir::{Direction, NodeId};
+use crate::surface::ir::{Direction, NodeId};
 use crate::{SourceExcerpt, SourceSpan};
 
 // ============================================================================
@@ -534,7 +534,7 @@ impl<'a> FnFlattener<'a> {
             if !matches!(gp.kind, crate::resolve::GenericParamKind::Domain) {
                 continue;
             }
-            let Some(super::GenericArg::Domain(d)) = port_ref.args.0.get(i) else {
+            let Some(crate::hir::GenericArg::Domain(d)) = port_ref.args.0.get(i) else {
                 continue;
             };
             for hp in &p.params {
@@ -746,7 +746,7 @@ impl<'a> FnFlattener<'a> {
                 for s in &i.else_branch.statements {
                     self.flatten_stmt(s, func, &mut else_stmts);
                 }
-                out.push(HirStmt::If(super::HirIfStmt {
+                out.push(HirStmt::If(crate::hir::HirIfStmt {
                     condition: cond,
                     then_branch: HirBlock {
                         statements: then_stmts,
@@ -777,7 +777,7 @@ impl<'a> FnFlattener<'a> {
                 let d_input = self
                     .remap_expr(&a.d_input)
                     .unwrap_or_else(|| a.d_input.clone());
-                out.push(HirStmt::AlwaysFf(super::HirAlwaysFfStmt {
+                out.push(HirStmt::AlwaysFf(crate::hir::HirAlwaysFfStmt {
                     clock,
                     dest,
                     d_input,
@@ -847,7 +847,7 @@ impl<'a> FnFlattener<'a> {
             .get(&l.value.id)
             .cloned()
             .unwrap_or_else(|| HirType {
-                kind: HirTypeKind::Var(super::TypeVar(u32::MAX)),
+                kind: HirTypeKind::Var(crate::hir::TypeVar(u32::MAX)),
                 span: l.span.clone(),
             });
         let name = func
@@ -972,7 +972,7 @@ impl<'a> FnFlattener<'a> {
             .get(&eq.rhs.id)
             .cloned()
             .unwrap_or_else(|| HirType {
-                kind: HirTypeKind::Var(super::TypeVar(u32::MAX)),
+                kind: HirTypeKind::Var(crate::hir::TypeVar(u32::MAX)),
                 span: eq.span.clone(),
             });
 
@@ -1031,7 +1031,7 @@ impl<'a> FnFlattener<'a> {
             .get(&e.id)
             .cloned()
             .unwrap_or_else(|| HirType {
-                kind: HirTypeKind::Var(super::TypeVar(u32::MAX)),
+                kind: HirTypeKind::Var(crate::hir::TypeVar(u32::MAX)),
                 span: e.span.clone(),
             });
 
@@ -1260,7 +1260,7 @@ impl<'a> FnFlattener<'a> {
                     span: whole_expr.span.clone(),
                 }),
                 ty: Some(new_self.ty.as_ref().cloned().unwrap_or_else(|| HirType {
-                    kind: HirTypeKind::Var(super::TypeVar(u32::MAX)),
+                    kind: HirTypeKind::Var(crate::hir::TypeVar(u32::MAX)),
                     span: whole_expr.span.clone(),
                 })),
                 span: whole_expr.span.clone(),
@@ -1590,9 +1590,9 @@ fn walk_expr_for_max(e: &HirExpr, max: &mut u32) {
 mod tests {
     use super::*;
     use crate::hir::lower_to_hir;
+    use crate::hirt::typeck;
     use crate::resolve::resolve_file;
-    use crate::surface_ir::parse_surface_source;
-    use crate::typeck;
+    use crate::surface::ir::parse_surface_source;
 
     fn flatten(source: &str) -> Result<HirSourceFile, Vec<FlattenError>> {
         let file = parse_surface_source(source).expect("parse failed");
@@ -1601,15 +1601,16 @@ mod tests {
         let hir = lower_to_hir(&file, &resolve).expect("hir lowering");
         let tc = typeck::check_file(&hir, &resolve);
         assert!(tc.errors.is_empty(), "typeck: {:?}", tc.errors);
-        let block_lowered = crate::hir::lower_block_expressions::lower_block_expressions(
+        let block_lowered = crate::hirtl::lower_block_expressions::lower_block_expressions(
             &hir,
             &tc.expr_types,
             &tc.local_types,
         );
         let hir = block_lowered.file;
         let local_types = block_lowered.local_types;
-        let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
-        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
+        let hir =
+            crate::hirtl::method_lower::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
+        let hir = crate::hirtl::out_args::desugar_user_calls(&hir).expect("desugar");
         flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types)
     }
 
@@ -1712,15 +1713,19 @@ mod tests {
             let hir = lower_to_hir(&surface, &resolve).expect("lower");
             let tc = typeck::check_file(&hir, &resolve);
             assert!(tc.errors.is_empty(), "{name} typeck: {:?}", tc.errors);
-            let block_lowered = crate::hir::lower_block_expressions::lower_block_expressions(
+            let block_lowered = crate::hirtl::lower_block_expressions::lower_block_expressions(
                 &hir,
                 &tc.expr_types,
                 &tc.local_types,
             );
             let hir = block_lowered.file;
             let local_types = block_lowered.local_types;
-            let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
-            let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
+            let hir = crate::hirtl::method_lower::lower_method_calls(
+                &hir,
+                &resolve,
+                &tc.method_resolutions,
+            );
+            let hir = crate::hirtl::out_args::desugar_user_calls(&hir).expect("desugar");
             let flat = flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types)
                 .unwrap_or_else(|e| panic!("{name} flatten: {e:?}"));
             let _tc2 = typeck::check_file(&flat, &resolve);

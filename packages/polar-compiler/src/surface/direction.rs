@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::Path;
 
 use crate::resolve::{DefId, DefKind, Res, ResolveResult};
-use crate::surface_ir::{
+use crate::surface::ir::{
     Block, ConnectionDirection, Expression, FunctionDefinition, Item, NamedArgument,
     PositionalArgument, PostfixExpression, PostfixOperation, SourceFile, Statement,
 };
@@ -333,7 +333,7 @@ fn check_named_arg(
     // Source-arrow (`=>`) requires an `out`-direction named param on the
     // callee — that's the only thing the function writes back through the
     // named slot. Sink-arrow (`=`) is the inverse.
-    let param_is_out = matches!(param.direction, Some(crate::surface_ir::Direction::Out));
+    let param_is_out = matches!(param.direction, Some(crate::surface::ir::Direction::Out));
     if matches!(operator, NamedArgumentOperator::Source) && !param_is_out {
         errors.push(DirectionError {
             kind: DirectionErrorKind::SourceArrowOnSink {
@@ -357,7 +357,7 @@ fn keyword_matches_operator(keyword: ConnectionDirection, operator: NamedArgumen
 mod tests {
     use super::*;
     use crate::resolve::resolve_file;
-    use crate::surface_ir::parse_surface_source;
+    use crate::surface::ir::parse_surface_source;
 
     fn check(source: &str) -> Vec<DirectionError> {
         let file = parse_surface_source(source).expect("parse failed");
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn direction_fail_unknown_named_arg() {
-        let source = include_str!("../../../examples/fail-expected/unknown-named-arg.plr");
+        let source = include_str!("../../../../examples/fail-expected/unknown-named-arg.plr");
         let file = parse_surface_source(source).expect("parse failed");
         let resolve = resolve_file(&file);
         assert!(
@@ -475,7 +475,8 @@ mod tests {
 
     #[test]
     fn direction_fail_source_arrow_on_fn_param() {
-        let source = include_str!("../../../examples/fail-expected/source-arrow-on-fn-param.plr");
+        let source =
+            include_str!("../../../../examples/fail-expected/source-arrow-on-fn-param.plr");
         let file = parse_surface_source(source).expect("parse failed");
         let resolve = resolve_file(&file);
         assert!(

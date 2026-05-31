@@ -29,7 +29,7 @@ use super::{
 };
 use crate::SourceSpan;
 use crate::resolve::{DefId, DefKind, LocalKind, Res, ResolveResult};
-use crate::surface_ir::{
+use crate::surface::ir::{
     AssignmentStatement, BinaryOperator, Block, Expression, FunctionDefinition, Item, LetStatement,
     NamedArgument, NamedParameter, NodeId, ParamKind, Parameter, PortDefinition,
     PositionalArgument, PostfixExpression, PostfixOperation, RecordConstructorExpression,
@@ -775,7 +775,7 @@ impl<'a> Lowerer<'a> {
     ///
     /// Impl-level parameters (e.g. `impl T { #clk: Clock } { … }`) are not
     /// yet supported; if present, lowering errors and the impl is skipped.
-    fn lower_impl(&mut self, impl_block: &crate::surface_ir::ImplBlock, items: &mut Vec<HirItem>) {
+    fn lower_impl(&mut self, impl_block: &crate::surface::ir::ImplBlock, items: &mut Vec<HirItem>) {
         let target_def = match self.resolve.resolutions.get(&impl_block.name.id) {
             Some(&Res::Def(_, id)) => id,
             _ => return,
@@ -934,7 +934,7 @@ impl<'a> Lowerer<'a> {
     /// Allocate a `LocalId` for an implicit-var target if (a) the resolver
     /// classified the target's surface node as `LocalKind::ImplicitVar` (the
     /// introduction site), and (b) we haven't already allocated for it.
-    fn maybe_alloc_implicit_var(&mut self, target: &crate::surface_ir::Identifier) {
+    fn maybe_alloc_implicit_var(&mut self, target: &crate::surface::ir::Identifier) {
         if self.fn_state.node_to_local.contains_key(&target.id) {
             return;
         }
@@ -1135,7 +1135,7 @@ impl<'a> Lowerer<'a> {
     /// Lower `when EVENT { body }` to a HIR `When` expression. Stays
     /// tree-shaped through typeck; a later pass flattens it to a result
     /// var + always_ff statement.
-    fn lower_when_expression(&mut self, when_expr: &crate::surface_ir::WhenExpression) -> HirExpr {
+    fn lower_when_expression(&mut self, when_expr: &crate::surface::ir::WhenExpression) -> HirExpr {
         let event = self.lower_expr(&when_expr.event);
         let body = self.lower_branch_block(&when_expr.body);
         HirExpr {
@@ -1164,7 +1164,7 @@ impl<'a> Lowerer<'a> {
     /// Lower `if cond { … } else { … }` to a HIR `If` expression. Each
     /// branch is lowered as its own block-expression so the tail value is
     /// available to the late flattening pass.
-    fn lower_if_expression(&mut self, if_expr: &crate::surface_ir::IfExpression) -> HirExpr {
+    fn lower_if_expression(&mut self, if_expr: &crate::surface::ir::IfExpression) -> HirExpr {
         let condition = self.lower_expr(&if_expr.condition);
         let then_branch = self.lower_branch_block(&if_expr.then_branch);
         let else_branch = self.lower_branch_block(&if_expr.else_branch);
@@ -1191,7 +1191,7 @@ impl<'a> Lowerer<'a> {
     /// shape — every "operation" is a call. Type checking handles the
     /// polymorphic signature `(+){N, D}(uint(N) @D, uint(N) @D) -> uint(N) @D`
     /// the same way it handles `reg`'s implicit width parameter today.
-    fn lower_binary(&mut self, b: &crate::surface_ir::BinaryExpression) -> HirExpr {
+    fn lower_binary(&mut self, b: &crate::surface::ir::BinaryExpression) -> HirExpr {
         let op_name = match b.operator {
             BinaryOperator::Add => "+",
             BinaryOperator::Multiply => "*",
@@ -1581,7 +1581,7 @@ impl<'a> Lowerer<'a> {
     fn lower_method_step(
         &mut self,
         receiver: HirExpr,
-        field: &crate::surface_ir::FieldAccess,
+        field: &crate::surface::ir::FieldAccess,
         args: &[PositionalArgument],
     ) -> HirExpr {
         let call_span = combine_spans(&receiver.span, &field.span);
@@ -2097,7 +2097,7 @@ fn builtin_literal(text: &str) -> Option<ConstValue> {
 mod tests {
     use super::*;
     use crate::resolve::resolve_file;
-    use crate::surface_ir::{Direction, parse_surface_source};
+    use crate::surface::ir::{Direction, parse_surface_source};
 
     fn lower(source: &str) -> Result<HirSourceFile, Vec<HirLowerError>> {
         let file = parse_surface_source(source).expect("parse failed");

@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use super::{
+use crate::hir::{
     HirArg, HirArgSource, HirBlock, HirCall, HirEquation, HirExpr, HirExprKind, HirFieldAccess,
     HirFn, HirId, HirItem, HirLet, HirMethodCall, HirSourceFile, HirStmt, ParamKind, ParamSection,
 };
@@ -113,13 +113,13 @@ fn rewrite_stmt(stmt: &HirStmt, ctx: &RewriteCtx<'_>) -> HirStmt {
         }),
         HirStmt::Return(e) => HirStmt::Return(rewrite_expr(e, ctx)),
         HirStmt::Expr(e) => HirStmt::Expr(rewrite_expr(e, ctx)),
-        HirStmt::If(i) => HirStmt::If(super::HirIfStmt {
+        HirStmt::If(i) => HirStmt::If(crate::hir::HirIfStmt {
             condition: rewrite_expr(&i.condition, ctx),
             then_branch: rewrite_block(&i.then_branch, ctx),
             else_branch: rewrite_block(&i.else_branch, ctx),
             span: i.span.clone(),
         }),
-        HirStmt::AlwaysFf(a) => HirStmt::AlwaysFf(super::HirAlwaysFfStmt {
+        HirStmt::AlwaysFf(a) => HirStmt::AlwaysFf(crate::hir::HirAlwaysFfStmt {
             clock: a.clock,
             dest: a.dest,
             d_input: rewrite_expr(&a.d_input, ctx),
@@ -267,10 +267,10 @@ fn rewrite_method_call(mc: &HirMethodCall, whole: &HirExpr, ctx: &RewriteCtx<'_>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::lower_to_hir;
+    use crate::hir::{lower_to_hir, *};
+    use crate::hirt::typeck;
     use crate::resolve::resolve_file;
-    use crate::surface_ir::parse_surface_source;
-    use crate::typeck;
+    use crate::surface::ir::parse_surface_source;
 
     fn process(source: &str) -> HirSourceFile {
         let file = parse_surface_source(source).expect("parse");

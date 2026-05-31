@@ -11,7 +11,7 @@
 
 use std::fmt::Write;
 
-use crate::sv_ir::{SvExpr, SvFile, SvItem};
+use crate::svir::ir::{SvExpr, SvFile, SvItem};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmitError {
@@ -146,13 +146,17 @@ fn validate_item(item: &SvItem, module: &str, errors: &mut Vec<EmitError>) {
     }
 }
 
-fn validate_comb_stmt(stmt: &crate::sv_ir::SvCombStmt, module: &str, errors: &mut Vec<EmitError>) {
+fn validate_comb_stmt(
+    stmt: &crate::svir::ir::SvCombStmt,
+    module: &str,
+    errors: &mut Vec<EmitError>,
+) {
     match stmt {
-        crate::sv_ir::SvCombStmt::Assign { lhs, rhs } => {
+        crate::svir::ir::SvCombStmt::Assign { lhs, rhs } => {
             validate_expr_idents(lhs, module, errors);
             validate_expr_idents(rhs, module, errors);
         }
-        crate::sv_ir::SvCombStmt::If(if_stmt) => {
+        crate::svir::ir::SvCombStmt::If(if_stmt) => {
             validate_expr_idents(&if_stmt.cond, module, errors);
             for s in &if_stmt.then_branch {
                 validate_comb_stmt(s, module, errors);
@@ -445,26 +449,28 @@ const SV_RESERVED_WORDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{flatten_aggregates, lower_to_hir};
+    use crate::hir::lower_to_hir;
+    use crate::hirt::typeck;
+    use crate::hirtl::flatten::flatten_aggregates;
     use crate::resolve::resolve_file;
-    use crate::surface_ir::parse_surface_source;
-    use crate::sv_lower::lower_to_sv;
-    use crate::typeck;
+    use crate::surface::ir::parse_surface_source;
+    use crate::svir::lower::lower_to_sv;
 
     fn build_sv(src: &str) -> Result<String, Vec<EmitError>> {
         let surface = parse_surface_source(src).expect("parse");
         let resolve = resolve_file(&surface);
         let hir = lower_to_hir(&surface, &resolve).expect("lower");
         let tc = typeck::check_file(&hir, &resolve);
-        let block_lowered = crate::hir::lower_block_expressions::lower_block_expressions(
+        let block_lowered = crate::hirtl::lower_block_expressions::lower_block_expressions(
             &hir,
             &tc.expr_types,
             &tc.local_types,
         );
         let hir = block_lowered.file;
         let local_types = block_lowered.local_types;
-        let hir = crate::hir::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
-        let hir = crate::hir::desugar_user_calls(&hir).expect("desugar");
+        let hir =
+            crate::hirtl::method_lower::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
+        let hir = crate::hirtl::out_args::desugar_user_calls(&hir).expect("desugar");
         let flat =
             flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types).expect("flatten");
         let sv = lower_to_sv(&flat, &resolve, &tc.fn_residuals);
@@ -494,7 +500,8 @@ mod tests {
 
     #[test]
     fn emits_accumulator() {
-        let s = build_sv(include_str!("../../../examples/working/accumulator.plr")).expect("emit");
+        let s =
+            build_sv(include_str!("../../../../examples/working/accumulator.plr")).expect("emit");
         // Eyeball-check the key shapes; the exact whitespace can shift
         // without breaking SV semantics.
         assert!(s.contains("module accumulator"), "{s}");
@@ -511,15 +518,17 @@ mod tests {
 
     #[test]
     fn emits_counter_with_parameter() {
-        let s = build_sv(include_str!("../../../examples/working/counter.plr")).expect("emit");
+        let s = build_sv(include_str!("../../../../examples/working/counter.plr")).expect("emit");
         assert!(s.contains("#(parameter int bits"), "{s}");
         assert!(s.contains("[bits-1:0]"), "{s}");
     }
 
     #[test]
     fn emits_packet_struct() {
-        let s =
-            build_sv(include_str!("../../../examples/working/packet_struct.plr")).expect("emit");
+        let s = build_sv(include_str!(
+            "../../../../examples/working/packet_struct.plr"
+        ))
+        .expect("emit");
         assert!(s.contains("inp__valid"), "{s}");
         assert!(s.contains("inp__payload"), "{s}");
         assert!(s.contains("result__valid"), "{s}");
@@ -534,7 +543,7 @@ mod tests {
         // pipeline.plr shadows the `data` param with two `let data = …`
         // bindings. The emitter must rename the shadows so SV doesn't see
         // three declarations of the same identifier.
-        let s = build_sv(include_str!("../../../examples/working/pipeline.plr")).expect("emit");
+        let s = build_sv(include_str!("../../../../examples/working/pipeline.plr")).expect("emit");
         // The original `data` port and the renamed shadows should both appear.
         assert!(s.contains("input  logic [7:0] data,"), "{s}");
         assert!(s.contains("data_1"), "{s}");
@@ -549,7 +558,8 @@ mod tests {
         // multi_call.plr's `add9` writes `return add3(add3(x))` — a nested
         // user-fn call. The out_args pass lifts the inner call into a
         // synthetic temp; sv_lower emits three `add3` instances in `add9`.
-        let s = build_sv(include_str!("../../../examples/working/multi_call.plr")).expect("emit");
+        let s =
+            build_sv(include_str!("../../../../examples/working/multi_call.plr")).expect("emit");
         let instances = s.matches("add3 add3").count();
         assert_eq!(
             instances, 3,
@@ -565,7 +575,8 @@ mod tests {
         // dispatch picks `Option::reg` because the receiver types as Option.
         // The SV module is `Option__reg` (owner-qualified) so it avoids the
         // SV `reg` reserved word.
-        let s = build_sv(include_str!("../../../examples/working/delay_impl.plr")).expect("emit");
+        let s =
+            build_sv(include_str!("../../../../examples/working/delay_impl.plr")).expect("emit");
         let instances = s.matches("Option__reg Option__reg").count();
         assert_eq!(
             instances, 2,
@@ -579,7 +590,7 @@ mod tests {
         // both named (`f { downstream => ds }(…)`) and positional
         // (`f(…, out => ds)`). Each form should connect the callee's
         // out-direction port to a caller-side local.
-        let s = build_sv(include_str!("../../../examples/working/delay.plr")).expect("emit");
+        let s = build_sv(include_str!("../../../../examples/working/delay.plr")).expect("emit");
         // Implicit-var `ds` introduced by the source-arrow becomes two
         // logic decls (per-leaf of `Option @clk`).
         assert!(s.contains("logic ds__valid;"), "{s}");
@@ -601,7 +612,7 @@ mod tests {
     fn emits_delay_with_user_fn_instances() {
         // delay.plr's `double_delay` instantiates `reg2` twice; flatten +
         // out_args + sv_lower should produce two SV instance declarations.
-        let s = build_sv(include_str!("../../../examples/working/delay.plr")).expect("emit");
+        let s = build_sv(include_str!("../../../../examples/working/delay.plr")).expect("emit");
         // Two `reg2` instances appear (one named `reg2`, one `reg2_1`).
         assert!(s.contains("module reg2"), "{s}");
         assert!(s.contains("module double_delay"), "{s}");
@@ -619,8 +630,10 @@ mod tests {
         // `if cond { a } else { b }` as a fn body's tail expression flattens
         // to `var __block_N; always_comb begin if (cond) __block_N = a;
         // else __block_N = b; end; assign result = __block_N;`.
-        let s =
-            build_sv(include_str!("../../../examples/working/if_expression.plr")).expect("emit");
+        let s = build_sv(include_str!(
+            "../../../../examples/working/if_expression.plr"
+        ))
+        .expect("emit");
         assert!(s.contains("always_comb begin"), "{s}");
         assert!(s.contains("if (cond) begin"), "{s}");
         assert!(s.contains("end else begin"), "{s}");
@@ -638,7 +651,10 @@ mod tests {
         // `always_ff @(posedge clk) __block_N <= (count + 1);` plus a
         // continuous `assign count = __block_N;` that ties the result
         // back to the user's `var count`.
-        let s = build_sv(include_str!("../../../examples/working/when_counter.plr")).expect("emit");
+        let s = build_sv(include_str!(
+            "../../../../examples/working/when_counter.plr"
+        ))
+        .expect("emit");
         assert!(s.contains("always_ff @(posedge clk) begin"), "{s}");
         // No `if (!rstn)` for the reset-less when form.
         assert!(
@@ -666,7 +682,7 @@ mod tests {
     fn fail_example_with_reserved_word_errors() {
         // examples/fail-expected/sv-reserved-word.plr uses `input` as a parameter
         // name. The earlier passes accept it; the emitter should reject it.
-        let src = include_str!("../../../examples/fail-expected/sv-reserved-word.plr");
+        let src = include_str!("../../../../examples/fail-expected/sv-reserved-word.plr");
         let errs = build_sv(src).expect_err("expected emission error");
         assert!(
             errs.iter().any(|e| matches!(

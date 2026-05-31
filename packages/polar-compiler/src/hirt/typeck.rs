@@ -118,8 +118,8 @@ pub enum ObligationKind {
     /// whatever survives is attached to the enclosing fn as a residual
     /// constraint and propagated through call sites.
     ConstEq {
-        lhs: crate::normal_const::NormalConst,
-        rhs: crate::normal_const::NormalConst,
+        lhs: crate::hirt::normal_const::NormalConst,
+        rhs: crate::hirt::normal_const::NormalConst,
     },
     /// A domain must inhabit the `Clock` kind (not `@const`). Discharged once
     /// the domain resolves and bound-tracking is in place.
@@ -326,8 +326,8 @@ fn obligations_equal(a: &Obligation, b: &Obligation) -> bool {
     }
 }
 
-fn describe_normal(nc: &crate::normal_const::NormalConst) -> String {
-    use crate::normal_const::NormalVar;
+fn describe_normal(nc: &crate::hirt::normal_const::NormalConst) -> String {
+    use crate::hirt::normal_const::NormalVar;
     if nc.terms.is_empty() {
         return nc.constant.to_string();
     }
@@ -411,8 +411,8 @@ struct FileCtx<'hir> {
 /// caller's `GenericArgs[i].Const`.
 #[derive(Debug, Clone)]
 pub struct FnResidual {
-    pub lhs: crate::normal_const::NormalConst,
-    pub rhs: crate::normal_const::NormalConst,
+    pub lhs: crate::hirt::normal_const::NormalConst,
+    pub rhs: crate::hirt::normal_const::NormalConst,
     pub span: SourceSpan,
 }
 
@@ -1085,8 +1085,8 @@ impl InferCtxt {
             // infrastructure is in place for Phase D's residual propagation
             // through arithmetic.
             _ => match (
-                crate::normal_const::normalise(&lhs),
-                crate::normal_const::normalise(&rhs),
+                crate::hirt::normal_const::normalise(&lhs),
+                crate::hirt::normal_const::normalise(&rhs),
             ) {
                 (Some(a), Some(b)) if a == b => {}
                 (Some(a), Some(b)) => {
@@ -1223,14 +1223,14 @@ impl InferCtxt {
     /// containing further vars). Vars without a binding stay as-is.
     fn simplify_normal_const(
         &self,
-        nc: &crate::normal_const::NormalConst,
-    ) -> crate::normal_const::NormalConst {
-        use crate::normal_const::NormalVar;
+        nc: &crate::hirt::normal_const::NormalConst,
+    ) -> crate::hirt::normal_const::NormalConst {
+        use crate::hirt::normal_const::NormalVar;
         nc.simplify(&mut |var| match var {
             NormalVar::ConstVar(i) => {
                 let bound = self.const_vars.get(*i as usize).and_then(|r| r.as_ref())?;
                 let resolved = self.resolve_const_expr(bound);
-                crate::normal_const::normalise(&resolved)
+                crate::hirt::normal_const::normalise(&resolved)
             }
             _ => None,
         })
@@ -1243,13 +1243,13 @@ impl InferCtxt {
     /// won't, but the substitution is defensive).
     fn substitute_residual_through_args(
         &self,
-        nc: &crate::normal_const::NormalConst,
+        nc: &crate::hirt::normal_const::NormalConst,
         args: &GenericArgs,
-    ) -> crate::normal_const::NormalConst {
-        use crate::normal_const::NormalVar;
+    ) -> crate::hirt::normal_const::NormalConst {
+        use crate::hirt::normal_const::NormalVar;
         nc.simplify(&mut |var| match var {
             NormalVar::Param(i) => match args.0.get(*i as usize) {
-                Some(GenericArg::Const(c)) => crate::normal_const::normalise(c),
+                Some(GenericArg::Const(c)) => crate::hirt::normal_const::normalise(c),
                 _ => None,
             },
             _ => None,
@@ -1365,7 +1365,7 @@ impl InferCtxt {
     /// position that expects a value.
     fn infer_block_expr(
         &mut self,
-        block: &super::hir::HirBlockExpr,
+        block: &crate::hir::HirBlockExpr,
         span: SourceSpan,
         file: &FileCtx<'_>,
     ) -> HirType {
@@ -1389,7 +1389,7 @@ impl InferCtxt {
     /// if-expression's type is the unified branch type.
     fn infer_if_expr(
         &mut self,
-        if_expr: &super::hir::HirIfExpr,
+        if_expr: &crate::hir::HirIfExpr,
         span: SourceSpan,
         file: &FileCtx<'_>,
     ) -> HirType {
@@ -1415,7 +1415,7 @@ impl InferCtxt {
     /// same clock domain.
     fn infer_when_expr(
         &mut self,
-        when_expr: &super::hir::HirWhenExpr,
+        when_expr: &crate::hir::HirWhenExpr,
         span: SourceSpan,
         file: &FileCtx<'_>,
     ) -> HirType {
@@ -1982,7 +1982,7 @@ mod tests {
     use super::*;
     use crate::hir::lower_to_hir;
     use crate::resolve::resolve_file;
-    use crate::surface_ir::parse_surface_source;
+    use crate::surface::ir::parse_surface_source;
 
     fn check(source: &str) -> TypeCheckResult {
         let file = parse_surface_source(source).expect("parse failed");
