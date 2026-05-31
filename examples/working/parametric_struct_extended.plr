@@ -1,4 +1,4 @@
-// verilator: -GN=8
+// verilator: -GN=8 -Wno-UNUSEDSIGNAL
 // Parametric struct used concretely inside a non-generic fn. Exercises
 // the full Phase 1–5 chain: type-arg syntax (`Bus(uint(8))`), the
 // separate term-level constructor (`bus`), `HirTypeKind::Param` for the
@@ -28,7 +28,7 @@ fn pipeline
   }
 
 fn pipeline_para
-  { dom clk: Clock, rstn: Reset @clk, param A: Type }
+  { dom clk: Clock, rstn: Reset @clk = high, param A: Type }
   ( w: Bus(A) @clk )
   -> Bus(A) @clk
   {
@@ -36,10 +36,10 @@ fn pipeline_para
   }
 
 
-// fn pipeline_write
-//   { dom clk: Clock, rstn: Reset @clk}
-//   ( w: Bus(Write) @clk )
-//   -> Bus(Write) @clk
-//   {
-//     pipeline_para{rstn}(w)
-//   }
+fn pipeline_write
+  { dom clk: Clock, rstn: Reset @clk = high }
+  ( w: Bus(Write) @clk )
+  -> Bus(Write) @clk
+{
+  pipeline_para(w)
+}

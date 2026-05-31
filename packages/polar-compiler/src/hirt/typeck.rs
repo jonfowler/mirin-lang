@@ -142,6 +142,12 @@ pub struct TypeCheckResult {
     /// during typeck, and emitted as SV `initial assert(…)` at the
     /// monomorphic module by sv_lower.
     pub fn_residuals: HashMap<DefId, Vec<FnResidual>>,
+    /// Per-call `GenericArgs` inferred at the call site. Keyed by the
+    /// call expression's `HirId`. Consumed by the monomorphise pass to
+    /// drive Type-kind specialisation: for each call to a Type-kind
+    /// generic fn, the recorded args determine which specialisation
+    /// the call must be rewritten to.
+    pub call_generics: HashMap<HirId, GenericArgs>,
     /// Types inferred for each expression keyed by `HirId`.
     pub expr_types: HashMap<HirId, HirType>,
     /// Resolved callee `DefId` for each `HirExprKind::MethodCall` expression,
@@ -176,6 +182,7 @@ pub fn check_file(file: &HirSourceFile, resolve: &ResolveResult) -> TypeCheckRes
         errors: ctx.errors,
         residual_obligations: ctx.residual_obligations,
         fn_residuals: ctx.fn_residuals,
+        call_generics: ctx.call_generics,
         expr_types: ctx.expr_types,
         method_resolutions: ctx.method_resolutions,
         local_types: ctx.local_types,
@@ -403,6 +410,7 @@ struct FileCtx<'hir> {
     expr_types: HashMap<HirId, HirType>,
     method_resolutions: HashMap<HirId, DefId>,
     local_types: HashMap<LocalId, HirType>,
+    call_generics: HashMap<HirId, GenericArgs>,
 }
 
 /// A residual constraint attached to a fn's signature. Stored as a pair
@@ -448,6 +456,7 @@ impl<'hir> FileCtx<'hir> {
             expr_types: HashMap::new(),
             method_resolutions: HashMap::new(),
             local_types: HashMap::new(),
+            call_generics: HashMap::new(),
         }
     }
 
@@ -477,6 +486,9 @@ impl<'hir> FileCtx<'hir> {
         }
         for (id, def) in infer.method_resolutions.drain() {
             self.method_resolutions.insert(id, def);
+        }
+        for (id, args) in infer.call_generics.drain() {
+            self.call_generics.insert(id, args);
         }
         for (id, ty) in infer.locals.drain() {
             self.local_types.insert(id, ty);
@@ -540,6 +552,10 @@ struct InferCtxt {
     /// Resolved callee for each `HirExprKind::MethodCall`, keyed by the
     /// MethodCall's `HirId`. Filled in by `infer_method_call`.
     method_resolutions: HashMap<HirId, DefId>,
+    /// Per-call `GenericArgs` (after substitution), keyed by the call
+    /// expression's `HirId`. Drained into `FileCtx::call_generics` by
+    /// `collect` so the monomorphise pass can replay the bindings.
+    call_generics: HashMap<HirId, GenericArgs>,
     /// Constraints not solved at the walk site.
     obligations: Vec<Obligation>,
     errors: Vec<TypeError>,
@@ -555,6 +571,7 @@ impl InferCtxt {
             locals: HashMap::new(),
             expr_types: HashMap::new(),
             method_resolutions: HashMap::new(),
+            call_generics: HashMap::new(),
             obligations: Vec::new(),
             errors: Vec::new(),
         }
@@ -744,6 +761,13 @@ impl InferCtxt {
                         },
                         domain,
                     }),
+                    ValueKind::Struct { def, args } => HirTypeKind::Value(ValueType {
+                        kind: ValueKind::Struct {
+                            def: *def,
+                            args: self.apply_substitution_to_args(args, subst),
+                        },
+                        domain,
+                    }),
                     _ => HirTypeKind::Value(ValueType {
                         kind: vt.kind.clone(),
                         domain,
@@ -757,13 +781,26 @@ impl InferCtxt {
             HirTypeKind::Port(p) => HirType {
                 kind: HirTypeKind::Port(PortTypeRef {
                     def: p.def,
-                    args: p.args.clone(),
+                    args: self.apply_substitution_to_args(&p.args, subst),
                     domain: self.substitute_domain(&p.domain, subst),
                 }),
                 span: ty.span.clone(),
             },
             _ => ty.clone(),
         }
+    }
+
+    fn apply_substitution_to_args(&self, args: &GenericArgs, subst: &Substitution) -> GenericArgs {
+        GenericArgs(
+            args.0
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(self.apply_substitution(t, subst)),
+                    GenericArg::Const(c) => GenericArg::Const(self.substitute_const_expr(c, subst)),
+                    GenericArg::Domain(d) => GenericArg::Domain(self.substitute_domain(d, subst)),
+                })
+                .collect(),
+        )
     }
 
     fn substitute_domain(&self, d: &Domain, subst: &Substitution) -> Domain {
@@ -926,6 +963,24 @@ impl InferCtxt {
             let ty = self.locals[&local].clone();
             let resolved = self.finalize_type(&ty);
             self.locals.insert(local, resolved);
+        }
+        // Resolve each per-call `GenericArgs` so downstream passes
+        // (especially monomorphise) see concrete types instead of the
+        // fresh inference variables build_sig_subst seeded.
+        let call_ids: Vec<HirId> = self.call_generics.keys().copied().collect();
+        for id in call_ids {
+            let args = self.call_generics[&id].clone();
+            let resolved = GenericArgs(
+                args.0
+                    .into_iter()
+                    .map(|a| match a {
+                        GenericArg::Type(t) => GenericArg::Type(self.finalize_type(&t)),
+                        GenericArg::Const(c) => GenericArg::Const(self.resolve_const_expr(&c)),
+                        GenericArg::Domain(d) => GenericArg::Domain(self.finalize_domain(&d)),
+                    })
+                    .collect(),
+            );
+            self.call_generics.insert(id, resolved);
         }
     }
 
@@ -1360,7 +1415,7 @@ impl InferCtxt {
                 }),
                 span: expr.span.clone(),
             },
-            HirExprKind::Call(call) => self.infer_call(call, file),
+            HirExprKind::Call(call) => self.infer_call(call, expr.id, file),
             HirExprKind::Field(field) => self.infer_field(field, expr.span.clone(), file),
             HirExprKind::MethodCall(mc) => {
                 self.infer_method_call(mc, expr.id, expr.span.clone(), file)
@@ -1494,7 +1549,7 @@ impl InferCtxt {
         }
     }
 
-    fn infer_call(&mut self, call: &HirCall, file: &FileCtx<'_>) -> HirType {
+    fn infer_call(&mut self, call: &HirCall, call_id: HirId, file: &FileCtx<'_>) -> HirType {
         if let Some(struct_def) = file.lookup_struct(call.callee) {
             return self.infer_struct_call(struct_def, call, file);
         }
@@ -1505,6 +1560,10 @@ impl InferCtxt {
         };
 
         let subst = self.build_sig_subst(callee, file, &call.span);
+        // Record the per-call `GenericArgs` so a later monomorphisation
+        // pass can replay the binding at codegen time. Drained into
+        // `FileCtx::call_generics` by `collect` after `check_fn`.
+        self.call_generics.insert(call_id, subst.args.clone());
 
         // Slot each arg's expression against the corresponding parameter.
         if call.args.len() != callee.params.len() {

@@ -12,4 +12,5 @@
 pub mod flatten;
 pub mod lower_block_expressions;
 pub mod method_lower;
+pub mod monomorphise;
 pub mod out_args;

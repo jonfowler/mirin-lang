@@ -43,21 +43,31 @@ use crate::test_support::working_examples;
 /// Pipeline an example all the way to SV text.
 fn build_sv(src: &str) -> String {
     let surface = parse_surface_source(src).expect("parse");
-    let resolve = resolve_file(&surface);
+    let mut resolve = resolve_file(&surface);
     let hir = lower_to_hir(&surface, &resolve).expect("lower");
     let tc = typeck::check_file(&hir, &resolve);
+    let mono = crate::hirtl::monomorphise::monomorphise(
+        hir,
+        tc.expr_types,
+        tc.local_types,
+        tc.method_resolutions,
+        tc.fn_residuals,
+        &tc.call_generics,
+        &mut resolve,
+    );
+    let hir = mono.file;
     let block_lowered = crate::hirtl::lower_block_expressions::lower_block_expressions(
         &hir,
-        &tc.expr_types,
-        &tc.local_types,
+        &mono.expr_types,
+        &mono.local_types,
     );
     let hir = block_lowered.file;
     let local_types = block_lowered.local_types;
     let hir =
-        crate::hirtl::method_lower::lower_method_calls(&hir, &resolve, &tc.method_resolutions);
+        crate::hirtl::method_lower::lower_method_calls(&hir, &resolve, &mono.method_resolutions);
     let hir = crate::hirtl::out_args::desugar_user_calls(&hir).expect("desugar");
-    let flat = flatten_aggregates(&hir, &resolve, &tc.expr_types, &local_types).expect("flatten");
-    let sv = lower_to_sv(&flat, &resolve, &tc.fn_residuals);
+    let flat = flatten_aggregates(&hir, &resolve, &mono.expr_types, &local_types).expect("flatten");
+    let sv = lower_to_sv(&flat, &resolve, &mono.fn_residuals);
     emit(&sv).expect("emit")
 }
 

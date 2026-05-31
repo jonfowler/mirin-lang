@@ -148,7 +148,7 @@ fn main() {
         }
     };
 
-    let result = resolve_file(&file);
+    let mut result = resolve_file(&file);
     if !result.errors.is_empty() {
         let mut rendered = String::new();
         render_resolve_errors(&result.errors, &source, Some(&args.input), &mut rendered)
@@ -223,18 +223,38 @@ fn main() {
     let _ = width_check.unresolved_widths;
     let _ = width_check.unresolved_domain_kinds;
 
+    // Monomorphise Type-kind generic fns: synthesise a specialised
+    // module per concrete instantiation, leave Const/Domain generics
+    // polymorphic. Original Type-kind-generic fns stay in the HIR but
+    // are skipped by sv_lower (no SV construct matches a
+    // type-polymorphic module).
+    let mono = polar_compiler::hirtl::monomorphise::monomorphise(
+        hir,
+        tc.expr_types,
+        tc.local_types,
+        tc.method_resolutions,
+        tc.fn_residuals,
+        &tc.call_generics,
+        &mut result,
+    );
+    let hir = mono.file;
+    let mono_expr_types = mono.expr_types;
+    let mono_local_types = mono.local_types;
+    let mono_method_resolutions = mono.method_resolutions;
+    let mono_fn_residuals = mono.fn_residuals;
+
     // Flatten block/if expressions into a result-local + statement-form
     // `if`. After this, no `HirExprKind::Block` / `HirExprKind::If`
     // remains in HIR; downstream passes only see `HirStmt::If`.
     let block_lowered =
-        polar_compiler::lower_block_expressions(&hir, &tc.expr_types, &tc.local_types);
+        polar_compiler::lower_block_expressions(&hir, &mono_expr_types, &mono_local_types);
     let hir = block_lowered.file;
     let local_types = block_lowered.local_types;
 
     // Rewrite each `HirExprKind::MethodCall` into a regular `Call` against
     // the resolved method's `DefId`. After this pass no `MethodCall`
     // remains in HIR; downstream passes treat methods like user fns.
-    let hir = polar_compiler::lower_method_calls(&hir, &result, &tc.method_resolutions);
+    let hir = polar_compiler::lower_method_calls(&hir, &result, &mono_method_resolutions);
 
     // Rewrite user-function calls into out-arg form so that, after flatten,
     // they sit at expression-statement position with binding leaves passed
@@ -263,7 +283,7 @@ fn main() {
             print!("{}", parsed.cst);
         }
         EmitMode::Sv => {
-            let flat = match flatten_aggregates(&hir, &result, &tc.expr_types, &local_types) {
+            let flat = match flatten_aggregates(&hir, &result, &mono_expr_types, &local_types) {
                 Ok(f) => f,
                 Err(errors) => {
                     let mut rendered = String::new();
@@ -278,7 +298,7 @@ fn main() {
                     process::exit(1);
                 }
             };
-            let sv_file = lower_to_sv(&flat, &result, &tc.fn_residuals);
+            let sv_file = lower_to_sv(&flat, &result, &mono_fn_residuals);
             let sv_text = match emit_sv(&sv_file) {
                 Ok(s) => s,
                 Err(errors) => {
