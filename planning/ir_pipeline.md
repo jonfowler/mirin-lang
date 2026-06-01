@@ -20,6 +20,8 @@ HIR (untyped)
   ─► typeck::check_file             hirt/typeck.rs
   ─► check_width_obligations        hirt/typeck.rs
 HIR (typed)
+  ─► monomorphise                   hirtl/monomorphise.rs
+HIR (monomorphic)
   ─► lower_block_expressions        hirtl/lower_block_expressions.rs
   ─► lower_method_calls             hirtl/method_lower.rs
   ─► desugar_user_calls             hirtl/out_args.rs
@@ -69,7 +71,9 @@ First IR structured for semantic analysis.
   reference the same param in const position. Typeck additionally produces
   `ValueKind::Var(_)` placeholders when a parametric callsite needs a
   structural inference variable independent of its domain (e.g. `reg`'s
-  `self: A @clk`). All three are substituted out by typeck / flatten.
+  `self: A @clk`). All three are substituted out by typeck (Var), the
+  monomorphise pass (Type-kind `Param`), and flatten (Const/Domain
+  `Param` at struct/port use sites).
 - `HirFn::is_prelude` flags synthesised intrinsic signatures (currently
   `reg`). Such fns drive typeck's arg slotting via the general user-fn
   path but are skipped by every later pass — their call sites lower
@@ -103,7 +107,13 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 | `typeck::check_file` | `hirt/typeck.rs` | Eager unification walk. Per-fn `InferCtxt` carries type/domain/const var pools and an obligation queue. Writes back via `expr_types`, `local_types`, `method_resolutions`, `fn_residuals`. Queues `ConstEq` (normalised) obligations for symbolic widths; the fixpoint `discharge_obligations` pass at end-of-fn simplifies them via current bindings. Use sites of parametric defs allocate fresh `GenericArgs` (`fresh_args_for_def`) and substitute via `instantiate` (rustc's `EarlyBinder::instantiate` shape); call sites build the same `Substitution { args: GenericArgs, domain_locals }` shape with fresh inference variables, and propagate the callee's surviving residual constraints through the call. See `planning/type_inference.md` and `planning/parametricity.md`. |
 | `check_width_obligations` | `hirt/typeck.rs` | Discharge `WidthEq` obligations where both sides are now ground. Surviving residuals carry forward (currently no-op; ready for parametric widths). |
 
-### HIR (typed) → HIR (lowered)
+### HIR (typed) → HIR (monomorphic)
+
+| Pass | File | What it does |
+|---|---|---|
+| `monomorphise` | `hirtl/monomorphise.rs` | For every call whose callee has at least one Type-kind generic param, synthesise a specialised `HirFn` with the Type-kind args substituted out and rewrite the call to point at the spec's `DefId`. Const-kind and Domain-kind params stay polymorphic — only Type is monomorphised. The spec's name is `<orig>__<mangled_types>` (e.g. `pipeline_para__Write`); its `HirParam` list drops the entries whose name matched a substituted Type generic, and the rewritten call has the corresponding arg slots removed so the shape lines up. Reads typeck's `call_generics` side table; clones expr_types/local_types/method_resolutions for the spec's body with fresh `HirId`s and substituted types. Original Type-kind-generic fns stay in the HIR but are skipped by `lower_to_sv` (no SV construct matches a type-polymorphic module). See `planning/parametricity.md`. |
+
+### HIR (monomorphic) → HIR (lowered)
 
 | Pass | File | What it does |
 |---|---|---|
@@ -134,9 +144,14 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 
 The IR-per-phase shape and the eager-unify-with-deferred-obligations split
 follow rustc directly. AST → HIR → THIR → MIR maps onto Surface IR → HIR
-(untyped) → HIR (typed) → HIR (flat). The block/if late-flattening is
-rustc-style: a tree-shaped form survives through type checking, and a late pass
+(untyped) → HIR (typed) → HIR (monomorphic) → HIR (lowered) → HIR (flat).
+Monomorphisation specifically follows rustc's collector / shimming
+approach: each Type-kind instantiation produces a fresh `DefId` and a
+specialised body; Const-kind args stay polymorphic the way rustc's const
+generics also do. The block/if late-flattening is rustc-style: a
+tree-shaped form survives through type checking, and a late pass
 introduces synthetic locals and statement-form control flow. The domain
-solver is structured per OutsideIn(X) — one constraint generator, separate
-solvers for types and domains. See `planning/type_inference.md` for the
-typeck design rationale.
+solver is structured per OutsideIn(X) — one constraint generator,
+separate solvers for types and domains. See `planning/type_inference.md`
+for the typeck design rationale and `planning/parametricity.md` for the
+const-kind inference / monomorphisation split.
