@@ -98,6 +98,43 @@ One `cargo build --release -p polar-lsp` binary serves every editor.
   the binary and register the `.plr` filetype.
 - **Zed** — needs a small WASM extension to register the server; defer.
 
+## Diagnostics and sharing work with a checker
+
+We want always-up-to-date type errors (the feel of Rust's `bacon`) *and*
+navigation/highlighting, and we want them to share work. The conclusion: share it
+**in-process, not across processes.**
+
+Cross-process sharing (an LSP process and a separate checker process reusing each
+other's compiled artifacts) is the wrong trade. It needs a persistent on-disk
+query cache (`planning/modules.md` §8, deferred) *plus* locking, and — the
+deciding point — the two analyses have **different inputs**: the LSP must see
+*unsaved buffers* while a disk-based checker sees *saved files*, so a cache keyed
+on disk-file hashes is partly invalid for the LSP anyway. This is why
+rust-analyzer and `bacon`/`cargo check` deliberately run as two independent
+analyses rather than sharing.
+
+Instead, one long-lived process holds **one in-memory incremental query engine**
+(the single-layer engine of `planning/modules.md` §8), with several consumers:
+
+- `polar-compiler` exposes an incremental, query-shaped API whose inputs arrive
+  through a **VFS** — a `path → (text, revision)` overlay, not direct `fs` reads.
+  Batch CLI fills the VFS from disk once; `polar-lsp` overlays editor buffers and
+  bumps the revision on `didChange`.
+- `polar-lsp` owns that engine. Go-to-definition, highlighting, **and** type-error
+  diagnostics are all queries against the same in-process store — so the work is
+  shared with zero serialization and zero locking.
+- The "bacon" experience is just the server's own `publishDiagnostics`, surfaced
+  inline or in a terminal panel via a tiny client connected to the same server.
+  There is no second compiler process.
+
+A truly separate checker still has a place (CI, an authoritative CLI compile) —
+but it should be a from-scratch compile that **shares nothing**. For monolithic
+single-layer incremental on RTL-sized projects a cold check is already fast, so
+cross-process reuse buys little; do not build it.
+
+The only new requirement this places on the compiler is the **VFS input
+boundary** — worth baking in early regardless (see `planning/modules.md` §8).
+
 ## Pitfalls
 
 - **Position encoding** — one conversion module; negotiate UTF-8.
