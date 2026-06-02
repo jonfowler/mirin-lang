@@ -22,6 +22,17 @@ pub enum Item {
     Struct(StructDefinition),
     Port(PortDefinition),
     Impl(ImplBlock),
+    Mod(ModuleDefinition),
+}
+
+/// An inline module: `mod foo { items… }`. Holds the same item set as the
+/// crate root, so modules nest arbitrarily. File-based `mod foo;` is a later
+/// slice. See `planning/modules.md` §4.1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleDefinition {
+    pub span: SourceSpan,
+    pub name: Identifier,
+    pub items: Vec<Item>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -527,8 +538,21 @@ impl<'a> Lowerer<'a> {
             "struct_definition" => Ok(Item::Struct(self.lower_struct_definition(node)?)),
             "port_definition" => Ok(Item::Port(self.lower_port_definition(node)?)),
             "impl_block" => Ok(Item::Impl(self.lower_impl_block(node)?)),
+            "module_definition" => Ok(Item::Mod(self.lower_module_definition(node)?)),
             _ => Err(unexpected_node(node, "top-level declaration")),
         }
+    }
+
+    fn lower_module_definition(&mut self, node: &CstNode) -> Result<ModuleDefinition, LowerError> {
+        expect_kind(node, "module_definition")?;
+        let body = lower_required_child(node, "body", "module_body")?;
+        Ok(ModuleDefinition {
+            span: node.span.clone(),
+            name: self.lower_required_identifier(node, "name")?,
+            items: named_children(body)
+                .map(|child| self.lower_item(child))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
     }
 
     fn lower_struct_definition(&mut self, node: &CstNode) -> Result<StructDefinition, LowerError> {

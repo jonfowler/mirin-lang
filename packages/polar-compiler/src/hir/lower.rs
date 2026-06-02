@@ -150,28 +150,7 @@ pub fn lower_to_hir(
 ) -> Result<HirSourceFile, Vec<HirLowerError>> {
     let mut ctx = Lowerer::new(file, resolve);
     let mut items = Vec::new();
-    for item in &file.items {
-        match item {
-            Item::Fn(func) => {
-                if let Some(hir_fn) = ctx.lower_fn(func) {
-                    items.push(HirItem::Fn(hir_fn));
-                }
-            }
-            Item::Struct(s) => {
-                if let Some(hir_struct) = ctx.lower_struct(s) {
-                    items.push(HirItem::Struct(hir_struct));
-                }
-            }
-            Item::Port(p) => {
-                if let Some(hir_port) = ctx.lower_port(p) {
-                    items.push(HirItem::Port(hir_port));
-                }
-            }
-            Item::Impl(impl_block) => {
-                ctx.lower_impl(impl_block, &mut items);
-            }
-        }
-    }
+    ctx.lower_items(&file.items, &mut items);
     // Append synthetic prelude HirFns last so test helpers that select
     // the first user fn from `items` continue to find it at index 0.
     // typeck reads these via their `DefId` regardless of position;
@@ -196,6 +175,43 @@ pub fn lower_to_hir(
         })
     } else {
         Err(ctx.errors)
+    }
+}
+
+/// Collect every user fn / struct / impl-method `DefId → &def` mapping,
+/// recursing into nested `mod`s. Modules are pure name-resolution scopes; HIR
+/// is a flat list of defs keyed by `DefId`, so module nesting is erased here.
+fn collect_user_defs<'a>(
+    items: &'a [Item],
+    resolve: &ResolveResult,
+    user_fns: &mut HashMap<DefId, &'a FunctionDefinition>,
+    user_structs: &mut HashMap<DefId, &'a StructDefinition>,
+) {
+    for item in items {
+        match item {
+            Item::Fn(func) => {
+                if let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&func.name.id) {
+                    user_fns.insert(def_id, func);
+                }
+            }
+            Item::Struct(s) => {
+                if let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&s.name.id) {
+                    user_structs.insert(def_id, s);
+                }
+            }
+            Item::Impl(impl_block) => {
+                // Methods defined inside the impl get their own `DefId`s from
+                // `resolve_impl`; record each one so call-site lookups (e.g.
+                // typeck's `lookup_fn`) find them.
+                for func in &impl_block.functions {
+                    if let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&func.name.id) {
+                        user_fns.insert(def_id, func);
+                    }
+                }
+            }
+            Item::Mod(m) => collect_user_defs(&m.items, resolve, user_fns, user_structs),
+            Item::Port(_) => {}
+        }
     }
 }
 
@@ -237,31 +253,7 @@ impl<'a> Lowerer<'a> {
     fn new(file: &'a SourceFile, resolve: &'a ResolveResult) -> Self {
         let mut user_fns = HashMap::new();
         let mut user_structs = HashMap::new();
-        for item in &file.items {
-            match item {
-                Item::Fn(func) => {
-                    if let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&func.name.id) {
-                        user_fns.insert(def_id, func);
-                    }
-                }
-                Item::Struct(s) => {
-                    if let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&s.name.id) {
-                        user_structs.insert(def_id, s);
-                    }
-                }
-                Item::Impl(impl_block) => {
-                    // Methods defined inside the impl get their own `DefId`s
-                    // from `resolve_impl`; record each one so call-site
-                    // lookups (e.g. typeck's `lookup_fn`) find them.
-                    for func in &impl_block.functions {
-                        if let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&func.name.id) {
-                            user_fns.insert(def_id, func);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        collect_user_defs(&file.items, resolve, &mut user_fns, &mut user_structs);
         Self {
             resolve,
             user_fns,
@@ -608,6 +600,35 @@ impl<'a> Lowerer<'a> {
     }
 
     // ----- items -----
+
+    /// Lower a module's items into the flat HIR item list, recursing into
+    /// nested `mod`s. Module structure is a resolution-time concern only; by
+    /// HIR everything is keyed by `DefId`, so modules flatten away here.
+    fn lower_items(&mut self, items: &[Item], out: &mut Vec<HirItem>) {
+        for item in items {
+            match item {
+                Item::Fn(func) => {
+                    if let Some(hir_fn) = self.lower_fn(func) {
+                        out.push(HirItem::Fn(hir_fn));
+                    }
+                }
+                Item::Struct(s) => {
+                    if let Some(hir_struct) = self.lower_struct(s) {
+                        out.push(HirItem::Struct(hir_struct));
+                    }
+                }
+                Item::Port(p) => {
+                    if let Some(hir_port) = self.lower_port(p) {
+                        out.push(HirItem::Port(hir_port));
+                    }
+                }
+                Item::Impl(impl_block) => {
+                    self.lower_impl(impl_block, out);
+                }
+                Item::Mod(m) => self.lower_items(&m.items, out),
+            }
+        }
+    }
 
     fn lower_fn(&mut self, func: &FunctionDefinition) -> Option<HirFn> {
         let def_id = match self.resolve.resolutions.get(&func.name.id) {
@@ -1815,6 +1836,7 @@ impl<'a> Lowerer<'a> {
                     Some((DefKind::Fn, _))
                     | Some((DefKind::Impl, _))
                     | Some((DefKind::Method { .. }, _))
+                    | Some((DefKind::Mod, _))
                     | Some((DefKind::BuiltinType, _))
                     | Some((DefKind::Ctor { .. }, _)) => {
                         // `uint`/`bool` reach this arm when written verbatim

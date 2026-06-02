@@ -181,6 +181,10 @@ pub enum DefKind {
     Struct,
     Port,
     Impl,
+    /// An inline `mod foo { … }`. Lives in the type namespace; its `DefId` keys
+    /// into the module tree via `ModuleTree::module_of_def`. Erased before HIR
+    /// — modules are a name-resolution concern only.
+    Mod,
     /// A function defined inside an `impl T { … }` block. Lives outside the
     /// global name table — callers reach it via `Type::method` or by method
     /// dispatch on a receiver of type `T`. `owner` is the `T` def.
@@ -202,6 +206,121 @@ pub enum DefKind {
     Ctor {
         owner: DefId,
     },
+}
+
+/// The two name namespaces (Rust has three; Polar has no macros). A module's
+/// name table is keyed by `(name, Namespace)`, so a type and a value may share
+/// a name without colliding. See `planning/modules.md` §5.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Namespace {
+    Type,
+    Value,
+}
+
+impl DefKind {
+    /// Which namespace this def's *name* occupies, or `None` for defs that are
+    /// never entered into a module name table (`impl` blocks introduce no name;
+    /// methods live in `impl_methods`, not the module tree).
+    pub fn namespace(self) -> Option<Namespace> {
+        match self {
+            DefKind::Fn | DefKind::Ctor { .. } => Some(Namespace::Value),
+            DefKind::Struct | DefKind::Port | DefKind::Mod | DefKind::BuiltinType => {
+                Some(Namespace::Type)
+            }
+            DefKind::Impl | DefKind::Method { .. } => None,
+        }
+    }
+}
+
+/// Index into `ModuleTree::modules`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ModuleId(pub u32);
+
+/// What kind of module a `ModuleData` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleKind {
+    /// The crate root — the top-level scope of the input file.
+    Root,
+    /// A `mod foo { … }`; carries the module's own `DefId`.
+    Named(DefId),
+    /// The synthetic prelude — the lowest-priority fallback scope injected into
+    /// every module's lookups. See `planning/modules.md` §5.3.
+    Prelude,
+}
+
+/// One entry in a module's name table. For now it just wraps the `Res`;
+/// `Visibility` and `BindingSource` (glob priority, re-exports) arrive with
+/// `use`/`pub` in later slices. See `planning/modules.md` §6.2.
+#[derive(Debug, Clone, Copy)]
+pub struct Binding {
+    pub res: Res,
+}
+
+/// One module's data: its kind, its parent, and its name table. Modeled on
+/// rustc's `ModuleData`. See `planning/modules.md` §6.2.
+#[derive(Debug, Clone)]
+pub struct ModuleData {
+    pub kind: ModuleKind,
+    pub parent: Option<ModuleId>,
+    /// Names defined directly in this module, keyed by `(name, namespace)`.
+    items: HashMap<(String, Namespace), Binding>,
+    /// Path segments from the crate root *to* this module (exclusive of the
+    /// module's own defs). Used to build each contained def's `DefPath`.
+    path_prefix: Vec<DefPathSegment>,
+}
+
+impl ModuleData {
+    /// Iterate the module's `(name, namespace) → Binding` entries.
+    pub fn entries(&self) -> impl Iterator<Item = (&(String, Namespace), &Binding)> {
+        self.items.iter()
+    }
+}
+
+/// The module tree: the crate root, the synthetic prelude, and every inline
+/// `mod`. Replaces the old flat global name table. Bare-name lookup in a module
+/// consults that module's own table, then the prelude (no `use`/glob/ancestor
+/// walk yet — those land in S4). See `planning/modules.md` §5.2 / §6.2.
+#[derive(Debug, Default, Clone)]
+pub struct ModuleTree {
+    modules: Vec<ModuleData>,
+    root: ModuleId,
+    prelude: ModuleId,
+    /// A named module's `DefId` → its `ModuleId`.
+    def_to_module: HashMap<DefId, ModuleId>,
+}
+
+impl ModuleTree {
+    pub fn root(&self) -> ModuleId {
+        self.root
+    }
+
+    pub fn prelude(&self) -> ModuleId {
+        self.prelude
+    }
+
+    pub fn module(&self, id: ModuleId) -> &ModuleData {
+        &self.modules[id.0 as usize]
+    }
+
+    pub fn module_of_def(&self, def: DefId) -> Option<ModuleId> {
+        self.def_to_module.get(&def).copied()
+    }
+
+    /// Look up a name in one module's table only (no fallback).
+    pub fn lookup_local(&self, module: ModuleId, name: &str, ns: Namespace) -> Option<Res> {
+        self.modules[module.0 as usize]
+            .items
+            .get(&(name.to_owned(), ns))
+            .map(|b| b.res)
+    }
+
+    /// Resolve a bare name as a body in `module` sees it: the module's own
+    /// table, then the prelude. The prelude is lowest priority, so a
+    /// user-defined name shadows it (as in Rust).
+    pub fn lookup(&self, module: ModuleId, name: &str, ns: Namespace) -> Option<Res> {
+        self.lookup_local(module, name, ns)
+            .or_else(|| self.lookup_local(self.prelude, name, ns))
+    }
 }
 
 /// Kind of a generic parameter on a struct, port, or fn.
@@ -449,6 +568,9 @@ pub struct ResolveResult {
     /// Specialised defs synthesised later by monomorphisation are *not* in
     /// this table; they gain stable paths when that pass becomes path-aware.
     pub def_paths: DefPathTable,
+    /// The module tree (crate root, prelude, and every inline `mod`). Bare-name
+    /// resolution consults it; see `planning/modules.md` §6.2.
+    pub modules: ModuleTree,
 }
 
 impl ResolveResult {
@@ -460,10 +582,11 @@ impl ResolveResult {
         &self.locals[&id]
     }
 
-    /// Find a definition by name. Returns the `DefId` of the first matching
-    /// entry, prelude or user-defined. Names are unique across the def table
-    /// (duplicate user definitions are rejected during collection), so the
-    /// result is unambiguous when it exists.
+    /// Find a definition by name, scanning the whole def table and returning
+    /// the first match (prelude defs come first). With modules a name may
+    /// repeat across scopes, so this is only unambiguous for prelude/builtin
+    /// names; module-aware code should resolve through `modules` or the
+    /// recorded `resolutions` instead.
     pub fn def_id(&self, name: &str) -> Option<DefId> {
         self.defs
             .iter()
@@ -495,6 +618,12 @@ const PRELUDE_FN_NAMES: &[&str] = &["reg", "+", "*", "posedge"];
 /// recognises it there and tags the parameter as `GenericParamKind::Type`.
 const PRELUDE_TYPE_NAMES: &[&str] = &["uint", "bool", "Clock", "Event", "Type"];
 
+/// Reserved first path segment for prelude defs, so their `DefPath`s never
+/// collide with crate-root user defs of the same name (e.g. a user `fn reg`
+/// shadowing the prelude `reg`). Not a valid identifier, so unreachable by
+/// source.
+const PRELUDE_SEGMENT: &str = "$prelude";
+
 /// Identifier-shaped literals (`true`, `false`, `high`, `low`). The resolver
 /// neither errors on them nor emits a `Res` — HIR lowering recognises them by
 /// name and emits a `Const` node directly.
@@ -522,52 +651,70 @@ fn prelude_span() -> SourceSpan {
 }
 
 pub fn resolve_file(file: &SourceFile) -> ResolveResult {
-    let mut ctx = Ctx::with_prelude();
+    let mut ctx = Ctx::new();
+    let root = ctx.result.modules.root();
 
-    // Pass 1: collect all top-level definition names.
-    for item in &file.items {
-        ctx.collect_item(item);
-    }
+    // Phase 1: build the module + def tree. Allocate a `DefId` per item, fill
+    // each module's name table, and recurse into nested `mod`s. No imports
+    // (Polar has no macros, so this needs no expansion/fixpoint).
+    ctx.collect_items(&file.items, root);
 
-    // Pass 2: resolve each item.
-    for item in &file.items {
-        ctx.resolve_item(item);
-    }
+    // Phase 2: resolve every item's body against the module tree.
+    ctx.resolve_items(&file.items, root);
 
-    // Pass 3: backfill the prelude `reg` entry for every value-shaped type
-    // that doesn't already have a user-defined `reg`. The prelude `reg`
-    // accepts any value type as `self`, so structs, ports, and the primitive
-    // `uint` all dispatch to it by default. A user-defined `impl T { fn reg }`
-    // wins because impl-block resolution (pass 2) ran first.
+    // Backfill the prelude `reg` entry for every value-shaped type that
+    // doesn't already have a user-defined `reg`. The prelude `reg` accepts any
+    // value type as `self`, so structs, ports, and the primitive `uint` all
+    // dispatch to it by default. A user-defined `impl T { fn reg }` wins
+    // because impl-block resolution (phase 2) ran first.
     ctx.backfill_prelude_reg();
 
     // Build the stable def-path table over every def now in the table. No
-    // behaviour depends on it yet (S1); it is the identity substrate the
-    // module system and incremental compilation build on.
-    ctx.result.def_paths = build_def_path_table(&ctx.result.defs, StableCrateId::root());
+    // behaviour depends on it yet; it is the identity substrate the module
+    // system and incremental compilation build on (`planning/modules.md` §8).
+    let table = build_def_path_table(
+        &ctx.result.defs,
+        &ctx.def_module,
+        &ctx.result.modules,
+        StableCrateId::root(),
+    );
+    ctx.result.def_paths = table;
 
     ctx.result
 }
 
-/// Assign each def a single-segment `DefPath` (no modules yet) under the crate
-/// root, disambiguating same-named defs in allocation order, and compute its
-/// `DefPathHash`. Indexed by `DefIndex`.
-fn build_def_path_table(defs: &[DefInfo], scid: StableCrateId) -> DefPathTable {
+/// Build each def's full `DefPath` (the module prefix it lives under plus its
+/// own name), disambiguating any two defs that would otherwise share a path,
+/// and compute its `DefPathHash`. Indexed by `DefIndex`.
+fn build_def_path_table(
+    defs: &[DefInfo],
+    def_module: &[ModuleId],
+    modules: &ModuleTree,
+    scid: StableCrateId,
+) -> DefPathTable {
     let mut table = DefPathTable::default();
-    let mut disambig: HashMap<String, u32> = HashMap::new();
+    // Disambiguate on the full segment-*name* path: two defs at the same path
+    // (e.g. a user `reg` and the prelude `$prelude::reg` never collide, but two
+    // synthesised same-name siblings would) get increasing disambiguators.
+    let mut disambig: HashMap<Vec<String>, u32> = HashMap::new();
     for (i, info) in defs.iter().enumerate() {
+        let module = def_module[i];
+        let mut segments = modules.module(module).path_prefix.clone();
+        segments.push(DefPathSegment {
+            name: info.name.clone(),
+            disambiguator: 0,
+        });
+        let key: Vec<String> = segments.iter().map(|s| s.name.clone()).collect();
         let disambiguator = {
-            let counter = disambig.entry(info.name.clone()).or_insert(0);
+            let counter = disambig.entry(key).or_insert(0);
             let d = *counter;
             *counter += 1;
             d
         };
+        segments.last_mut().unwrap().disambiguator = disambiguator;
         let path = DefPath {
             krate: LOCAL_CRATE,
-            segments: vec![DefPathSegment {
-                name: info.name.clone(),
-                disambiguator,
-            }],
+            segments,
         };
         let hash = DefPathHash::new(scid, hash_def_path(&path));
         let id = DefId::local(i as u32);
@@ -594,39 +741,74 @@ fn hash_def_path(path: &DefPath) -> u64 {
 
 // ----- internals -----
 
-#[derive(Default)]
 struct Ctx {
     result: ResolveResult,
-    /// Top-level definitions in scope, mapped by name to their `DefId` and kind.
-    /// The kind is duplicated here (also in `DefInfo`) so resolution sites can
-    /// build `Res::Def(kind, id)` without a second lookup.
-    global_defs: HashMap<String, (DefKind, DefId)>,
+    /// The module whose body is currently being resolved (phase 2). Set by
+    /// `resolve_items`; consulted by every name lookup via `lookup`.
+    current_module: ModuleId,
+    /// The module each `DefId` lives in, indexed by `DefIndex`. Pushed in
+    /// lockstep with `alloc_def_raw`; drives `DefPath` construction.
+    def_module: Vec<ModuleId>,
 }
 
 impl Ctx {
-    fn with_prelude() -> Self {
-        let mut ctx = Self::default();
+    /// Build a fresh context with the two always-present modules — the prelude
+    /// (`ModuleId(0)`, seeded first so prelude defs get the lowest `DefId`s) and
+    /// the crate root (`ModuleId(1)`) — and seed the prelude.
+    fn new() -> Self {
+        let mut modules = ModuleTree::default();
+        modules.modules.push(ModuleData {
+            kind: ModuleKind::Prelude,
+            parent: None,
+            items: HashMap::new(),
+            path_prefix: vec![DefPathSegment {
+                name: PRELUDE_SEGMENT.to_owned(),
+                disambiguator: 0,
+            }],
+        });
+        modules.modules.push(ModuleData {
+            kind: ModuleKind::Root,
+            parent: None,
+            items: HashMap::new(),
+            path_prefix: Vec::new(),
+        });
+        modules.prelude = ModuleId(0);
+        modules.root = ModuleId(1);
+
+        let result = ResolveResult {
+            modules,
+            ..Default::default()
+        };
+        let mut ctx = Ctx {
+            result,
+            current_module: ModuleId(1),
+            def_module: Vec::new(),
+        };
+        ctx.seed_prelude();
+        ctx
+    }
+
+    fn seed_prelude(&mut self) {
+        let prelude = self.result.modules.prelude();
         for &name in PRELUDE_FN_NAMES {
-            let id = DefId::local(ctx.result.defs.len() as u32);
-            ctx.result.defs.push(DefInfo {
-                kind: DefKind::Fn,
-                name: name.to_owned(),
-                span: prelude_span(),
-                generic_params: Vec::new(),
-            });
-            ctx.global_defs.insert(name.to_owned(), (DefKind::Fn, id));
+            let id = self.alloc_def_raw(DefKind::Fn, name.to_owned(), prelude_span(), prelude);
+            self.define(prelude, name, Namespace::Value, Res::Def(DefKind::Fn, id));
         }
         for &name in PRELUDE_TYPE_NAMES {
-            let id = DefId::local(ctx.result.defs.len() as u32);
-            ctx.result.defs.push(DefInfo {
-                kind: DefKind::BuiltinType,
-                name: name.to_owned(),
-                span: prelude_span(),
-                generic_params: Vec::new(),
-            });
-            ctx.global_defs
-                .insert(name.to_owned(), (DefKind::BuiltinType, id));
+            let id = self.alloc_def_raw(
+                DefKind::BuiltinType,
+                name.to_owned(),
+                prelude_span(),
+                prelude,
+            );
+            self.define(
+                prelude,
+                name,
+                Namespace::Type,
+                Res::Def(DefKind::BuiltinType, id),
+            );
         }
+        let ctx = self;
         // Seed `Clock::posedge`. Like `uint::reg`, the prelude method has
         // no user-visible `HirFn` — typeck recognises the callee `DefId`
         // and applies a hand-rolled signature (`Clock @D -> Event @D`).
@@ -709,7 +891,6 @@ impl Ctx {
                 },
             ];
         }
-        ctx
     }
 
     /// Wire the prelude `reg` method into every value-shaped def that doesn't
@@ -739,14 +920,61 @@ impl Ctx {
         }
     }
 
-    fn alloc_def(&mut self, kind: DefKind, ident: &Identifier) -> DefId {
+    /// Allocate a `DefId`, push its `DefInfo`, and record its owning module
+    /// (for `DefPath` construction). The single allocation point for all defs.
+    fn alloc_def_raw(
+        &mut self,
+        kind: DefKind,
+        name: String,
+        span: SourceSpan,
+        module: ModuleId,
+    ) -> DefId {
         let id = DefId::local(self.result.defs.len() as u32);
         self.result.defs.push(DefInfo {
             kind,
-            name: ident.text.clone(),
-            span: ident.span.clone(),
+            name,
+            span,
             generic_params: Vec::new(),
         });
+        self.def_module.push(module);
+        id
+    }
+
+    fn alloc_def(&mut self, kind: DefKind, ident: &Identifier, module: ModuleId) -> DefId {
+        self.alloc_def_raw(kind, ident.text.clone(), ident.span.clone(), module)
+    }
+
+    /// Insert a `(name, namespace) → Res` binding into a module's name table.
+    fn define(&mut self, module: ModuleId, name: &str, ns: Namespace, res: Res) {
+        self.result.modules.modules[module.0 as usize]
+            .items
+            .insert((name.to_owned(), ns), Binding { res });
+    }
+
+    /// Resolve a bare name as the current module sees it (own table, then
+    /// prelude).
+    fn lookup(&self, name: &str, ns: Namespace) -> Option<Res> {
+        self.result.modules.lookup(self.current_module, name, ns)
+    }
+
+    /// Create a child module under `parent` for `mod name` (def `def`), with a
+    /// `DefPath` prefix extending the parent's. Returns its `ModuleId`.
+    fn new_child_module(&mut self, parent: ModuleId, def: DefId, name: &str) -> ModuleId {
+        let mut prefix = self.result.modules.modules[parent.0 as usize]
+            .path_prefix
+            .clone();
+        prefix.push(DefPathSegment {
+            name: name.to_owned(),
+            disambiguator: 0,
+        });
+        let id = ModuleId(self.result.modules.modules.len() as u32);
+        self.result.modules.modules.push(ModuleData {
+            kind: ModuleKind::Named(def),
+            parent: Some(parent),
+            items: HashMap::new(),
+            path_prefix: prefix,
+        });
+        self.result.modules.def_to_module.insert(def, id);
         id
     }
 
@@ -761,44 +989,104 @@ impl Ctx {
         );
     }
 
-    fn collect_item(&mut self, item: &Item) {
-        // `impl` blocks extend an existing type rather than introducing a new
-        // top-level name. They are handled in pass 2 (`resolve_impl`), which
-        // looks up the underlying struct/port DefId.
-        let (kind, ident, constructor, requires_ctor) = match item {
-            Item::Fn(f) => (DefKind::Fn, &f.name, None, false),
-            Item::Struct(s) => (DefKind::Struct, &s.name, s.constructor.as_ref(), true),
-            Item::Port(p) => (DefKind::Port, &p.name, p.constructor.as_ref(), true),
-            Item::Impl(_) => return,
-        };
-        if self.global_defs.contains_key(&ident.text) {
+    /// Phase 1: allocate defs and fill name tables for one module's items,
+    /// recursing into nested `mod`s.
+    fn collect_items(&mut self, items: &[Item], module: ModuleId) {
+        for item in items {
+            self.collect_item(item, module);
+        }
+    }
+
+    fn collect_item(&mut self, item: &Item, module: ModuleId) {
+        match item {
+            // `impl` blocks extend an existing type rather than introducing a
+            // new name; handled in phase 2 (`resolve_impl`).
+            Item::Impl(_) => {}
+            Item::Fn(f) => self.collect_named_def(module, DefKind::Fn, &f.name, None, false),
+            Item::Struct(s) => self.collect_named_def(
+                module,
+                DefKind::Struct,
+                &s.name,
+                s.constructor.as_ref(),
+                true,
+            ),
+            Item::Port(p) => {
+                self.collect_named_def(module, DefKind::Port, &p.name, p.constructor.as_ref(), true)
+            }
+            Item::Mod(m) => {
+                if self
+                    .lookup_local(module, &m.name.text, Namespace::Type)
+                    .is_some()
+                {
+                    self.result.errors.push(ResolveError {
+                        kind: ResolveErrorKind::DuplicateDef(m.name.text.clone()),
+                        span: m.name.span.clone(),
+                    });
+                    return;
+                }
+                let def = self.alloc_def(DefKind::Mod, &m.name, module);
+                self.define(
+                    module,
+                    &m.name.text,
+                    Namespace::Type,
+                    Res::Def(DefKind::Mod, def),
+                );
+                self.result
+                    .resolutions
+                    .insert(m.name.id, Res::Def(DefKind::Mod, def));
+                let child = self.new_child_module(module, def, &m.name.text);
+                self.collect_items(&m.items, child);
+            }
+        }
+    }
+
+    fn lookup_local(&self, module: ModuleId, name: &str, ns: Namespace) -> Option<Res> {
+        self.result.modules.lookup_local(module, name, ns)
+    }
+
+    /// Allocate a fn/struct/port def into `module`'s name table, plus its
+    /// term-level constructor as a distinct `DefKind::Ctor` (mirroring rustc's
+    /// `DefKind::Struct` vs `DefKind::Ctor` split). A name clash within the
+    /// same module+namespace is a `DuplicateDef`.
+    fn collect_named_def(
+        &mut self,
+        module: ModuleId,
+        kind: DefKind,
+        ident: &Identifier,
+        constructor: Option<&Identifier>,
+        requires_ctor: bool,
+    ) {
+        let ns = kind.namespace().expect("fn/struct/port are named");
+        if self.lookup_local(module, &ident.text, ns).is_some() {
             self.result.errors.push(ResolveError {
                 kind: ResolveErrorKind::DuplicateDef(ident.text.clone()),
                 span: ident.span.clone(),
             });
             return;
         }
-        let id = self.alloc_def(kind, ident);
-        self.global_defs.insert(ident.text.clone(), (kind, id));
+        let id = self.alloc_def(kind, ident, module);
+        self.define(module, &ident.text, ns, Res::Def(kind, id));
         self.result.resolutions.insert(ident.id, Res::Def(kind, id));
 
-        // Register the term-level constructor as a distinct `DefKind::Ctor`
-        // pointing back at the owning type. Mirrors rustc's split between
-        // `DefKind::Struct` (the type) and `DefKind::Ctor` (the constructor
-        // value). Struct and port definitions always require an explicit
-        // constructor name to keep the type/term distinction consistent.
         match constructor {
             Some(ctor) => {
                 let ctor_kind = DefKind::Ctor { owner: id };
-                if self.global_defs.contains_key(&ctor.text) && ctor.text != ident.text {
+                if self
+                    .lookup_local(module, &ctor.text, Namespace::Value)
+                    .is_some()
+                {
                     self.result.errors.push(ResolveError {
                         kind: ResolveErrorKind::DuplicateDef(ctor.text.clone()),
                         span: ctor.span.clone(),
                     });
                 } else {
-                    let ctor_id = self.alloc_def(ctor_kind, ctor);
-                    self.global_defs
-                        .insert(ctor.text.clone(), (ctor_kind, ctor_id));
+                    let ctor_id = self.alloc_def(ctor_kind, ctor, module);
+                    self.define(
+                        module,
+                        &ctor.text,
+                        Namespace::Value,
+                        Res::Def(ctor_kind, ctor_id),
+                    );
                     self.result
                         .resolutions
                         .insert(ctor.id, Res::Def(ctor_kind, ctor_id));
@@ -814,6 +1102,17 @@ impl Ctx {
         }
     }
 
+    /// Phase 2: resolve every item's body in `module`, recursing into nested
+    /// `mod`s with `current_module` set so name lookups hit the right scope.
+    fn resolve_items(&mut self, items: &[Item], module: ModuleId) {
+        let prev = self.current_module;
+        self.current_module = module;
+        for item in items {
+            self.resolve_item(item);
+        }
+        self.current_module = prev;
+    }
+
     fn resolve_item(&mut self, item: &Item) {
         match item {
             Item::Fn(f) => {
@@ -826,7 +1125,7 @@ impl Ctx {
                         });
                     }
                 }
-                let Some(&(_, def_id)) = self.global_defs.get(&f.name.text) else {
+                let Some(def_id) = self.def_of_name(&f.name) else {
                     return;
                 };
                 self.resolve_function(f, def_id, &HashMap::new());
@@ -834,11 +1133,28 @@ impl Ctx {
             Item::Struct(s) => self.resolve_struct(s),
             Item::Port(p) => self.resolve_port(p),
             Item::Impl(i) => self.resolve_impl(i),
+            Item::Mod(m) => {
+                let Some(def_id) = self.def_of_name(&m.name) else {
+                    return;
+                };
+                let Some(child) = self.result.modules.module_of_def(def_id) else {
+                    return;
+                };
+                self.resolve_items(&m.items, child);
+            }
+        }
+    }
+
+    /// The `DefId` recorded for a definition's name during phase 1.
+    fn def_of_name(&self, ident: &Identifier) -> Option<DefId> {
+        match self.result.resolutions.get(&ident.id) {
+            Some(Res::Def(_, def_id)) => Some(*def_id),
+            _ => None,
         }
     }
 
     fn resolve_struct(&mut self, s: &StructDefinition) {
-        let Some(&(_, def_id)) = self.global_defs.get(&s.name.text) else {
+        let Some(def_id) = self.def_of_name(&s.name) else {
             return;
         };
         let params = self.collect_params(def_id, &[], &s.parameters);
@@ -849,7 +1165,7 @@ impl Ctx {
     }
 
     fn resolve_port(&mut self, p: &PortDefinition) {
-        let Some(&(_, def_id)) = self.global_defs.get(&p.name.text) else {
+        let Some(def_id) = self.def_of_name(&p.name) else {
             return;
         };
         let params = self.collect_params(def_id, &p.named_parameters, &p.parameters);
@@ -937,7 +1253,9 @@ impl Ctx {
     }
 
     fn resolve_impl(&mut self, impl_block: &ImplBlock) {
-        let Some(&(kind, def_id)) = self.global_defs.get(&impl_block.name.text) else {
+        // The impl target is a type named in the current module (or prelude).
+        let Some(Res::Def(kind, def_id)) = self.lookup(&impl_block.name.text, Namespace::Type)
+        else {
             self.result.errors.push(ResolveError {
                 kind: ResolveErrorKind::ImplOfUnknownType(impl_block.name.text.clone()),
                 span: impl_block.name.span.clone(),
@@ -948,13 +1266,14 @@ impl Ctx {
         self.result
             .resolutions
             .insert(impl_block.name.id, Res::Def(kind, def_id));
+        let module = self.current_module;
         let impl_params =
             self.collect_params(def_id, &impl_block.named_parameters, &impl_block.parameters);
         for func in &impl_block.functions {
             // Allocate a `DefId` for the method, scoped to its owner type
             // rather than the global namespace. Two impls may define the
             // same method name on different types; both get distinct ids.
-            let method_def = self.alloc_def(DefKind::Method { owner: def_id }, &func.name);
+            let method_def = self.alloc_def(DefKind::Method { owner: def_id }, &func.name, module);
             self.result.resolutions.insert(
                 func.name.id,
                 Res::Def(DefKind::Method { owner: def_id }, method_def),
@@ -1077,15 +1396,14 @@ impl Ctx {
     }
 
     fn resolve_type_expr(&mut self, ty: &TypeExpression, params: &HashMap<String, NodeId>) {
-        // Type head: check params first (for type-level parameters), then global defs.
+        // Type head: check params first (for type-level parameters), then the
+        // current module (Type namespace) + prelude.
         if let Some(&id) = params.get(&ty.name.text) {
             self.result.resolutions.insert(ty.name.id, Res::Local(id));
-        } else if let Some(&(kind, id)) = self.global_defs.get(&ty.name.text) {
-            self.result
-                .resolutions
-                .insert(ty.name.id, Res::Def(kind, id));
+        } else if let Some(res) = self.lookup(&ty.name.text, Namespace::Type) {
+            self.result.resolutions.insert(ty.name.id, res);
         }
-        // else: built-in type (uint, bool, Reset, …) — not in the def table
+        // else: built-in type (Reset, …) not in the def table
         if let Some(domain) = &ty.domain {
             if let Some(&id) = params.get(&domain.text) {
                 self.result.resolutions.insert(domain.id, Res::Local(id));
@@ -1116,8 +1434,8 @@ impl Ctx {
             Expression::Identifier(ident) => {
                 if let Some(&id) = params.get(&ident.text) {
                     self.result.resolutions.insert(ident.id, Res::Local(id));
-                } else if let Some(&(kind, id)) = self.global_defs.get(&ident.text) {
-                    self.result.resolutions.insert(ident.id, Res::Def(kind, id));
+                } else if let Some(res) = self.lookup(&ident.text, Namespace::Value) {
+                    self.result.resolutions.insert(ident.id, res);
                 }
             }
             Expression::Binary(b) => {
@@ -1235,11 +1553,8 @@ impl BlockCtx<'_> {
             Expression::Number(_) => {}
             Expression::Path(p) => {
                 // Resolve the type part; the member is a field name (deferred to type checking).
-                if let Some(&(kind, id)) = self.ctx.global_defs.get(&p.ty.text) {
-                    self.ctx
-                        .result
-                        .resolutions
-                        .insert(p.ty.id, Res::Def(kind, id));
+                if let Some(res) = self.ctx.lookup(&p.ty.text, Namespace::Type) {
+                    self.ctx.result.resolutions.insert(p.ty.id, res);
                 }
             }
             Expression::Binary(b) => {
@@ -1253,11 +1568,8 @@ impl BlockCtx<'_> {
                 }
             }
             Expression::RecordConstructor(r) => {
-                if let Some(&(kind, id)) = self.ctx.global_defs.get(&r.constructor.text) {
-                    self.ctx
-                        .result
-                        .resolutions
-                        .insert(r.constructor.id, Res::Def(kind, id));
+                if let Some(res) = self.ctx.lookup(&r.constructor.text, Namespace::Value) {
+                    self.ctx.result.resolutions.insert(r.constructor.id, res);
                 }
                 for field in &r.fields {
                     // field.name is a struct field name — deferred to type checking
@@ -1426,11 +1738,8 @@ impl BlockCtx<'_> {
                 .result
                 .resolutions
                 .insert(ty.name.id, Res::Local(id));
-        } else if let Some(&(kind, id)) = self.ctx.global_defs.get(&ty.name.text) {
-            self.ctx
-                .result
-                .resolutions
-                .insert(ty.name.id, Res::Def(kind, id));
+        } else if let Some(res) = self.ctx.lookup(&ty.name.text, Namespace::Type) {
+            self.ctx.result.resolutions.insert(ty.name.id, res);
         }
         if let Some(domain) = &ty.domain {
             if let Some(&id) = self.params.get(&domain.text) {
@@ -1471,10 +1780,9 @@ impl BlockCtx<'_> {
         if let Some(&id) = self.params.get(name) {
             return Some(Res::Local(id));
         }
-        if let Some(&(kind, id)) = self.ctx.global_defs.get(name) {
-            return Some(Res::Def(kind, id));
-        }
-        None
+        // Value-namespace lookup in the current module + prelude (locals, which
+        // are namespace-agnostic, were checked above).
+        self.ctx.lookup(name, Namespace::Value)
     }
 
     fn has_let_binding(&self, name: &str) -> bool {
@@ -1529,12 +1837,25 @@ mod tests {
     }
 
     #[test]
-    fn user_cannot_redefine_prelude_name() {
-        // Defining a `fn reg` collides with the prelude entry and surfaces as
-        // a duplicate-def error.
+    fn user_def_shadows_prelude_name() {
+        // Defining `fn reg` is allowed: it shadows the prelude `reg` in the
+        // crate root, as in Rust (planning/modules.md §5.3). The prelude `reg`
+        // remains in the prelude module as a lower-priority fallback.
         let r = resolve("fn reg(a: uint(8)) { let r = a; }");
-        assert_eq!(r.errors.len(), 1);
-        assert!(matches!(&r.errors[0].kind, ResolveErrorKind::DuplicateDef(n) if n == "reg"));
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+        let root = r.modules.root();
+        let Some(Res::Def(DefKind::Fn, user_reg)) =
+            r.modules.lookup_local(root, "reg", Namespace::Value)
+        else {
+            panic!("root `reg` should resolve to a user fn def");
+        };
+        let prelude_reg = r
+            .modules
+            .lookup_local(r.modules.prelude(), "reg", Namespace::Value);
+        assert!(
+            matches!(prelude_reg, Some(Res::Def(DefKind::Fn, id)) if id != user_reg),
+            "prelude keeps its own distinct `reg`: {prelude_reg:?}"
+        );
     }
 
     #[test]
@@ -1791,6 +2112,114 @@ mod tests {
         // The stable-crate-id half is shared across defs in the same crate.
         assert_eq!(add.stable_crate_id(), sub.stable_crate_id());
         assert_eq!(add.stable_crate_id(), StableCrateId::root());
+    }
+
+    // --- modules (S2) ---
+
+    #[test]
+    fn resolves_items_inside_module() {
+        // `dbl` calls `add`; both are in `mod math`, so the bare call resolves
+        // in the module's own scope. `uint` resolves via the prelude.
+        let r = resolve(
+            "mod math {\n\
+                 fn add(a: uint(8)) { let r = a; }\n\
+                 fn dbl(a: uint(8)) { let r = add(a); }\n\
+             }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn module_name_is_a_type_namespace_def() {
+        let r = resolve("mod math { }");
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+        let root = r.modules.root();
+        assert!(matches!(
+            r.modules.lookup_local(root, "math", Namespace::Type),
+            Some(Res::Def(DefKind::Mod, _))
+        ));
+    }
+
+    #[test]
+    fn module_def_path_is_qualified() {
+        let r = resolve("mod math { fn add(a: uint(8)) { let r = a; } }");
+        let add = r.def_id("add").unwrap();
+        let names: Vec<&str> = r
+            .def_paths
+            .def_path(add)
+            .segments
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["math", "add"]);
+    }
+
+    #[test]
+    fn nested_module_def_path() {
+        let r = resolve("mod a { mod b { fn f(x: uint(8)) { let r = x; } } }");
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+        let f = r.def_id("f").unwrap();
+        let names: Vec<String> = r
+            .def_paths
+            .def_path(f)
+            .segments
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        assert_eq!(names, vec!["a", "b", "f"]);
+    }
+
+    #[test]
+    fn module_does_not_see_crate_root_items_by_bare_name() {
+        // `helper` is at the crate root; `caller` is inside `mod m`. A bare
+        // reference does not cross module boundaries (no `use`/`super` yet) —
+        // matching Rust (planning/modules.md §5.2).
+        let r = resolve(
+            "fn helper(a: uint(8)) { let r = a; }\n\
+             mod m { fn caller(a: uint(8)) { let r = helper(a); } }",
+        );
+        assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
+        assert!(matches!(&r.errors[0].kind, ResolveErrorKind::UndefinedName(n) if n == "helper"));
+    }
+
+    #[test]
+    fn same_name_in_different_modules_is_allowed() {
+        let r = resolve(
+            "mod a { fn f(x: uint(8)) { let r = x; } }\n\
+             mod b { fn f(x: uint(8)) { let r = x; } }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+        assert_eq!(r.defs.iter().filter(|d| d.name == "f").count(), 2);
+        // Their stable hashes differ (distinct module prefixes).
+        let fs: Vec<DefId> = r
+            .defs
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.name == "f")
+            .map(|(i, _)| DefId::local(i as u32))
+            .collect();
+        assert_ne!(
+            r.def_paths.def_path_hash(fs[0]),
+            r.def_paths.def_path_hash(fs[1])
+        );
+    }
+
+    #[test]
+    fn duplicate_module_name_is_error() {
+        let r = resolve("mod a { }\nmod a { }");
+        assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
+        assert!(matches!(&r.errors[0].kind, ResolveErrorKind::DuplicateDef(n) if n == "a"));
+    }
+
+    #[test]
+    fn struct_and_constructor_resolve_inside_module() {
+        let r = resolve(
+            "mod m {\n\
+                 struct P = mk { v: bool }\n\
+                 fn build() { let r = mk { v: true }; }\n\
+             }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
     }
 
     // --- generic params / Ctor ---

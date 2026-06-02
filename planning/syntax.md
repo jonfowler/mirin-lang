@@ -7,6 +7,7 @@ This document defines the small Polar surface syntax subset that current example
 - `fn` declarations
 - `struct` declarations
 - `port` declarations
+- inline `mod` declarations
 - named argument sections
 - positional argument sections
 - clocked types with `@clk`
@@ -128,6 +129,28 @@ reg_df {
 ```
 
 The `in`/`out` direction keywords are optional and checked for consistency when present. See `planning/port_connections.md` for the full connection syntax.
+
+## Modules
+
+Polar follows Rust's module system. The first implemented slice is the inline
+form — `mod name { items… }` — which introduces a named scope nesting the same
+item set (fns, structs, ports, impls, and further `mod`s):
+
+```rust
+mod arith {
+  fn multAdd { dom clk: Clock } ( a: uint(8) @clk, b: uint(8) @clk ) -> uint(8) @clk {
+    let mult = a * b;
+    return mult.reg(rstn, 0) + 0;
+  }
+}
+```
+
+A module is a name-resolution scope only — it does not change what Verilog is
+generated. Bare names resolve in the current module, then the prelude; crossing
+a module boundary needs a path (`crate::`/`super::`/`self::`) or `use`. Names
+live in two namespaces (type and value), so a type and a constructor may share
+a name. File-based `mod foo;`, `use`, and `pub` visibility are later slices;
+see `planning/modules.md` for the full design and staging.
 
 ## `impl` blocks
 

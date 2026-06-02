@@ -145,35 +145,51 @@ fn excerpt_for_span(source: &str, span: &SourceSpan) -> Option<SourceExcerpt> {
 /// calls (`x.method(...)`) and path-rooted calls (`Type::member(...)`) are
 /// deferred until type information is available.
 pub fn check_directions(file: &SourceFile, resolve: &ResolveResult) -> Vec<DirectionError> {
-    let callees = collect_callees(file, resolve);
+    let mut callees = HashMap::new();
+    collect_callees(&file.items, resolve, &mut callees);
     let mut errors = Vec::new();
-    for item in &file.items {
-        match item {
-            Item::Fn(func) => check_block(&func.body, &callees, resolve, &mut errors),
-            Item::Impl(impl_block) => {
-                for func in &impl_block.functions {
-                    check_block(&func.body, &callees, resolve, &mut errors);
-                }
-            }
-            Item::Struct(_) | Item::Port(_) => {}
-        }
-    }
+    check_items(&file.items, &callees, resolve, &mut errors);
     errors
 }
 
-fn collect_callees<'a>(
-    file: &'a SourceFile,
+/// Walk a module's items (recursing into nested `mod`s) and check every fn
+/// body. Modules carry no direction semantics — they only nest the item set.
+fn check_items(
+    items: &[Item],
+    callees: &HashMap<DefId, &FunctionDefinition>,
     resolve: &ResolveResult,
-) -> HashMap<DefId, &'a FunctionDefinition> {
-    let mut table = HashMap::new();
-    for item in &file.items {
-        if let Item::Fn(func) = item
-            && let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&func.name.id)
-        {
-            table.insert(def_id, func);
+    errors: &mut Vec<DirectionError>,
+) {
+    for item in items {
+        match item {
+            Item::Fn(func) => check_block(&func.body, callees, resolve, errors),
+            Item::Impl(impl_block) => {
+                for func in &impl_block.functions {
+                    check_block(&func.body, callees, resolve, errors);
+                }
+            }
+            Item::Mod(m) => check_items(&m.items, callees, resolve, errors),
+            Item::Struct(_) | Item::Port(_) => {}
         }
     }
-    table
+}
+
+fn collect_callees<'a>(
+    items: &'a [Item],
+    resolve: &ResolveResult,
+    table: &mut HashMap<DefId, &'a FunctionDefinition>,
+) {
+    for item in items {
+        match item {
+            Item::Fn(func) => {
+                if let Some(&Res::Def(_, def_id)) = resolve.resolutions.get(&func.name.id) {
+                    table.insert(def_id, func);
+                }
+            }
+            Item::Mod(m) => collect_callees(&m.items, resolve, table),
+            _ => {}
+        }
+    }
 }
 
 fn check_block<'a>(

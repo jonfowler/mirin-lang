@@ -46,7 +46,10 @@ Surface IR lowering and by editor tooling.
 ### Surface IR — `surface/ir.rs`
 Source-shaped AST. Identifiers are textual `String`s carrying spans. Method
 calls, named vs. positional arguments, `if`/`when`/block-expressions, and
-`var`/`let` distinctions are preserved as written.
+`var`/`let` distinctions are preserved as written. Inline modules
+(`Item::Mod`) nest the same item set; they are a name-resolution scope only and
+are flattened away by `lower_to_hir` (and by `check_directions`), so no module
+construct survives into HIR.
 
 ### HIR — `hir/mod.rs`
 First IR structured for semantic analysis.
@@ -90,7 +93,7 @@ Shallow Verilog-shaped tree. `SvFile` of `SvModule`s with `parameters`,
 
 | Pass | File | What it does |
 |---|---|---|
-| `resolve_file` | `resolve.rs` | Build `DefId` table for top-level items, term-level constructors (`DefKind::Ctor`), and impl methods. Classify struct/port parameters as Type / Const / Domain and record them in `generic_params`. Build per-fn locals table from `let`/`var`/params. Seed the prelude (`reg`, `posedge`, `+`, `*`, `Clock`, `Event`, `Type`, `uint`, `bool`). Populate `impl_methods: (owner_def, method_name) → method_def`. Walk `Block`/`If`/`When` with fresh `let` scopes. |
+| `resolve_file` | `resolve.rs` | Two module-aware phases (rustc's resolver shape). **Phase 1** builds the module tree (`ModuleTree`: crate root, synthetic prelude, and every inline `mod foo { … }`) and the `DefId` table — fns, term-level constructors (`DefKind::Ctor`), modules (`DefKind::Mod`), classifying struct/port params as Type/Const/Domain into `generic_params`. Each module's name table is keyed by `(name, Namespace)` (Type vs Value). **Phase 2** resolves every item body against the current module: bare names look up the module's own table then the prelude (no `use`/glob/ancestor walk yet); builds the per-fn locals table from `let`/`var`/params; populates `impl_methods: (owner_def, method_name) → method_def`; walks `Block`/`If`/`When` with fresh `let` scopes. The prelude (`reg`, `posedge`, `+`, `*`, `Clock`, `Event`, `Type`, `uint`, `bool`) is a module injected at lowest priority. Stable `DefId ↔ DefPath`/`DefPathHash` identity is built over the whole def tree (module-qualified paths). See `planning/modules.md`. |
 | `check_directions` | `surface/direction.rs` | Verify connection operators agree with port field direction: `=` for `in`, `=>` for `out`. Reject `=>` on `let`. |
 
 ### HIR (untyped)
