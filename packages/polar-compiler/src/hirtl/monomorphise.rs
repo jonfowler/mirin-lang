@@ -95,7 +95,7 @@ pub fn monomorphise(
             .entry((callee_def, key.clone()))
             .or_insert_with(|| {
                 let id = next_def;
-                next_def = DefId(next_def.0 + 1);
+                next_def = DefId::local(next_def.index.0 + 1);
                 specs_to_build.push((callee_def, id, args.clone()));
                 id
             });
@@ -296,14 +296,14 @@ fn mangle_type(ty: &HirType, resolve: &ResolveResult) -> String {
 // ---- DefId helpers ----
 
 fn next_def_id(resolve: &ResolveResult) -> DefId {
-    DefId(resolve.defs.len() as u32)
+    DefId::local(resolve.defs.len() as u32)
 }
 
 fn push_def_info(resolve: &mut ResolveResult, expected: DefId, info: DefInfo) {
     // The caller allocated `expected` from `next_def_id`. Verify we're
     // still in sync; if not, pad to keep the index valid (shouldn't
     // happen in practice).
-    while resolve.defs.len() < expected.0 as usize {
+    while resolve.defs.len() < expected.index_usize() {
         resolve.defs.push(DefInfo {
             kind: info.kind,
             name: String::new(),
@@ -311,10 +311,10 @@ fn push_def_info(resolve: &mut ResolveResult, expected: DefId, info: DefInfo) {
             generic_params: Vec::new(),
         });
     }
-    if resolve.defs.len() == expected.0 as usize {
+    if resolve.defs.len() == expected.index_usize() {
         resolve.defs.push(info);
     } else {
-        resolve.defs[expected.0 as usize] = info;
+        resolve.defs[expected.index_usize()] = info;
     }
 }
 

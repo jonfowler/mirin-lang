@@ -563,7 +563,7 @@ impl<'a> Lowerer<'a> {
     /// is cleared again on exit.
     fn enter_generic_scope(&mut self, def_id: DefId) {
         self.current_generic_params.clear();
-        if let Some(info) = self.resolve.defs.get(def_id.0 as usize) {
+        if let Some(info) = self.resolve.defs.get(def_id.index_usize()) {
             for (i, gp) in info.generic_params.iter().enumerate() {
                 self.current_generic_params.insert(gp.local, i as u32);
             }
@@ -1730,7 +1730,7 @@ impl<'a> Lowerer<'a> {
                 let target_kind = self
                     .resolve
                     .defs
-                    .get(target.0 as usize)
+                    .get(target.index_usize())
                     .map(|info| info.kind);
                 match target_kind {
                     Some(DefKind::Struct) => self.value_type(
@@ -1763,7 +1763,7 @@ impl<'a> Lowerer<'a> {
                 match self.resolve.def_id(other).and_then(|id| {
                     self.resolve
                         .defs
-                        .get(id.0 as usize)
+                        .get(id.index_usize())
                         .map(|info| (info.kind, id))
                 }) {
                     Some((DefKind::Struct, def_id)) => {
@@ -1776,7 +1776,7 @@ impl<'a> Lowerer<'a> {
                         )
                     }
                     Some((DefKind::Port, def_id)) => {
-                        let info = self.resolve.defs.get(def_id.0 as usize);
+                        let info = self.resolve.defs.get(def_id.index_usize());
                         let has_dom_params = info
                             .map(|i| {
                                 i.generic_params.iter().any(|gp| {
@@ -1948,7 +1948,7 @@ impl<'a> Lowerer<'a> {
         let params: Vec<crate::resolve::GenericParamInfo> = self
             .resolve
             .defs
-            .get(def_id.0 as usize)
+            .get(def_id.index_usize())
             .map(|info| info.generic_params.clone())
             .unwrap_or_default();
 

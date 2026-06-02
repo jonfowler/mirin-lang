@@ -10,13 +10,157 @@ use crate::surface::ir::{
 };
 use crate::{SourceExcerpt, SourcePosition, SourceSpan};
 
+/// Partition of the global `DefId` / `DefPath` space by crate — a namespace /
+/// dependency root, *not* a separate compilation unit. With monolithic
+/// compilation every crate lives in the same session, so `CrateNum` is about
+/// naming and the `crate::` anchor, not a compilation boundary.
+/// See `planning/modules.md` §6.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CrateNum(pub u32);
+
+/// The root crate — the one whose root module is the CLI input file. Until the
+/// `polar` build tool and multi-crate loading land (S3+), this is the only
+/// crate, so every `DefId` is allocated here.
+pub const LOCAL_CRATE: CrateNum = CrateNum(0);
+
+/// Index of a definition within its crate — an index into that crate's def
+/// table. Numerically equal to the old `DefId(u32)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DefIndex(pub u32);
+
 /// Unique ID for a top-level definition (component, struct, port, impl).
 ///
-/// Modeled on rustc's `DefId`: an index into the `defs` table, separate from
-/// `NodeId`. The separation makes the def-vs-local distinction explicit in the
-/// type system and leaves room for cross-file/cross-crate identity later.
+/// Modeled on rustc's `DefId`: a `(CrateNum, DefIndex)` pair, separate from
+/// `NodeId`. `DefIndex` is the fast in-session currency (an index into the def
+/// table); `CrateNum` partitions that space by crate. The separation makes the
+/// def-vs-local distinction explicit in the type system and carries
+/// cross-crate identity. The *stable* identity is `DefPath` / `DefPathHash`
+/// (below), which is what survives edits and powers incremental compilation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DefId {
+    pub krate: CrateNum,
+    pub index: DefIndex,
+}
+
+impl DefId {
+    /// Construct a `DefId` in the local (root) crate from a raw def index. The
+    /// common case until multi-crate compilation lands.
+    pub fn local(index: u32) -> Self {
+        DefId {
+            krate: LOCAL_CRATE,
+            index: DefIndex(index),
+        }
+    }
+
+    /// Index into the local crate's def table.
+    pub fn index_usize(self) -> usize {
+        self.index.0 as usize
+    }
+}
+
+/// Stable, cross-session identity of a crate: a hash of the crate name. Forms
+/// the high 64 bits of every `DefPathHash`. See `planning/modules.md` §6.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DefId(pub u32);
+pub struct StableCrateId(pub u64);
+
+impl StableCrateId {
+    pub fn from_crate_name(name: &str) -> Self {
+        StableCrateId(stable_hash_bytes(name.as_bytes()))
+    }
+
+    /// The root crate's stable id until a real crate name is threaded through
+    /// (the loader, S3). Deterministic and good enough for S1's single crate.
+    pub fn root() -> Self {
+        Self::from_crate_name("crate")
+    }
+}
+
+/// One segment of a `DefPath`: a name plus a disambiguator that separates defs
+/// which would otherwise share a path (mirrors rustc's `DefPathData` +
+/// disambiguator — e.g. two impl methods of the same name on different owners).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DefPathSegment {
+    pub name: String,
+    pub disambiguator: u32,
+}
+
+/// The **stable** identity of a definition: the disambiguated name-segment path
+/// from the crate root (`crate::util::cfg::parse`). Survives edits to unrelated
+/// siblings the way an integer index does not — the keystone for incremental
+/// compilation. There are no modules yet (S1), so every path is a single
+/// segment directly under the crate root; S2 prepends the module chain.
+/// See `planning/modules.md` §6.1 / §8.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DefPath {
+    pub krate: CrateNum,
+    pub segments: Vec<DefPathSegment>,
+}
+
+/// Hash of `(StableCrateId, DefPath)`. The serializable, cross-session-stable
+/// id — the basis for any future fingerprint-based incremental skipping and for
+/// cross-crate references. High 64 bits are the `StableCrateId`; low 64 are a
+/// stable hash of the path segments. Mirrors rustc's 128-bit `DefPathHash`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DefPathHash(pub u128);
+
+impl DefPathHash {
+    fn new(krate: StableCrateId, path_hash: u64) -> Self {
+        DefPathHash(((krate.0 as u128) << 64) | path_hash as u128)
+    }
+
+    pub fn stable_crate_id(self) -> StableCrateId {
+        StableCrateId((self.0 >> 64) as u64)
+    }
+}
+
+/// A small, dependency-free, **stable** hash (FNV-1a, 64-bit). Stable across
+/// runs and builds — unlike `std`'s `DefaultHasher`, whose output is not
+/// guaranteed stable across versions. This is the seed of the incremental story
+/// (`planning/modules.md` §8): once HIR hashing lands, the same utility hashes
+/// structure with `DefPathHash` substituted for `DefId` and spans ignored. For
+/// now it only hashes `DefPath`s.
+fn stable_hash_bytes(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Bidirectional `DefId ↔ DefPath` map, plus the `DefPathHash → DefId` reverse
+/// index used when loading cached/external data (none yet). Indexed by
+/// `DefIndex` for the local crate. See `planning/modules.md` §6.1.
+#[derive(Debug, Default, Clone)]
+pub struct DefPathTable {
+    paths: Vec<DefPath>,
+    hashes: Vec<DefPathHash>,
+    hash_to_def: HashMap<DefPathHash, DefId>,
+}
+
+impl DefPathTable {
+    pub fn def_path(&self, id: DefId) -> &DefPath {
+        &self.paths[id.index_usize()]
+    }
+
+    pub fn def_path_hash(&self, id: DefId) -> DefPathHash {
+        self.hashes[id.index_usize()]
+    }
+
+    pub fn def_id_from_hash(&self, hash: DefPathHash) -> Option<DefId> {
+        self.hash_to_def.get(&hash).copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+}
 
 /// What an identifier resolves to. Mirrors rustc's `Res<Id>`: the category
 /// (`Def` vs `Local`) is encoded in the variant, with the kind for definitions
@@ -299,11 +443,17 @@ pub struct ResolveResult {
     /// (`x.m(…)` where `x: T`) or eventually via path syntax (`T::m(…)`,
     /// not yet implemented).
     pub impl_methods: HashMap<(DefId, String), DefId>,
+    /// Stable `DefId ↔ DefPath` identity for every def present at the end of
+    /// resolution. Built once here; nothing downstream consumes it yet (S1
+    /// lays the identity foundation — see `planning/modules.md` §6.1 / §9).
+    /// Specialised defs synthesised later by monomorphisation are *not* in
+    /// this table; they gain stable paths when that pass becomes path-aware.
+    pub def_paths: DefPathTable,
 }
 
 impl ResolveResult {
     pub fn def_info(&self, id: DefId) -> &DefInfo {
-        &self.defs[id.0 as usize]
+        &self.defs[id.index_usize()]
     }
 
     pub fn local_info(&self, id: NodeId) -> &LocalInfo {
@@ -319,7 +469,7 @@ impl ResolveResult {
             .iter()
             .enumerate()
             .find(|(_, d)| d.name == name)
-            .map(|(i, _)| DefId(i as u32))
+            .map(|(i, _)| DefId::local(i as u32))
     }
 }
 
@@ -391,7 +541,55 @@ pub fn resolve_file(file: &SourceFile) -> ResolveResult {
     // wins because impl-block resolution (pass 2) ran first.
     ctx.backfill_prelude_reg();
 
+    // Build the stable def-path table over every def now in the table. No
+    // behaviour depends on it yet (S1); it is the identity substrate the
+    // module system and incremental compilation build on.
+    ctx.result.def_paths = build_def_path_table(&ctx.result.defs, StableCrateId::root());
+
     ctx.result
+}
+
+/// Assign each def a single-segment `DefPath` (no modules yet) under the crate
+/// root, disambiguating same-named defs in allocation order, and compute its
+/// `DefPathHash`. Indexed by `DefIndex`.
+fn build_def_path_table(defs: &[DefInfo], scid: StableCrateId) -> DefPathTable {
+    let mut table = DefPathTable::default();
+    let mut disambig: HashMap<String, u32> = HashMap::new();
+    for (i, info) in defs.iter().enumerate() {
+        let disambiguator = {
+            let counter = disambig.entry(info.name.clone()).or_insert(0);
+            let d = *counter;
+            *counter += 1;
+            d
+        };
+        let path = DefPath {
+            krate: LOCAL_CRATE,
+            segments: vec![DefPathSegment {
+                name: info.name.clone(),
+                disambiguator,
+            }],
+        };
+        let hash = DefPathHash::new(scid, hash_def_path(&path));
+        let id = DefId::local(i as u32);
+        table.paths.push(path);
+        table.hashes.push(hash);
+        table.hash_to_def.insert(hash, id);
+    }
+    table
+}
+
+/// Stable hash of a crate-relative segment list. The crate is folded into the
+/// high half of `DefPathHash` via its `StableCrateId`, so it is not rehashed
+/// here.
+fn hash_def_path(path: &DefPath) -> u64 {
+    let mut buf: Vec<u8> = Vec::new();
+    for seg in &path.segments {
+        buf.extend_from_slice(seg.name.as_bytes());
+        buf.push(0);
+        buf.extend_from_slice(&seg.disambiguator.to_le_bytes());
+        buf.push(0xff);
+    }
+    stable_hash_bytes(&buf)
 }
 
 // ----- internals -----
@@ -409,7 +607,7 @@ impl Ctx {
     fn with_prelude() -> Self {
         let mut ctx = Self::default();
         for &name in PRELUDE_FN_NAMES {
-            let id = DefId(ctx.result.defs.len() as u32);
+            let id = DefId::local(ctx.result.defs.len() as u32);
             ctx.result.defs.push(DefInfo {
                 kind: DefKind::Fn,
                 name: name.to_owned(),
@@ -419,7 +617,7 @@ impl Ctx {
             ctx.global_defs.insert(name.to_owned(), (DefKind::Fn, id));
         }
         for &name in PRELUDE_TYPE_NAMES {
-            let id = DefId(ctx.result.defs.len() as u32);
+            let id = DefId::local(ctx.result.defs.len() as u32);
             ctx.result.defs.push(DefInfo {
                 kind: DefKind::BuiltinType,
                 name: name.to_owned(),
@@ -452,7 +650,7 @@ impl Ctx {
             .result
             .def_id("reg")
             .expect("`reg` was just added to the prelude");
-        ctx.result.defs[reg_def_id.0 as usize].generic_params = vec![
+        ctx.result.defs[reg_def_id.index_usize()].generic_params = vec![
             GenericParamInfo {
                 name: "A".to_owned(),
                 kind: GenericParamKind::Type,
@@ -476,7 +674,7 @@ impl Ctx {
         // handles it. Signature: `fn posedge { dom clk: Clock }(self: Clock)
         // -> Event @clk`. The single `dom` arg lands the result's domain
         // via the receiver's identity once method dispatch unifies `self`.
-        ctx.result.defs[posedge_def_id.0 as usize].generic_params = vec![GenericParamInfo {
+        ctx.result.defs[posedge_def_id.index_usize()].generic_params = vec![GenericParamInfo {
             name: "clk".to_owned(),
             kind: GenericParamKind::Domain,
             local: NodeId(u32::MAX - 2),
@@ -494,7 +692,7 @@ impl Ctx {
             let Some(def_id) = ctx.result.def_id(name) else {
                 continue;
             };
-            ctx.result.defs[def_id.0 as usize].generic_params = vec![
+            ctx.result.defs[def_id.index_usize()].generic_params = vec![
                 GenericParamInfo {
                     name: "N".to_owned(),
                     kind: GenericParamKind::Const,
@@ -527,7 +725,9 @@ impl Ctx {
             .iter()
             .enumerate()
             .filter_map(|(i, info)| match info.kind {
-                DefKind::Struct | DefKind::Port | DefKind::BuiltinType => Some(DefId(i as u32)),
+                DefKind::Struct | DefKind::Port | DefKind::BuiltinType => {
+                    Some(DefId::local(i as u32))
+                }
                 _ => None,
             })
             .collect();
@@ -540,7 +740,7 @@ impl Ctx {
     }
 
     fn alloc_def(&mut self, kind: DefKind, ident: &Identifier) -> DefId {
-        let id = DefId(self.result.defs.len() as u32);
+        let id = DefId::local(self.result.defs.len() as u32);
         self.result.defs.push(DefInfo {
             kind,
             name: ident.text.clone(),
@@ -688,7 +888,7 @@ impl Ctx {
                 out.push(info);
             }
         }
-        self.result.defs[def_id.0 as usize].generic_params = out;
+        self.result.defs[def_id.index_usize()].generic_params = out;
     }
 
     fn classify_named_param(&self, np: &NamedParameter) -> Option<GenericParamInfo> {
@@ -1323,7 +1523,7 @@ mod tests {
         let reg_id = r.def_id("reg").expect("prelude `reg`");
         let add_id = r.def_id("add").expect("user `add`");
         assert!(
-            add_id.0 > reg_id.0,
+            add_id > reg_id,
             "user defs should come after prelude in the def table; got reg={reg_id:?} add={add_id:?}"
         );
     }
@@ -1544,6 +1744,53 @@ mod tests {
             r.errors[0].kind.to_string(),
             "`inp` is not a valid source arrow target; only `var` signals may be wired this way"
         );
+    }
+
+    // --- stable identity (DefPath / DefPathHash) ---
+
+    #[test]
+    fn def_path_table_covers_every_def() {
+        let r = resolve("fn add(a: uint(8), b: uint(8)) { let r = a; }");
+        assert!(r.errors.is_empty());
+        assert_eq!(
+            r.def_paths.len(),
+            r.defs.len(),
+            "every resolved def should have a stable path"
+        );
+    }
+
+    #[test]
+    fn def_path_round_trips_through_hash() {
+        let r = resolve("fn add(a: uint(8), b: uint(8)) { let r = a; }");
+        let add_id = r.def_id("add").unwrap();
+        let hash = r.def_paths.def_path_hash(add_id);
+        assert_eq!(
+            r.def_paths.def_id_from_hash(hash),
+            Some(add_id),
+            "DefPathHash should map back to its DefId"
+        );
+    }
+
+    #[test]
+    fn def_path_is_single_segment_named_after_the_def() {
+        let r = resolve("fn add(a: uint(8), b: uint(8)) { let r = a; }");
+        let add_id = r.def_id("add").unwrap();
+        let path = r.def_paths.def_path(add_id);
+        assert_eq!(path.krate, LOCAL_CRATE);
+        assert_eq!(path.segments.len(), 1, "no modules yet (S1)");
+        assert_eq!(path.segments[0].name, "add");
+        assert_eq!(path.segments[0].disambiguator, 0);
+    }
+
+    #[test]
+    fn distinct_defs_get_distinct_path_hashes() {
+        let r = resolve("fn add(a: uint(8)) { let r = a; }\nfn sub(a: uint(8)) { let r = a; }");
+        let add = r.def_paths.def_path_hash(r.def_id("add").unwrap());
+        let sub = r.def_paths.def_path_hash(r.def_id("sub").unwrap());
+        assert_ne!(add, sub);
+        // The stable-crate-id half is shared across defs in the same crate.
+        assert_eq!(add.stable_crate_id(), sub.stable_crate_id());
+        assert_eq!(add.stable_crate_id(), StableCrateId::root());
     }
 
     // --- generic params / Ctor ---

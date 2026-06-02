@@ -632,7 +632,7 @@ impl InferCtxt {
         let params = file
             .resolve
             .defs
-            .get(def_id.0 as usize)
+            .get(def_id.index_usize())
             .map(|info| info.generic_params.clone())
             .unwrap_or_default();
         let mut args = Vec::with_capacity(params.len());
@@ -2023,7 +2023,7 @@ fn describe_type(ty: &HirType) -> String {
                 ValueKind::Reset => "Reset".to_owned(),
                 ValueKind::Usize => "usize".to_owned(),
                 ValueKind::Event => "Event".to_owned(),
-                ValueKind::Struct { def, .. } => format!("struct#{}", def.0),
+                ValueKind::Struct { def, .. } => format!("struct#{}", def.index.0),
                 ValueKind::Param(i) => format!("'P{i}"),
                 ValueKind::Var(i) => format!("?V{i}"),
             };
@@ -2034,7 +2034,7 @@ fn describe_type(ty: &HirType) -> String {
                 format!("{body} @{dom}")
             }
         }
-        HirTypeKind::Port(p) => format!("port#{}", p.def.0),
+        HirTypeKind::Port(p) => format!("port#{}", p.def.index.0),
         HirTypeKind::Clock => "Clock".to_owned(),
     }
 }
