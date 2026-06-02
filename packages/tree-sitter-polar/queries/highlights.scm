@@ -3,6 +3,7 @@
   "port"
   "impl"
   "fn"
+  "mod"
   "let"
   "var"
   "return"
@@ -31,6 +32,7 @@
 (port_definition name: (identifier) @type)
 (port_definition constructor: (identifier) @constructor)
 (function_definition name: (identifier) @function)
+(module_definition name: (identifier) @namespace)
 
 ; Type expressions — the head name is always a type
 (type_expression name: (identifier) @type)

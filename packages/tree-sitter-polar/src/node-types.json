@@ -410,6 +410,63 @@
     }
   },
   {
+    "type": "module_body",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "function_definition",
+          "named": true
+        },
+        {
+          "type": "impl_block",
+          "named": true
+        },
+        {
+          "type": "module_definition",
+          "named": true
+        },
+        {
+          "type": "port_definition",
+          "named": true
+        },
+        {
+          "type": "struct_definition",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "module_definition",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "module_body",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "named_argument_list",
     "named": true,
     "fields": {},
@@ -1048,6 +1105,10 @@
           "named": true
         },
         {
+          "type": "module_definition",
+          "named": true
+        },
+        {
           "type": "port_definition",
           "named": true
         },
@@ -1385,6 +1446,10 @@
   },
   {
     "type": "let",
+    "named": false
+  },
+  {
+    "type": "mod",
     "named": false
   },
   {

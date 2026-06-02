@@ -174,3 +174,48 @@ impl Reg {
               (number)))
           domain: (identifier))
         body: (block)))))
+
+========================================
+inline module with nested items
+========================================
+
+mod math {
+  fn add(a: uint(8)) { let r = a; }
+  mod inner {
+    struct Packet = packet { valid: bool }
+  }
+}
+
+---
+
+(source_file
+  (module_definition
+    name: (identifier)
+    body: (module_body
+      (function_definition
+        name: (identifier)
+        parameters: (parameter_section
+          (parameter
+            name: (identifier)
+            type: (type_expression
+              name: (identifier)
+              (type_index
+                (type_argument
+                  (number))))))
+        body: (block
+          (statement
+            (let_statement
+              name: (identifier)
+              value: (expression
+                (identifier))))))
+      (module_definition
+        name: (identifier)
+        body: (module_body
+          (struct_definition
+            name: (identifier)
+            constructor: (identifier)
+            body: (record_type_body
+              (record_field_type
+                name: (identifier)
+                type: (type_expression
+                  name: (identifier))))))))))

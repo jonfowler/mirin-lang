@@ -25,7 +25,15 @@ module.exports = grammar({
         $.struct_definition,
         $.port_definition,
         $.impl_block,
+        $.module_definition,
       ),
+
+    // Inline module: `mod foo { items… }`. Bodies nest the same item set,
+    // so modules nest arbitrarily. File-based `mod foo;` is a later slice.
+    module_definition: ($) =>
+      seq("mod", field("name", $.identifier), field("body", $.module_body)),
+
+    module_body: ($) => seq("{", repeat($._item), "}"),
 
     struct_definition: ($) =>
       seq(
