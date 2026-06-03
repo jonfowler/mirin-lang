@@ -168,7 +168,7 @@ fn check_items(
                     check_block(&func.body, callees, resolve, errors);
                 }
             }
-            Item::Mod(m) => check_items(&m.items, callees, resolve, errors),
+            Item::Mod(m) => check_items(m.items(), callees, resolve, errors),
             Item::Struct(_) | Item::Port(_) => {}
         }
     }
@@ -186,7 +186,7 @@ fn collect_callees<'a>(
                     table.insert(def_id, func);
                 }
             }
-            Item::Mod(m) => collect_callees(&m.items, resolve, table),
+            Item::Mod(m) => collect_callees(m.items(), resolve, table),
             _ => {}
         }
     }

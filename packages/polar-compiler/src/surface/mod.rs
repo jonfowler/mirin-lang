@@ -7,4 +7,5 @@
 
 pub mod direction;
 pub mod ir;
+pub mod loader;
 pub mod parser;

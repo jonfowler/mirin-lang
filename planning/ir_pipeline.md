@@ -7,10 +7,10 @@ of passes against it. This doc is the map; the code in
 ## Overview
 
 ```
-source.plr
-  ─► tree-sitter parse              surface/parser/tree_sitter.rs
-CST
-  ─► lower_cst                      surface/ir.rs
+crate root .plr
+  ─► load_crate                     surface/loader.rs
+       (per file: tree-sitter parse → lower_cst, splicing `mod foo;` bodies
+        into one combined Surface IR over one combined source buffer)
 Surface IR
   ─► resolve_file                   resolve.rs
   ─► check_directions               surface/direction.rs
@@ -42,6 +42,15 @@ verilator.
 ### CST — concrete syntax tree
 Produced by tree-sitter. Owns exact layout including trivia. Consumed by the
 Surface IR lowering and by editor tooling.
+
+### Loader — `surface/loader.rs`
+Turns a crate root `.plr` plus its `mod foo;` declarations into one combined
+`SourceFile`. Each file is parsed and lowered, its CST spans offset into one
+combined source buffer, with a single crate-wide `NodeId` counter (ids are
+crate-unique). File modules (`mod foo;`) are read from `foo.plr` and spliced in
+as `ModuleBody::Inline`, so by resolution every module is inline. Source is
+supplied through a `SourceProvider` (filesystem by default; in-memory for
+tests) — the seam a future VFS overlays editor buffers onto.
 
 ### Surface IR — `surface/ir.rs`
 Source-shaped AST. Identifiers are textual `String`s carrying spans. Method

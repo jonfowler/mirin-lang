@@ -145,12 +145,18 @@ mod arith {
 }
 ```
 
+File-based modules use `mod foo;`: the body is loaded from `foo.plr` in the
+current file's directory, and that module's own children live under `foo/`
+(e.g. `main.plr`'s `mod util;` → `util.plr`; `util.plr`'s `mod cfg;` →
+`util/cfg.plr`). A `.plr` file joins the crate only when some ancestor declares
+it with `mod`.
+
 A module is a name-resolution scope only — it does not change what Verilog is
 generated. Bare names resolve in the current module, then the prelude; crossing
 a module boundary needs a path (`crate::`/`super::`/`self::`) or `use`. Names
 live in two namespaces (type and value), so a type and a constructor may share
-a name. File-based `mod foo;`, `use`, and `pub` visibility are later slices;
-see `planning/modules.md` for the full design and staging.
+a name. `pub` visibility is a later slice; see `planning/modules.md` for the
+full design and staging.
 
 ## `impl` blocks
 

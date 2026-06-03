@@ -4,7 +4,7 @@ use std::{env, fs, process};
 use polar_compiler::hirt::typeck;
 use polar_compiler::{
     ParseError, check_directions, check_drivers, check_width_obligations, emit_sv,
-    flatten_aggregates, hir, lower_cst, lower_to_sv, parse_source_with_diagnostics,
+    flatten_aggregates, hir, load_crate_from_fs, lower_to_sv, parse_source_with_diagnostics,
     render_direction_errors, render_driver_errors, render_emit_errors, render_parse_error,
     render_resolve_errors, resolve_file,
 };
@@ -109,29 +109,34 @@ fn main() {
         Err(code) => process::exit(code),
     };
 
-    let source = match fs::read_to_string(&args.input) {
-        Ok(s) => s,
+    // `--emit cst` is a single-file debug aid: parse just the root file and
+    // print its concrete syntax tree (the multi-file loader has no single CST).
+    if args.emit == EmitMode::Cst {
+        emit_root_cst(&args.input);
+        return;
+    }
+
+    // Load the whole crate: the root file plus every `mod foo;` it pulls in,
+    // producing one combined `SourceFile` over one combined source buffer.
+    let loaded = match load_crate_from_fs(&args.input) {
+        Ok(l) => l,
         Err(e) => {
-            eprintln!("error: failed to read {}: {e}", args.input.display());
-            process::exit(2);
+            eprintln!("error: {e}");
+            // A file we couldn't read is an environment/IO failure (exit 2);
+            // parse/lower failures are compile errors (exit 1).
+            process::exit(match e {
+                polar_compiler::LoadError::Read { .. } => 2,
+                _ => 1,
+            });
         }
     };
+    let source = loaded.source;
+    let file = loaded.file;
 
-    let parsed = match parse_source_with_diagnostics(&source) {
-        Ok(p) => p,
-        Err(err) => {
-            let mut rendered = String::new();
-            render_parse_error(&err, Some(&args.input), &mut rendered)
-                .expect("rendering parse error should not fail");
-            eprintln!("{rendered}");
-            process::exit(1);
-        }
-    };
-
-    if !parsed.diagnostics.is_empty() {
+    if !loaded.diagnostics.is_empty() {
         let mut rendered = String::new();
         render_parse_error(
-            &ParseError::Syntax(parsed.diagnostics),
+            &ParseError::Syntax(loaded.diagnostics),
             Some(&args.input),
             &mut rendered,
         )
@@ -139,14 +144,6 @@ fn main() {
         eprintln!("{rendered}");
         process::exit(1);
     }
-
-    let file = match lower_cst(&parsed.cst, &source) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("error: {e}");
-            process::exit(1);
-        }
-    };
 
     let mut result = resolve_file(&file);
     if !result.errors.is_empty() {
@@ -278,41 +275,58 @@ fn main() {
         }
     };
 
-    match args.emit {
-        EmitMode::Cst => {
-            print!("{}", parsed.cst);
+    // Only `--emit sv` reaches here; `--emit cst` returned early above.
+    let flat = match flatten_aggregates(&hir, &result, &mono_expr_types, &local_types) {
+        Ok(f) => f,
+        Err(errors) => {
+            let mut rendered = String::new();
+            polar_compiler::render_flatten_errors(
+                &errors,
+                &source,
+                Some(&args.input),
+                &mut rendered,
+            )
+            .expect("rendering flatten errors should not fail");
+            eprintln!("{rendered}");
+            process::exit(1);
         }
-        EmitMode::Sv => {
-            let flat = match flatten_aggregates(&hir, &result, &mono_expr_types, &local_types) {
-                Ok(f) => f,
-                Err(errors) => {
-                    let mut rendered = String::new();
-                    polar_compiler::render_flatten_errors(
-                        &errors,
-                        &source,
-                        Some(&args.input),
-                        &mut rendered,
-                    )
-                    .expect("rendering flatten errors should not fail");
-                    eprintln!("{rendered}");
-                    process::exit(1);
-                }
-            };
-            let sv_file = lower_to_sv(&flat, &result, &mono_fn_residuals);
-            let sv_text = match emit_sv(&sv_file) {
-                Ok(s) => s,
-                Err(errors) => {
-                    let mut rendered = String::new();
-                    render_emit_errors(&errors, &mut rendered)
-                        .expect("rendering emit errors should not fail");
-                    eprintln!("{rendered}");
-                    process::exit(1);
-                }
-            };
-            if let Err(e) = write_sv_output(&args.input, &args.out_dir, &sv_text) {
-                eprintln!("error: failed to write SystemVerilog output: {e}");
-                process::exit(2);
-            }
+    };
+    let sv_file = lower_to_sv(&flat, &result, &mono_fn_residuals);
+    let sv_text = match emit_sv(&sv_file) {
+        Ok(s) => s,
+        Err(errors) => {
+            let mut rendered = String::new();
+            render_emit_errors(&errors, &mut rendered)
+                .expect("rendering emit errors should not fail");
+            eprintln!("{rendered}");
+            process::exit(1);
+        }
+    };
+    if let Err(e) = write_sv_output(&args.input, &args.out_dir, &sv_text) {
+        eprintln!("error: failed to write SystemVerilog output: {e}");
+        process::exit(2);
+    }
+}
+
+/// Parse just the root file and print its CST to stdout (the `--emit cst`
+/// debug path). Multi-file loading does not apply here — there is no single
+/// CST across files.
+fn emit_root_cst(input: &Path) {
+    let source = match fs::read_to_string(input) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: failed to read {}: {e}", input.display());
+            process::exit(2);
+        }
+    };
+    match parse_source_with_diagnostics(&source) {
+        Ok(parsed) => print!("{}", parsed.cst),
+        Err(err) => {
+            let mut rendered = String::new();
+            render_parse_error(&err, Some(input), &mut rendered)
+                .expect("rendering parse error should not fail");
+            eprintln!("{rendered}");
+            process::exit(1);
         }
     }
 }

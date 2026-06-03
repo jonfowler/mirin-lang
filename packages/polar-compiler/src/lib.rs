@@ -29,12 +29,16 @@ pub use surface::direction::{
 pub use surface::ir::{
     ArgumentList, AssignmentStatement, BinaryExpression, BinaryOperator, Block,
     ConnectionDirection, Expression, ExpressionStatement, FieldAccess, FunctionDefinition,
-    Identifier, IfExpression, ImplBlock, Item, LetStatement, LowerError, NamedArgument,
-    NamedArgumentList, NamedParameter, NodeId, NumberLiteral, ParamKind, Parameter, PathExpression,
-    PortDefinition, PortField, PostfixExpression, PostfixOperation, RecordConstructorExpression,
-    RecordFieldType, RecordFieldValue, ReturnStatement, SinkArgument, SourceArgument, SourceFile,
-    Statement, StructDefinition, SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix,
-    VarStatement, WhenExpression, lower_cst, parse_surface_file, parse_surface_source,
+    Identifier, IfExpression, ImplBlock, Item, LetStatement, LowerError, ModuleBody,
+    ModuleDefinition, NamedArgument, NamedArgumentList, NamedParameter, NodeId, NumberLiteral,
+    ParamKind, Parameter, PathExpression, PortDefinition, PortField, PostfixExpression,
+    PostfixOperation, RecordConstructorExpression, RecordFieldType, RecordFieldValue,
+    ReturnStatement, SinkArgument, SourceArgument, SourceFile, Statement, StructDefinition,
+    SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix, VarStatement, WhenExpression, lower_cst,
+    parse_surface_file, parse_surface_source,
+};
+pub use surface::loader::{
+    FsProvider, LoadError, LoadedCrate, MapProvider, SourceProvider, load_crate, load_crate_from_fs,
 };
 pub use surface::parser::tree_sitter::{
     Cst, CstChild, CstNode, ParseError, ParsedSource, SourceExcerpt, SourcePosition, SourceSpan,

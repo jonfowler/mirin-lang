@@ -209,7 +209,7 @@ fn collect_user_defs<'a>(
                     }
                 }
             }
-            Item::Mod(m) => collect_user_defs(&m.items, resolve, user_fns, user_structs),
+            Item::Mod(m) => collect_user_defs(m.items(), resolve, user_fns, user_structs),
             Item::Port(_) => {}
         }
     }
@@ -625,7 +625,7 @@ impl<'a> Lowerer<'a> {
                 Item::Impl(impl_block) => {
                     self.lower_impl(impl_block, out);
                 }
-                Item::Mod(m) => self.lower_items(&m.items, out),
+                Item::Mod(m) => self.lower_items(m.items(), out),
             }
         }
     }

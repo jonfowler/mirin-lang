@@ -219,3 +219,38 @@ mod math {
                 name: (identifier)
                 type: (type_expression
                   name: (identifier))))))))))
+
+========================================
+file-based module declaration
+========================================
+
+mod util;
+
+mod math {
+  fn f(a: uint(8)) { let r = a; }
+}
+
+---
+
+(source_file
+  (module_definition
+    name: (identifier))
+  (module_definition
+    name: (identifier)
+    body: (module_body
+      (function_definition
+        name: (identifier)
+        parameters: (parameter_section
+          (parameter
+            name: (identifier)
+            type: (type_expression
+              name: (identifier)
+              (type_index
+                (type_argument
+                  (number))))))
+        body: (block
+          (statement
+            (let_statement
+              name: (identifier)
+              value: (expression
+                (identifier)))))))))

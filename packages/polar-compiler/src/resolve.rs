@@ -1035,7 +1035,7 @@ impl Ctx {
                     .resolutions
                     .insert(m.name.id, Res::Def(DefKind::Mod, def));
                 let child = self.new_child_module(module, def, &m.name.text);
-                self.collect_items(&m.items, child);
+                self.collect_items(m.items(), child);
             }
         }
     }
@@ -1140,7 +1140,7 @@ impl Ctx {
                 let Some(child) = self.result.modules.module_of_def(def_id) else {
                     return;
                 };
-                self.resolve_items(&m.items, child);
+                self.resolve_items(m.items(), child);
             }
         }
     }

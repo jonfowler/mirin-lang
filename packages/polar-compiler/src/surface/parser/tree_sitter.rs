@@ -10,7 +10,7 @@ unsafe extern "C" {
 
 const LANGUAGE_FN: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_polar) };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SourcePosition {
     pub row: usize,
     pub column: usize,
@@ -25,7 +25,7 @@ impl From<Point> for SourcePosition {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SourceSpan {
     pub start_byte: usize,
     pub end_byte: usize,

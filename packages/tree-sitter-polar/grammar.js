@@ -28,10 +28,14 @@ module.exports = grammar({
         $.module_definition,
       ),
 
-    // Inline module: `mod foo { items… }`. Bodies nest the same item set,
-    // so modules nest arbitrarily. File-based `mod foo;` is a later slice.
+    // Module declaration. `mod foo { items… }` nests an inline body (modules
+    // nest arbitrarily); `mod foo;` loads the body from `foo.plr` at load time.
     module_definition: ($) =>
-      seq("mod", field("name", $.identifier), field("body", $.module_body)),
+      seq(
+        "mod",
+        field("name", $.identifier),
+        choice(field("body", $.module_body), ";"),
+      ),
 
     module_body: ($) => seq("{", repeat($._item), "}"),
 

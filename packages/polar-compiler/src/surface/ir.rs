@@ -25,14 +25,35 @@ pub enum Item {
     Mod(ModuleDefinition),
 }
 
-/// An inline module: `mod foo { items… }`. Holds the same item set as the
-/// crate root, so modules nest arbitrarily. File-based `mod foo;` is a later
-/// slice. See `planning/modules.md` §4.1.
+/// A module declaration. `mod foo { items… }` carries an inline body that
+/// nests the same item set (so modules nest arbitrarily); `mod foo;` is
+/// file-backed — the loader reads `foo.plr` and replaces the body with the
+/// loaded items. See `planning/modules.md` §4.1–§4.2.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleDefinition {
     pub span: SourceSpan,
     pub name: Identifier,
-    pub items: Vec<Item>,
+    pub body: ModuleBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleBody {
+    /// `mod foo { … }` — items written in place. The loader also rewrites a
+    /// resolved `File` body into `Inline` once `foo.plr` is loaded, so by the
+    /// time resolution runs every module is `Inline`.
+    Inline(Vec<Item>),
+    /// `mod foo;` — body lives in `foo.plr`, not yet loaded.
+    File,
+}
+
+impl ModuleDefinition {
+    /// The module's items, or `&[]` for an unloaded file module.
+    pub fn items(&self) -> &[Item] {
+        match &self.body {
+            ModuleBody::Inline(items) => items,
+            ModuleBody::File => &[],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -500,6 +521,20 @@ pub fn lower_cst(cst: &Cst, source: &str) -> Result<SourceFile, LowerError> {
     Lowerer::new(source).lower_cst(cst)
 }
 
+/// Lower a CST starting the `NodeId` counter at `next_id`, returning the
+/// lowered file and the next free id. The multi-file loader threads the
+/// counter across files so every `NodeId` is crate-unique (see
+/// `surface/loader.rs`).
+pub fn lower_cst_seeded(
+    cst: &Cst,
+    source: &str,
+    next_id: u32,
+) -> Result<(SourceFile, u32), LowerError> {
+    let mut lowerer = Lowerer { source, next_id };
+    let file = lowerer.lower_cst(cst)?;
+    Ok((file, lowerer.next_id))
+}
+
 /// State threaded through lowering. Owns the source text and the `NodeId` counter
 /// so every constructed `Identifier` gets a unique id without a separate pass.
 struct Lowerer<'a> {
@@ -545,13 +580,20 @@ impl<'a> Lowerer<'a> {
 
     fn lower_module_definition(&mut self, node: &CstNode) -> Result<ModuleDefinition, LowerError> {
         expect_kind(node, "module_definition")?;
-        let body = lower_required_child(node, "body", "module_body")?;
+        let name = self.lower_required_identifier(node, "name")?;
+        // `mod foo { … }` has a `body` child; `mod foo;` has none.
+        let body = match child_by_field(node, "body") {
+            Some(body) => ModuleBody::Inline(
+                named_children(body)
+                    .map(|child| self.lower_item(child))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            None => ModuleBody::File,
+        };
         Ok(ModuleDefinition {
             span: node.span.clone(),
-            name: self.lower_required_identifier(node, "name")?,
-            items: named_children(body)
-                .map(|child| self.lower_item(child))
-                .collect::<Result<Vec<_>, _>>()?,
+            name,
+            body,
         })
     }
 
