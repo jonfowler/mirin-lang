@@ -319,3 +319,48 @@ fn f() {
               segment: (identifier)
               segment: (identifier)
               segment: (identifier))))))))
+
+========================================
+visibility modifiers
+========================================
+
+pub fn f(x: uint(8)) { let r = x; }
+pub(crate) struct P = p { v: bool }
+pub use crate::a::b;
+
+---
+
+(source_file
+  (function_definition
+    visibility: (visibility_modifier)
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    body: (block
+      (statement
+        (let_statement
+          name: (identifier)
+          value: (expression
+            (identifier))))))
+  (struct_definition
+    visibility: (visibility_modifier)
+    name: (identifier)
+    constructor: (identifier)
+    body: (record_type_body
+      (record_field_type
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)))))
+  (use_declaration
+    visibility: (visibility_modifier)
+    tree: (use_tree
+      (use_path
+        (identifier)
+        (identifier)
+        (identifier)))))

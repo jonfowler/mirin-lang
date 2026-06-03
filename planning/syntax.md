@@ -165,8 +165,21 @@ use a::*;                        // glob (lowest priority)
 Paths use 2018-style relative resolution with `crate::`/`super::`/`self::`
 anchors, in both `use` and expression position (`crate::m::g`). Names live in
 two namespaces (type and value), so a type and a constructor may share a name.
-`pub` visibility is a later slice (everything is currently nameable across
-modules); see `planning/modules.md` for the full design and staging.
+
+Items are **private by default** — visible only in the defining module and its
+descendants. `pub` opens them up; the parenthesised forms narrow that reach:
+
+```rust
+pub fn f() { … }            // visible everywhere
+pub(crate) struct S = s {…} // visible anywhere in the crate
+pub(super) fn g() { … }     // visible in the parent module's subtree
+pub(in crate::a) fn h() {…} // visible within module a's subtree
+pub use crate::a::f;        // re-export: f becomes part of this module's surface
+```
+
+A plain `use` is private to its module; only `pub use` re-exports a name so
+others can reach it through this module. Naming a private item from outside its
+scope is an error. See `planning/modules.md` for the full design and staging.
 
 Note: a path written directly in expression position resolves but does not yet
 lower to hardware — import the item with `use` to call it. Type-position paths

@@ -6,7 +6,7 @@ use crate::surface::ir::{
     Block, Expression, FunctionDefinition, Identifier, ImplBlock, Item, LetStatement,
     NamedArgument, NamedParameter, NodeId, Parameter, PortDefinition, PositionalArgument,
     PostfixOperation, SourceFile, Statement, StructDefinition, TypeArgument, TypeExpression,
-    TypeSuffix, UseTree, VarStatement,
+    TypeSuffix, UseDecl, UseTree, VarStatement, Visibility as SurfaceVisibility,
 };
 use crate::{SourceExcerpt, SourcePosition, SourceSpan};
 
@@ -261,11 +261,16 @@ pub enum BindingSource {
     Glob,
 }
 
-/// One entry in a module's name table.
+/// One entry in a module's name table. `vis` is the *binding*'s visibility:
+/// for a def it is the def's declared visibility; for a plain `use` it is
+/// private to the importing module; for a `pub use` it is the re-export's
+/// declared visibility. Path resolution checks `vis` at each step, so a
+/// `pub use` re-exports a name while a plain `use` keeps it module-private.
 #[derive(Debug, Clone, Copy)]
 pub struct Binding {
     pub res: Res,
     pub source: BindingSource,
+    pub vis: Visibility,
 }
 
 /// One module's data: its kind, its parent, and its name table. Modeled on
@@ -320,10 +325,15 @@ impl ModuleTree {
 
     /// Look up a name in one module's table only (no fallback).
     pub fn lookup_local(&self, module: ModuleId, name: &str, ns: Namespace) -> Option<Res> {
+        self.binding_local(module, name, ns).map(|b| b.res)
+    }
+
+    /// Like `lookup_local` but returns the whole binding (for visibility).
+    pub fn binding_local(&self, module: ModuleId, name: &str, ns: Namespace) -> Option<Binding> {
         self.modules[module.0 as usize]
             .items
             .get(&(name.to_owned(), ns))
-            .map(|b| b.res)
+            .copied()
     }
 
     /// Resolve a bare name as a body in `module` sees it: the module's own
@@ -333,6 +343,31 @@ impl ModuleTree {
         self.lookup_local(module, name, ns)
             .or_else(|| self.lookup_local(self.prelude, name, ns))
     }
+
+    /// `true` if `module` is `ancestor` or a descendant of it.
+    pub fn is_within(&self, module: ModuleId, ancestor: ModuleId) -> bool {
+        let mut cur = Some(module);
+        while let Some(m) = cur {
+            if m == ancestor {
+                return true;
+            }
+            cur = self.modules[m.0 as usize].parent;
+        }
+        false
+    }
+}
+
+/// A def's accessibility scope (resolved from the surface `Visibility`).
+/// See `planning/modules.md` §4.5 / §7.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    /// `pub` — visible everywhere (across crates, eventually).
+    Public,
+    /// `pub(crate)` — visible anywhere in the crate.
+    Crate,
+    /// Visible within the given module's subtree. Covers private (scope = the
+    /// defining module), `pub(super)` (the parent), and `pub(in path)`.
+    Restricted(ModuleId),
 }
 
 /// Kind of a generic parameter on a struct, port, or fn.
@@ -399,6 +434,11 @@ pub struct DefInfo {
     /// `Port`, and (eventually) `Fn`. The position in this list is the index
     /// referenced by `HirTypeKind::Param(i)`.
     pub generic_params: Vec<GenericParamInfo>,
+    /// The module this def is declared in (drives `DefPath` and the privacy
+    /// check's "defining module").
+    pub module: ModuleId,
+    /// Accessibility scope. See `planning/modules.md` §4.5.
+    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone)]
@@ -438,6 +478,8 @@ pub enum ResolveErrorKind {
     /// `Foo { … }` constructor — except Polar uses a distinct constructor name
     /// (e.g. `struct Bus(A: Type) = bus { … }`).
     MissingConstructor(String),
+    /// A path or `use` names a definition that is not visible from here.
+    Private(String),
 }
 
 impl fmt::Display for ResolveErrorKind {
@@ -488,6 +530,9 @@ impl fmt::Display for ResolveErrorKind {
                     "`{name}` is missing its `= constructor` clause; add one like `struct {name} = {} {{ … }}`",
                     name.to_lowercase()
                 )
+            }
+            ResolveErrorKind::Private(name) => {
+                write!(f, "`{name}` is private")
             }
         }
     }
@@ -678,6 +723,10 @@ pub fn resolve_file(file: &SourceFile) -> ResolveResult {
     // Phase 2: resolve every item's body against the module tree.
     ctx.resolve_items(&file.items, root);
 
+    // Phase 4 (privacy): now that every reference resolves, reject `use`
+    // imports that name an inaccessible def (`planning/modules.md` §7.5).
+    ctx.check_use_privacy(&file.items);
+
     // Backfill the prelude `reg` entry for every value-shaped type that
     // doesn't already have a user-defined `reg`. The prelude `reg` accepts any
     // value type as `self`, so structs, ports, and the primitive `uint` all
@@ -688,12 +737,7 @@ pub fn resolve_file(file: &SourceFile) -> ResolveResult {
     // Build the stable def-path table over every def now in the table. No
     // behaviour depends on it yet; it is the identity substrate the module
     // system and incremental compilation build on (`planning/modules.md` §8).
-    let table = build_def_path_table(
-        &ctx.result.defs,
-        &ctx.def_module,
-        &ctx.result.modules,
-        StableCrateId::root(),
-    );
+    let table = build_def_path_table(&ctx.result.defs, &ctx.result.modules, StableCrateId::root());
     ctx.result.def_paths = table;
 
     ctx.result
@@ -704,7 +748,6 @@ pub fn resolve_file(file: &SourceFile) -> ResolveResult {
 /// and compute its `DefPathHash`. Indexed by `DefIndex`.
 fn build_def_path_table(
     defs: &[DefInfo],
-    def_module: &[ModuleId],
     modules: &ModuleTree,
     scid: StableCrateId,
 ) -> DefPathTable {
@@ -714,8 +757,7 @@ fn build_def_path_table(
     // synthesised same-name siblings would) get increasing disambiguators.
     let mut disambig: HashMap<Vec<String>, u32> = HashMap::new();
     for (i, info) in defs.iter().enumerate() {
-        let module = def_module[i];
-        let mut segments = modules.module(module).path_prefix.clone();
+        let mut segments = modules.module(info.module).path_prefix.clone();
         segments.push(DefPathSegment {
             name: info.name.clone(),
             disambiguator: 0,
@@ -755,6 +797,34 @@ fn hash_def_path(path: &DefPath) -> u64 {
     stable_hash_bytes(&buf)
 }
 
+/// Flatten a use-tree into its leaf paths (full segment lists), calling `emit`
+/// for each. Globs are skipped — they import only accessible names, so they
+/// raise no privacy error.
+fn collect_use_leaves<'a>(
+    prefix: &[&'a Identifier],
+    tree: &'a UseTree,
+    emit: &mut dyn FnMut(&[&'a Identifier], &SourceSpan),
+) {
+    match tree {
+        UseTree::Path { segments, .. } => {
+            let full: Vec<&Identifier> = prefix.iter().copied().chain(segments.iter()).collect();
+            if let Some(last) = full.last() {
+                emit(&full, &last.span);
+            }
+        }
+        UseTree::Group {
+            prefix: gp,
+            children,
+        } => {
+            let new_prefix: Vec<&Identifier> = prefix.iter().copied().chain(gp.iter()).collect();
+            for child in children {
+                collect_use_leaves(&new_prefix, child, emit);
+            }
+        }
+        UseTree::Glob { .. } => {}
+    }
+}
+
 // ----- internals -----
 
 struct Ctx {
@@ -762,9 +832,6 @@ struct Ctx {
     /// The module whose body is currently being resolved (phase 2). Set by
     /// `resolve_items`; consulted by every name lookup via `lookup`.
     current_module: ModuleId,
-    /// The module each `DefId` lives in, indexed by `DefIndex`. Pushed in
-    /// lockstep with `alloc_def_raw`; drives `DefPath` construction.
-    def_module: Vec<ModuleId>,
 }
 
 impl Ctx {
@@ -798,7 +865,6 @@ impl Ctx {
         let mut ctx = Ctx {
             result,
             current_module: ModuleId(1),
-            def_module: Vec::new(),
         };
         ctx.seed_prelude();
         ctx
@@ -806,8 +872,11 @@ impl Ctx {
 
     fn seed_prelude(&mut self) {
         let prelude = self.result.modules.prelude();
+        // Prelude defs are visible everywhere (they back the lowest-priority
+        // fallback scope), so mark them public.
         for &name in PRELUDE_FN_NAMES {
             let id = self.alloc_def_raw(DefKind::Fn, name.to_owned(), prelude_span(), prelude);
+            self.result.defs[id.index_usize()].visibility = Visibility::Public;
             self.define(prelude, name, Namespace::Value, Res::Def(DefKind::Fn, id));
         }
         for &name in PRELUDE_TYPE_NAMES {
@@ -817,6 +886,7 @@ impl Ctx {
                 prelude_span(),
                 prelude,
             );
+            self.result.defs[id.index_usize()].visibility = Visibility::Public;
             self.define(
                 prelude,
                 name,
@@ -951,8 +1021,11 @@ impl Ctx {
             name,
             span,
             generic_params: Vec::new(),
+            module,
+            // Default to private (visible in the defining module's subtree);
+            // `collect_named_def`/the `mod` arm override from the surface form.
+            visibility: Visibility::Restricted(module),
         });
-        self.def_module.push(module);
         id
     }
 
@@ -960,13 +1033,19 @@ impl Ctx {
         self.alloc_def_raw(kind, ident.text.clone(), ident.span.clone(), module)
     }
 
-    /// Insert a definition binding into a module's name table.
+    /// Insert a definition binding into a module's name table. The binding's
+    /// visibility is the def's own (set before this call).
     fn define(&mut self, module: ModuleId, name: &str, ns: Namespace, res: Res) {
+        let vis = match res {
+            Res::Def(_, def) => self.result.def_info(def).visibility,
+            Res::Local(_) => Visibility::Public,
+        };
         self.result.modules.modules[module.0 as usize].items.insert(
             (name.to_owned(), ns),
             Binding {
                 res,
                 source: BindingSource::Def,
+                vis,
             },
         );
     }
@@ -980,12 +1059,13 @@ impl Ctx {
         ns: Namespace,
         res: Res,
         source: BindingSource,
+        vis: Visibility,
     ) -> bool {
         let table = &mut self.result.modules.modules[module.0 as usize].items;
         let key = (name.to_owned(), ns);
         match table.get(&key) {
             None => {
-                table.insert(key, Binding { res, source });
+                table.insert(key, Binding { res, source, vis });
                 true
             }
             Some(existing) => match (existing.source, source) {
@@ -993,7 +1073,7 @@ impl Ctx {
                 (BindingSource::Def, _) => false,
                 // An explicit import overrides a glob import.
                 (BindingSource::Glob, BindingSource::Import) => {
-                    table.insert(key, Binding { res, source });
+                    table.insert(key, Binding { res, source, vis });
                     true
                 }
                 // Otherwise keep the existing binding (idempotent re-imports,
@@ -1054,17 +1134,25 @@ impl Ctx {
             // `impl` blocks extend an existing type rather than introducing a
             // new name; handled in phase 2 (`resolve_impl`).
             Item::Impl(_) => {}
-            Item::Fn(f) => self.collect_named_def(module, DefKind::Fn, &f.name, None, false),
+            Item::Fn(f) => {
+                self.collect_named_def(module, DefKind::Fn, &f.name, None, false, &f.visibility)
+            }
             Item::Struct(s) => self.collect_named_def(
                 module,
                 DefKind::Struct,
                 &s.name,
                 s.constructor.as_ref(),
                 true,
+                &s.visibility,
             ),
-            Item::Port(p) => {
-                self.collect_named_def(module, DefKind::Port, &p.name, p.constructor.as_ref(), true)
-            }
+            Item::Port(p) => self.collect_named_def(
+                module,
+                DefKind::Port,
+                &p.name,
+                p.constructor.as_ref(),
+                true,
+                &p.visibility,
+            ),
             Item::Mod(m) => {
                 if self
                     .lookup_local(module, &m.name.text, Namespace::Type)
@@ -1077,6 +1165,8 @@ impl Ctx {
                     return;
                 }
                 let def = self.alloc_def(DefKind::Mod, &m.name, module);
+                self.result.defs[def.index_usize()].visibility =
+                    self.resolve_visibility(&m.visibility, module);
                 self.define(
                     module,
                     &m.name.text,
@@ -1110,6 +1200,7 @@ impl Ctx {
         ident: &Identifier,
         constructor: Option<&Identifier>,
         requires_ctor: bool,
+        visibility: &SurfaceVisibility,
     ) {
         let ns = kind.namespace().expect("fn/struct/port are named");
         if self.lookup_local(module, &ident.text, ns).is_some() {
@@ -1119,7 +1210,9 @@ impl Ctx {
             });
             return;
         }
+        let vis = self.resolve_visibility(visibility, module);
         let id = self.alloc_def(kind, ident, module);
+        self.result.defs[id.index_usize()].visibility = vis;
         self.define(module, &ident.text, ns, Res::Def(kind, id));
         self.result.resolutions.insert(ident.id, Res::Def(kind, id));
 
@@ -1136,6 +1229,8 @@ impl Ctx {
                     });
                 } else {
                     let ctor_id = self.alloc_def(ctor_kind, ctor, module);
+                    // The constructor is as visible as its type.
+                    self.result.defs[ctor_id.index_usize()].visibility = vis;
                     self.define(
                         module,
                         &ctor.text,
@@ -1217,14 +1312,17 @@ impl Ctx {
     /// imported set, and any chained import, can grow as other imports land.
     /// Polar has no macros, so this is the only fixpoint resolution needs.
     fn resolve_imports<'a>(&mut self, items: &'a [Item]) {
-        // The use-trees borrow `items` (external to `self`), so we can hold
+        // The use-decls borrow `items` (external to `self`), so we can hold
         // them while mutably borrowing `self` in the fixpoint below.
-        let mut uses: Vec<(ModuleId, &'a UseTree)> = Vec::new();
+        let mut uses: Vec<(ModuleId, &'a UseDecl)> = Vec::new();
         self.collect_uses(items, self.result.modules.root(), &mut uses);
         loop {
             let mut changed = false;
-            for &(module, tree) in &uses {
-                changed |= self.import_tree(module, &[], tree);
+            for &(module, decl) in &uses {
+                // A `pub use` re-exports at the declared visibility; a plain
+                // `use` is private to the importing module.
+                let vis = self.resolve_visibility(&decl.visibility, module);
+                changed |= self.import_tree(module, &[], &decl.tree, vis);
             }
             if !changed {
                 break;
@@ -1236,11 +1334,11 @@ impl Ctx {
         &self,
         items: &'a [Item],
         module: ModuleId,
-        out: &mut Vec<(ModuleId, &'a UseTree)>,
+        out: &mut Vec<(ModuleId, &'a UseDecl)>,
     ) {
         for item in items {
             match item {
-                Item::Use(u) => out.push((module, &u.tree)),
+                Item::Use(u) => out.push((module, u)),
                 Item::Mod(m) => {
                     if let Some(def) = self.def_of_name(&m.name)
                         && let Some(child) = self.result.modules.module_of_def(def)
@@ -1253,14 +1351,20 @@ impl Ctx {
         }
     }
 
-    /// Apply one use-tree to `module` under `prefix`. Returns whether any new
-    /// binding was inserted.
-    fn import_tree(&mut self, module: ModuleId, prefix: &[&Identifier], tree: &UseTree) -> bool {
+    /// Apply one use-tree to `module` under `prefix`, inserting bindings at
+    /// visibility `vis`. Returns whether any new binding was inserted.
+    fn import_tree(
+        &mut self,
+        module: ModuleId,
+        prefix: &[&Identifier],
+        tree: &UseTree,
+        vis: Visibility,
+    ) -> bool {
         match tree {
             UseTree::Path { segments, alias } => {
                 let full: Vec<&Identifier> =
                     prefix.iter().copied().chain(segments.iter()).collect();
-                self.import_leaf(module, &full, alias.as_ref())
+                self.import_leaf(module, &full, alias.as_ref(), vis)
             }
             UseTree::Group {
                 prefix: gp,
@@ -1270,23 +1374,25 @@ impl Ctx {
                     prefix.iter().copied().chain(gp.iter()).collect();
                 let mut changed = false;
                 for child in children {
-                    changed |= self.import_tree(module, &new_prefix, child);
+                    changed |= self.import_tree(module, &new_prefix, child, vis);
                 }
                 changed
             }
             UseTree::Glob { prefix: gp, .. } => {
                 let full: Vec<&Identifier> = prefix.iter().copied().chain(gp.iter()).collect();
-                self.import_glob(module, &full)
+                self.import_glob(module, &full, vis)
             }
         }
     }
 
-    /// Import a single leaf `prefix::…::name [as alias]` into `module`.
+    /// Import a single leaf `prefix::…::name [as alias]` into `module` at
+    /// visibility `vis`.
     fn import_leaf(
         &mut self,
         module: ModuleId,
         segments: &[&Identifier],
         alias: Option<&Identifier>,
+        vis: Visibility,
     ) -> bool {
         let Some((&last, prefix)) = segments.split_last() else {
             return false;
@@ -1309,6 +1415,7 @@ impl Ctx {
                 Namespace::Type,
                 res,
                 BindingSource::Import,
+                vis,
             );
         }
         let texts: Vec<&str> = segments.iter().map(|s| s.text.as_str()).collect();
@@ -1317,14 +1424,16 @@ impl Ctx {
         // Import the name in whichever namespace(s) it resolves to.
         for ns in [Namespace::Type, Namespace::Value] {
             if let Some(res) = self.resolve_path(&texts, module, ns) {
-                changed |= self.import_binding(module, &name.text, ns, res, BindingSource::Import);
+                changed |=
+                    self.import_binding(module, &name.text, ns, res, BindingSource::Import, vis);
             }
         }
         changed
     }
 
-    /// Import every name from the module named by `prefix` into `module`.
-    fn import_glob(&mut self, module: ModuleId, prefix: &[&Identifier]) -> bool {
+    /// Import every name from the module named by `prefix` into `module` at
+    /// visibility `vis`.
+    fn import_glob(&mut self, module: ModuleId, prefix: &[&Identifier], vis: Visibility) -> bool {
         let texts: Vec<&str> = prefix.iter().map(|s| s.text.as_str()).collect();
         let Some(target) = self.resolve_path_to_module(&texts, module) else {
             return false;
@@ -1332,17 +1441,19 @@ impl Ctx {
         if target == module {
             return false;
         }
-        // Snapshot the target's entries (avoid borrowing while mutating).
+        // Snapshot the target's accessible entries (avoid borrowing while
+        // mutating). A glob imports only names visible from `module`.
         let entries: Vec<(String, Namespace, Res)> = self
             .result
             .modules
             .module(target)
             .entries()
+            .filter(|(_, b)| self.vis_accessible(b.vis, module))
             .map(|((name, ns), b)| (name.clone(), *ns, b.res))
             .collect();
         let mut changed = false;
         for (name, ns, res) in entries {
-            changed |= self.import_binding(module, &name, ns, res, BindingSource::Glob);
+            changed |= self.import_binding(module, &name, ns, res, BindingSource::Glob, vis);
         }
         changed
     }
@@ -1374,6 +1485,18 @@ impl Ctx {
     /// `None` if any segment fails to resolve or an intermediate segment is not
     /// a module.
     fn resolve_path(&self, segments: &[&str], from: ModuleId, final_ns: Namespace) -> Option<Res> {
+        self.resolve_path_collecting(segments, from, final_ns, &mut Vec::new())
+    }
+
+    /// Like `resolve_path`, but pushes every def the path touches (intermediate
+    /// modules, then the final def) into `chain` — used by the privacy check.
+    fn resolve_path_collecting(
+        &self,
+        segments: &[&str],
+        from: ModuleId,
+        final_ns: Namespace,
+        chain: &mut Vec<DefId>,
+    ) -> Option<Res> {
         let (mut module, start) = self.path_anchor(segments, from);
         let relative = start == 0;
         if start >= segments.len() {
@@ -1393,16 +1516,157 @@ impl Ctx {
             let Some(Res::Def(DefKind::Mod, def)) = res else {
                 return None;
             };
+            chain.push(def);
             module = self.result.modules.module_of_def(def)?;
             i += 1;
         }
-        if i == start && relative {
+        let res = if i == start && relative {
             self.result.modules.lookup(module, segments[i], final_ns)
         } else {
             self.result
                 .modules
                 .lookup_local(module, segments[i], final_ns)
+        };
+        if let Some(Res::Def(_, def)) = res {
+            chain.push(def);
         }
+        res
+    }
+
+    // ----- visibility / privacy -----
+
+    /// Convert a surface `Visibility` to a resolved accessibility scope,
+    /// relative to the module the item is declared in.
+    fn resolve_visibility(&self, vis: &SurfaceVisibility, module: ModuleId) -> Visibility {
+        match vis {
+            SurfaceVisibility::Inherited => Visibility::Restricted(module),
+            SurfaceVisibility::Public => Visibility::Public,
+            SurfaceVisibility::Crate => Visibility::Crate,
+            SurfaceVisibility::Super => {
+                let parent = self.result.modules.module(module).parent.unwrap_or(module);
+                Visibility::Restricted(parent)
+            }
+            SurfaceVisibility::Restricted(path) => {
+                let texts: Vec<&str> = path.iter().map(|s| s.text.as_str()).collect();
+                match self.resolve_path_to_module(&texts, module) {
+                    Some(m) => Visibility::Restricted(m),
+                    // Unresolvable `pub(in …)` falls back to private.
+                    None => Visibility::Restricted(module),
+                }
+            }
+        }
+    }
+
+    /// Is a binding of visibility `vis` nameable from `use_module`?
+    fn vis_accessible(&self, vis: Visibility, use_module: ModuleId) -> bool {
+        match vis {
+            Visibility::Public | Visibility::Crate => true,
+            Visibility::Restricted(scope) => self.result.modules.is_within(use_module, scope),
+        }
+    }
+
+    /// Phase 4: reject `use` imports that name an inaccessible binding. Walks
+    /// every `use` leaf and checks the whole path (each module segment + the
+    /// final binding) against the importing module.
+    fn check_use_privacy(&mut self, items: &[Item]) {
+        let mut uses: Vec<(ModuleId, &UseDecl)> = Vec::new();
+        self.collect_uses(items, self.result.modules.root(), &mut uses);
+        // Snapshot leaves so we don't borrow `items` while mutating `self`.
+        let mut leaves: Vec<(ModuleId, Vec<String>, SourceSpan)> = Vec::new();
+        for (module, decl) in uses {
+            collect_use_leaves(&[], &decl.tree, &mut |segments, span| {
+                leaves.push((
+                    module,
+                    segments.iter().map(|s| s.text.clone()).collect(),
+                    span.clone(),
+                ));
+            });
+        }
+        for (module, segs, span) in leaves {
+            // Drop a trailing `self` (it names the prefix module).
+            let segs: Vec<&str> = if segs.last().map(String::as_str) == Some("self") {
+                segs[..segs.len() - 1].iter().map(String::as_str).collect()
+            } else {
+                segs.iter().map(String::as_str).collect()
+            };
+            if segs.is_empty() {
+                continue;
+            }
+            self.check_path_access(&segs, module, &span);
+        }
+    }
+
+    /// Walk a path's bindings (intermediate modules, then the final name) and
+    /// emit a privacy error for the first one inaccessible from `from`. The
+    /// relative first segment resolves in `from`'s own scope (or the prelude),
+    /// which is always accessible, so it is not checked.
+    fn check_path_access(&mut self, segments: &[&str], from: ModuleId, span: &SourceSpan) {
+        let (mut module, start) = self.path_anchor(segments, from);
+        let relative = start == 0;
+        if start >= segments.len() {
+            return;
+        }
+        let mut i = start;
+        // Intermediate module segments.
+        while i + 1 < segments.len() {
+            let own_scope = i == start && relative;
+            let binding = if own_scope {
+                self.result
+                    .modules
+                    .lookup(module, segments[i], Namespace::Type)
+                    .map(|res| (res, true))
+            } else {
+                self.result
+                    .modules
+                    .binding_local(module, segments[i], Namespace::Type)
+                    .map(|b| (b.res, self.vis_accessible(b.vis, from)))
+            };
+            let Some((res, ok)) = binding else { return };
+            if !ok {
+                self.push_private_error(res, span);
+                return;
+            }
+            let Res::Def(DefKind::Mod, def) = res else {
+                return;
+            };
+            let Some(next) = self.result.modules.module_of_def(def) else {
+                return;
+            };
+            module = next;
+            i += 1;
+        }
+        // Final segment — resolve in either namespace.
+        let own_scope = i == start && relative;
+        for ns in [Namespace::Value, Namespace::Type] {
+            let binding = if own_scope {
+                self.result
+                    .modules
+                    .lookup(module, segments[i], ns)
+                    .map(|res| (res, true))
+            } else {
+                self.result
+                    .modules
+                    .binding_local(module, segments[i], ns)
+                    .map(|b| (b.res, self.vis_accessible(b.vis, from)))
+            };
+            if let Some((res, ok)) = binding {
+                if !ok {
+                    self.push_private_error(res, span);
+                }
+                return;
+            }
+        }
+    }
+
+    fn push_private_error(&mut self, res: Res, span: &SourceSpan) {
+        let name = match res {
+            Res::Def(_, def) => self.result.def_info(def).name.clone(),
+            Res::Local(_) => return,
+        };
+        self.result.errors.push(ResolveError {
+            kind: ResolveErrorKind::Private(name),
+            span: span.clone(),
+        });
     }
 
     /// Resolve a path whose final segment must itself be a module.
@@ -1825,6 +2089,9 @@ impl BlockCtx<'_> {
                         if let Some(last) = p.segments.last() {
                             self.ctx.result.resolutions.insert(last.id, res);
                         }
+                        // Privacy: the path's modules and final def must be
+                        // accessible from here.
+                        self.ctx.check_path_access(&texts, module, &p.span);
                     }
                     None => {
                         let joined = texts.join("::");
@@ -2510,7 +2777,7 @@ mod tests {
     #[test]
     fn use_brings_name_into_scope() {
         let r = resolve(
-            "mod m { fn helper(a: uint(8)) { let r = a; } }\n\
+            "mod m { pub fn helper(a: uint(8)) { let r = a; } }\n\
              use crate::m::helper;\n\
              fn g(a: uint(8)) { let r = helper(a); }",
         );
@@ -2540,7 +2807,7 @@ mod tests {
     #[test]
     fn use_group_and_alias() {
         let r = resolve(
-            "mod m { fn a(x: uint(8)) { let r = x; } fn b(x: uint(8)) { let r = x; } }\n\
+            "mod m { pub fn a(x: uint(8)) { let r = x; } pub fn b(x: uint(8)) { let r = x; } }\n\
              use crate::m::{a as alpha, b};\n\
              fn g(x: uint(8)) { let r = alpha(x); let s = b(x); }",
         );
@@ -2550,7 +2817,7 @@ mod tests {
     #[test]
     fn glob_import() {
         let r = resolve(
-            "mod m { fn a(x: uint(8)) { let r = x; } fn b(x: uint(8)) { let r = x; } }\n\
+            "mod m { pub fn a(x: uint(8)) { let r = x; } pub fn b(x: uint(8)) { let r = x; } }\n\
              use crate::m::*;\n\
              fn g(x: uint(8)) { let r = a(x); let s = b(x); }",
         );
@@ -2561,7 +2828,7 @@ mod tests {
     fn use_struct_then_construct() {
         // Importing a struct's constructor lets a bare record literal resolve.
         let r = resolve(
-            "mod m { struct P = mk { v: bool } }\n\
+            "mod m { pub struct P = mk { v: bool } }\n\
              use crate::m::mk;\n\
              fn g() { let r = mk { v: true }; }",
         );
@@ -2571,7 +2838,7 @@ mod tests {
     #[test]
     fn nested_group_paths() {
         let r = resolve(
-            "mod a { mod b { fn deep(x: uint(8)) { let r = x; } } fn near(x: uint(8)) { let r = x; } }\n\
+            "mod a { pub mod b { pub fn deep(x: uint(8)) { let r = x; } } pub fn near(x: uint(8)) { let r = x; } }\n\
              use crate::a::{near, b::deep};\n\
              fn g(x: uint(8)) { let r = near(x); let s = deep(x); }",
         );
@@ -2583,7 +2850,7 @@ mod tests {
         // A path in expression position resolves (HIR lowering of path
         // expressions is a separate slice).
         let r = resolve(
-            "mod m { fn helper(a: uint(8)) { let r = a; } }\n\
+            "mod m { pub fn helper(a: uint(8)) { let r = a; } }\n\
              fn g(a: uint(8)) { let r = crate::m::helper; }",
         );
         assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
@@ -2602,7 +2869,7 @@ mod tests {
     fn glob_does_not_override_local_def() {
         // A local `f` shadows a glob-imported `f` (glob is lowest priority).
         let r = resolve(
-            "mod m { fn f(x: uint(8)) { let r = x; } }\n\
+            "mod m { pub fn f(x: uint(8)) { let r = x; } }\n\
              use crate::m::*;\n\
              fn f(x: uint(8)) { let r = x; }\n\
              fn g(x: uint(8)) { let r = f(x); }",
@@ -2618,6 +2885,102 @@ mod tests {
         // The local def and the module's `f` are distinct defs.
         let m_f = r.def_id("f").unwrap(); // first `f` = the one in module m
         assert_ne!(local_f, m_f);
+    }
+
+    // --- visibility & privacy (S5/S6) ---
+
+    fn has_private_error(r: &ResolveResult, name: &str) -> bool {
+        r.errors
+            .iter()
+            .any(|e| matches!(&e.kind, ResolveErrorKind::Private(n) if n == name))
+    }
+
+    #[test]
+    fn private_item_is_not_importable() {
+        let r = resolve(
+            "mod m { fn helper(a: uint(8)) { let r = a; } }\n\
+             use crate::m::helper;",
+        );
+        assert!(
+            has_private_error(&r, "helper"),
+            "expected `helper` private error, got {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn private_item_visible_to_descendant() {
+        // A child module may use a parent's private item (private = visible in
+        // the defining module *and its descendants*).
+        let r = resolve(
+            "fn top(a: uint(8)) { let r = a; }\n\
+             mod m { use super::top; fn g(a: uint(8)) { let r = top(a); } }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn private_module_is_not_pathable_from_outside() {
+        // `inner` is private to `a`; the crate root cannot path through it even
+        // though `f` itself is public.
+        let r = resolve(
+            "mod a { mod inner { pub fn f(x: uint(8)) { let r = x; } } }\n\
+             use crate::a::inner::f;",
+        );
+        assert!(
+            has_private_error(&r, "inner"),
+            "expected `inner` private error, got {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn pub_crate_is_accessible_anywhere() {
+        let r = resolve(
+            "mod m { pub(crate) fn f(x: uint(8)) { let r = x; } }\n\
+             use crate::m::f;\n\
+             fn g(x: uint(8)) { let r = f(x); }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn pub_super_visible_in_parent_subtree() {
+        let r = resolve(
+            "mod a {\n\
+                 mod inner { pub(super) fn f(x: uint(8)) { let r = x; } }\n\
+                 use crate::a::inner::f;\n\
+                 fn g(x: uint(8)) { let r = f(x); }\n\
+             }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn pub_use_reexports() {
+        let r = resolve(
+            "mod a { pub fn f(x: uint(8)) { let r = x; } }\n\
+             mod b { pub use crate::a::f; }\n\
+             use crate::b::f;\n\
+             fn g(x: uint(8)) { let r = f(x); }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn plain_use_is_not_reexported() {
+        // `b`'s plain `use` of `a::f` is private to `b`; the root cannot reach
+        // `f` through `b` (only a `pub use` would re-export it).
+        let r = resolve(
+            "mod a { pub fn f(x: uint(8)) { let r = x; } }\n\
+             mod b { use crate::a::f; }\n\
+             use crate::b::f;",
+        );
+        assert!(
+            has_private_error(&r, "f"),
+            "expected `f` re-export private error, got {:?}",
+            r.errors
+        );
     }
 
     // --- generic params / Ctor ---

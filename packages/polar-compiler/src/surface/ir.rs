@@ -26,11 +26,29 @@ pub enum Item {
     Use(UseDecl),
 }
 
+/// Item visibility as written. The resolver turns this into a concrete
+/// accessibility scope. See `planning/modules.md` §4.5.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Visibility {
+    /// No modifier — private (visible in the defining module and descendants).
+    #[default]
+    Inherited,
+    /// `pub`
+    Public,
+    /// `pub(crate)`
+    Crate,
+    /// `pub(super)`
+    Super,
+    /// `pub(in a::b)` — the path must resolve to an ancestor module.
+    Restricted(Vec<Identifier>),
+}
+
 /// A `use` import. The tree mirrors Rust's nested form. See
 /// `planning/modules.md` §4.3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseDecl {
     pub span: SourceSpan,
+    pub visibility: Visibility,
     pub tree: UseTree,
 }
 
@@ -60,6 +78,7 @@ pub enum UseTree {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleDefinition {
     pub span: SourceSpan,
+    pub visibility: Visibility,
     pub name: Identifier,
     pub body: ModuleBody,
 }
@@ -94,6 +113,7 @@ pub struct Identifier {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDefinition {
     pub span: SourceSpan,
+    pub visibility: Visibility,
     pub name: Identifier,
     pub parameters: Vec<Parameter>,
     pub constructor: Option<Identifier>,
@@ -103,6 +123,7 @@ pub struct StructDefinition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortDefinition {
     pub span: SourceSpan,
+    pub visibility: Visibility,
     pub name: Identifier,
     pub named_parameters: Vec<NamedParameter>,
     pub parameters: Vec<Parameter>,
@@ -122,6 +143,7 @@ pub struct ImplBlock {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionDefinition {
     pub span: SourceSpan,
+    pub visibility: Visibility,
     pub name: Identifier,
     pub named_parameters: Vec<NamedParameter>,
     pub parameters: Vec<Parameter>,
@@ -622,16 +644,37 @@ impl<'a> Lowerer<'a> {
         };
         Ok(ModuleDefinition {
             span: node.span.clone(),
+            visibility: self.lower_visibility(node)?,
             name,
             body,
         })
     }
 
+    /// Read an optional `visibility` field child into a `Visibility`.
+    fn lower_visibility(&mut self, node: &CstNode) -> Result<Visibility, LowerError> {
+        let Some(vis) = child_by_field(node, "visibility") else {
+            return Ok(Visibility::Inherited);
+        };
+        // `pub(in a::b)` carries a `use_path`; `pub(crate)`/`pub(super)` carry
+        // an anonymous `crate`/`super` token; bare `pub` carries neither.
+        if let Some(path) = child_by_kind(vis, "use_path") {
+            Ok(Visibility::Restricted(self.lower_use_path(path)?))
+        } else if child_by_kind(vis, "crate").is_some() {
+            Ok(Visibility::Crate)
+        } else if child_by_kind(vis, "super").is_some() {
+            Ok(Visibility::Super)
+        } else {
+            Ok(Visibility::Public)
+        }
+    }
+
     fn lower_use_declaration(&mut self, node: &CstNode) -> Result<UseDecl, LowerError> {
         expect_kind(node, "use_declaration")?;
+        let visibility = self.lower_visibility(node)?;
         let tree = lower_required_child(node, "tree", "use_tree")?;
         Ok(UseDecl {
             span: node.span.clone(),
+            visibility,
             tree: self.lower_use_tree(tree)?,
         })
     }
@@ -676,6 +719,7 @@ impl<'a> Lowerer<'a> {
         let body = lower_required_child(node, "body", "record_type_body")?;
         Ok(StructDefinition {
             span: node.span.clone(),
+            visibility: self.lower_visibility(node)?,
             name: self.lower_required_identifier(node, "name")?,
             parameters: self.lower_parameter_section(node, "parameters")?,
             constructor: child_by_field(node, "constructor")
@@ -692,6 +736,7 @@ impl<'a> Lowerer<'a> {
         let body = lower_required_child(node, "body", "port_body")?;
         Ok(PortDefinition {
             span: node.span.clone(),
+            visibility: self.lower_visibility(node)?,
             name: self.lower_required_identifier(node, "name")?,
             named_parameters: self.lower_named_parameter_section(node, "named_parameters")?,
             parameters: self.lower_parameter_section(node, "parameters")?,
@@ -725,6 +770,7 @@ impl<'a> Lowerer<'a> {
         expect_kind(node, "function_definition")?;
         Ok(FunctionDefinition {
             span: node.span.clone(),
+            visibility: self.lower_visibility(node)?,
             name: self.lower_required_identifier(node, "name")?,
             named_parameters: self.lower_named_parameter_section(node, "named_parameters")?,
             parameters: self.lower_parameter_section(node, "parameters")?,

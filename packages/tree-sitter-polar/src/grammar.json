@@ -59,6 +59,22 @@
       "type": "SEQ",
       "members": [
         {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "visibility",
+              "content": {
+                "type": "SYMBOL",
+                "name": "visibility_modifier"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
           "type": "STRING",
           "value": "use"
         },
@@ -266,9 +282,81 @@
         }
       ]
     },
+    "visibility_modifier": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "pub"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "("
+                },
+                {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "crate"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "super"
+                    },
+                    {
+                      "type": "SEQ",
+                      "members": [
+                        {
+                          "type": "STRING",
+                          "value": "in"
+                        },
+                        {
+                          "type": "SYMBOL",
+                          "name": "use_path"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "STRING",
+                  "value": ")"
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
     "module_definition": {
       "type": "SEQ",
       "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "visibility",
+              "content": {
+                "type": "SYMBOL",
+                "name": "visibility_modifier"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
         {
           "type": "STRING",
           "value": "mod"
@@ -323,6 +411,22 @@
     "struct_definition": {
       "type": "SEQ",
       "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "visibility",
+              "content": {
+                "type": "SYMBOL",
+                "name": "visibility_modifier"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
         {
           "type": "STRING",
           "value": "struct"
@@ -389,6 +493,22 @@
     "port_definition": {
       "type": "SEQ",
       "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "visibility",
+              "content": {
+                "type": "SYMBOL",
+                "name": "visibility_modifier"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
         {
           "type": "STRING",
           "value": "port"
@@ -548,6 +668,22 @@
     "function_definition": {
       "type": "SEQ",
       "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "visibility",
+              "content": {
+                "type": "SYMBOL",
+                "name": "visibility_modifier"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
         {
           "type": "STRING",
           "value": "fn"

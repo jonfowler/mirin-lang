@@ -113,6 +113,8 @@ pub fn monomorphise(
         let orig_generic_params = orig_info.generic_params.clone();
         let orig_kind = orig_info.kind;
         let orig_span = orig_info.span.clone();
+        let orig_module = orig_info.module;
+        let orig_visibility = orig_info.visibility;
         let meta = build_spec_metadata(&orig_name, &orig_generic_params, args, resolve);
         // Register the spec in `resolve.defs`. Subsequent passes look up
         // `def_info(spec_def)` and expect a real entry there.
@@ -124,6 +126,8 @@ pub fn monomorphise(
                 name: meta.name.clone(),
                 span: orig_span,
                 generic_params: meta.generic_params,
+                module: orig_module,
+                visibility: orig_visibility,
             },
         );
 
@@ -309,6 +313,8 @@ fn push_def_info(resolve: &mut ResolveResult, expected: DefId, info: DefInfo) {
             name: String::new(),
             span: info.span.clone(),
             generic_params: Vec::new(),
+            module: info.module,
+            visibility: info.visibility,
         });
     }
     if resolve.defs.len() == expected.index_usize() {

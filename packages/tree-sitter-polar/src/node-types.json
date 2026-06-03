@@ -271,6 +271,16 @@
             "named": true
           }
         ]
+      },
+      "visibility": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "visibility_modifier",
+            "named": true
+          }
+        ]
       }
     }
   },
@@ -464,6 +474,16 @@
         "types": [
           {
             "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "visibility": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "visibility_modifier",
             "named": true
           }
         ]
@@ -832,6 +852,16 @@
             "named": true
           }
         ]
+      },
+      "visibility": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "visibility_modifier",
+            "named": true
+          }
+        ]
       }
     }
   },
@@ -1191,6 +1221,16 @@
             "named": true
           }
         ]
+      },
+      "visibility": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "visibility_modifier",
+            "named": true
+          }
+        ]
       }
     }
   },
@@ -1293,6 +1333,16 @@
         "types": [
           {
             "type": "use_tree",
+            "named": true
+          }
+        ]
+      },
+      "visibility": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "visibility_modifier",
             "named": true
           }
         ]
@@ -1412,6 +1462,21 @@
     }
   },
   {
+    "type": "visibility_modifier",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "use_path",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "when_expression",
     "named": true,
     "fields": {
@@ -1511,6 +1576,10 @@
     "extra": true
   },
   {
+    "type": "crate",
+    "named": false
+  },
+  {
     "type": "dom",
     "named": false
   },
@@ -1563,6 +1632,10 @@
     "named": false
   },
   {
+    "type": "pub",
+    "named": false
+  },
+  {
     "type": "return",
     "named": false
   },
@@ -1572,6 +1645,10 @@
   },
   {
     "type": "struct",
+    "named": false
+  },
+  {
+    "type": "super",
     "named": false
   },
   {

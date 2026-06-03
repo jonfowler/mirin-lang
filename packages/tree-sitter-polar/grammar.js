@@ -32,7 +32,13 @@ module.exports = grammar({
     // `use` imports. Paths are 2018-style relative; `crate`/`super`/`self`
     // anchors are ordinary identifier segments recognised by the resolver.
     //   use a::b::c;   use a::b as d;   use a::{b, c::{d, e}};   use a::*;
-    use_declaration: ($) => seq("use", field("tree", $.use_tree), ";"),
+    use_declaration: ($) =>
+      seq(
+        optional(field("visibility", $.visibility_modifier)),
+        "use",
+        field("tree", $.use_tree),
+        ";",
+      ),
 
     use_tree: ($) =>
       choice(
@@ -45,10 +51,22 @@ module.exports = grammar({
 
     use_group: ($) => seq("{", commaSep($.use_tree), optional(","), "}"),
 
+    // Item visibility. Default (absent) is private. The parenthesised forms
+    // narrow a public item's reach.
+    //   pub   pub(crate)   pub(super)   pub(in a::b)
+    visibility_modifier: ($) =>
+      seq(
+        "pub",
+        optional(
+          seq("(", choice("crate", "super", seq("in", $.use_path)), ")"),
+        ),
+      ),
+
     // Module declaration. `mod foo { items… }` nests an inline body (modules
     // nest arbitrarily); `mod foo;` loads the body from `foo.plr` at load time.
     module_definition: ($) =>
       seq(
+        optional(field("visibility", $.visibility_modifier)),
         "mod",
         field("name", $.identifier),
         choice(field("body", $.module_body), ";"),
@@ -58,6 +76,7 @@ module.exports = grammar({
 
     struct_definition: ($) =>
       seq(
+        optional(field("visibility", $.visibility_modifier)),
         "struct",
         field("name", $.identifier),
         optional(field("parameters", $.parameter_section)),
@@ -67,6 +86,7 @@ module.exports = grammar({
 
     port_definition: ($) =>
       seq(
+        optional(field("visibility", $.visibility_modifier)),
         "port",
         field("name", $.identifier),
         optional(field("named_parameters", $.named_parameter_section)),
@@ -88,6 +108,7 @@ module.exports = grammar({
 
     function_definition: ($) =>
       seq(
+        optional(field("visibility", $.visibility_modifier)),
         "fn",
         field("name", $.identifier),
         optional(field("named_parameters", $.named_parameter_section)),

@@ -35,7 +35,7 @@ pub use surface::ir::{
     PostfixOperation, RecordConstructorExpression, RecordFieldType, RecordFieldValue,
     ReturnStatement, SinkArgument, SourceArgument, SourceFile, Statement, StructDefinition,
     SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix, UseDecl, UseTree, VarStatement,
-    WhenExpression, lower_cst, parse_surface_file, parse_surface_source,
+    Visibility, WhenExpression, lower_cst, parse_surface_file, parse_surface_source,
 };
 pub use surface::loader::{
     FsProvider, LoadError, LoadedCrate, MapProvider, SourceProvider, load_crate, load_crate_from_fs,

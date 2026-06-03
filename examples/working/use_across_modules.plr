@@ -3,7 +3,7 @@
 // can call it by its bare name. Modules are erased before HIR, so the
 // generated SystemVerilog is two ordinary modules — `top` instantiating `add3`.
 mod parts {
-  fn add3 (x: uint(8)) -> uint(8) {
+  pub fn add3 (x: uint(8)) -> uint(8) {
     return x + 3;
   }
 }

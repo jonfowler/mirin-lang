@@ -1,0 +1,24 @@
+// Visibility and `pub use` re-exports (planning/modules.md §4.5).
+// `add3` is private to `mul`, but a `pub`-marked function `scale` is public.
+// `api` re-exports `scale` with `pub use`, so `top` reaches it through `api`
+// even though it lives in `mul`. Modules are erased before HIR — the generated
+// SystemVerilog is just `top` instantiating `scale`.
+mod mul {
+  fn add3 (x: uint(8)) -> uint(8) {
+    return x + 3;
+  }
+
+  pub fn scale (x: uint(8)) -> uint(8) {
+    return add3(x) + add3(x);
+  }
+}
+
+mod api {
+  pub use crate::mul::scale;
+}
+
+use crate::api::scale;
+
+fn top (x: uint(8)) -> uint(8) {
+  return scale(x);
+}
