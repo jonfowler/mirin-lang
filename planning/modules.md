@@ -313,6 +313,11 @@ answers "are you allowed to name it."
 
 ## 8. Incremental compilation
 
+> The full design for the query engine this section sketches lives in
+> `planning/query_engine.md`. This section states the single-layer *strategy*;
+> that doc covers the query graph, firewalls, stable identity, and the migration
+> plan.
+
 With one monolithic compile, incremental compilation is **single-layer**: there
 is no coarse crate-skip tier, so all reuse comes from fine-grained, query-style
 memoization over the single `DefPath` space. This is *simpler* than rustc's

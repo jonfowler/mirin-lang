@@ -1,5 +1,6 @@
 [workspace]
 members = [
   "packages/polar-compiler",
+  "packages/polar-db",
 ]
 resolver = "3"
