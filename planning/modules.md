@@ -1,8 +1,13 @@
 # Module system
 
-Status: **design doc, not yet implemented.** This is the source of truth for the
-module-system slice. `planning/syntax.md` gains the surface forms (`mod`, `use`,
-`pub`, paths) and `planning/ir_pipeline.md` gains the new passes when this lands.
+Status: **implemented (S1–S6).** This is the source of truth for the design;
+`planning/syntax.md` carries the surface forms (`mod`, `use`, `pub`, paths) and
+`planning/ir_pipeline.md` the passes (loader, two-phase resolver + import
+fixpoint + privacy). Inline and file-based `mod`, `use` (groups/`as`/glob),
+`crate`/`super`/`self` paths, and `pub`/`pub(crate)`/`pub(super)`/`pub(in …)`/
+`pub use` visibility all work. Deferred (noted in §11 / syntax.md): lowering a
+path written *directly* in expression/type position to hardware (use `use`),
+and the on-disk incremental query cache (§8).
 
 We follow Rust's module system closely. The user gave the directive plainly:
 there is no reason to adopt a different format. Where we diverge it is a
