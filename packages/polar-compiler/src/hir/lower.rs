@@ -210,7 +210,9 @@ fn collect_user_defs<'a>(
                 }
             }
             Item::Mod(m) => collect_user_defs(m.items(), resolve, user_fns, user_structs),
-            Item::Port(_) => {}
+            // `use` introduces no defs — only import bindings consumed via the
+            // resolved names.
+            Item::Port(_) | Item::Use(_) => {}
         }
     }
 }
@@ -626,6 +628,8 @@ impl<'a> Lowerer<'a> {
                     self.lower_impl(impl_block, out);
                 }
                 Item::Mod(m) => self.lower_items(m.items(), out),
+                // `use` is resolved away; nothing to lower.
+                Item::Use(_) => {}
             }
         }
     }

@@ -23,6 +23,34 @@ pub enum Item {
     Port(PortDefinition),
     Impl(ImplBlock),
     Mod(ModuleDefinition),
+    Use(UseDecl),
+}
+
+/// A `use` import. The tree mirrors Rust's nested form. See
+/// `planning/modules.md` §4.3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UseDecl {
+    pub span: SourceSpan,
+    pub tree: UseTree,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UseTree {
+    /// `a::b::c` optionally `as d`. `segments` is the whole path (≥1).
+    Path {
+        segments: Vec<Identifier>,
+        alias: Option<Identifier>,
+    },
+    /// `prefix::{ children }` — `prefix` may be empty (`{ … }` at the root).
+    Group {
+        prefix: Vec<Identifier>,
+        children: Vec<UseTree>,
+    },
+    /// `prefix::*` — `prefix` may be empty.
+    Glob {
+        prefix: Vec<Identifier>,
+        span: SourceSpan,
+    },
 }
 
 /// A module declaration. `mod foo { items… }` carries an inline body that
@@ -295,8 +323,9 @@ pub struct NumberLiteral {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathExpression {
     pub span: SourceSpan,
-    pub ty: Identifier,
-    pub member: Identifier,
+    /// The `::`-separated segments, in order (≥2). The leading segment may be
+    /// the anchor `crate`/`super`/`self`, recognised by the resolver.
+    pub segments: Vec<Identifier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -574,6 +603,7 @@ impl<'a> Lowerer<'a> {
             "port_definition" => Ok(Item::Port(self.lower_port_definition(node)?)),
             "impl_block" => Ok(Item::Impl(self.lower_impl_block(node)?)),
             "module_definition" => Ok(Item::Mod(self.lower_module_definition(node)?)),
+            "use_declaration" => Ok(Item::Use(self.lower_use_declaration(node)?)),
             _ => Err(unexpected_node(node, "top-level declaration")),
         }
     }
@@ -595,6 +625,50 @@ impl<'a> Lowerer<'a> {
             name,
             body,
         })
+    }
+
+    fn lower_use_declaration(&mut self, node: &CstNode) -> Result<UseDecl, LowerError> {
+        expect_kind(node, "use_declaration")?;
+        let tree = lower_required_child(node, "tree", "use_tree")?;
+        Ok(UseDecl {
+            span: node.span.clone(),
+            tree: self.lower_use_tree(tree)?,
+        })
+    }
+
+    fn lower_use_tree(&mut self, node: &CstNode) -> Result<UseTree, LowerError> {
+        expect_kind(node, "use_tree")?;
+        let prefix = match child_by_kind(node, "use_path") {
+            Some(p) => self.lower_use_path(p)?,
+            None => Vec::new(),
+        };
+        if let Some(group) = child_by_field(node, "group") {
+            let children = named_children(group)
+                .filter(|c| c.kind == "use_tree")
+                .map(|c| self.lower_use_tree(c))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(UseTree::Group { prefix, children })
+        } else if child_by_field(node, "glob").is_some() {
+            Ok(UseTree::Glob {
+                prefix,
+                span: node.span.clone(),
+            })
+        } else {
+            let alias = child_by_field(node, "alias")
+                .map(|n| self.lower_identifier(n))
+                .transpose()?;
+            Ok(UseTree::Path {
+                segments: prefix,
+                alias,
+            })
+        }
+    }
+
+    fn lower_use_path(&mut self, node: &CstNode) -> Result<Vec<Identifier>, LowerError> {
+        expect_kind(node, "use_path")?;
+        named_children(node)
+            .map(|c| self.lower_identifier(c))
+            .collect()
     }
 
     fn lower_struct_definition(&mut self, node: &CstNode) -> Result<StructDefinition, LowerError> {
@@ -880,8 +954,12 @@ impl<'a> Lowerer<'a> {
             })),
             "path_expression" => Ok(Expression::Path(PathExpression {
                 span: node.span.clone(),
-                ty: self.lower_required_identifier(node, "type")?,
-                member: self.lower_required_identifier(node, "member")?,
+                segments: node
+                    .children
+                    .iter()
+                    .filter(|c| c.field_name.as_deref() == Some("segment"))
+                    .map(|c| self.lower_identifier(&c.node))
+                    .collect::<Result<Vec<_>, _>>()?,
             })),
             "binary_expression" => Ok(Expression::Binary(BinaryExpression {
                 span: node.span.clone(),
@@ -1218,6 +1296,13 @@ fn child_by_field<'a>(node: &'a CstNode, field_name: &str) -> Option<&'a CstNode
         .iter()
         .find(|child| child.field_name.as_deref() == Some(field_name))
         .map(|child| &child.node)
+}
+
+fn child_by_kind<'a>(node: &'a CstNode, kind: &str) -> Option<&'a CstNode> {
+    node.children
+        .iter()
+        .map(|child| &child.node)
+        .find(|n| n.kind == kind)
 }
 
 fn lower_required_field<'a>(

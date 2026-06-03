@@ -1,0 +1,15 @@
+// `use` imports across modules (planning/modules.md §4.3–§4.4). `add3` is
+// defined in `mod parts` and pulled into the crate root by `use`, so `top`
+// can call it by its bare name. Modules are erased before HIR, so the
+// generated SystemVerilog is two ordinary modules — `top` instantiating `add3`.
+mod parts {
+  fn add3 (x: uint(8)) -> uint(8) {
+    return x + 3;
+  }
+}
+
+use crate::parts::add3;
+
+fn top (x: uint(8)) -> uint(8) {
+  return add3(add3(x));
+}

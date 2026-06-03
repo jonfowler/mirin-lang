@@ -254,3 +254,68 @@ mod math {
               name: (identifier)
               value: (expression
                 (identifier)))))))))
+
+========================================
+use declarations
+========================================
+
+use crate::a::b;
+use a::{b, c::d};
+use a::* ;
+use a::b as c;
+
+---
+
+(source_file
+  (use_declaration
+    tree: (use_tree
+      (use_path
+        (identifier)
+        (identifier)
+        (identifier))))
+  (use_declaration
+    tree: (use_tree
+      (use_path
+        (identifier))
+      group: (use_group
+        (use_tree
+          (use_path
+            (identifier)))
+        (use_tree
+          (use_path
+            (identifier)
+            (identifier))))))
+  (use_declaration
+    tree: (use_tree
+      (use_path
+        (identifier))))
+  (use_declaration
+    tree: (use_tree
+      (use_path
+        (identifier)
+        (identifier))
+      alias: (identifier))))
+
+========================================
+multi-segment path expression
+========================================
+
+fn f() {
+  let x = crate::m::g;
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section)
+    body: (block
+      (statement
+        (let_statement
+          name: (identifier)
+          value: (expression
+            (path_expression
+              segment: (identifier)
+              segment: (identifier)
+              segment: (identifier))))))))

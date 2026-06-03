@@ -4,6 +4,8 @@
   "impl"
   "fn"
   "mod"
+  "use"
+  "as"
   "let"
   "var"
   "return"
@@ -37,9 +39,12 @@
 ; Type expressions — the head name is always a type
 (type_expression name: (identifier) @type)
 
-; Path expressions — Type::member
-(path_expression type: (identifier) @type)
-(path_expression member: (identifier) @property)
+; Path expressions — `a::b::c`. Segments are module/type names; the final
+; binding's kind isn't known syntactically, so tag all segments as types.
+(path_expression segment: (identifier) @type)
+
+; Use paths
+(use_path (identifier) @type)
 
 ; Parameters — declared names
 (named_parameter name: (identifier) @variable.parameter)

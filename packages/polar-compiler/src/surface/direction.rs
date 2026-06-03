@@ -169,7 +169,7 @@ fn check_items(
                 }
             }
             Item::Mod(m) => check_items(m.items(), callees, resolve, errors),
-            Item::Struct(_) | Item::Port(_) => {}
+            Item::Struct(_) | Item::Port(_) | Item::Use(_) => {}
         }
     }
 }

@@ -436,6 +436,10 @@
         {
           "type": "struct_definition",
           "named": true
+        },
+        {
+          "type": "use_declaration",
+          "named": true
         }
       ]
     }
@@ -748,18 +752,8 @@
     "type": "path_expression",
     "named": true,
     "fields": {
-      "member": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "identifier",
-            "named": true
-          }
-        ]
-      },
-      "type": {
-        "multiple": false,
+      "segment": {
+        "multiple": true,
         "required": true,
         "types": [
           {
@@ -1115,6 +1109,10 @@
         {
           "type": "struct_definition",
           "named": true
+        },
+        {
+          "type": "use_declaration",
+          "named": true
         }
       ]
     }
@@ -1286,6 +1284,98 @@
     }
   },
   {
+    "type": "use_declaration",
+    "named": true,
+    "fields": {
+      "tree": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "use_tree",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "use_group",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "use_tree",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "use_path",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "use_tree",
+    "named": true,
+    "fields": {
+      "alias": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "glob": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "*",
+            "named": false
+          }
+        ]
+      },
+      "group": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "use_group",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "use_path",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "var_statement",
     "named": true,
     "fields": {
@@ -1412,6 +1502,10 @@
     "named": false
   },
   {
+    "type": "as",
+    "named": false
+  },
+  {
     "type": "comment",
     "named": true,
     "extra": true
@@ -1478,6 +1572,10 @@
   },
   {
     "type": "struct",
+    "named": false
+  },
+  {
+    "type": "use",
     "named": false
   },
   {

@@ -6,7 +6,7 @@ use crate::surface::ir::{
     Block, Expression, FunctionDefinition, Identifier, ImplBlock, Item, LetStatement,
     NamedArgument, NamedParameter, NodeId, Parameter, PortDefinition, PositionalArgument,
     PostfixOperation, SourceFile, Statement, StructDefinition, TypeArgument, TypeExpression,
-    TypeSuffix, VarStatement,
+    TypeSuffix, UseTree, VarStatement,
 };
 use crate::{SourceExcerpt, SourcePosition, SourceSpan};
 
@@ -248,12 +248,24 @@ pub enum ModuleKind {
     Prelude,
 }
 
-/// One entry in a module's name table. For now it just wraps the `Res`;
-/// `Visibility` and `BindingSource` (glob priority, re-exports) arrive with
-/// `use`/`pub` in later slices. See `planning/modules.md` §6.2.
+/// How a name entered a module's table — drives import priority (a local def
+/// beats an explicit import beats a glob import). `Visibility` and re-exports
+/// arrive with `pub` in a later slice. See `planning/modules.md` §6.2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingSource {
+    /// Defined directly in this module (`fn`/`struct`/`port`/`mod`/ctor) or the prelude.
+    Def,
+    /// Brought in by an explicit `use a::b;` (or group/`as`).
+    Import,
+    /// Brought in by a glob `use a::*;`.
+    Glob,
+}
+
+/// One entry in a module's name table.
 #[derive(Debug, Clone, Copy)]
 pub struct Binding {
     pub res: Res,
+    pub source: BindingSource,
 }
 
 /// One module's data: its kind, its parent, and its name table. Modeled on
@@ -659,6 +671,10 @@ pub fn resolve_file(file: &SourceFile) -> ResolveResult {
     // (Polar has no macros, so this needs no expansion/fixpoint).
     ctx.collect_items(&file.items, root);
 
+    // Phase 1.5: resolve `use` imports against the built tree (a fixpoint, for
+    // globs and chained imports), inserting import bindings into module tables.
+    ctx.resolve_imports(&file.items);
+
     // Phase 2: resolve every item's body against the module tree.
     ctx.resolve_items(&file.items, root);
 
@@ -944,11 +960,47 @@ impl Ctx {
         self.alloc_def_raw(kind, ident.text.clone(), ident.span.clone(), module)
     }
 
-    /// Insert a `(name, namespace) → Res` binding into a module's name table.
+    /// Insert a definition binding into a module's name table.
     fn define(&mut self, module: ModuleId, name: &str, ns: Namespace, res: Res) {
-        self.result.modules.modules[module.0 as usize]
-            .items
-            .insert((name.to_owned(), ns), Binding { res });
+        self.result.modules.modules[module.0 as usize].items.insert(
+            (name.to_owned(), ns),
+            Binding {
+                res,
+                source: BindingSource::Def,
+            },
+        );
+    }
+
+    /// Insert an import binding, respecting priority (Def > Import > Glob).
+    /// Returns `true` if the table changed (drives the import fixpoint).
+    fn import_binding(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        ns: Namespace,
+        res: Res,
+        source: BindingSource,
+    ) -> bool {
+        let table = &mut self.result.modules.modules[module.0 as usize].items;
+        let key = (name.to_owned(), ns);
+        match table.get(&key) {
+            None => {
+                table.insert(key, Binding { res, source });
+                true
+            }
+            Some(existing) => match (existing.source, source) {
+                // A local def always wins; never overwrite it.
+                (BindingSource::Def, _) => false,
+                // An explicit import overrides a glob import.
+                (BindingSource::Glob, BindingSource::Import) => {
+                    table.insert(key, Binding { res, source });
+                    true
+                }
+                // Otherwise keep the existing binding (idempotent re-imports,
+                // and lenient on conflicting imports — no ambiguity error yet).
+                _ => false,
+            },
+        }
     }
 
     /// Resolve a bare name as the current module sees it (own table, then
@@ -1037,6 +1089,9 @@ impl Ctx {
                 let child = self.new_child_module(module, def, &m.name.text);
                 self.collect_items(m.items(), child);
             }
+            // Imports are resolved in a dedicated pass (`resolve_imports`)
+            // after the whole module + def tree exists.
+            Item::Use(_) => {}
         }
     }
 
@@ -1142,6 +1197,8 @@ impl Ctx {
                 };
                 self.resolve_items(m.items(), child);
             }
+            // Imports were resolved before bodies (`resolve_imports`).
+            Item::Use(_) => {}
         }
     }
 
@@ -1149,6 +1206,213 @@ impl Ctx {
     fn def_of_name(&self, ident: &Identifier) -> Option<DefId> {
         match self.result.resolutions.get(&ident.id) {
             Some(Res::Def(_, def_id)) => Some(*def_id),
+            _ => None,
+        }
+    }
+
+    // ----- imports (phase 1.5) -----
+
+    /// Resolve every `use` against the built module tree, to a fixpoint —
+    /// explicit imports and globs converge in a few passes because a glob's
+    /// imported set, and any chained import, can grow as other imports land.
+    /// Polar has no macros, so this is the only fixpoint resolution needs.
+    fn resolve_imports<'a>(&mut self, items: &'a [Item]) {
+        // The use-trees borrow `items` (external to `self`), so we can hold
+        // them while mutably borrowing `self` in the fixpoint below.
+        let mut uses: Vec<(ModuleId, &'a UseTree)> = Vec::new();
+        self.collect_uses(items, self.result.modules.root(), &mut uses);
+        loop {
+            let mut changed = false;
+            for &(module, tree) in &uses {
+                changed |= self.import_tree(module, &[], tree);
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn collect_uses<'a>(
+        &self,
+        items: &'a [Item],
+        module: ModuleId,
+        out: &mut Vec<(ModuleId, &'a UseTree)>,
+    ) {
+        for item in items {
+            match item {
+                Item::Use(u) => out.push((module, &u.tree)),
+                Item::Mod(m) => {
+                    if let Some(def) = self.def_of_name(&m.name)
+                        && let Some(child) = self.result.modules.module_of_def(def)
+                    {
+                        self.collect_uses(m.items(), child, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Apply one use-tree to `module` under `prefix`. Returns whether any new
+    /// binding was inserted.
+    fn import_tree(&mut self, module: ModuleId, prefix: &[&Identifier], tree: &UseTree) -> bool {
+        match tree {
+            UseTree::Path { segments, alias } => {
+                let full: Vec<&Identifier> =
+                    prefix.iter().copied().chain(segments.iter()).collect();
+                self.import_leaf(module, &full, alias.as_ref())
+            }
+            UseTree::Group {
+                prefix: gp,
+                children,
+            } => {
+                let new_prefix: Vec<&Identifier> =
+                    prefix.iter().copied().chain(gp.iter()).collect();
+                let mut changed = false;
+                for child in children {
+                    changed |= self.import_tree(module, &new_prefix, child);
+                }
+                changed
+            }
+            UseTree::Glob { prefix: gp, .. } => {
+                let full: Vec<&Identifier> = prefix.iter().copied().chain(gp.iter()).collect();
+                self.import_glob(module, &full)
+            }
+        }
+    }
+
+    /// Import a single leaf `prefix::…::name [as alias]` into `module`.
+    fn import_leaf(
+        &mut self,
+        module: ModuleId,
+        segments: &[&Identifier],
+        alias: Option<&Identifier>,
+    ) -> bool {
+        let Some((&last, prefix)) = segments.split_last() else {
+            return false;
+        };
+        // `use a::{self}` / `use a::self` — import the module `a` itself.
+        if last.text == "self" {
+            let Some((&modname, _)) = prefix.split_last() else {
+                return false;
+            };
+            let texts: Vec<&str> = prefix.iter().map(|s| s.text.as_str()).collect();
+            let Some(res @ Res::Def(DefKind::Mod, _)) =
+                self.resolve_path(&texts, module, Namespace::Type)
+            else {
+                return false;
+            };
+            let name = alias.unwrap_or(modname);
+            return self.import_binding(
+                module,
+                &name.text,
+                Namespace::Type,
+                res,
+                BindingSource::Import,
+            );
+        }
+        let texts: Vec<&str> = segments.iter().map(|s| s.text.as_str()).collect();
+        let name = alias.unwrap_or(last);
+        let mut changed = false;
+        // Import the name in whichever namespace(s) it resolves to.
+        for ns in [Namespace::Type, Namespace::Value] {
+            if let Some(res) = self.resolve_path(&texts, module, ns) {
+                changed |= self.import_binding(module, &name.text, ns, res, BindingSource::Import);
+            }
+        }
+        changed
+    }
+
+    /// Import every name from the module named by `prefix` into `module`.
+    fn import_glob(&mut self, module: ModuleId, prefix: &[&Identifier]) -> bool {
+        let texts: Vec<&str> = prefix.iter().map(|s| s.text.as_str()).collect();
+        let Some(target) = self.resolve_path_to_module(&texts, module) else {
+            return false;
+        };
+        if target == module {
+            return false;
+        }
+        // Snapshot the target's entries (avoid borrowing while mutating).
+        let entries: Vec<(String, Namespace, Res)> = self
+            .result
+            .modules
+            .module(target)
+            .entries()
+            .map(|((name, ns), b)| (name.clone(), *ns, b.res))
+            .collect();
+        let mut changed = false;
+        for (name, ns, res) in entries {
+            changed |= self.import_binding(module, &name, ns, res, BindingSource::Glob);
+        }
+        changed
+    }
+
+    // ----- path resolution -----
+
+    /// Resolve `crate`/`super`/`self` anchors at the start of a path. Returns
+    /// the module the first *named* segment is looked up in and the index of
+    /// that segment. An anchored path resolves subsequent segments locally; a
+    /// relative path (no anchor) resolves its first segment through scope.
+    fn path_anchor(&self, segments: &[&str], from: ModuleId) -> (ModuleId, usize) {
+        match segments.first().copied() {
+            Some("crate") => (self.result.modules.root(), 1),
+            Some("self") => (from, 1),
+            Some("super") => {
+                let mut module = from;
+                let mut i = 0;
+                while segments.get(i).copied() == Some("super") {
+                    module = self.result.modules.module(module).parent.unwrap_or(module);
+                    i += 1;
+                }
+                (module, i)
+            }
+            _ => (from, 0),
+        }
+    }
+
+    /// Resolve a full path's final segment to a `Res` in `final_ns`. Returns
+    /// `None` if any segment fails to resolve or an intermediate segment is not
+    /// a module.
+    fn resolve_path(&self, segments: &[&str], from: ModuleId, final_ns: Namespace) -> Option<Res> {
+        let (mut module, start) = self.path_anchor(segments, from);
+        let relative = start == 0;
+        if start >= segments.len() {
+            return None;
+        }
+        let mut i = start;
+        while i + 1 < segments.len() {
+            let res = if i == start && relative {
+                self.result
+                    .modules
+                    .lookup(module, segments[i], Namespace::Type)
+            } else {
+                self.result
+                    .modules
+                    .lookup_local(module, segments[i], Namespace::Type)
+            };
+            let Some(Res::Def(DefKind::Mod, def)) = res else {
+                return None;
+            };
+            module = self.result.modules.module_of_def(def)?;
+            i += 1;
+        }
+        if i == start && relative {
+            self.result.modules.lookup(module, segments[i], final_ns)
+        } else {
+            self.result
+                .modules
+                .lookup_local(module, segments[i], final_ns)
+        }
+    }
+
+    /// Resolve a path whose final segment must itself be a module.
+    fn resolve_path_to_module(&self, segments: &[&str], from: ModuleId) -> Option<ModuleId> {
+        if segments.is_empty() {
+            // Empty prefix (`use {…}` / `*` at the root) means the current module.
+            return Some(from);
+        }
+        match self.resolve_path(segments, from, Namespace::Type)? {
+            Res::Def(DefKind::Mod, def) => self.result.modules.module_of_def(def),
             _ => None,
         }
     }
@@ -1552,9 +1816,28 @@ impl BlockCtx<'_> {
             Expression::Identifier(ident) => self.resolve_name_use(ident),
             Expression::Number(_) => {}
             Expression::Path(p) => {
-                // Resolve the type part; the member is a field name (deferred to type checking).
-                if let Some(res) = self.ctx.lookup(&p.ty.text, Namespace::Type) {
-                    self.ctx.result.resolutions.insert(p.ty.id, res);
+                // Resolve the whole path to its final value, recording the
+                // result on the last segment (lowering reads it there).
+                let texts: Vec<&str> = p.segments.iter().map(|s| s.text.as_str()).collect();
+                let module = self.ctx.current_module;
+                match self.ctx.resolve_path(&texts, module, Namespace::Value) {
+                    Some(res) => {
+                        if let Some(last) = p.segments.last() {
+                            self.ctx.result.resolutions.insert(last.id, res);
+                        }
+                    }
+                    None => {
+                        let joined = texts.join("::");
+                        let span = p
+                            .segments
+                            .last()
+                            .map(|s| s.span.clone())
+                            .unwrap_or_else(|| p.span.clone());
+                        self.ctx.result.errors.push(ResolveError {
+                            kind: ResolveErrorKind::UndefinedName(joined),
+                            span,
+                        });
+                    }
                 }
             }
             Expression::Binary(b) => {
@@ -2220,6 +2503,121 @@ mod tests {
              }",
         );
         assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    // --- use imports & paths (S4) ---
+
+    #[test]
+    fn use_brings_name_into_scope() {
+        let r = resolve(
+            "mod m { fn helper(a: uint(8)) { let r = a; } }\n\
+             use crate::m::helper;\n\
+             fn g(a: uint(8)) { let r = helper(a); }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn super_path_in_use() {
+        let r = resolve(
+            "fn top(a: uint(8)) { let r = a; }\n\
+             mod m { use super::top; fn g(a: uint(8)) { let r = top(a); } }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn self_path_in_use() {
+        let r = resolve(
+            "mod m {\n\
+                 fn helper(a: uint(8)) { let r = a; }\n\
+                 fn g(a: uint(8)) { let r = self::helper(a); }\n\
+             }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn use_group_and_alias() {
+        let r = resolve(
+            "mod m { fn a(x: uint(8)) { let r = x; } fn b(x: uint(8)) { let r = x; } }\n\
+             use crate::m::{a as alpha, b};\n\
+             fn g(x: uint(8)) { let r = alpha(x); let s = b(x); }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn glob_import() {
+        let r = resolve(
+            "mod m { fn a(x: uint(8)) { let r = x; } fn b(x: uint(8)) { let r = x; } }\n\
+             use crate::m::*;\n\
+             fn g(x: uint(8)) { let r = a(x); let s = b(x); }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn use_struct_then_construct() {
+        // Importing a struct's constructor lets a bare record literal resolve.
+        let r = resolve(
+            "mod m { struct P = mk { v: bool } }\n\
+             use crate::m::mk;\n\
+             fn g() { let r = mk { v: true }; }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn nested_group_paths() {
+        let r = resolve(
+            "mod a { mod b { fn deep(x: uint(8)) { let r = x; } } fn near(x: uint(8)) { let r = x; } }\n\
+             use crate::a::{near, b::deep};\n\
+             fn g(x: uint(8)) { let r = near(x); let s = deep(x); }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn path_expression_resolves() {
+        // A path in expression position resolves (HIR lowering of path
+        // expressions is a separate slice).
+        let r = resolve(
+            "mod m { fn helper(a: uint(8)) { let r = a; } }\n\
+             fn g(a: uint(8)) { let r = crate::m::helper; }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn unresolved_path_errors() {
+        let r = resolve("fn g(a: uint(8)) { let r = crate::nope::x; }");
+        assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
+        assert!(
+            matches!(&r.errors[0].kind, ResolveErrorKind::UndefinedName(n) if n == "crate::nope::x")
+        );
+    }
+
+    #[test]
+    fn glob_does_not_override_local_def() {
+        // A local `f` shadows a glob-imported `f` (glob is lowest priority).
+        let r = resolve(
+            "mod m { fn f(x: uint(8)) { let r = x; } }\n\
+             use crate::m::*;\n\
+             fn f(x: uint(8)) { let r = x; }\n\
+             fn g(x: uint(8)) { let r = f(x); }",
+        );
+        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+        // The crate-root `f` is the local def, not the glob import.
+        let root = r.modules.root();
+        let Some(Res::Def(DefKind::Fn, local_f)) =
+            r.modules.lookup_local(root, "f", Namespace::Value)
+        else {
+            panic!("root `f` should resolve to a fn");
+        };
+        // The local def and the module's `f` are distinct defs.
+        let m_f = r.def_id("f").unwrap(); // first `f` = the one in module m
+        assert_ne!(local_f, m_f);
     }
 
     // --- generic params / Ctor ---

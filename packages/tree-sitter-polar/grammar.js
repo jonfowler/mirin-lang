@@ -12,7 +12,7 @@ module.exports = grammar({
 
   word: ($) => $.identifier,
 
-  conflicts: ($) => [],
+  conflicts: ($) => [[$.use_path]],
 
   rules: {
     source_file: ($) => repeat($._item),
@@ -26,7 +26,24 @@ module.exports = grammar({
         $.port_definition,
         $.impl_block,
         $.module_definition,
+        $.use_declaration,
       ),
+
+    // `use` imports. Paths are 2018-style relative; `crate`/`super`/`self`
+    // anchors are ordinary identifier segments recognised by the resolver.
+    //   use a::b::c;   use a::b as d;   use a::{b, c::{d, e}};   use a::*;
+    use_declaration: ($) => seq("use", field("tree", $.use_tree), ";"),
+
+    use_tree: ($) =>
+      choice(
+        seq($.use_path, optional(seq("as", field("alias", $.identifier)))),
+        seq(optional(seq($.use_path, "::")), field("group", $.use_group)),
+        seq(optional(seq($.use_path, "::")), field("glob", "*")),
+      ),
+
+    use_path: ($) => seq($.identifier, repeat(seq("::", $.identifier))),
+
+    use_group: ($) => seq("{", commaSep($.use_tree), optional(","), "}"),
 
     // Module declaration. `mod foo { items… }` nests an inline body (modules
     // nest arbitrarily); `mod foo;` loads the body from `foo.plr` at load time.
@@ -351,8 +368,14 @@ module.exports = grammar({
     record_field_value: ($) =>
       seq(field("name", $.identifier), ":", field("value", $.expression)),
 
+    // Multi-segment path: `a::b::c`, `crate::m::f`, `super::x`. Always ≥2
+    // segments (a single name is an `identifier`). `crate`/`super`/`self`
+    // anchors are ordinary identifier segments handled by the resolver.
     path_expression: ($) =>
-      seq(field("type", $.identifier), "::", field("member", $.identifier)),
+      seq(
+        field("segment", $.identifier),
+        repeat1(seq("::", field("segment", $.identifier))),
+      ),
 
     parenthesized_expression: ($) => seq("(", $.expression, ")"),
 

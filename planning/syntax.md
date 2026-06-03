@@ -153,10 +153,24 @@ it with `mod`.
 
 A module is a name-resolution scope only — it does not change what Verilog is
 generated. Bare names resolve in the current module, then the prelude; crossing
-a module boundary needs a path (`crate::`/`super::`/`self::`) or `use`. Names
-live in two namespaces (type and value), so a type and a constructor may share
-a name. `pub` visibility is a later slice; see `planning/modules.md` for the
-full design and staging.
+a module boundary needs a path or `use`:
+
+```rust
+use crate::parts::add3;          // absolute, from the crate root
+use super::sibling;              // from the parent module
+use a::{b, c::d, e as f};        // groups, nesting, rename
+use a::*;                        // glob (lowest priority)
+```
+
+Paths use 2018-style relative resolution with `crate::`/`super::`/`self::`
+anchors, in both `use` and expression position (`crate::m::g`). Names live in
+two namespaces (type and value), so a type and a constructor may share a name.
+`pub` visibility is a later slice (everything is currently nameable across
+modules); see `planning/modules.md` for the full design and staging.
+
+Note: a path written directly in expression position resolves but does not yet
+lower to hardware — import the item with `use` to call it. Type-position paths
+(`a::B`) are likewise deferred; `use` the type instead.
 
 ## `impl` blocks
 
