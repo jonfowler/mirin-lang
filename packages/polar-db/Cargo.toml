@@ -7,17 +7,13 @@ edition = "2024"
 # (planning/query_engine.md). Standalone: it links the tree-sitter grammar
 # itself and does not depend on `polar-compiler`, which remains a runnable
 # reference oracle until this crate reaches parity (Q5) and replaces it.
+#
+# Engine: salsa (validated by the Q0 spike, see planning/query_engine.md §7).
 
 [dependencies]
 tree-sitter = "0.25"
 tree-sitter-language = "0.1"
-# Spike only: validated on Q0/Q1 before committing the codebase to it (§7).
-salsa = { version = "0.26", optional = true }
+salsa = "0.26"
 
 [build-dependencies]
 cc = "1.1"
-
-[features]
-# `cargo test -p polar-db --features spike-salsa` exercises the salsa engine
-# spike alongside the thin store, to compare ergonomics from real contact.
-spike-salsa = ["dep:salsa"]
