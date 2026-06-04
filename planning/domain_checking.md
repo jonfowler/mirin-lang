@@ -8,7 +8,7 @@ Domain checking also gives clock-associated signals access to their clock for re
 
 For the first pass, "domain" means "clock domain". The current assumption is that registers update on the rising edge of their clock. The system should leave room for future clocking styles (negative edge, dual edge, frequency multiples), but those are out of scope here.
 
-Domain information is part of a value's type — `uint(8) @clk` is a distinct type from `uint(8)`. In the implementation it is convenient to treat domain inference as a pass that runs alongside the rest of type checking but with its own constraint set, since domains form a simple lattice rather than participating in the full structural type-equality machinery.
+Domain information is part of a value's type — `uint(8) @clk` is a distinct type from `uint(8)`. One useful lens: `@clk` is an applicative wrapper `OnDom clk`, so `uint(8) @clk` is `OnDom clk (uint 8)`. Operations lift into the domain automatically (`add(x, 7)` with `x : uint(8) @clk` is `liftA2 add x (pure 7)`); Polar never spells the lift operators because SystemVerilog doesn't need them. The applicative's `pure` is the `const` domain below: compile-time constants enter any domain for free. In the implementation it is convenient to treat domain inference as a pass that runs alongside the rest of type checking but with its own constraint set, since domains form a simple lattice rather than participating in the full structural type-equality machinery — but the domain is still a component of the type, not a parallel attribute. For how this generalises to aggregates (one domain on the whole struct or monodomain port), see `planning/structs_and_ports.md`.
 
 ## The `const` domain
 

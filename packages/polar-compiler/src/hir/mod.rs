@@ -388,6 +388,21 @@ pub struct HirType {
 /// `Port(...)` once uses force the kind. Domains live only on `Value` because
 /// ports have no top-level domain — clocking flows through their fields via
 /// the port's clock parameter.
+///
+/// WARNING (domain-is-part-of-the-type review, 2026-06): the blanket claim
+/// that "ports have no top-level domain" is wrong for the common case. A port
+/// that declares no `dom` parameter (fields carry no `@`) has exactly one
+/// domain attached to the whole structure — identical to a struct — supplied
+/// at the use site (`DF @clk`) and already carried by `PortTypeRef.domain`
+/// below. Only ports that declare `dom` parameter(s) express their domain(s)
+/// through those params instead, leaving `PortTypeRef.domain` unspecified;
+/// that is the genuinely-multi-domain (or degenerate uniform-single-dom-param,
+/// which should be lint-warned to elide) case. The domain is part of the type
+/// in every form; only its placement (on the aggregate vs. via params) differs.
+/// The polar-db rewrite should model the domain-elided port and the struct the
+/// same way: one domain on the aggregate, domain-agnostic fields, field access
+/// yielding the aggregate's domain. See `planning/structs_and_ports.md`
+/// ("Domains are part of the type").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirTypeKind {
     /// Type-inference variable. The unifier resolves it to one of the other
@@ -399,6 +414,12 @@ pub enum HirTypeKind {
     /// Port type. Does not carry a top-level domain — clocking is parametric
     /// over the port's `#clk` (or similar) named parameter, which flows into
     /// the per-field types.
+    ///
+    /// WARNING (domain-is-part-of-the-type review, 2026-06): true only for
+    /// ports that declare `dom` parameter(s). A port with no `dom` parameter
+    /// has a single top-level domain (carried by `PortTypeRef.domain`) and
+    /// should be treated like a struct. See the note on `HirTypeKind` above and
+    /// `planning/structs_and_ports.md`.
     Port(PortTypeRef),
     /// Meta-kind: a clock domain itself (e.g. `#clk: Clock`). Never the type
     /// of a value-level expression.
