@@ -229,6 +229,40 @@ For now, this should remain deferred.
 
 The current design should **not** add extra syntax for explicit constructor-side type application yet.
 
+## Internal representation
+
+Structs and ports share one internal structure in the compiler, distinguished by a kind tag — not by separate types. This is the IR realization of the *Core principle* above ("structs and ports share the same declaration structure"). The slogan: **a struct is a port whose fields are all outputs.**
+
+This follows rustc directly. rustc has no separate `StructDef` / `EnumDef` / `UnionDef`; it has one `AdtDef` carrying an `AdtKind::{Struct, Enum, Union}` tag, and field lookup, layout, and generic substitution all run through it uniformly — the kind is consulted only where behaviour genuinely forks. Polar mirrors this with a single aggregate def:
+
+```text
+enum AdtKind { Struct, Port }          // provenance + rule selector, not a structural fork
+
+AdtDef {
+    kind,                              // Struct | Port
+    type_name, ctor_name,             // Bus/bus, DF/df
+    generic_params,                   // Type | Const | Domain kinds
+    fields: [ Field ],
+}
+Field {
+    direction,                        // Out for every struct field; In/Out for ports
+    name, ty,                         // ty may reference a generic param, incl. a dom param
+    is_param,                         // params-as-fields (credit count; the implicit `param A: Type`)
+}
+```
+
+The only things that genuinely differ between a struct and a port are **per-field direction** and **whether the def names a module boundary**. Both are orthogonal axes — a direction tag on the field, a kind tag on the def — not a reason to fork the whole structure. Everything else (generic params, the constructor, monomorphisation, the domain) is shared, so forking would only duplicate it.
+
+Two design points make this pay off:
+
+1. **The domain lives uniformly on the type head.** Every type — scalar, struct, or port — carries one domain component (today `ValueType` already does this for scalars and structs; only `Port` is the outlier with its own `PortTypeRef.domain`). Unifying that removes the duplicated `apply_struct_domain` / `apply_port_domain` / `stamp_domain` paths: stamping the aggregate's domain onto its fields becomes one operation.
+
+2. **Domain elision is modelled like lifetime elision.** The [two domain forms](#domains-are-part-of-the-type) — elided vs. explicit `dom` parameter — are *not* two structures. rustc inserts a fresh lifetime when you omit one; explicit `'a` is the same machinery written out. Likewise: a declaration with no `dom` parameter and no per-field `@` gets one whole-aggregate domain inserted at lowering; an explicit `{ dom clk }` is the user-written case. Downstream of lowering there is a single representation, and "mono vs explicit" is just a flag recording whether the domain was written — enough to drive the lint that suggests eliding a uniform single-`dom` port.
+
+**Guardrail:** this shares *representation*, not *identity*. The `AdtKind` tag plus distinct `DefId`s keep structs and ports separate everywhere it matters — unification still rejects a struct where a port is required, diagnostics still name the right concept, and the *struct = all-`Out`-fields* invariant is enforced from the direction tags. Sharing the machinery is not collapsing the concept (cf. CLAUDE.md, "Ports are first-class… Do not collapse them with structs").
+
+This decision targets the polar-db rewrite; the current `polar-compiler` still splits at the struct/port seam (`HirTypeKind::Value` vs `HirTypeKind::Port`), which is why its domain handling is duplicated. See the `WARNING` notes in `polar-compiler/src/hir/mod.rs`.
+
 ## Current open questions
 
 - exact surface syntax for constructing parameterized values when some parameters cannot be inferred
