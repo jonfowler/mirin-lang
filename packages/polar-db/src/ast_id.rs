@@ -25,6 +25,13 @@ impl FileAstId {
     pub fn kind(self) -> AstIdKind {
         AstIdKind::from_raw((self.0 >> 24) as u8)
     }
+
+    /// A synthetic id for a def with no source location (the prelude's builtins).
+    /// Uses a reserved kind byte (`0xFF`) so it can never collide with an id
+    /// minted from a real CST node (whose kinds are `0..=5`).
+    pub fn synthetic(index: u16) -> FileAstId {
+        FileAstId((0xFF << 24) | index as u32)
+    }
 }
 
 /// The categories of item that receive a stable id. (Bodies, fields, params,

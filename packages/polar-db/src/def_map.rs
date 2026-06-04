@@ -19,8 +19,9 @@
 //! modules (Q2b); name tables in the `{Module, Item}` namespaces with
 //! constructors (`struct Bus = bus`) and the `struct S = S` collision check;
 //! `use` imports to a fixpoint with privacy (Q2c); the impl-method index and the
-//! stable `DefPath`/`DefPathHash` table (Q2d). Still to come: the prelude /
-//! ancestor lookup that body resolution needs (Q3).
+//! stable `DefPath`/`DefPathHash` table (Q2d); the synthetic **prelude** module
+//! plus `resolve_in_scope` (own table → prelude), the in-scope lookup body
+//! resolution uses (Q3a). Still to come: `sig_of`/`body`/`infer` (Q3b–d).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -48,6 +49,9 @@ pub enum ModuleKind<'db> {
     Root,
     /// A `mod foo { … }` (or, from Q2b, `mod foo;`); carries the module's `DefId`.
     Named(DefId<'db>),
+    /// The synthetic prelude — the lowest-priority fallback scope holding the
+    /// language builtins. Injected by `crate_def_map`, not from any source.
+    Prelude,
 }
 
 /// A resolved accessibility scope (the surface `pub`/`pub(crate)`/… resolved
@@ -153,6 +157,8 @@ pub struct DefData<'db> {
 pub struct CrateDefMap<'db> {
     modules: Vec<ModuleData<'db>>,
     root: ModuleId,
+    /// The synthetic prelude module (lowest-priority lookup fallback).
+    prelude: ModuleId,
     defs: HashMap<DefId<'db>, DefData<'db>>,
     def_to_module: HashMap<DefId<'db>, ModuleId>,
     /// The impl-method index: `(owner type, method name) → method def`. Built
@@ -168,6 +174,11 @@ pub struct CrateDefMap<'db> {
 impl<'db> CrateDefMap<'db> {
     pub fn root(&self) -> ModuleId {
         self.root
+    }
+
+    /// The synthetic prelude module — the lowest-priority lookup fallback.
+    pub fn prelude(&self) -> ModuleId {
+        self.prelude
     }
 
     pub fn module(&self, id: ModuleId) -> &ModuleData<'db> {
@@ -240,10 +251,25 @@ impl<'db> CrateDefMap<'db> {
             .copied()
     }
 
-    /// Resolve a bare name in one module's table (defs + imports). No
-    /// prelude/ancestor fallback yet — that lands with body resolution (Q3).
+    /// Resolve a bare name in one module's own table (defs + imports), with no
+    /// fallback. Used for path segments, where each step is explicit.
     pub fn resolve_local(&self, module: ModuleId, name: &str, ns: Namespace) -> Option<DefId<'db>> {
         self.binding_local(module, name, ns).map(|b| b.def)
+    }
+
+    /// Resolve a bare name as a body in `module` sees it: the module's own table,
+    /// then the prelude (lowest priority, so a user name shadows a builtin). This
+    /// is the in-scope lookup body resolution (Q3c) uses. No ancestor walk — a
+    /// bare name resolves in its own module or the prelude, matching the old
+    /// resolver (`modules.md` §5.2).
+    pub fn resolve_in_scope(
+        &self,
+        module: ModuleId,
+        name: &str,
+        ns: Namespace,
+    ) -> Option<DefId<'db>> {
+        self.resolve_local(module, name, ns)
+            .or_else(|| self.resolve_local(self.prelude, name, ns))
     }
 }
 
@@ -254,6 +280,10 @@ pub fn crate_def_map<'db>(db: &'db dyn salsa::Database, krate: SourceRoot) -> Cr
     let mut collector = Collector::new(db, krate);
     let root_module = collector.new_module(ModuleKind::Root, None, Vec::new());
     debug_assert_eq!(root_module, collector.map.root);
+    // The prelude is its own module (id 1), the lowest-priority lookup fallback.
+    let prelude = collector.new_module(ModuleKind::Prelude, None, vec!["$prelude".to_owned()]);
+    collector.map.prelude = prelude;
+    collector.populate_prelude(prelude);
     let root = krate.root_file(db);
     let tree = item_tree(db, root);
     // File modules declared at the crate root resolve next to the root file.
@@ -280,6 +310,9 @@ pub fn crate_def_map<'db>(db: &'db dyn salsa::Database, krate: SourceRoot) -> Cr
 struct Collector<'db> {
     db: &'db dyn salsa::Database,
     map: CrateDefMap<'db>,
+    /// The crate root file — also the nominal `file` for synthetic prelude defs
+    /// (with reserved synthetic `FileAstId`s, so they never collide with it).
+    root_file: SourceFile,
     /// Path → file, for resolving `mod foo;` to another file in the crate.
     files: HashMap<PathBuf, SourceFile>,
     /// `(module, use-tree)` for every `use`, recorded during collection and
@@ -306,9 +339,11 @@ impl<'db> Collector<'db> {
             .collect();
         Self {
             db,
+            root_file: krate.root_file(db),
             map: CrateDefMap {
                 modules: Vec::new(),
                 root: ModuleId(0),
+                prelude: ModuleId(1),
                 defs: HashMap::new(),
                 def_to_module: HashMap::new(),
                 impl_methods: HashMap::new(),
@@ -342,6 +377,49 @@ impl<'db> Collector<'db> {
             self.map.def_to_module.insert(def, id);
         }
         id
+    }
+
+    /// Fill the prelude with the language builtins — types and intrinsic fns,
+    /// all `Public` and in the `Item` namespace. Each gets a `DefId` minted from
+    /// a synthetic `FileAstId` (so prelude defs have stable ids and can be
+    /// method-dispatch owners) but is **not** given a `DefPath` (they are
+    /// rebuilt identically each session and need no cross-session identity).
+    /// Signatures for the fns are synthesised later by `sig_of` (Q3b).
+    fn populate_prelude(&mut self, prelude: ModuleId) {
+        const BUILTINS: &[(&str, DefKind)] = &[
+            ("uint", DefKind::BuiltinType),
+            ("bool", DefKind::BuiltinType),
+            ("Clock", DefKind::BuiltinType),
+            ("Event", DefKind::BuiltinType),
+            ("Reset", DefKind::BuiltinType),
+            ("Type", DefKind::BuiltinType),
+            ("reg", DefKind::Fn),
+            ("posedge", DefKind::Fn),
+            ("+", DefKind::Fn),
+            ("*", DefKind::Fn),
+        ];
+        for (i, (name, kind)) in BUILTINS.iter().enumerate() {
+            let ast_id = crate::ast_id::FileAstId::synthetic(i as u16);
+            let def = DefId::new(self.db, self.root_file, ast_id, DefRole::Item);
+            self.map.defs.insert(
+                def,
+                DefData {
+                    kind: *kind,
+                    name: (*name).to_owned(),
+                    module: prelude,
+                    visibility: Visibility::Public,
+                    owner: None,
+                },
+            );
+            self.map.modules[prelude.0 as usize].items.insert(
+                ((*name).to_owned(), kind.namespace()),
+                Binding {
+                    def,
+                    source: BindingSource::Def,
+                    vis: Visibility::Public,
+                },
+            );
+        }
     }
 
     /// Collect the items declared in one module. `file` is the file they live in;
@@ -1063,8 +1141,8 @@ mod inner {
         let krate = single(&mut db, &mut vfs, "t.plr", SAMPLE);
         let map = crate_def_map(&db, krate);
 
-        // root + inner = 2 modules.
-        assert_eq!(map.modules().len(), 2);
+        // root + prelude + inner = 3 modules.
+        assert_eq!(map.modules().len(), 3);
         let inner_def = map
             .resolve_local(map.root(), "inner", Namespace::Module)
             .unwrap();
@@ -1528,6 +1606,70 @@ mod inner {
             map.def_path_hash(ma).unwrap(),
             map.def_path_hash(mb).unwrap(),
             "the disambiguator must separate same-named sibling methods"
+        );
+    }
+
+    // ----- Q3a: prelude + in-scope resolution -----
+
+    #[test]
+    fn prelude_builtins_resolve_in_scope() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "fn f () -> uint(8) { return 0; }",
+        );
+        let map = crate_def_map(&db, krate);
+        let root = map.root();
+        // Builtin type and intrinsic fn both reachable from the root via scope.
+        let uint = map
+            .resolve_in_scope(root, "uint", Namespace::Item)
+            .expect("uint in scope");
+        assert_eq!(map.def_data(uint).unwrap().kind, DefKind::BuiltinType);
+        assert_eq!(
+            map.resolve_in_scope(root, "reg", Namespace::Item)
+                .map(|d| map.def_data(d).unwrap().kind),
+            Some(DefKind::Fn)
+        );
+    }
+
+    #[test]
+    fn prelude_is_a_separate_lowest_priority_module() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "fn f () -> uint(8) { return 0; }",
+        );
+        let map = crate_def_map(&db, krate);
+        let root = map.root();
+        assert!(root != map.prelude(), "prelude is a distinct module");
+        // Builtins live in the prelude, not the root's own table.
+        assert!(map.resolve_local(root, "uint", Namespace::Item).is_none());
+        assert!(
+            map.resolve_in_scope(root, "uint", Namespace::Item)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_user_def_shadows_a_prelude_builtin() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // A user type named `uint` shadows the prelude builtin of the same name.
+        let krate = single(&mut db, &mut vfs, "t.plr", "struct uint = u { a: uint(8) }");
+        let map = crate_def_map(&db, krate);
+        let resolved = map
+            .resolve_in_scope(map.root(), "uint", Namespace::Item)
+            .unwrap();
+        assert_eq!(
+            map.def_data(resolved).unwrap().kind,
+            DefKind::Struct,
+            "the user `struct uint` must win over the prelude builtin"
         );
     }
 }

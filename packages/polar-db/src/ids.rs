@@ -85,6 +85,10 @@ pub enum DefKind {
     Method,
     /// An `impl T { … }` block. Introduces no name of its own.
     Impl,
+    /// A primitive type baked into the language (`uint`, `bool`, `Clock`, …),
+    /// carried by the synthetic prelude. Its `DefId` is the owner key in the
+    /// impl-method index so prelude methods (`uint.reg`) dispatch like user ones.
+    BuiltinType,
 }
 
 impl DefKind {
@@ -100,7 +104,8 @@ impl DefKind {
             | DefKind::Port
             | DefKind::Ctor
             | DefKind::Method
-            | DefKind::Impl => Namespace::Item,
+            | DefKind::Impl
+            | DefKind::BuiltinType => Namespace::Item,
         }
     }
 }
