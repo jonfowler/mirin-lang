@@ -2997,13 +2997,16 @@ mod tests {
     }
 
     #[test]
-    fn struct_without_constructor_is_error() {
-        let r = resolve("struct Packet { valid: bool, payload: uint(8) }");
-        assert_eq!(r.errors.len(), 1, "errors: {:?}", r.errors);
-        assert!(matches!(
-            &r.errors[0].kind,
-            ResolveErrorKind::MissingConstructor(n) if n == "Packet"
-        ));
+    fn struct_without_constructor_fails_to_parse() {
+        // `= ctor` is mandatory in the grammar: a struct introduces a type name
+        // and a constructor name (which share one namespace), so the bare form
+        // is now a parse error rather than a resolve-time MissingConstructor
+        // diagnostic. The `MissingConstructor` check survives as defence against
+        // partial error-recovery, but valid input can no longer reach it.
+        assert!(
+            parse_surface_source("struct Packet { valid: bool, payload: uint(8) }").is_err(),
+            "a constructor-less struct must fail to parse"
+        );
     }
 
     #[test]

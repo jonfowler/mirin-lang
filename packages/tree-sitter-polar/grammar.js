@@ -81,13 +81,19 @@ module.exports = grammar({
 
     module_body: ($) => seq("{", repeat($._item), "}"),
 
+    // The constructor name (`= ctor`) is mandatory. A struct/port introduces
+    // *two* names — the type and its constructor — and they share one namespace,
+    // so they must differ (`struct S = S { … }` is a duplicate-name error,
+    // diagnosed by name resolution). Requiring `= ctor` keeps the type/term
+    // split explicit at the syntax level. See `planning/syntax.md`.
     struct_definition: ($) =>
       seq(
         optional(field("visibility", $.visibility_modifier)),
         "struct",
         field("name", $.identifier),
         optional(field("parameters", $.parameter_section)),
-        optional(seq("=", field("constructor", $.identifier))),
+        "=",
+        field("constructor", $.identifier),
         field("body", $.record_type_body),
       ),
 
@@ -98,7 +104,8 @@ module.exports = grammar({
         field("name", $.identifier),
         optional(field("named_parameters", $.named_parameter_section)),
         optional(field("parameters", $.parameter_section)),
-        optional(seq("=", field("constructor", $.identifier))),
+        "=",
+        field("constructor", $.identifier),
         field("body", $.port_body),
       ),
 
