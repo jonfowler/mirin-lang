@@ -209,8 +209,17 @@ pub enum DefKind {
 }
 
 /// The two name namespaces (Rust has three; Polar has no macros). A module's
-/// name table is keyed by `(name, Namespace)`, so a type and a value may share
-/// a name without colliding. See `planning/modules.md` §5.1.
+/// name table is keyed by `(name, Namespace)`. See `planning/modules.md` §5.1.
+///
+/// WARNING — OUTDATED NAMESPACE MODEL. This `Type`/`Value` split is the *legacy*
+/// design. The current design (`modules.md` §5.1, implemented in the new
+/// `polar-db` crate's `ids::Namespace`) splits **{Module, Item}** instead: a type
+/// and its constructor share one `Item` namespace and must differ (`struct S = S`
+/// is a name collision), while modules get their own namespace so `mod df {
+/// port DF = df { … } }` works. This oracle still implements the old split and so
+/// does **not** reject `struct S = S` — it is the reference being replaced and is
+/// not worth the careful 28-site re-classification to flip. Do not copy this
+/// model forward; the correct one lives in `polar-db`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Namespace {
     Type,

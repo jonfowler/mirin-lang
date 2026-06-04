@@ -11,13 +11,16 @@ use std::path::{Path, PathBuf};
 
 use salsa::Setter;
 
-use crate::db::{RootDatabase, SourceFile};
+use crate::db::{RootDatabase, SourceFile, SourceRoot};
 
 /// The path → input map. Holds salsa `SourceFile` handles (which are `Copy`),
 /// interning each path to a stable handle on first sight.
 #[derive(Default)]
 pub struct Vfs {
     by_path: HashMap<PathBuf, SourceFile>,
+    /// The reused `SourceRoot` input; its `files` are refreshed by
+    /// [`Vfs::source_root`] so resolution sees the current set.
+    root: Option<SourceRoot>,
 }
 
 impl Vfs {
@@ -51,5 +54,35 @@ impl Vfs {
     /// The handle for an already-known path, if any.
     pub fn file(&self, path: impl AsRef<Path>) -> Option<SourceFile> {
         self.by_path.get(path.as_ref()).copied()
+    }
+
+    /// Build (or refresh) the [`SourceRoot`] for a crate rooted at `root_path`,
+    /// covering every file currently in the VFS. Call after the files a query
+    /// needs are loaded; re-calling updates the file set in place (reusing the
+    /// same input, so resolution stays incremental). Panics if `root_path` is
+    /// not loaded.
+    pub fn source_root(
+        &mut self,
+        db: &mut RootDatabase,
+        root_path: impl AsRef<Path>,
+    ) -> SourceRoot {
+        let root_file = self
+            .file(&root_path)
+            .expect("root file must be loaded before building its SourceRoot");
+        // Deterministic order so the input's value is stable across rebuilds.
+        let mut files: Vec<SourceFile> = self.by_path.values().copied().collect();
+        files.sort_by(|a, b| a.path(db).cmp(b.path(db)));
+        match self.root {
+            Some(root) => {
+                root.set_root_file(db).to(root_file);
+                root.set_files(db).to(files);
+                root
+            }
+            None => {
+                let root = SourceRoot::new(db, root_file, files);
+                self.root = Some(root);
+                root
+            }
+        }
     }
 }
