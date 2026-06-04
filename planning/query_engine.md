@@ -394,7 +394,7 @@ building (even while overall behaviour is incomplete):
   (already rustc-shaped) — module tree, namespaces, `use`, privacy.
 - **Q3** — `sig_of(def)` / `body(def)` / `infer(def)` per-def (port
   `lower_to_hir` + the per-fn `typeck` core). Anon-const role-based identity
-  (§2.3).
+  (§2.3). **Full plan + pass-by-pass mapping: `planning/q3_typed_hir.md`.**
 - **Q4** — `const_eval(def)` node; dependent widths (`uint(cfg.bits)`) route
   through it; cycle detection.
 - **Q5** — back end as per-def / per-instantiation queries (`monomorphise`,
