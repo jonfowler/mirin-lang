@@ -166,18 +166,25 @@ lower; `pub` is about who may *name* a definition, not whether it is emitted.)
 
 ### 5.1 Namespaces
 
-Two namespaces (Rust has three; we have no macros):
+Two namespaces, splitting **modules** from everything else:
 
-- **Type namespace**: `struct`, `port`, `mod`, type-kind generic params, builtin
-  types (`uint`, `bool`, `Clock`, …).
-- **Value namespace**: `fn`, constructors (`DefKind::Ctor`), const/domain params,
-  locals, and `Type::method` paths.
+- **Module namespace**: `mod` names.
+- **Item namespace**: `struct`/`port` type names, `fn`, constructors
+  (`DefKind::Ctor`), and builtin types (`uint`, `bool`, `Clock`, …).
+  (Generic params and locals are body/decl-local scopes; `Type::method` paths
+  resolve through the impl-method index, not a module table.)
 
-The struct/constructor split the compiler already has (`DefKind::Ctor` —
-`Packet` the type vs `packet` the constructor) is exactly Rust's unit-struct
-duality, and simpler here because Polar uses distinct names, so one identifier
-never occupies both namespaces at once. Each module's name table is keyed by
-`(Symbol, Namespace)`.
+This deliberately differs from Rust's type/value split. Rust separates types
+from values mainly so a unit/tuple struct's *type* and *constructor* can share
+one name; Polar gives constructors **distinct** names (`struct Bus = bus`), so it
+needs no such split. Instead Polar keeps a **single item namespace** — a type and
+its constructor both live in it and therefore must differ (`struct S = S` is a
+name collision) — and splits out only **modules**, because a module name appears
+solely in path-prefix position (`df::X`) and so can coexist with an item of the
+same name (the common `mod df { port DF = df { … } }`). Each module's name table
+is keyed by `(Symbol, Namespace)` with `Namespace ∈ {Module, Item}`: a path's
+non-final segments resolve in the Module namespace, a leaf or bare name in the
+Item namespace.
 
 ### 5.2 Name lookup order (inside a module body)
 

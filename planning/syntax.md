@@ -164,7 +164,11 @@ use a::*;                        // glob (lowest priority)
 
 Paths use 2018-style relative resolution with `crate::`/`super::`/`self::`
 anchors, in both `use` and expression position (`crate::m::g`). Names live in
-two namespaces (type and value), so a type and a constructor may share a name.
+two namespaces — **modules** and **everything else** (types, functions,
+constructors). A module may share a name with a non-module item (a `mod df`
+beside a `port DF = df {…}`), since module names appear only in path-prefix
+position. But a type and its constructor share the item namespace, so they must
+differ: `struct S = S {…}` is a name collision.
 
 Items are **private by default** — visible only in the defining module and its
 descendants. `pub` opens them up; the parenthesised forms narrow that reach:

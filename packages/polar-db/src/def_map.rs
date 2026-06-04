@@ -267,25 +267,27 @@ mod inner {
         let map = crate_def_map(&db, f);
         let root = map.root();
 
+        // Types and fns share the Item namespace.
         let top = map
-            .resolve_local(root, "top", Namespace::Value)
+            .resolve_local(root, "top", Namespace::Item)
             .expect("fn top");
         assert_eq!(map.def_data(top).unwrap().kind, DefKind::Fn);
         assert_eq!(
-            map.resolve_local(root, "S", Namespace::Type)
+            map.resolve_local(root, "S", Namespace::Item)
                 .map(|d| map.def_data(d).unwrap().kind),
             Some(DefKind::Struct)
         );
         assert_eq!(
-            map.resolve_local(root, "P", Namespace::Type)
+            map.resolve_local(root, "P", Namespace::Item)
                 .map(|d| map.def_data(d).unwrap().kind),
             Some(DefKind::Port)
         );
-        // A fn is in the value namespace, not the type namespace.
-        assert!(map.resolve_local(root, "top", Namespace::Type).is_none());
-        // mod `inner` is a type-namespace name in the root.
+        // `mod` lives in the Module namespace, separate from items: `inner` is
+        // not an Item, and `top` is not a Module.
+        assert!(map.resolve_local(root, "inner", Namespace::Item).is_none());
+        assert!(map.resolve_local(root, "top", Namespace::Module).is_none());
         assert_eq!(
-            map.resolve_local(root, "inner", Namespace::Type)
+            map.resolve_local(root, "inner", Namespace::Module)
                 .map(|d| map.def_data(d).unwrap().kind),
             Some(DefKind::Mod)
         );
@@ -301,7 +303,7 @@ mod inner {
         // root + inner = 2 modules.
         assert_eq!(map.modules().len(), 2);
         let inner_def = map
-            .resolve_local(map.root(), "inner", Namespace::Type)
+            .resolve_local(map.root(), "inner", Namespace::Module)
             .unwrap();
         // The named module points back at its def, and its parent is the root.
         let inner_mod = map
@@ -313,11 +315,11 @@ mod inner {
         assert_eq!(map.module(inner_mod).parent(), Some(map.root()));
         // `nested` resolves inside `inner`, not at the root.
         assert!(
-            map.resolve_local(inner_mod, "nested", Namespace::Value)
+            map.resolve_local(inner_mod, "nested", Namespace::Item)
                 .is_some()
         );
         assert!(
-            map.resolve_local(map.root(), "nested", Namespace::Value)
+            map.resolve_local(map.root(), "nested", Namespace::Item)
                 .is_none()
         );
     }

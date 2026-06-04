@@ -34,13 +34,19 @@ pub struct DefId<'db> {
     pub ast_id: FileAstId,
 }
 
-/// The two name namespaces (Rust has three; Polar has no macros). A module's
-/// name table is keyed by `(name, Namespace)`, so a type and a value may share a
-/// name without colliding. Mirrors `resolve.rs::Namespace` / `modules.md` §5.1.
+/// The two name namespaces (`modules.md` §5.1). Polar splits **modules** from
+/// everything else, rather than Rust's type/value split: a type and its
+/// constructor share the `Item` namespace (so `struct S = S` collides), while a
+/// `mod` lives in its own namespace and may share a name with an item (the
+/// common `mod df { port DF = df { … } }`). A module's name table is keyed by
+/// `(name, Namespace)`; a path's non-final segments resolve in `Module`, a leaf
+/// or bare name in `Item`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, salsa::Update)]
 pub enum Namespace {
-    Type,
-    Value,
+    /// `mod` names — referenced only in path-prefix position.
+    Module,
+    /// Types, functions, constructors, builtin types.
+    Item,
 }
 
 /// The flavor of a definition. The Q2a subset: the named items that enter a
@@ -57,13 +63,14 @@ pub enum DefKind {
 }
 
 impl DefKind {
-    /// Which namespace this def's *name* occupies. Every Q2a kind has one;
-    /// nameless defs (impl blocks) and index-only defs (methods) return `None`
-    /// once they exist (Q2d).
+    /// Which namespace this def's *name* occupies. `Mod` is the lone `Module`-ns
+    /// kind; types, fns, and (from Q2d) constructors all share the `Item`
+    /// namespace. Nameless defs (impl blocks) and index-only defs (methods) will
+    /// return `None` once they exist (Q2d).
     pub fn namespace(self) -> Namespace {
         match self {
-            DefKind::Fn => Namespace::Value,
-            DefKind::Struct | DefKind::Port | DefKind::Mod => Namespace::Type,
+            DefKind::Mod => Namespace::Module,
+            DefKind::Fn | DefKind::Struct | DefKind::Port => Namespace::Item,
         }
     }
 }
