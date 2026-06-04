@@ -29,7 +29,8 @@ fn multAdd
           name: (identifier)
           domain: (identifier))
         default: (expression
-          (identifier)))
+          (path_expression
+            segment: (identifier))))
       (named_parameter
         name: (identifier)
         type: (type_expression
@@ -70,9 +71,11 @@ fn multAdd
           value: (expression
             (binary_expression
               left: (expression
-                (identifier))
+                (path_expression
+                  segment: (identifier)))
               right: (expression
-                (identifier))))))
+                (path_expression
+                  segment: (identifier)))))))
       (statement
         (let_statement
           name: (identifier)
@@ -83,7 +86,8 @@ fn multAdd
                 field: (identifier))
               (argument_list
                 (expression
-                  (identifier))
+                  (path_expression
+                    segment: (identifier)))
                 (expression
                   (number)))))))
       (statement
@@ -92,13 +96,16 @@ fn multAdd
           value: (expression
             (binary_expression
               left: (expression
-                (identifier))
+                (path_expression
+                  segment: (identifier)))
               right: (expression
-                (identifier))))))
+                (path_expression
+                  segment: (identifier)))))))
       (statement
         (return_statement
           value: (expression
-            (identifier)))))))
+            (path_expression
+              segment: (identifier))))))))
 
 ========================================
 var with combined initializer
@@ -122,13 +129,14 @@ fn f() {
             name: (identifier)
             (type_index
               (type_argument
-              (number))))
+                (number))))
           value: (expression
             (binary_expression
               left: (expression
-                (identifier))
+                (path_expression
+                  segment: (identifier)))
               right: (expression
-              (number)))))))))
+                (number)))))))))
 
 ========================================
 impl block with self parameter
@@ -166,7 +174,7 @@ impl Reg {
               name: (identifier)
               (type_index
                 (type_argument
-                (number))))))
+                  (number))))))
         return_type: (return_type_expression
           name: (identifier)
           (type_index
@@ -207,7 +215,8 @@ mod math {
             (let_statement
               name: (identifier)
               value: (expression
-                (identifier))))))
+                (path_expression
+                  segment: (identifier)))))))
       (module_definition
         name: (identifier)
         body: (module_body
@@ -253,7 +262,8 @@ mod math {
             (let_statement
               name: (identifier)
               value: (expression
-                (identifier)))))))))
+                (path_expression
+                  segment: (identifier))))))))))
 
 ========================================
 use declarations
@@ -347,7 +357,8 @@ pub use crate::a::b;
         (let_statement
           name: (identifier)
           value: (expression
-            (identifier))))))
+            (path_expression
+              segment: (identifier)))))))
   (struct_definition
     visibility: (visibility_modifier)
     name: (identifier)

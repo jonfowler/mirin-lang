@@ -153,10 +153,6 @@
           "named": true
         },
         {
-          "type": "identifier",
-          "named": true
-        },
-        {
           "type": "if_expression",
           "named": true
         },
@@ -292,10 +288,6 @@
         "multiple": false,
         "required": true,
         "types": [
-          {
-            "type": "identifier",
-            "named": true
-          },
           {
             "type": "number",
             "named": true
@@ -1494,10 +1486,6 @@
         "multiple": false,
         "required": true,
         "types": [
-          {
-            "type": "identifier",
-            "named": true
-          },
           {
             "type": "parenthesized_expression",
             "named": true

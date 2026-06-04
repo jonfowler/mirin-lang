@@ -998,15 +998,26 @@ impl<'a> Lowerer<'a> {
                 span: node.span.clone(),
                 text: text(node, self.source)?.to_owned(),
             })),
-            "path_expression" => Ok(Expression::Path(PathExpression {
-                span: node.span.clone(),
-                segments: node
+            "path_expression" => {
+                let segments = node
                     .children
                     .iter()
                     .filter(|c| c.field_name.as_deref() == Some("segment"))
                     .map(|c| self.lower_identifier(&c.node))
-                    .collect::<Result<Vec<_>, _>>()?,
-            })),
+                    .collect::<Result<Vec<_>, _>>()?;
+                // The grammar now has paths only (no distinct identifier
+                // expression); a single-segment path is a bare name. Preserve
+                // the surface IR's Identifier/Path split here so the rest of
+                // the old compiler is unchanged.
+                if segments.len() == 1 {
+                    Ok(Expression::Identifier(segments.into_iter().next().unwrap()))
+                } else {
+                    Ok(Expression::Path(PathExpression {
+                        span: node.span.clone(),
+                        segments,
+                    }))
+                }
+            }
             "binary_expression" => Ok(Expression::Binary(BinaryExpression {
                 span: node.span.clone(),
                 left: Box::new(self.lower_expression(lower_required_field(node, "left")?)?),

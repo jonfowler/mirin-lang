@@ -243,7 +243,6 @@ module.exports = grammar({
         $.postfix_expression,
         $.record_constructor_expression,
         $.path_expression,
-        $.identifier,
         $.number,
         $.parenthesized_expression,
         $.block_expression,
@@ -279,7 +278,6 @@ module.exports = grammar({
     // anything because `)` terminates the cond before the block opens.
     _if_condition: ($) =>
       choice(
-        $.identifier,
         $.number,
         $.path_expression,
         $.parenthesized_expression,
@@ -305,7 +303,6 @@ module.exports = grammar({
     // event ends before `{ … }` begins.
     _when_event: ($) =>
       choice(
-        $.identifier,
         $.path_expression,
         $.postfix_expression,
         $.parenthesized_expression,
@@ -389,13 +386,15 @@ module.exports = grammar({
     record_field_value: ($) =>
       seq(field("name", $.identifier), ":", field("value", $.expression)),
 
-    // Multi-segment path: `a::b::c`, `crate::m::f`, `super::x`. Always ≥2
-    // segments (a single name is an `identifier`). `crate`/`super`/`self`
-    // anchors are ordinary identifier segments handled by the resolver.
+    // A name reference: `a`, `a::b::c`, `crate::m::f`, `super::x`. 1+ segments
+    // — a bare name is a single-segment path (there is no separate identifier
+    // expression; the lowering decides bare-name vs path by segment count).
+    // `crate`/`super`/`self` anchors are ordinary identifier segments handled
+    // by the resolver.
     path_expression: ($) =>
       seq(
         field("segment", $.identifier),
-        repeat1(seq("::", field("segment", $.identifier))),
+        repeat(seq("::", field("segment", $.identifier))),
       ),
 
     parenthesized_expression: ($) => seq("(", $.expression, ")"),
