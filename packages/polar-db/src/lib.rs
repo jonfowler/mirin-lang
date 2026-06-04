@@ -11,10 +11,12 @@
 
 pub mod ast_id;
 pub mod db;
+pub mod item_tree;
 pub mod parser;
 pub mod vfs;
 
 pub use ast_id::{AstIdKind, AstIdMap, FileAstId, ast_id_map};
 pub use db::{RootDatabase, SourceFile};
+pub use item_tree::ItemTree; // the query is `item_tree::item_tree` (avoids a module/fn name clash)
 pub use parser::{language, parse_text};
 pub use vfs::Vfs;

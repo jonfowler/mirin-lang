@@ -249,7 +249,7 @@ from "walk the whole crate" to "compute this one key."
 |---|---|---|---|
 | tree-sitter parse | *(no query)* | — | **transient**: a `tree_sitter::Tree` is not `salsa::Update`, so it can't be a tracked value. Parsing happens *inside* the queries that need the tree (§7). This is where Polar diverges from rust-analyzer, whose rowan trees back a real `parse` query. |
 | (new) stable identity | `ast_id_map` | file | per-file `FileAstId`s by hash-of-identity (§2.2). Done (Q1b). |
-| (new) item summary | `item_tree` | file | new; the firewall — extract from lowering |
+| (new) item summary | `item_tree` | file | the firewall: lean (name+vis+id, mod nesting, impl method index), no types/bodies. Done (Q1c). |
 | `resolve_file` ph.1–2 | `crate_def_map` | crate | already rustc-shaped |
 | `lower_to_hir` (per item) | `body` | def | narrow from whole-file to per-def |
 | `typeck::check_file` | `infer` | def | **already per-fn** |
