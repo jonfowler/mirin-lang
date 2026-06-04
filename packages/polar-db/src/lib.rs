@@ -19,7 +19,10 @@ pub mod vfs;
 
 pub use ast_id::{AstIdKind, AstIdMap, FileAstId, ast_id_map};
 pub use db::{RootDatabase, SourceFile, SourceRoot};
-pub use def_map::{CrateDefMap, DefData, ModuleData, ModuleId, ModuleKind, crate_def_map};
+pub use def_map::{
+    Binding, BindingSource, CrateDefMap, DefData, DefDiagnostic, ModuleData, ModuleId, ModuleKind,
+    Visibility, crate_def_map,
+};
 pub use ids::{DefId, DefKind, Namespace};
 pub use item_tree::ItemTree; // the query is `item_tree::item_tree` (avoids a module/fn name clash)
 pub use parser::{language, parse_text};

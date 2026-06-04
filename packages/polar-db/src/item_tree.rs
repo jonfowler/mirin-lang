@@ -75,12 +75,33 @@ pub enum ModKind {
     File,
 }
 
-/// A `use` import. The tree itself is lowered in Q2 (where name resolution
-/// consumes it); here we only record that the import exists, with its id.
+/// A `use` import: its visibility, id, and the lowered import tree that name
+/// resolution (`crate_def_map`, Q2c) consumes. The tree is pure syntax, so it
+/// belongs in the firewall.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub struct UseItem {
     pub visibility: Visibility,
     pub ast_id: FileAstId,
+    pub tree: UseTree,
+}
+
+/// A `use` tree, mirroring `surface::UseTree` but with owned string segments
+/// (the firewall holds no `NodeId`s). `crate::`/`super::`/`self` anchors are
+/// ordinary segments the resolver recognises.
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub enum UseTree {
+    /// `a::b::c` optionally `as d`. `segments` is the whole path (≥1).
+    Path {
+        segments: Vec<String>,
+        alias: Option<String>,
+    },
+    /// `prefix::{ children }` — `prefix` may be empty (`{ … }` at the root).
+    Group {
+        prefix: Vec<String>,
+        children: Vec<UseTree>,
+    },
+    /// `prefix::*` — `prefix` may be empty.
+    Glob { prefix: Vec<String> },
 }
 
 /// Visibility as written. Mirrors `polar-compiler`'s `surface::Visibility`.
@@ -122,6 +143,13 @@ fn lower_items(node: Node, source: &str, ast_ids: &AstIdMap) -> Vec<Item> {
             "use_declaration" => Item::Use(UseItem {
                 visibility: visibility(&child, source),
                 ast_id: ast_id(&child, ast_ids),
+                tree: child
+                    .child_by_field_name("tree")
+                    .map(|t| lower_use_tree(&t, source))
+                    .unwrap_or(UseTree::Path {
+                        segments: Vec::new(),
+                        alias: None,
+                    }),
             }),
             _ => continue,
         };
@@ -216,6 +244,45 @@ fn visibility(node: &Node, source: &str) -> Visibility {
     } else {
         Visibility::Public
     }
+}
+
+/// Lower a `use_tree` CST node. Mirrors `surface::ir::lower_use_tree`.
+fn lower_use_tree(node: &Node, source: &str) -> UseTree {
+    let mut cursor = node.walk();
+    let prefix = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "use_path")
+        .map(|p| use_path_segments(&p, source))
+        .unwrap_or_default();
+    if let Some(group) = node.child_by_field_name("group") {
+        let mut gc = group.walk();
+        let children = group
+            .children(&mut gc)
+            .filter(|c| c.kind() == "use_tree")
+            .map(|c| lower_use_tree(&c, source))
+            .collect();
+        UseTree::Group { prefix, children }
+    } else if node.child_by_field_name("glob").is_some() {
+        UseTree::Glob { prefix }
+    } else {
+        let alias = node
+            .child_by_field_name("alias")
+            .and_then(|a| a.utf8_text(source.as_bytes()).ok())
+            .map(str::to_owned);
+        UseTree::Path {
+            segments: prefix,
+            alias,
+        }
+    }
+}
+
+/// The identifier segments of a `use_path` node.
+fn use_path_segments(node: &Node, source: &str) -> Vec<String> {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|c| c.kind() == "identifier")
+        .filter_map(|c| c.utf8_text(source.as_bytes()).ok().map(str::to_owned))
+        .collect()
 }
 
 #[cfg(test)]

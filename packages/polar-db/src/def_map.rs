@@ -16,17 +16,19 @@
 //! file set), which is what lets it resolve `mod foo;` to another file.
 //!
 //! **Scope so far:** the module tree — root, inline `mod`, and `mod foo;` file
-//! modules (Q2b) — and name tables for the named items (`fn`/`struct`/`port`/
-//! `mod`) in the `{Module, Item}` namespaces. Still to come: `use` imports +
-//! privacy (Q2c), and the impl-method index + `DefPath` table + the
-//! `struct S = S` collision check (Q2d).
+//! modules (Q2b) — name tables in the `{Module, Item}` namespaces, and `use`
+//! imports resolved to a fixpoint with privacy (Q2c). Still to come: the
+//! impl-method index + `DefPath` table + the `struct S = S` collision check
+//! (Q2d), and the prelude / ancestor lookup that body resolution needs (Q3).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::db::{SourceFile, SourceRoot};
 use crate::ids::{DefId, DefKind, Namespace};
-use crate::item_tree::{Item, ModItem, ModKind, item_tree};
+use crate::item_tree::{
+    Item, ModItem, ModKind, UseTree, Visibility as SurfaceVisibility, item_tree,
+};
 
 /// Index into [`CrateDefMap::modules`]. The root is always `ModuleId(0)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, salsa::Update)]
@@ -44,15 +46,61 @@ pub enum ModuleKind<'db> {
     Named(DefId<'db>),
 }
 
-/// One module's data: what it is, its parent, and the names defined directly in
-/// it. Modeled on `resolve.rs::ModuleData` (the prelude + import-priority parts
-/// arrive in later slices). Lookups go through [`CrateDefMap`].
+/// A resolved accessibility scope (the surface `pub`/`pub(crate)`/… resolved
+/// against the module tree). Mirrors `resolve.rs::Visibility`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, salsa::Update)]
+pub enum Visibility {
+    /// `pub` — visible everywhere.
+    Public,
+    /// `pub(crate)` — visible anywhere in the crate.
+    Crate,
+    /// Visible within the given module's subtree. Covers private (the defining
+    /// module), `pub(super)` (the parent), and `pub(in path)`.
+    Restricted(ModuleId),
+}
+
+/// How a name entered a module's table — drives import priority
+/// (`Def > Import > Glob`). Mirrors `resolve.rs::BindingSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, salsa::Update)]
+pub enum BindingSource {
+    /// Defined directly in this module.
+    Def,
+    /// Brought in by an explicit `use a::b;` (or group/`as`).
+    Import,
+    /// Brought in by a glob `use a::*;`.
+    Glob,
+}
+
+/// One entry in a module's name table: what it resolves to, how it got there,
+/// and the binding's visibility (a def's own, or a `pub use` re-export's).
+#[derive(Clone, Copy, PartialEq, Eq, salsa::Update)]
+pub struct Binding<'db> {
+    pub def: DefId<'db>,
+    pub source: BindingSource,
+    pub vis: Visibility,
+}
+
+/// A name-resolution diagnostic carried by the def map (RA's `DefMap` carries
+/// its diagnostics the same way). Spans arrive with the diagnostics infra (Q6);
+/// for now the offending name/path is enough to test behaviour.
+#[derive(Debug, Clone, PartialEq, Eq, salsa::Update)]
+pub enum DefDiagnostic {
+    /// A `mod foo;` whose file was not found in the crate.
+    UnresolvedModule { name: String },
+    /// A `use` path that resolved to nothing.
+    UnresolvedImport { path: Vec<String> },
+    /// A `use` that names a binding not accessible from the importing module.
+    PrivateImport { name: String },
+}
+
+/// One module's data: what it is, its parent, and the names visible in it
+/// (defs + imports). Modeled on `resolve.rs::ModuleData`.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct ModuleData<'db> {
     kind: ModuleKind<'db>,
     parent: Option<ModuleId>,
-    /// Names defined directly in this module, keyed by `(name, namespace)`.
-    items: HashMap<(String, Namespace), DefId<'db>>,
+    /// Names in this module, keyed by `(name, namespace)`.
+    items: HashMap<(String, Namespace), Binding<'db>>,
 }
 
 impl<'db> ModuleData<'db> {
@@ -64,8 +112,8 @@ impl<'db> ModuleData<'db> {
         self.parent
     }
 
-    /// Iterate this module's `(name, namespace) → DefId` entries.
-    pub fn items(&self) -> impl Iterator<Item = (&(String, Namespace), &DefId<'db>)> {
+    /// Iterate this module's `(name, namespace) → Binding` entries.
+    pub fn items(&self) -> impl Iterator<Item = (&(String, Namespace), &Binding<'db>)> {
         self.items.iter()
     }
 }
@@ -78,18 +126,22 @@ pub struct DefData<'db> {
     pub name: String,
     /// The module this def is declared in.
     pub module: ModuleId,
+    /// The def's own accessibility scope.
+    pub visibility: Visibility,
     /// Marker so the lifetime is used even before `DefPath` (which references
     /// other defs) lands; lets Q2d add owner-carrying fields without churn.
     _krate: std::marker::PhantomData<DefId<'db>>,
 }
 
-/// The crate's name-resolution map: the module tree plus per-def metadata. The
-/// return value of the [`crate_def_map`] query.
+/// The crate's name-resolution map: the module tree, per-def metadata, and the
+/// diagnostics produced while resolving it. The return value of [`crate_def_map`].
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct CrateDefMap<'db> {
     modules: Vec<ModuleData<'db>>,
     root: ModuleId,
     defs: HashMap<DefId<'db>, DefData<'db>>,
+    def_to_module: HashMap<DefId<'db>, ModuleId>,
+    diagnostics: Vec<DefDiagnostic>,
 }
 
 impl<'db> CrateDefMap<'db> {
@@ -113,13 +165,44 @@ impl<'db> CrateDefMap<'db> {
         self.defs.len()
     }
 
-    /// Resolve a bare name in one module's table (no prelude/ancestor/import
-    /// fallback yet — those land in Q2c).
-    pub fn resolve_local(&self, module: ModuleId, name: &str, ns: Namespace) -> Option<DefId<'db>> {
+    pub fn diagnostics(&self) -> &[DefDiagnostic] {
+        &self.diagnostics
+    }
+
+    /// The module a named-module def opens, if any.
+    pub fn module_of_def(&self, def: DefId<'db>) -> Option<ModuleId> {
+        self.def_to_module.get(&def).copied()
+    }
+
+    /// `true` if `module` is `ancestor` or a descendant of it.
+    pub fn is_within(&self, module: ModuleId, ancestor: ModuleId) -> bool {
+        let mut cur = Some(module);
+        while let Some(m) = cur {
+            if m == ancestor {
+                return true;
+            }
+            cur = self.modules[m.0 as usize].parent;
+        }
+        false
+    }
+
+    /// The full binding for a name in one module's table.
+    pub fn binding_local(
+        &self,
+        module: ModuleId,
+        name: &str,
+        ns: Namespace,
+    ) -> Option<Binding<'db>> {
         self.modules[module.0 as usize]
             .items
             .get(&(name.to_owned(), ns))
             .copied()
+    }
+
+    /// Resolve a bare name in one module's table (defs + imports). No
+    /// prelude/ancestor fallback yet — that lands with body resolution (Q3).
+    pub fn resolve_local(&self, module: ModuleId, name: &str, ns: Namespace) -> Option<DefId<'db>> {
+        self.binding_local(module, name, ns).map(|b| b.def)
     }
 }
 
@@ -138,7 +221,14 @@ pub fn crate_def_map<'db>(db: &'db dyn salsa::Database, krate: SourceRoot) -> Cr
         .parent()
         .map(Path::to_owned)
         .unwrap_or_default();
+    // Phase 1: module + def tree (names, modules, `use`s recorded).
     collector.collect_items(&tree.top_level, root, root_module, &root_dir);
+    // Phase 1.5: refine `pub(in path)` visibilities now the whole tree exists.
+    collector.resolve_pending_visibilities();
+    // Phase 2: resolve `use` imports to a fixpoint.
+    collector.resolve_imports();
+    // Phase 3: privacy + unresolved-import diagnostics over every `use` leaf.
+    collector.check_uses();
     collector.map
 }
 
@@ -147,6 +237,12 @@ struct Collector<'db> {
     map: CrateDefMap<'db>,
     /// Path → file, for resolving `mod foo;` to another file in the crate.
     files: HashMap<PathBuf, SourceFile>,
+    /// `(module, use-tree)` for every `use`, recorded during collection and
+    /// consumed by the import fixpoint and the privacy check.
+    uses: Vec<(ModuleId, UseTree)>,
+    /// `pub(in path)` defs to re-resolve once the whole tree is built:
+    /// `(module, name, ns, path)`.
+    pending_vis: Vec<(ModuleId, String, Namespace, Vec<String>)>,
 }
 
 impl<'db> Collector<'db> {
@@ -162,8 +258,12 @@ impl<'db> Collector<'db> {
                 modules: Vec::new(),
                 root: ModuleId(0),
                 defs: HashMap::new(),
+                def_to_module: HashMap::new(),
+                diagnostics: Vec::new(),
             },
             files,
+            uses: Vec::new(),
+            pending_vis: Vec::new(),
         }
     }
 
@@ -174,6 +274,9 @@ impl<'db> Collector<'db> {
             parent,
             items: HashMap::new(),
         });
+        if let ModuleKind::Named(def) = kind {
+            self.map.def_to_module.insert(def, id);
+        }
         id
     }
 
@@ -184,18 +287,32 @@ impl<'db> Collector<'db> {
         for item in items {
             match item {
                 Item::Fn(f) => {
-                    self.declare(file, f.ast_id, &f.name, DefKind::Fn, module);
+                    self.declare(file, f.ast_id, &f.name, DefKind::Fn, module, &f.visibility);
                 }
                 Item::Struct(s) => {
-                    self.declare(file, s.ast_id, &s.name, DefKind::Struct, module);
+                    self.declare(
+                        file,
+                        s.ast_id,
+                        &s.name,
+                        DefKind::Struct,
+                        module,
+                        &s.visibility,
+                    );
                 }
                 Item::Port(p) => {
-                    self.declare(file, p.ast_id, &p.name, DefKind::Port, module);
+                    self.declare(
+                        file,
+                        p.ast_id,
+                        &p.name,
+                        DefKind::Port,
+                        module,
+                        &p.visibility,
+                    );
                 }
                 Item::Mod(m) => self.collect_mod(m, file, module, dir),
-                // Impls (the method index) and `use` imports are name-resolution
-                // concerns too, but land in Q2d / Q2c respectively.
-                Item::Impl(_) | Item::Use(_) => {}
+                Item::Use(u) => self.uses.push((module, u.tree.clone())),
+                // The impl-method index lands in Q2d.
+                Item::Impl(_) => {}
             }
         }
     }
@@ -208,14 +325,27 @@ impl<'db> Collector<'db> {
         name: &str,
         kind: DefKind,
         module: ModuleId,
+        surface_vis: &SurfaceVisibility,
     ) -> DefId<'db> {
         let def = DefId::new(self.db, file, ast_id);
+        let ns = kind.namespace();
+        // `pub(in path)` may name a module declared later, so resolve it in a
+        // later pass; everything else is fixed now.
+        let vis = match surface_vis {
+            SurfaceVisibility::Restricted(path) => {
+                self.pending_vis
+                    .push((module, name.to_owned(), ns, path.clone()));
+                Visibility::Restricted(module)
+            }
+            _ => self.resolve_visibility(surface_vis, module),
+        };
         self.map.defs.insert(
             def,
             DefData {
                 kind,
                 name: name.to_owned(),
                 module,
+                visibility: vis,
                 _krate: std::marker::PhantomData,
             },
         );
@@ -223,8 +353,12 @@ impl<'db> Collector<'db> {
         // surface (Q6). Until then this keeps a deterministic table.
         self.map.modules[module.0 as usize]
             .items
-            .entry((name.to_owned(), kind.namespace()))
-            .or_insert(def);
+            .entry((name.to_owned(), ns))
+            .or_insert(Binding {
+                def,
+                source: BindingSource::Def,
+                vis,
+            });
         def
     }
 
@@ -234,7 +368,7 @@ impl<'db> Collector<'db> {
     /// modules in `dir/m` — each level owns a deeper directory, so the file tree
     /// strictly deepens and cannot cycle.
     fn collect_mod(&mut self, m: &ModItem, file: SourceFile, parent: ModuleId, dir: &Path) {
-        let def = self.declare(file, m.ast_id, &m.name, DefKind::Mod, parent);
+        let def = self.declare(file, m.ast_id, &m.name, DefKind::Mod, parent, &m.visibility);
         let sub = self.new_module(ModuleKind::Named(def), Some(parent));
         let child_dir = dir.join(&m.name);
         match &m.kind {
@@ -246,10 +380,397 @@ impl<'db> Collector<'db> {
                 if let Some(&mod_file) = self.files.get(&mod_path) {
                     let tree = item_tree(self.db, mod_file);
                     self.collect_items(&tree.top_level, mod_file, sub, &child_dir);
+                } else {
+                    self.map.diagnostics.push(DefDiagnostic::UnresolvedModule {
+                        name: m.name.clone(),
+                    });
                 }
-                // else: unresolved module file. The `mod` name still resolves (to
-                // an empty module); the "file not found" diagnostic lands in Q6.
             }
+        }
+    }
+
+    // ----- visibility -----
+
+    /// Resolve a surface visibility to an accessibility scope, relative to the
+    /// module the item is declared in.
+    fn resolve_visibility(&self, vis: &SurfaceVisibility, module: ModuleId) -> Visibility {
+        match vis {
+            SurfaceVisibility::Inherited => Visibility::Restricted(module),
+            SurfaceVisibility::Public => Visibility::Public,
+            SurfaceVisibility::Crate => Visibility::Crate,
+            SurfaceVisibility::Super => {
+                let parent = self.map.modules[module.0 as usize].parent.unwrap_or(module);
+                Visibility::Restricted(parent)
+            }
+            SurfaceVisibility::Restricted(path) => {
+                let segs: Vec<&str> = path.iter().map(String::as_str).collect();
+                match self.resolve_path_to_module(&segs, module) {
+                    Some(m) => Visibility::Restricted(m),
+                    None => Visibility::Restricted(module),
+                }
+            }
+        }
+    }
+
+    /// Phase 1.5: re-resolve the `pub(in path)` defs deferred during collection,
+    /// updating both the def's metadata and its module-table binding.
+    fn resolve_pending_visibilities(&mut self) {
+        let pending = std::mem::take(&mut self.pending_vis);
+        for (module, name, ns, path) in pending {
+            let segs: Vec<&str> = path.iter().map(String::as_str).collect();
+            let vis = match self.resolve_path_to_module(&segs, module) {
+                Some(m) => Visibility::Restricted(m),
+                None => Visibility::Restricted(module),
+            };
+            if let Some(binding) = self.map.modules[module.0 as usize]
+                .items
+                .get_mut(&(name.clone(), ns))
+            {
+                binding.vis = vis;
+                let def = binding.def;
+                if let Some(data) = self.map.defs.get_mut(&def) {
+                    data.visibility = vis;
+                }
+            }
+        }
+    }
+
+    // ----- imports (fixpoint) -----
+
+    /// Resolve every `use` to a fixpoint — explicit imports and globs converge
+    /// in a few passes because a glob's imported set, and any chained import, can
+    /// grow as other imports land. Polar has no macros, so this is the only
+    /// fixpoint resolution needs.
+    fn resolve_imports(&mut self) {
+        let uses = std::mem::take(&mut self.uses);
+        loop {
+            let mut changed = false;
+            for (module, tree) in &uses {
+                let vis = Visibility::Restricted(*module); // plain `use`: module-private
+                changed |= self.import_tree(*module, &[], tree, vis);
+            }
+            if !changed {
+                break;
+            }
+        }
+        self.uses = uses;
+    }
+
+    /// Apply one use-tree to `module` under `prefix`. Returns whether any new
+    /// binding was inserted.
+    fn import_tree(
+        &mut self,
+        module: ModuleId,
+        prefix: &[String],
+        tree: &UseTree,
+        vis: Visibility,
+    ) -> bool {
+        match tree {
+            UseTree::Path { segments, alias } => {
+                let full: Vec<&str> = prefix.iter().chain(segments).map(String::as_str).collect();
+                self.import_leaf(module, &full, alias.as_deref(), vis)
+            }
+            UseTree::Group {
+                prefix: gp,
+                children,
+            } => {
+                let new_prefix: Vec<String> = prefix.iter().chain(gp).cloned().collect();
+                let mut changed = false;
+                for child in children {
+                    changed |= self.import_tree(module, &new_prefix, child, vis);
+                }
+                changed
+            }
+            UseTree::Glob { prefix: gp } => {
+                let full: Vec<&str> = prefix.iter().chain(gp).map(String::as_str).collect();
+                self.import_glob(module, &full, vis)
+            }
+        }
+    }
+
+    /// Import a single leaf `prefix::…::name [as alias]` into `module`.
+    fn import_leaf(
+        &mut self,
+        module: ModuleId,
+        segments: &[&str],
+        alias: Option<&str>,
+        vis: Visibility,
+    ) -> bool {
+        let Some((&last, prefix)) = segments.split_last() else {
+            return false;
+        };
+        // `use a::self` — import the module `a` itself.
+        if last == "self" {
+            let Some((&modname, _)) = prefix.split_last() else {
+                return false;
+            };
+            let Some(def) = self.resolve_path(prefix, module, Namespace::Module) else {
+                return false;
+            };
+            let name = alias.unwrap_or(modname);
+            return self.import_binding(module, name, Namespace::Module, def, vis);
+        }
+        let name = alias.unwrap_or(last);
+        let mut changed = false;
+        // Import the name in whichever namespace(s) it resolves to.
+        for ns in [Namespace::Module, Namespace::Item] {
+            if let Some(def) = self.resolve_path(segments, module, ns) {
+                changed |= self.import_binding(module, name, ns, def, vis);
+            }
+        }
+        changed
+    }
+
+    /// Import every accessible name from the module named by `prefix`.
+    fn import_glob(&mut self, module: ModuleId, prefix: &[&str], vis: Visibility) -> bool {
+        let Some(target) = self.resolve_path_to_module(prefix, module) else {
+            return false;
+        };
+        if target == module {
+            return false;
+        }
+        // Snapshot the target's accessible entries (avoid borrowing while
+        // mutating). A glob imports only names visible from `module`.
+        let entries: Vec<(String, Namespace, DefId<'db>)> = self.map.modules[target.0 as usize]
+            .items
+            .iter()
+            .filter(|(_, b)| self.vis_accessible(b.vis, module))
+            .map(|((name, ns), b)| (name.clone(), *ns, b.def))
+            .collect();
+        let mut changed = false;
+        for (name, ns, def) in entries {
+            changed |= self.import_glob_binding(module, &name, ns, def, vis);
+        }
+        changed
+    }
+
+    /// Insert an explicit-import binding, respecting priority (`Def > Import`).
+    fn import_binding(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        ns: Namespace,
+        def: DefId<'db>,
+        vis: Visibility,
+    ) -> bool {
+        self.insert_binding(module, name, ns, def, BindingSource::Import, vis)
+    }
+
+    /// Insert a glob-import binding (lowest priority).
+    fn import_glob_binding(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        ns: Namespace,
+        def: DefId<'db>,
+        vis: Visibility,
+    ) -> bool {
+        self.insert_binding(module, name, ns, def, BindingSource::Glob, vis)
+    }
+
+    /// Insert a binding respecting priority `Def > Import > Glob`. Returns
+    /// whether the table changed (drives the fixpoint).
+    fn insert_binding(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        ns: Namespace,
+        def: DefId<'db>,
+        source: BindingSource,
+        vis: Visibility,
+    ) -> bool {
+        let table = &mut self.map.modules[module.0 as usize].items;
+        let key = (name.to_owned(), ns);
+        match table.get(&key) {
+            None => {
+                table.insert(key, Binding { def, source, vis });
+                true
+            }
+            Some(existing) => match (existing.source, source) {
+                // A local def always wins.
+                (BindingSource::Def, _) => false,
+                // An explicit import overrides a glob.
+                (BindingSource::Glob, BindingSource::Import) => {
+                    table.insert(key, Binding { def, source, vis });
+                    true
+                }
+                // Otherwise keep the existing (idempotent / lenient on conflicts).
+                _ => false,
+            },
+        }
+    }
+
+    // ----- path resolution -----
+
+    /// Resolve `crate`/`super`/`self` anchors. Returns the module the first
+    /// *named* segment is looked up in and that segment's index.
+    fn path_anchor(&self, segments: &[&str], from: ModuleId) -> (ModuleId, usize) {
+        match segments.first().copied() {
+            Some("crate") => (self.map.root, 1),
+            Some("self") => (from, 1),
+            Some("super") => {
+                let mut module = from;
+                let mut i = 0;
+                while segments.get(i).copied() == Some("super") {
+                    module = self.map.modules[module.0 as usize].parent.unwrap_or(module);
+                    i += 1;
+                }
+                (module, i)
+            }
+            _ => (from, 0),
+        }
+    }
+
+    /// Resolve a path's final segment to a def in `final_ns`. Intermediate
+    /// segments must be modules (the `{Module, Item}` split makes this
+    /// unambiguous — they always resolve in the `Module` namespace).
+    fn resolve_path(
+        &self,
+        segments: &[&str],
+        from: ModuleId,
+        final_ns: Namespace,
+    ) -> Option<DefId<'db>> {
+        let (mut module, start) = self.path_anchor(segments, from);
+        if start >= segments.len() {
+            return None;
+        }
+        let mut i = start;
+        while i + 1 < segments.len() {
+            let def = self
+                .map
+                .resolve_local(module, segments[i], Namespace::Module)?;
+            if self.map.def_data(def).map(|d| d.kind) != Some(DefKind::Mod) {
+                return None;
+            }
+            module = self.map.module_of_def(def)?;
+            i += 1;
+        }
+        self.map.resolve_local(module, segments[i], final_ns)
+    }
+
+    /// Resolve a path whose final segment must itself be a module.
+    fn resolve_path_to_module(&self, segments: &[&str], from: ModuleId) -> Option<ModuleId> {
+        if segments.is_empty() {
+            // Empty prefix (`{ … }` / `*` at the current module).
+            return Some(from);
+        }
+        let def = self.resolve_path(segments, from, Namespace::Module)?;
+        if self.map.def_data(def).map(|d| d.kind) != Some(DefKind::Mod) {
+            return None;
+        }
+        self.map.module_of_def(def)
+    }
+
+    // ----- privacy -----
+
+    /// Is a binding of visibility `vis` nameable from `use_module`?
+    fn vis_accessible(&self, vis: Visibility, use_module: ModuleId) -> bool {
+        match vis {
+            Visibility::Public | Visibility::Crate => true,
+            Visibility::Restricted(scope) => self.map.is_within(use_module, scope),
+        }
+    }
+
+    /// Phase 3: over every `use` leaf, emit an unresolved-import or private-import
+    /// diagnostic. Mirrors `resolve.rs::check_use_privacy`.
+    fn check_uses(&mut self) {
+        let uses = std::mem::take(&mut self.uses);
+        let mut leaves: Vec<(ModuleId, Vec<String>)> = Vec::new();
+        for (module, tree) in &uses {
+            use_leaves(tree, &[], &mut |segs| leaves.push((*module, segs)));
+        }
+        for (module, mut segs) in leaves {
+            // A trailing `self` names the prefix module.
+            if segs.last().map(String::as_str) == Some("self") {
+                segs.pop();
+            }
+            if segs.is_empty() {
+                continue;
+            }
+            let refs: Vec<&str> = segs.iter().map(String::as_str).collect();
+            self.check_path_access(&refs, module);
+        }
+        self.uses = uses;
+    }
+
+    /// Walk a path's bindings (intermediate modules, then the final name) from
+    /// `from`, recording the first failure as a diagnostic.
+    fn check_path_access(&mut self, segments: &[&str], from: ModuleId) {
+        let (mut module, start) = self.path_anchor(segments, from);
+        if start >= segments.len() {
+            return;
+        }
+        let mut i = start;
+        while i + 1 < segments.len() {
+            // The relative first segment resolves in `from`'s own scope, always
+            // accessible; later segments are checked for visibility.
+            let own_scope = i == start && start == 0;
+            let Some(binding) = self
+                .map
+                .binding_local(module, segments[i], Namespace::Module)
+            else {
+                self.map.diagnostics.push(DefDiagnostic::UnresolvedImport {
+                    path: segments.iter().map(|s| s.to_string()).collect(),
+                });
+                return;
+            };
+            if !own_scope && !self.vis_accessible(binding.vis, from) {
+                self.push_private(binding.def);
+                return;
+            }
+            let Some(next) = self.map.module_of_def(binding.def) else {
+                return;
+            };
+            module = next;
+            i += 1;
+        }
+        // Final segment — in whichever namespace it resolves.
+        let own_scope = i == start && start == 0;
+        for ns in [Namespace::Module, Namespace::Item] {
+            if let Some(binding) = self.map.binding_local(module, segments[i], ns) {
+                if !own_scope && !self.vis_accessible(binding.vis, from) {
+                    self.push_private(binding.def);
+                }
+                return;
+            }
+        }
+        self.map.diagnostics.push(DefDiagnostic::UnresolvedImport {
+            path: segments.iter().map(|s| s.to_string()).collect(),
+        });
+    }
+
+    fn push_private(&mut self, def: DefId<'db>) {
+        if let Some(data) = self.map.def_data(def) {
+            self.map.diagnostics.push(DefDiagnostic::PrivateImport {
+                name: data.name.clone(),
+            });
+        }
+    }
+}
+
+/// Enumerate the leaf paths of a use-tree (each a full segment list), invoking
+/// `f` per leaf. A glob contributes its prefix (the module to check).
+fn use_leaves(tree: &UseTree, prefix: &[String], f: &mut impl FnMut(Vec<String>)) {
+    match tree {
+        UseTree::Path { segments, .. } => {
+            let mut p = prefix.to_vec();
+            p.extend(segments.iter().cloned());
+            f(p);
+        }
+        UseTree::Group {
+            prefix: gp,
+            children,
+        } => {
+            let mut p = prefix.to_vec();
+            p.extend(gp.iter().cloned());
+            for child in children {
+                use_leaves(child, &p, f);
+            }
+        }
+        UseTree::Glob { prefix: gp } => {
+            let mut p = prefix.to_vec();
+            p.extend(gp.iter().cloned());
+            f(p);
         }
     }
 }
@@ -498,6 +1019,153 @@ mod inner {
         assert_eq!(
             before, after,
             "a body edit in a file module must not change the def map"
+        );
+    }
+
+    // ----- Q2c: `use` imports + privacy -----
+
+    #[test]
+    fn use_imports_a_name_from_a_submodule() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "mod m { pub fn f () -> uint(8) { return 0; } }\nuse m::f;",
+        );
+        let map = crate_def_map(&db, krate);
+        assert!(
+            map.resolve_local(map.root(), "f", Namespace::Item)
+                .is_some()
+        );
+        assert!(map.diagnostics().is_empty(), "{:?}", map.diagnostics());
+    }
+
+    #[test]
+    fn use_glob_imports_only_accessible_names() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "mod m {\n  pub fn f () -> uint(8) { return 0; }\n  pub fn g () -> uint(8) { return 0; }\n  fn hidden () -> uint(8) { return 0; }\n}\nuse m::*;",
+        );
+        let map = crate_def_map(&db, krate);
+        let root = map.root();
+        assert!(map.resolve_local(root, "f", Namespace::Item).is_some());
+        assert!(map.resolve_local(root, "g", Namespace::Item).is_some());
+        // `hidden` is private to `m`, so the glob does not bring it in.
+        assert!(map.resolve_local(root, "hidden", Namespace::Item).is_none());
+    }
+
+    #[test]
+    fn use_group_and_alias() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "mod m {\n  pub fn f () -> uint(8) { return 0; }\n  pub fn g () -> uint(8) { return 0; }\n}\nuse m::{f, g as h};",
+        );
+        let map = crate_def_map(&db, krate);
+        let root = map.root();
+        assert!(map.resolve_local(root, "f", Namespace::Item).is_some());
+        assert!(map.resolve_local(root, "h", Namespace::Item).is_some());
+        // The alias renames: `g` is not bound, only `h`.
+        assert!(map.resolve_local(root, "g", Namespace::Item).is_none());
+    }
+
+    #[test]
+    fn use_imports_a_submodule_through_a_chained_path() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "mod a { pub mod b { pub fn f () -> uint(8) { return 0; } } }\nuse a::b;",
+        );
+        let map = crate_def_map(&db, krate);
+        // `b` is imported into the root in the Module namespace.
+        assert!(
+            map.resolve_local(map.root(), "b", Namespace::Module)
+                .is_some()
+        );
+        assert!(map.diagnostics().is_empty(), "{:?}", map.diagnostics());
+    }
+
+    #[test]
+    fn a_local_def_beats_an_import() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "mod m { pub fn f () -> uint(8) { return 0; } }\nuse m::f;\nfn f () -> uint(8) { return 1; }",
+        );
+        let map = crate_def_map(&db, krate);
+        let binding = map
+            .binding_local(map.root(), "f", Namespace::Item)
+            .expect("f bound");
+        assert_eq!(
+            binding.source,
+            BindingSource::Def,
+            "the local `f` must win over the import"
+        );
+    }
+
+    #[test]
+    fn importing_a_private_name_is_flagged() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "mod m { fn secret () -> uint(8) { return 0; } }\nuse m::secret;",
+        );
+        let map = crate_def_map(&db, krate);
+        assert!(
+            map.diagnostics()
+                .iter()
+                .any(|d| matches!(d, DefDiagnostic::PrivateImport { name } if name == "secret")),
+            "{:?}",
+            map.diagnostics()
+        );
+    }
+
+    #[test]
+    fn pub_crate_is_reachable_from_another_subtree() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "mod a { pub(crate) fn f () -> uint(8) { return 0; } }\nmod b { use crate::a::f; }",
+        );
+        let map = crate_def_map(&db, krate);
+        let b = named_module(map, "b", Namespace::Module).expect("module b");
+        assert!(map.resolve_local(b, "f", Namespace::Item).is_some());
+        assert!(map.diagnostics().is_empty(), "{:?}", map.diagnostics());
+    }
+
+    #[test]
+    fn an_unresolved_import_is_flagged() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(&mut db, &mut vfs, "t.plr", "use nonexistent::thing;");
+        let map = crate_def_map(&db, krate);
+        assert!(
+            map.diagnostics()
+                .iter()
+                .any(|d| matches!(d, DefDiagnostic::UnresolvedImport { .. })),
+            "{:?}",
+            map.diagnostics()
         );
     }
 }
