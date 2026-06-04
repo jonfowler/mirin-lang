@@ -16,18 +16,22 @@
 //! file set), which is what lets it resolve `mod foo;` to another file.
 //!
 //! **Scope so far:** the module tree — root, inline `mod`, and `mod foo;` file
-//! modules (Q2b) — name tables in the `{Module, Item}` namespaces, and `use`
-//! imports resolved to a fixpoint with privacy (Q2c). Still to come: the
-//! impl-method index + `DefPath` table + the `struct S = S` collision check
-//! (Q2d), and the prelude / ancestor lookup that body resolution needs (Q3).
+//! modules (Q2b); name tables in the `{Module, Item}` namespaces with
+//! constructors (`struct Bus = bus`) and the `struct S = S` collision check;
+//! `use` imports to a fixpoint with privacy (Q2c); the impl-method index and the
+//! stable `DefPath`/`DefPathHash` table (Q2d). Still to come: the prelude /
+//! ancestor lookup that body resolution needs (Q3).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::db::{SourceFile, SourceRoot};
-use crate::ids::{DefId, DefKind, Namespace};
+use crate::ids::{
+    DefId, DefKind, DefPath, DefPathHash, DefPathSegment, DefPathSegmentKind, DefRole, Namespace,
+    StableCrateId,
+};
 use crate::item_tree::{
-    Item, ModItem, ModKind, UseTree, Visibility as SurfaceVisibility, item_tree,
+    ImplItem, Item, ModItem, ModKind, UseTree, Visibility as SurfaceVisibility, item_tree,
 };
 
 /// Index into [`CrateDefMap::modules`]. The root is always `ModuleId(0)`.
@@ -91,16 +95,25 @@ pub enum DefDiagnostic {
     UnresolvedImport { path: Vec<String> },
     /// A `use` that names a binding not accessible from the importing module.
     PrivateImport { name: String },
+    /// Two defs collide on `(name, namespace)` in one module — e.g. a type and
+    /// its constructor sharing a name (`struct S = S`).
+    DuplicateDef { name: String },
+    /// An `impl T { … }` whose owner type `T` did not resolve.
+    UnresolvedImplOwner { name: String },
 }
 
-/// One module's data: what it is, its parent, and the names visible in it
-/// (defs + imports). Modeled on `resolve.rs::ModuleData`.
+/// One module's data: what it is, its parent, the names visible in it (defs +
+/// imports), and its segment path from the crate root (for building contained
+/// defs' `DefPath`s). Modeled on `resolve.rs::ModuleData`.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct ModuleData<'db> {
     kind: ModuleKind<'db>,
     parent: Option<ModuleId>,
     /// Names in this module, keyed by `(name, namespace)`.
     items: HashMap<(String, Namespace), Binding<'db>>,
+    /// The module names from the crate root *to* this module (exclusive of its
+    /// own defs). Empty at the root.
+    path_prefix: Vec<String>,
 }
 
 impl<'db> ModuleData<'db> {
@@ -119,8 +132,10 @@ impl<'db> ModuleData<'db> {
 }
 
 /// Per-def metadata, recoverable from a `DefId` alone (the way rustc exposes
-/// `tcx.def_kind`). The `DefPath` lands here in Q2d.
-#[derive(Debug, Clone, PartialEq, Eq, salsa::Update)]
+/// `tcx.def_kind`).
+//
+// No `Debug`: holds a `DefId` (`owner`), which has no std `Debug`.
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct DefData<'db> {
     pub kind: DefKind,
     pub name: String,
@@ -128,9 +143,8 @@ pub struct DefData<'db> {
     pub module: ModuleId,
     /// The def's own accessibility scope.
     pub visibility: Visibility,
-    /// Marker so the lifetime is used even before `DefPath` (which references
-    /// other defs) lands; lets Q2d add owner-carrying fields without churn.
-    _krate: std::marker::PhantomData<DefId<'db>>,
+    /// The type a `Ctor`/`Method` belongs to (`None` for everything else).
+    pub owner: Option<DefId<'db>>,
 }
 
 /// The crate's name-resolution map: the module tree, per-def metadata, and the
@@ -141,6 +155,13 @@ pub struct CrateDefMap<'db> {
     root: ModuleId,
     defs: HashMap<DefId<'db>, DefData<'db>>,
     def_to_module: HashMap<DefId<'db>, ModuleId>,
+    /// The impl-method index: `(owner type, method name) → method def`. Built
+    /// from `impl T { … }` blocks; type-directed dispatch (Q3 `infer`) reads it.
+    impl_methods: HashMap<(DefId<'db>, String), DefId<'db>>,
+    /// Stable `DefId → DefPath`/`DefPathHash` identity, plus the reverse index.
+    def_paths: HashMap<DefId<'db>, DefPath>,
+    def_path_hashes: HashMap<DefId<'db>, DefPathHash>,
+    hash_to_def: HashMap<DefPathHash, DefId<'db>>,
     diagnostics: Vec<DefDiagnostic>,
 }
 
@@ -167,6 +188,26 @@ impl<'db> CrateDefMap<'db> {
 
     pub fn diagnostics(&self) -> &[DefDiagnostic] {
         &self.diagnostics
+    }
+
+    /// The method `name` on owner type `owner`, via the impl-method index.
+    pub fn impl_method(&self, owner: DefId<'db>, name: &str) -> Option<DefId<'db>> {
+        self.impl_methods.get(&(owner, name.to_owned())).copied()
+    }
+
+    /// A def's stable `DefPath`.
+    pub fn def_path(&self, def: DefId<'db>) -> Option<&DefPath> {
+        self.def_paths.get(&def)
+    }
+
+    /// A def's stable `DefPathHash` (the cross-session / cross-crate id).
+    pub fn def_path_hash(&self, def: DefId<'db>) -> Option<DefPathHash> {
+        self.def_path_hashes.get(&def).copied()
+    }
+
+    /// The def a `DefPathHash` denotes (for loading cached/external data).
+    pub fn def_for_hash(&self, hash: DefPathHash) -> Option<DefId<'db>> {
+        self.hash_to_def.get(&hash).copied()
     }
 
     /// The module a named-module def opens, if any.
@@ -211,7 +252,7 @@ impl<'db> CrateDefMap<'db> {
 #[salsa::tracked(returns(ref))]
 pub fn crate_def_map<'db>(db: &'db dyn salsa::Database, krate: SourceRoot) -> CrateDefMap<'db> {
     let mut collector = Collector::new(db, krate);
-    let root_module = collector.new_module(ModuleKind::Root, None);
+    let root_module = collector.new_module(ModuleKind::Root, None, Vec::new());
     debug_assert_eq!(root_module, collector.map.root);
     let root = krate.root_file(db);
     let tree = item_tree(db, root);
@@ -221,14 +262,18 @@ pub fn crate_def_map<'db>(db: &'db dyn salsa::Database, krate: SourceRoot) -> Cr
         .parent()
         .map(Path::to_owned)
         .unwrap_or_default();
-    // Phase 1: module + def tree (names, modules, `use`s recorded).
+    // Phase 1: module + def tree (names, modules, `use`s + impls recorded).
     collector.collect_items(&tree.top_level, root, root_module, &root_dir);
     // Phase 1.5: refine `pub(in path)` visibilities now the whole tree exists.
     collector.resolve_pending_visibilities();
     // Phase 2: resolve `use` imports to a fixpoint.
     collector.resolve_imports();
-    // Phase 3: privacy + unresolved-import diagnostics over every `use` leaf.
+    // Phase 3: resolve impl owners and build the impl-method index.
+    collector.resolve_impls();
+    // Phase 4: privacy + unresolved-import diagnostics over every `use` leaf.
     collector.check_uses();
+    // Phase 5: build the stable DefPath / DefPathHash table over every def.
+    collector.build_def_paths();
     collector.map
 }
 
@@ -243,6 +288,13 @@ struct Collector<'db> {
     /// `pub(in path)` defs to re-resolve once the whole tree is built:
     /// `(module, name, ns, path)`.
     pending_vis: Vec<(ModuleId, String, Namespace, Vec<String>)>,
+    /// `(module, file, impl-item)` for every `impl` block, resolved after the
+    /// module tree + imports are built (the owner type may be defined later or
+    /// imported).
+    impls: Vec<(ModuleId, SourceFile, ImplItem)>,
+    /// Defs in declaration (source) order — a deterministic sequence for
+    /// `DefPath` disambiguation, since the `defs` map's iteration order is not.
+    def_order: Vec<DefId<'db>>,
 }
 
 impl<'db> Collector<'db> {
@@ -259,20 +311,32 @@ impl<'db> Collector<'db> {
                 root: ModuleId(0),
                 defs: HashMap::new(),
                 def_to_module: HashMap::new(),
+                impl_methods: HashMap::new(),
+                def_paths: HashMap::new(),
+                def_path_hashes: HashMap::new(),
+                hash_to_def: HashMap::new(),
                 diagnostics: Vec::new(),
             },
             files,
             uses: Vec::new(),
             pending_vis: Vec::new(),
+            impls: Vec::new(),
+            def_order: Vec::new(),
         }
     }
 
-    fn new_module(&mut self, kind: ModuleKind<'db>, parent: Option<ModuleId>) -> ModuleId {
+    fn new_module(
+        &mut self,
+        kind: ModuleKind<'db>,
+        parent: Option<ModuleId>,
+        path_prefix: Vec<String>,
+    ) -> ModuleId {
         let id = ModuleId(self.map.modules.len() as u32);
         self.map.modules.push(ModuleData {
             kind,
             parent,
             items: HashMap::new(),
+            path_prefix,
         });
         if let ModuleKind::Named(def) = kind {
             self.map.def_to_module.insert(def, id);
@@ -287,47 +351,76 @@ impl<'db> Collector<'db> {
         for item in items {
             match item {
                 Item::Fn(f) => {
-                    self.declare(file, f.ast_id, &f.name, DefKind::Fn, module, &f.visibility);
-                }
-                Item::Struct(s) => {
                     self.declare(
                         file,
-                        s.ast_id,
-                        &s.name,
-                        DefKind::Struct,
+                        f.ast_id,
+                        DefRole::Item,
+                        &f.name,
+                        DefKind::Fn,
                         module,
-                        &s.visibility,
+                        &f.visibility,
+                        None,
                     );
                 }
-                Item::Port(p) => {
-                    self.declare(
-                        file,
-                        p.ast_id,
-                        &p.name,
-                        DefKind::Port,
-                        module,
-                        &p.visibility,
-                    );
-                }
+                Item::Struct(s) => self.declare_adt(file, s, DefKind::Struct, module),
+                Item::Port(p) => self.declare_adt(file, p, DefKind::Port, module),
                 Item::Mod(m) => self.collect_mod(m, file, module, dir),
                 Item::Use(u) => self.uses.push((module, u.tree.clone())),
-                // The impl-method index lands in Q2d.
-                Item::Impl(_) => {}
+                Item::Impl(i) => self.impls.push((module, file, i.clone())),
             }
         }
     }
 
+    /// Declare a struct/port: the type def plus its term-level constructor (a
+    /// distinct `DefKind::Ctor` sharing the type's `FileAstId` via `DefRole::Ctor`,
+    /// owned by the type). Both names land in the `Item` namespace, so a type and
+    /// a constructor that share a name (`struct S = S`) collide.
+    fn declare_adt(
+        &mut self,
+        file: SourceFile,
+        item: &crate::item_tree::NamedItem,
+        kind: DefKind,
+        module: ModuleId,
+    ) {
+        let ty = self.declare(
+            file,
+            item.ast_id,
+            DefRole::Item,
+            &item.name,
+            kind,
+            module,
+            &item.visibility,
+            None,
+        );
+        // The constructor is as visible as its type, and owned by it.
+        self.declare(
+            file,
+            item.ast_id,
+            DefRole::Ctor,
+            &item.constructor,
+            DefKind::Ctor,
+            module,
+            &item.visibility,
+            Some(ty),
+        );
+    }
+
     /// Mint a `DefId` for a named item and enter it into its module's name table.
+    /// A clash on `(name, namespace)` is a `DuplicateDef` (the first binding
+    /// wins; the def itself is still recorded so callers can find it).
+    #[allow(clippy::too_many_arguments)]
     fn declare(
         &mut self,
         file: SourceFile,
         ast_id: crate::ast_id::FileAstId,
+        role: DefRole,
         name: &str,
         kind: DefKind,
         module: ModuleId,
         surface_vis: &SurfaceVisibility,
+        owner: Option<DefId<'db>>,
     ) -> DefId<'db> {
-        let def = DefId::new(self.db, file, ast_id);
+        let def = DefId::new(self.db, file, ast_id, role);
         let ns = kind.namespace();
         // `pub(in path)` may name a module declared later, so resolve it in a
         // later pass; everything else is fixed now.
@@ -346,19 +439,30 @@ impl<'db> Collector<'db> {
                 name: name.to_owned(),
                 module,
                 visibility: vis,
-                _krate: std::marker::PhantomData,
+                owner,
             },
         );
-        // First binding wins; duplicate-name diagnostics arrive with the error
-        // surface (Q6). Until then this keeps a deterministic table.
-        self.map.modules[module.0 as usize]
+        self.def_order.push(def);
+        // First binding wins; a clash on `(name, ns)` is a DuplicateDef.
+        let duplicate = match self.map.modules[module.0 as usize]
             .items
             .entry((name.to_owned(), ns))
-            .or_insert(Binding {
-                def,
-                source: BindingSource::Def,
-                vis,
+        {
+            std::collections::hash_map::Entry::Occupied(_) => true,
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(Binding {
+                    def,
+                    source: BindingSource::Def,
+                    vis,
+                });
+                false
+            }
+        };
+        if duplicate {
+            self.map.diagnostics.push(DefDiagnostic::DuplicateDef {
+                name: name.to_owned(),
             });
+        }
         def
     }
 
@@ -368,8 +472,19 @@ impl<'db> Collector<'db> {
     /// modules in `dir/m` — each level owns a deeper directory, so the file tree
     /// strictly deepens and cannot cycle.
     fn collect_mod(&mut self, m: &ModItem, file: SourceFile, parent: ModuleId, dir: &Path) {
-        let def = self.declare(file, m.ast_id, &m.name, DefKind::Mod, parent, &m.visibility);
-        let sub = self.new_module(ModuleKind::Named(def), Some(parent));
+        let def = self.declare(
+            file,
+            m.ast_id,
+            DefRole::Item,
+            &m.name,
+            DefKind::Mod,
+            parent,
+            &m.visibility,
+            None,
+        );
+        let mut prefix = self.map.modules[parent.0 as usize].path_prefix.clone();
+        prefix.push(m.name.clone());
+        let sub = self.new_module(ModuleKind::Named(def), Some(parent), prefix);
         let child_dir = dir.join(&m.name);
         match &m.kind {
             ModKind::Inline(children) => {
@@ -746,6 +861,94 @@ impl<'db> Collector<'db> {
             });
         }
     }
+
+    // ----- impl-method index -----
+
+    /// Resolve each `impl T { … }`: look up the owner type `T` in the impl's
+    /// module (Item ns; runs after imports so an imported owner resolves), then
+    /// mint a `Method` def per method and index it under `(owner, method name)`.
+    fn resolve_impls(&mut self) {
+        let impls = std::mem::take(&mut self.impls);
+        for (module, file, item) in impls {
+            let owner = self.map.resolve_local(module, &item.owner, Namespace::Item);
+            let owner = match owner.and_then(|o| self.map.def_data(o).map(|d| (o, d.kind))) {
+                Some((o, DefKind::Struct | DefKind::Port)) => o,
+                _ => {
+                    self.map
+                        .diagnostics
+                        .push(DefDiagnostic::UnresolvedImplOwner {
+                            name: item.owner.clone(),
+                        });
+                    continue;
+                }
+            };
+            for method in &item.methods {
+                let def = DefId::new(self.db, file, method.ast_id, DefRole::Item);
+                let vis = self.resolve_visibility(&method.visibility, module);
+                self.map.defs.insert(
+                    def,
+                    DefData {
+                        kind: DefKind::Method,
+                        name: method.name.clone(),
+                        module,
+                        visibility: vis,
+                        owner: Some(owner),
+                    },
+                );
+                self.def_order.push(def);
+                // Last writer wins on a duplicate method name (lenient; the
+                // duplicate-method diagnostic lands with the error surface, Q6).
+                self.map
+                    .impl_methods
+                    .insert((owner, method.name.clone()), def);
+            }
+        }
+    }
+
+    // ----- stable identity -----
+
+    /// Build each def's `DefPath` (its module prefix plus its own name) and
+    /// `DefPathHash`, disambiguating defs that would otherwise share a path.
+    /// Iterates defs in source order so disambiguators are deterministic.
+    /// Mirrors `resolve.rs::build_def_path_table`.
+    ///
+    /// Note: a method's path is `module::method` (the owner is not yet a path
+    /// component), so sibling impls with same-named methods are separated only by
+    /// the disambiguator — fine for identity, to be refined when owners join the
+    /// path.
+    fn build_def_paths(&mut self) {
+        let scid = StableCrateId::root();
+        let mut disambig: HashMap<Vec<String>, u32> = HashMap::new();
+        let order = std::mem::take(&mut self.def_order);
+        for def in order {
+            let Some(data) = self.map.defs.get(&def) else {
+                continue;
+            };
+            let mut names = self.map.modules[data.module.0 as usize].path_prefix.clone();
+            names.push(data.name.clone());
+            let disamb = {
+                let counter = disambig.entry(names.clone()).or_insert(0);
+                let d = *counter;
+                *counter += 1;
+                d
+            };
+            let mut segments: Vec<DefPathSegment> = names
+                .into_iter()
+                .map(|n| DefPathSegment {
+                    kind: DefPathSegmentKind::Named(n),
+                    disambiguator: 0,
+                })
+                .collect();
+            if let Some(last) = segments.last_mut() {
+                last.disambiguator = disamb;
+            }
+            let path = DefPath { segments };
+            let hash = DefPathHash::new(scid, &path);
+            self.map.def_paths.insert(def, path);
+            self.map.def_path_hashes.insert(def, hash);
+            self.map.hash_to_def.insert(hash, def);
+        }
+    }
 }
 
 /// Enumerate the leaf paths of a use-tree (each a full segment list), invoking
@@ -812,7 +1015,7 @@ mod tests {
 
     const SAMPLE: &str = "\
 pub fn top (x: uint(8)) -> uint(8) { return x; }
-struct S = S { a: uint(8) }
+struct S = s { a: uint(8) }
 port P = p { in a: uint(8) }
 mod inner {
   fn nested () -> uint(8) { return 0; }
@@ -899,7 +1102,7 @@ mod inner {
             // `top`'s body changed; every item's identity is unchanged.
             "\
 pub fn top (x: uint(8)) -> uint(8) { return x + x + x; }
-struct S = S { a: uint(8) }
+struct S = s { a: uint(8) }
 port P = p { in a: uint(8) }
 mod inner {
   fn nested () -> uint(8) { return 0; }
@@ -1166,6 +1369,165 @@ mod inner {
                 .any(|d| matches!(d, DefDiagnostic::UnresolvedImport { .. })),
             "{:?}",
             map.diagnostics()
+        );
+    }
+
+    // ----- Q2d: constructors, impl-method index, DefPath -----
+
+    #[test]
+    fn struct_mints_a_distinct_owned_constructor() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "struct Bus = bus { a: uint(8) }",
+        );
+        let map = crate_def_map(&db, krate);
+        let root = map.root();
+        let ty = map
+            .resolve_local(root, "Bus", Namespace::Item)
+            .expect("type");
+        let ctor = map
+            .resolve_local(root, "bus", Namespace::Item)
+            .expect("ctor");
+        assert!(ty != ctor, "ctor is a distinct def");
+        assert_eq!(map.def_data(ty).unwrap().kind, DefKind::Struct);
+        assert_eq!(map.def_data(ctor).unwrap().kind, DefKind::Ctor);
+        assert!(map.def_data(ctor).unwrap().owner == Some(ty));
+        assert!(map.diagnostics().is_empty(), "{:?}", map.diagnostics());
+    }
+
+    #[test]
+    fn struct_with_type_named_constructor_collides() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(&mut db, &mut vfs, "t.plr", "struct S = S { a: uint(8) }");
+        let map = crate_def_map(&db, krate);
+        assert!(
+            map.diagnostics()
+                .iter()
+                .any(|d| matches!(d, DefDiagnostic::DuplicateDef { name } if name == "S")),
+            "{:?}",
+            map.diagnostics()
+        );
+    }
+
+    #[test]
+    fn impl_methods_are_indexed_by_owner() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "struct Widget = w { a: uint(8) }\nimpl Widget { fn m (self) -> uint(8) { return 0; } }",
+        );
+        let map = crate_def_map(&db, krate);
+        let widget = map
+            .resolve_local(map.root(), "Widget", Namespace::Item)
+            .unwrap();
+        let m = map.impl_method(widget, "m").expect("method m");
+        assert_eq!(map.def_data(m).unwrap().kind, DefKind::Method);
+        assert!(map.def_data(m).unwrap().owner == Some(widget));
+        // A method is not a module-table name.
+        assert!(
+            map.resolve_local(map.root(), "m", Namespace::Item)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn impl_on_an_unknown_owner_is_flagged() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "impl Ghost { fn m (self) -> uint(8) { return 0; } }",
+        );
+        let map = crate_def_map(&db, krate);
+        assert!(
+            map.diagnostics().iter().any(
+                |d| matches!(d, DefDiagnostic::UnresolvedImplOwner { name } if name == "Ghost")
+            ),
+            "{:?}",
+            map.diagnostics()
+        );
+    }
+
+    #[test]
+    fn def_path_is_module_qualified() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "mod m { pub fn f () -> uint(8) { return 0; } }",
+        );
+        let map = crate_def_map(&db, krate);
+        let mmod = named_module(map, "m", Namespace::Module).unwrap();
+        let f = map.resolve_local(mmod, "f", Namespace::Item).unwrap();
+        let path = map.def_path(f).expect("def path");
+        let names: Vec<&str> = path
+            .segments
+            .iter()
+            .map(|s| match &s.kind {
+                DefPathSegmentKind::Named(n) => n.as_str(),
+                DefPathSegmentKind::AnonConst(_) => "<anon>",
+            })
+            .collect();
+        assert_eq!(names, ["m", "f"]);
+        assert!(map.def_path_hash(f).is_some());
+    }
+
+    #[test]
+    fn def_path_hash_is_stable_across_a_body_edit() {
+        // The identity payoff: a body edit leaves the DefPathHash unchanged.
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "fn f () -> uint(8) { return 0; }",
+        );
+        let before = {
+            let map = crate_def_map(&db, krate);
+            let f = map.resolve_local(map.root(), "f", Namespace::Item).unwrap();
+            map.def_path_hash(f).unwrap()
+        };
+        vfs.set_file_text(&mut db, "t.plr", "fn f () -> uint(8) { return 0 + 1 + 2; }");
+        let after = {
+            let map = crate_def_map(&db, krate);
+            let f = map.resolve_local(map.root(), "f", Namespace::Item).unwrap();
+            map.def_path_hash(f).unwrap()
+        };
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn same_named_sibling_methods_get_distinct_path_hashes() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "struct A = a { x: uint(8) }\nstruct B = b { x: uint(8) }\nimpl A { fn m (self) -> uint(8) { return 0; } }\nimpl B { fn m (self) -> uint(8) { return 0; } }",
+        );
+        let map = crate_def_map(&db, krate);
+        let a = map.resolve_local(map.root(), "A", Namespace::Item).unwrap();
+        let b = map.resolve_local(map.root(), "B", Namespace::Item).unwrap();
+        let ma = map.impl_method(a, "m").unwrap();
+        let mb = map.impl_method(b, "m").unwrap();
+        assert_ne!(
+            map.def_path_hash(ma).unwrap(),
+            map.def_path_hash(mb).unwrap(),
+            "the disambiguator must separate same-named sibling methods"
         );
     }
 }

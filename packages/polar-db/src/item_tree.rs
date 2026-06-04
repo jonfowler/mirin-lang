@@ -41,11 +41,14 @@ pub struct FnItem {
     pub ast_id: FileAstId,
 }
 
-/// A struct or port: name + visibility + id. Fields and parameters are deferred
-/// to the signature layer (Q3) and are not part of the firewall.
+/// A struct or port: its type name, its mandatory constructor name (`struct
+/// Bus = bus`), visibility, and id. Fields and parameters are deferred to the
+/// signature layer (Q3) and are not part of the firewall.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub struct NamedItem {
     pub name: String,
+    /// The term-level constructor name after `=` (the grammar requires it).
+    pub constructor: String,
     pub visibility: Visibility,
     pub ast_id: FileAstId,
 }
@@ -169,6 +172,7 @@ fn fn_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> FnItem {
 fn named_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> NamedItem {
     NamedItem {
         name: name_of(node, source),
+        constructor: field_text(node, "constructor", source),
         visibility: visibility(node, source),
         ast_id: ast_id(node, ast_ids),
     }
@@ -206,7 +210,12 @@ fn mod_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> ModItem {
 }
 
 fn name_of(node: &Node, source: &str) -> String {
-    node.child_by_field_name("name")
+    field_text(node, "name", source)
+}
+
+/// The text of a named child field, or `""` if absent.
+fn field_text(node: &Node, field: &str, source: &str) -> String {
+    node.child_by_field_name(field)
         .and_then(|n| n.utf8_text(source.as_bytes()).ok())
         .unwrap_or("")
         .to_string()

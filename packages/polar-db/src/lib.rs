@@ -23,7 +23,10 @@ pub use def_map::{
     Binding, BindingSource, CrateDefMap, DefData, DefDiagnostic, ModuleData, ModuleId, ModuleKind,
     Visibility, crate_def_map,
 };
-pub use ids::{DefId, DefKind, Namespace};
+pub use ids::{
+    AnonConstRole, DefId, DefKind, DefPath, DefPathHash, DefPathSegment, DefPathSegmentKind,
+    DefRole, Namespace, StableCrateId,
+};
 pub use item_tree::ItemTree; // the query is `item_tree::item_tree` (avoids a module/fn name clash)
 pub use parser::{language, parse_text};
 pub use vfs::Vfs;
