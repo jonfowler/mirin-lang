@@ -238,6 +238,40 @@ memoized and the well-formed case is acyclic; the syntactic `item_tree` stays
 stable and value-free regardless. A genuine cycle is caught by the query-stack
 back-edge check (§1.3). See `planning/parametricity.md` for the const-eval split.
 
+### 3.5 One local crate, not a crate graph
+
+`crate_def_map` is keyed on the **root `SourceFile`**: the whole local repo is a
+single crate (the crate is just the first path segment), and `mod foo;` loads a
+sibling file *within* it. We deliberately do **not** split the local tree into a
+crate graph. This costs no within-session incrementality, because the crate is
+not what provides it:
+
+- **Per-def reuse comes from the query DAG, not the crate.** A body edit backdates
+  `item_tree`, so `crate_def_map` and every other def's `sig_of`/`infer` are
+  known-unchanged. A def in an untouched region is reused exactly as if it lived
+  in its own crate — splitting could not make this finer than per-def.
+- **"Skip the whole untouched world" is salsa _durability_, an _input_ property —
+  not a crate boundary.** Mark local files low-durability and any precompiled deps
+  loaded at startup high-durability; a revision that bumps only low-durability
+  inputs proves higher-durability queries unchanged *without walking their edges*.
+  That is the "side-table checked first" optimisation, keyed per-input (strictly
+  more flexible than per-crate). Parked in Q7; salsa gives it for free.
+
+What a crate boundary *would* add is unrelated to within-session reuse: a hard
+metadata firewall for consuming **source-less** compiled artifacts, and
+cross-session / cross-crate identity (`StableCrateId` → `DefPathHash`). We keep
+`StableCrateId` in the identity layer so adding real crates later is
+non-breaking, and defer the boundary until we actually load precompiled crates
+into the db.
+
+**The one real cost** is item-structure granularity, not bodies: `crate_def_map`
+is one query over all files' item-trees, so renaming/adding/removing an *item* in
+any file re-runs name resolution for the whole crate (a body edit cannot — the
+item_tree firewall absorbs it). This is cheap in practice. If it ever gets hot,
+the fix is rust-analyzer's **per-module / block-level def maps** (resolve
+sub-trees independently) — a refinement *inside* the one-crate model, preferred
+over introducing crate splits.
+
 ## 4. Relationship to existing passes
 
 The query graph is *not* a rewrite of the semantics — it is a re-wiring of how
