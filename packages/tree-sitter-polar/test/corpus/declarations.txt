@@ -81,7 +81,8 @@ fn multAdd
           name: (identifier)
           value: (expression
             (postfix_expression
-              receiver: (identifier)
+              receiver: (path_expression
+                segment: (identifier))
               (field_access
                 field: (identifier))
               (argument_list

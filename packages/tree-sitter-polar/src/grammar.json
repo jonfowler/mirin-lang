@@ -1805,7 +1805,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "block_expression"
+          "name": "block"
         },
         {
           "type": "SYMBOL",
@@ -1814,42 +1814,6 @@
         {
           "type": "SYMBOL",
           "name": "when_expression"
-        }
-      ]
-    },
-    "block_expression": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "STRING",
-          "value": "{"
-        },
-        {
-          "type": "REPEAT",
-          "content": {
-            "type": "SYMBOL",
-            "name": "statement"
-          }
-        },
-        {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "FIELD",
-              "name": "tail",
-              "content": {
-                "type": "SYMBOL",
-                "name": "expression"
-              }
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
-        },
-        {
-          "type": "STRING",
-          "value": "}"
         }
       ]
     },
@@ -2035,10 +1999,6 @@
                 {
                   "type": "SYMBOL",
                   "name": "path_expression"
-                },
-                {
-                  "type": "SYMBOL",
-                  "name": "identifier"
                 },
                 {
                   "type": "SYMBOL",
@@ -2556,6 +2516,10 @@
   "conflicts": [
     [
       "use_path"
+    ],
+    [
+      "path_expression",
+      "record_constructor_expression"
     ]
   ],
   "precedences": [],

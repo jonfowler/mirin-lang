@@ -111,32 +111,6 @@
     }
   },
   {
-    "type": "block_expression",
-    "named": true,
-    "fields": {
-      "tail": {
-        "multiple": false,
-        "required": false,
-        "types": [
-          {
-            "type": "expression",
-            "named": true
-          }
-        ]
-      }
-    },
-    "children": {
-      "multiple": true,
-      "required": false,
-      "types": [
-        {
-          "type": "statement",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
     "type": "expression",
     "named": true,
     "fields": {},
@@ -149,7 +123,7 @@
           "named": true
         },
         {
-          "type": "block_expression",
+          "type": "block",
           "named": true
         },
         {
@@ -905,10 +879,6 @@
         "multiple": false,
         "required": true,
         "types": [
-          {
-            "type": "identifier",
-            "named": true
-          },
           {
             "type": "number",
             "named": true

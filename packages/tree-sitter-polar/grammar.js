@@ -12,7 +12,14 @@ module.exports = grammar({
 
   word: ($) => $.identifier,
 
-  conflicts: ($) => [[$.use_path]],
+  conflicts: ($) => [
+    [$.use_path],
+    // `x { … }` in expression position is ambiguous: a record constructor
+    // (`x { a: 1 }`) or a path `x` followed by a block. GLR resolves it by the
+    // brace contents — a valid record literal wins. (`if`/`when` conditions
+    // dodge this entirely by restricting their expression form.)
+    [$.path_expression, $.record_constructor_expression],
+  ],
 
   rules: {
     source_file: ($) => repeat($._item),
@@ -178,6 +185,10 @@ module.exports = grammar({
         field("type", $.type_expression),
       ),
 
+    // `{ stmt; ...; tail }` — used both as a function/if/when body and in
+    // expression position. The tail (if present) is the block's value;
+    // statements without a tail evaluate to unit-style (no value), which the
+    // type-checker rejects in value contexts.
     block: ($) =>
       seq("{", repeat($.statement), optional(field("tail", $.expression)), "}"),
 
@@ -245,17 +256,10 @@ module.exports = grammar({
         $.path_expression,
         $.number,
         $.parenthesized_expression,
-        $.block_expression,
+        $.block,
         $.if_expression,
         $.when_expression,
       ),
-
-    // `block_expression` is a block used in expression position. Same shape
-    // as a function body — `{ stmt; ...; tail }`. The tail (if present) is
-    // the block's value. Statements without a tail evaluate to unit-style
-    // (no value), which the type-checker rejects in value contexts.
-    block_expression: ($) =>
-      seq("{", repeat($.statement), optional(field("tail", $.expression)), "}"),
 
     // Rust-style `if cond { … } else { … }`. Both branches are required;
     // Polar has no statement-form `if`. The two branches must produce the
@@ -326,7 +330,7 @@ module.exports = grammar({
         seq(
           field(
             "receiver",
-            choice($.path_expression, $.identifier, $.number, $.parenthesized_expression),
+            choice($.path_expression, $.number, $.parenthesized_expression),
           ),
           repeat1(
             choice(

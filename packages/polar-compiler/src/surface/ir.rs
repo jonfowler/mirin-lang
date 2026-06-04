@@ -921,9 +921,9 @@ impl<'a> Lowerer<'a> {
         self.lower_block_like(node)
     }
 
-    /// Shared body for `block` and `block_expression` (which have identical
-    /// shape — both produce a `Block` AST node). Callers are responsible for
-    /// checking the CST kind matches whichever they expect.
+    /// Lowers a `block` node to a `Block` AST node. The grammar uses one
+    /// `block` node both as a body (fn/if/when) and in expression position;
+    /// callers decide how to wrap the result.
     fn lower_block_like(&mut self, node: &CstNode) -> Result<Block, LowerError> {
         // Grammar puts the optional tail-expression on a "tail" field; every
         // other named child is a statement.
@@ -1056,9 +1056,10 @@ impl<'a> Lowerer<'a> {
                     .ok_or_else(|| missing_child(node, "expression"))?;
                 self.lower_expression(inner)
             }
-            "block_expression" => {
-                // `block_expression` has the same shape as `block`; reuse the
-                // block lowering and wrap it in `Expression::Block`.
+            "block" => {
+                // A block in expression position. Reuse the block lowering and
+                // wrap it in `Expression::Block`. (The grammar uses one `block`
+                // node for both body and expression positions.)
                 let block = self.lower_block_like(node)?;
                 Ok(Expression::Block(Box::new(block)))
             }
