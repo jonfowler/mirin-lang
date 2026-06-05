@@ -16,11 +16,14 @@
 //! Front-to-back, each stage ports logic from the `polar-compiler` reference
 //! oracle one slice at a time.
 
+pub mod backend;
 pub mod base;
 pub mod hir;
 pub mod nameres;
 pub mod syntax;
 
+pub use backend::ir::{SvFile, SvModule};
+pub use backend::lower::{sv_module, verilog};
 pub use base::db::{RootDatabase, SourceFile, SourceRoot};
 pub use base::parser::{language, parse_text};
 pub use base::vfs::Vfs;
