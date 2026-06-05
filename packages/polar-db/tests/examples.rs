@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use polar_db::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, crate_def_map, directions, infer,
-    sig_of,
+    sig_of, verilog,
 };
 
 fn working_dir() -> PathBuf {
@@ -107,6 +107,20 @@ fn report() {
             "----"
         };
         eprintln!("{tag} {name:<32} nameres={n} body={b} infer={i} drivers={d} dirs={dir}");
+    }
+}
+
+/// Dev aid: dump the emitted SystemVerilog for every example. `cargo test -p
+/// polar-db --test examples dump_verilog -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn dump_verilog() {
+    for (name, src) in examples() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        vfs.set_file_text(&mut db, "t.plr", src);
+        let krate = vfs.source_root(&mut db, "t.plr");
+        eprintln!("===== {name} =====\n{}", verilog(&db, krate));
     }
 }
 

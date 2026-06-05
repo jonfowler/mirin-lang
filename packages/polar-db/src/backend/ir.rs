@@ -69,12 +69,49 @@ pub enum SvItem {
     Logic(SvLogicDecl),
     /// `assign lhs = rhs;`
     Assign { lhs: SvExpr, rhs: SvExpr },
+    /// `always_ff @(posedge clk) begin … end`, synchronous active-low reset.
+    AlwaysFf(SvAlwaysFf),
+    /// `always_comb begin … end` — combinational procedural block.
+    AlwaysComb(SvAlwaysComb),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub struct SvLogicDecl {
     pub ty: SvType,
     pub name: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SvAlwaysFf {
+    pub clock: String,
+    /// Active-low reset signal; `None` = reset-less (`when` lowers here).
+    pub reset: Option<String>,
+    pub reset_body: Vec<SvSeqAssign>,
+    pub clocked_body: Vec<SvSeqAssign>,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SvSeqAssign {
+    pub lhs: SvExpr,
+    pub rhs: SvExpr,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SvAlwaysComb {
+    pub body: Vec<SvCombStmt>,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub enum SvCombStmt {
+    Assign { lhs: SvExpr, rhs: SvExpr },
+    If(SvCombIf),
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SvCombIf {
+    pub cond: SvExpr,
+    pub then_branch: Vec<SvCombStmt>,
+    pub else_branch: Vec<SvCombStmt>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -153,6 +190,57 @@ impl fmt::Display for SvItem {
         match self {
             Self::Logic(d) => writeln!(f, "    logic{} {};", d.ty.bracketed(), d.name),
             Self::Assign { lhs, rhs } => writeln!(f, "    assign {lhs} = {rhs};"),
+            Self::AlwaysFf(a) => write!(f, "{a}"),
+            Self::AlwaysComb(a) => {
+                writeln!(f, "    always_comb begin")?;
+                for s in &a.body {
+                    fmt_comb_stmt(f, s, 8)?;
+                }
+                writeln!(f, "    end")
+            }
+        }
+    }
+}
+
+impl fmt::Display for SvAlwaysFf {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "    always_ff @(posedge {}) begin", self.clock)?;
+        match &self.reset {
+            Some(rst) => {
+                writeln!(f, "        if (!{rst}) begin")?;
+                for a in &self.reset_body {
+                    writeln!(f, "            {} <= {};", a.lhs, a.rhs)?;
+                }
+                writeln!(f, "        end else begin")?;
+                for a in &self.clocked_body {
+                    writeln!(f, "            {} <= {};", a.lhs, a.rhs)?;
+                }
+                writeln!(f, "        end")?;
+            }
+            None => {
+                for a in &self.clocked_body {
+                    writeln!(f, "        {} <= {};", a.lhs, a.rhs)?;
+                }
+            }
+        }
+        writeln!(f, "    end")
+    }
+}
+
+fn fmt_comb_stmt(f: &mut fmt::Formatter<'_>, stmt: &SvCombStmt, indent: usize) -> fmt::Result {
+    let pad = " ".repeat(indent);
+    match stmt {
+        SvCombStmt::Assign { lhs, rhs } => writeln!(f, "{pad}{lhs} = {rhs};"),
+        SvCombStmt::If(s) => {
+            writeln!(f, "{pad}if ({}) begin", s.cond)?;
+            for t in &s.then_branch {
+                fmt_comb_stmt(f, t, indent + 4)?;
+            }
+            writeln!(f, "{pad}end else begin")?;
+            for e in &s.else_branch {
+                fmt_comb_stmt(f, e, indent + 4)?;
+            }
+            writeln!(f, "{pad}end")
         }
     }
 }
