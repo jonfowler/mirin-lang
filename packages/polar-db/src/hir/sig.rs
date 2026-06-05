@@ -51,6 +51,9 @@ pub struct Param<'db> {
     pub ty: Type<'db>,
     pub direction: Option<Direction>,
     pub is_self: bool,
+    /// `true` if declared in the `{ … }` named section — call sites match named
+    /// args to these, positional args to the rest (in declared order).
+    pub from_named_section: bool,
 }
 
 /// A struct/port field: its name, type, and (ports only) direction.
@@ -180,7 +183,7 @@ fn lower_fn_sig<'db>(
     // Pass 1: classify every parameter (named then positional) into generic
     // params vs value params, so type lowering can resolve `Param(i)` refs.
     let mut generic_params = Vec::new();
-    let mut value_param_nodes: Vec<Node> = Vec::new();
+    let mut value_param_nodes: Vec<(Node, bool)> = Vec::new();
     for (field, child_kind, named) in [
         ("named_parameters", "named_parameter", true),
         ("parameters", "parameter", false),
@@ -192,7 +195,7 @@ fn lower_fn_sig<'db>(
                     kind,
                     from_named_section: named,
                 }),
-                ParamClass::Value => value_param_nodes.push(p),
+                ParamClass::Value => value_param_nodes.push((p, named)),
             }
         }
     }
@@ -205,7 +208,7 @@ fn lower_fn_sig<'db>(
 
     // Pass 2: lower each value parameter's type, assigning owner-relative ids.
     let mut params = Vec::new();
-    for (i, p) in value_param_nodes.iter().enumerate() {
+    for (i, (p, named)) in value_param_nodes.iter().enumerate() {
         let name = param_name(p, source);
         let is_self = name == "self";
         let ty = if is_self {
@@ -222,6 +225,7 @@ fn lower_fn_sig<'db>(
             ty,
             direction: direction_of(p, source),
             is_self,
+            from_named_section: *named,
         });
     }
 

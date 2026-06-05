@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use crate::base::db::SourceRoot;
-use crate::hir::body::{Body, ExprId, ExprKind, Stmt, body};
+use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{ConstArg, Domain, GenericArg, GenericParamKind, LocalId, Type, ValueKind};
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
@@ -440,7 +440,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             ExprKind::Local(l) => self.local_types.get(l).cloned().unwrap_or(Type::Error),
             ExprKind::Def(_) => Type::Error, // a bare item ref is not a value
-            ExprKind::Call { callee, args } => self.infer_call(body, *callee, args),
+            ExprKind::Call {
+                callee,
+                args,
+                named,
+            } => self.infer_call(body, *callee, args, named),
             ExprKind::Field { receiver, field } => self.infer_field(body, *receiver, field),
             ExprKind::MethodCall {
                 receiver,
@@ -477,19 +481,28 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         }
     }
 
-    fn infer_call(&mut self, body: &Body<'db>, callee: ExprId, args: &[ExprId]) -> Type<'db> {
+    fn infer_call(
+        &mut self,
+        body: &Body<'db>,
+        callee: ExprId,
+        args: &[ConnArg],
+        named: &[NamedArg],
+    ) -> Type<'db> {
         // The callee is a `Def` (operators lower to `Call(Def(op), …)` too).
         let ExprKind::Def(def) = body.expr(callee).kind else {
-            for &a in args {
-                self.infer_expr(body, a);
+            for a in args {
+                self.infer_expr(body, a.expr);
+            }
+            for n in named {
+                self.infer_expr(body, n.expr);
             }
             return Type::Error;
         };
         // Prelude `+` / `*`: both operands share a type; the result is that type.
         if self.is_prelude_op(def) {
             let mut acc: Option<Type<'db>> = None;
-            for &a in args {
-                let t = self.infer_expr(body, a);
+            for a in args {
+                let t = self.infer_expr(body, a.expr);
                 match &acc {
                     Some(prev) => self.unify(prev, &t),
                     None => acc = Some(t),
@@ -497,29 +510,49 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             return acc.unwrap_or(Type::Error);
         }
-        self.call_def(body, def, args, false)
+        self.call_def(body, def, args, named, false)
     }
 
-    /// Unify each argument against the callee's (instantiated) param types and
-    /// return its (instantiated) return type. `skip_self` drops the leading
-    /// `self` param for a method call.
+    /// Match a call's args against the callee's (instantiated) signature and
+    /// return its (instantiated) return type. Positional args bind the callee's
+    /// positional value params in order; named args bind the named-section params
+    /// by name. A value arg unifies its type with the param; an out-connection
+    /// (`=>`) unifies the param's type with the *target* place (the callee's `out`
+    /// value flows into it). Direction-correctness is `directions(def)`'s job.
+    /// `skip_self` drops the leading `self` for a method call.
     fn call_def(
         &mut self,
         body: &Body<'db>,
         def: DefId<'db>,
-        args: &[ExprId],
+        args: &[ConnArg],
+        named: &[NamedArg],
         skip_self: bool,
     ) -> Type<'db> {
         let sig = sig_of(self.db, self.krate, def);
         let subst = self.fresh_subst(&sig.generic_params);
-        let params = if skip_self && !sig.params.is_empty() {
-            &sig.params[1..]
-        } else {
-            &sig.params[..]
-        };
-        for (i, &arg) in args.iter().enumerate() {
-            let at = self.infer_expr(body, arg);
-            if let Some(p) = params.get(i) {
+
+        // Positional args bind the positional value params (in declared order),
+        // skipping `self` for a method call.
+        let positional: Vec<&super::sig::Param<'db>> = sig
+            .params
+            .iter()
+            .filter(|p| !p.from_named_section && (!skip_self || !p.is_self))
+            .collect();
+        for (i, a) in args.iter().enumerate() {
+            let at = self.infer_expr(body, a.expr);
+            if let Some(p) = positional.get(i) {
+                let pt = self.substitute(&p.ty, &subst);
+                self.unify(&pt, &at);
+            }
+        }
+        // Named args bind named-section params by name.
+        for n in named {
+            let at = self.infer_expr(body, n.expr);
+            if let Some(p) = sig
+                .params
+                .iter()
+                .find(|p| p.from_named_section && p.name == n.name)
+            {
                 let pt = self.substitute(&p.ty, &subst);
                 self.unify(&pt, &at);
             }
@@ -555,7 +588,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         expr: ExprId,
         receiver: ExprId,
         method: &str,
-        args: &[ExprId],
+        args: &[ConnArg],
     ) -> Type<'db> {
         let recv = self.infer_expr(body, receiver);
         let owner = self.owner_of(&recv);
@@ -564,11 +597,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             && let Some(method_def) = self.map.impl_method(owner, method)
         {
             self.method_resolutions.insert(expr, method_def);
-            return self.call_def(body, method_def, args, true);
+            return self.call_def(body, method_def, args, &[], true);
         }
         // Prelude methods not in the impl-method index yet (Q3a backfill pending).
-        for &a in args {
-            self.infer_expr(body, a);
+        for a in args {
+            self.infer_expr(body, a.expr);
         }
         match method {
             // `clk.posedge()` : Clock -> Event @const.

@@ -71,16 +71,25 @@ pub enum ExprKind<'db> {
     Local(LocalId),
     /// A resolved item reference (fn, constructor, builtin).
     Def(DefId<'db>),
-    /// A call — the single call shape; operators (`+`, `*`) lower to a `Call`
-    /// against the prelude op def.
-    Call { callee: ExprId, args: Vec<ExprId> },
+    /// A call. Operators (`+`, `*`) lower here too (callee = the prelude op).
+    /// Connection shapes are recorded **as written** — positional and named args,
+    /// with out-connections (`=>`) explicit. Matching named→params and out-args
+    /// to the callee's signature is `infer`/`directions`' job (they have the
+    /// sig); the body never looks a callee up (`planning/q5_backend.md`).
+    Call {
+        callee: ExprId,
+        /// Positional args, in source order.
+        args: Vec<ConnArg>,
+        /// Named-section args (`f{ name = v, name => target, name }`).
+        named: Vec<NamedArg>,
+    },
     /// Field access `recv.field`.
     Field { receiver: ExprId, field: String },
     /// `recv.method(args)` — dispatch deferred to `infer` (Q3d).
     MethodCall {
         receiver: ExprId,
         method: String,
-        args: Vec<ExprId>,
+        args: Vec<ConnArg>,
     },
     /// `Ctor { field: value, … }`. `ctor` is `None` if the name did not resolve.
     Record {
@@ -97,6 +106,24 @@ pub enum ExprKind<'db> {
     When { event: ExprId, body: Block },
     /// A block in expression position.
     Block(Block),
+}
+
+/// A positional call argument. `out` distinguishes a value (`expr` flows *into*
+/// the callee) from an out-connection `[out] => target` (`expr` is the caller
+/// place the callee's `out` param/field flows *into*).
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct ConnArg {
+    pub out: bool,
+    pub expr: ExprId,
+}
+
+/// A named-section call argument: a name plus a [`ConnArg`]-style connection
+/// (`name = value` / shorthand `name` → value; `name => target` → out-connection).
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct NamedArg {
+    pub name: String,
+    pub out: bool,
+    pub expr: ExprId,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -497,7 +524,17 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         };
         self.alloc(ExprKind::Call {
             callee,
-            args: vec![lhs, rhs],
+            args: vec![
+                ConnArg {
+                    out: false,
+                    expr: lhs,
+                },
+                ConnArg {
+                    out: false,
+                    expr: rhs,
+                },
+            ],
+            named: Vec::new(),
         })
     }
 
@@ -536,20 +573,29 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 }
                 "argument_list" => {
                     let args = self.lower_arg_list(&op, source);
-                    cur = self.alloc(ExprKind::Call { callee: cur, args });
+                    cur = self.alloc(ExprKind::Call {
+                        callee: cur,
+                        args,
+                        named: Vec::new(),
+                    });
                     i += 1;
                 }
+                // A named-argument section, optionally followed by a positional
+                // `( … )` section — a module-instantiation / connection call.
                 "named_argument_list" => {
-                    // A named-argument (module-instantiation) call — deferred.
-                    self.diag(BodyDiagnostic::Unsupported {
-                        what: "named-argument call".to_owned(),
+                    let named = self.lower_named_args(&op, source);
+                    let (args, advance) =
+                        if i + 1 < ops.len() && ops[i + 1].kind() == "argument_list" {
+                            (self.lower_arg_list(&ops[i + 1], source), 2)
+                        } else {
+                            (Vec::new(), 1)
+                        };
+                    cur = self.alloc(ExprKind::Call {
+                        callee: cur,
+                        args,
+                        named,
                     });
-                    cur = self.alloc(ExprKind::Missing);
-                    i += if i + 1 < ops.len() && ops[i + 1].kind() == "argument_list" {
-                        2
-                    } else {
-                        1
-                    };
+                    i += advance;
                 }
                 _ => i += 1,
             }
@@ -557,23 +603,91 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         cur
     }
 
-    fn lower_arg_list(&mut self, node: &Node, source: &str) -> Vec<ExprId> {
+    fn lower_arg_list(&mut self, node: &Node, source: &str) -> Vec<ConnArg> {
         let mut cursor = node.walk();
         let mut args = Vec::new();
         for arg in node.children(&mut cursor).filter(|c| c.is_named()) {
             match arg.kind() {
-                "expression" => args.push(self.lower_expr(&arg, source)),
+                "expression" => args.push(ConnArg {
+                    out: false,
+                    expr: self.lower_expr(&arg, source),
+                }),
+                // Positional out-arg `[out] => target`.
                 "out_argument" => {
-                    // Positional out-arg (`[out] => target`) — deferred (out-args).
-                    self.diag(BodyDiagnostic::Unsupported {
-                        what: "out-argument".to_owned(),
+                    let target = field_text(&arg, "target", source);
+                    args.push(ConnArg {
+                        out: true,
+                        expr: self.lower_place(&target),
                     });
-                    args.push(self.alloc(ExprKind::Missing));
                 }
                 _ => {}
             }
         }
         args
+    }
+
+    /// Lower a `named_argument_list` (`{ name = v, name => target, name }`).
+    fn lower_named_args(&mut self, node: &Node, source: &str) -> Vec<NamedArg> {
+        let mut cursor = node.walk();
+        let mut out = Vec::new();
+        for a in node
+            .children(&mut cursor)
+            .filter(|c| c.kind() == "named_or_shorthand_argument")
+        {
+            let name = field_text(&a, "name", source);
+            if let Some(value) = a.child_by_field_name("value") {
+                // `name = value`
+                out.push(NamedArg {
+                    name,
+                    out: false,
+                    expr: self.lower_expr(&value, source),
+                });
+            } else if let Some(target) = a.child_by_field_name("target") {
+                // `name => target` — an out-connection.
+                let target = node_text(&target, source);
+                out.push(NamedArg {
+                    name,
+                    out: true,
+                    expr: self.lower_place(&target),
+                });
+            } else {
+                // shorthand `name` — pass the local of the same name as the value.
+                let expr = self.lower_name_value(&name);
+                out.push(NamedArg {
+                    name,
+                    out: false,
+                    expr,
+                });
+            }
+        }
+        out
+    }
+
+    /// A name used as a value (shorthand arg): a local, else a def.
+    fn lower_name_value(&mut self, name: &str) -> ExprId {
+        if let Some(local) = self.lookup_local(name) {
+            return self.alloc(ExprKind::Local(local));
+        }
+        if let Some(def) = self
+            .map
+            .resolve_in_scope(self.module, name, Namespace::Item)
+        {
+            return self.alloc(ExprKind::Def(def));
+        }
+        self.diag(BodyDiagnostic::UnresolvedName {
+            name: name.to_owned(),
+        });
+        self.alloc(ExprKind::Missing)
+    }
+
+    /// An out-connection *target* place. An existing local is reused; a fresh
+    /// name introduces an implicit `var` (forward-only), mirroring the old
+    /// `ImplicitVar`.
+    fn lower_place(&mut self, name: &str) -> ExprId {
+        let local = self
+            .lookup_local(name)
+            .unwrap_or_else(|| self.alloc_local(name, LocalKind::Var, None));
+        self.alloc(ExprKind::Local(local))
     }
 
     fn lower_record(&mut self, node: &Node, source: &str) -> ExprId {
@@ -708,7 +822,7 @@ mod tests {
         let Stmt::Return { value } = b.block().stmts[0] else {
             unreachable!()
         };
-        let ExprKind::Call { callee, args } = &b.expr(value).kind else {
+        let ExprKind::Call { callee, args, .. } = &b.expr(value).kind else {
             panic!("expected a call");
         };
         assert!(
@@ -718,7 +832,7 @@ mod tests {
         assert_eq!(args.len(), 2);
         assert!(
             args.iter()
-                .all(|a| matches!(b.expr(*a).kind, ExprKind::Local(_)))
+                .all(|a| !a.out && matches!(b.expr(a.expr).kind, ExprKind::Local(_)))
         );
     }
 
@@ -735,11 +849,45 @@ mod tests {
         let Stmt::Return { value } = b.block().stmts[0] else {
             unreachable!()
         };
-        let ExprKind::Call { callee, args } = &b.expr(value).kind else {
+        let ExprKind::Call { callee, args, .. } = &b.expr(value).kind else {
             panic!("expected a call");
         };
         assert!(matches!(b.expr(*callee).kind, ExprKind::Def(_)));
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn named_args_and_out_connections_lower() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // A call with a named section: `a = x` (value) and `b => y` (out-conn).
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn snk { in a: uint(8), out b: uint(8) } () { b = a; }\nfn top (x: uint(8), out y: uint(8)) { snk{a = x, b => y}(); }",
+        );
+        let b = body_of(&db, krate, "top");
+        let Stmt::Expr(call) = b.block().stmts[0] else {
+            panic!("expected an expression statement")
+        };
+        let ExprKind::Call { named, args, .. } = &b.expr(call).kind else {
+            panic!("expected a call");
+        };
+        assert!(args.is_empty(), "no positional args");
+        assert_eq!(named.len(), 2);
+        // `a = x` is a value connection; `b => y` is an out-connection.
+        assert_eq!(named[0].name, "a");
+        assert!(!named[0].out);
+        assert_eq!(named[1].name, "b");
+        assert!(named[1].out);
+        // No Unsupported diagnostic — the connection forms lower now.
+        assert!(
+            !b.diagnostics()
+                .iter()
+                .any(|d| matches!(d, BodyDiagnostic::Unsupported { .. })),
+            "{:?}",
+            b.diagnostics()
+        );
     }
 
     #[test]
