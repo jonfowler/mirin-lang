@@ -271,6 +271,51 @@ impl<'db> CrateDefMap<'db> {
         self.resolve_local(module, name, ns)
             .or_else(|| self.resolve_local(self.prelude, name, ns))
     }
+
+    /// Resolve `crate`/`super`/`self` anchors at the start of a path. Returns the
+    /// module the first *named* segment is looked up in, and that segment's index.
+    pub(crate) fn path_anchor(&self, segments: &[&str], from: ModuleId) -> (ModuleId, usize) {
+        match segments.first().copied() {
+            Some("crate") => (self.root, 1),
+            Some("self") => (from, 1),
+            Some("super") => {
+                let mut module = from;
+                let mut i = 0;
+                while segments.get(i).copied() == Some("super") {
+                    module = self.modules[module.0 as usize].parent.unwrap_or(module);
+                    i += 1;
+                }
+                (module, i)
+            }
+            _ => (from, 0),
+        }
+    }
+
+    /// Resolve a multi-segment path's final segment to a def in `final_ns`,
+    /// starting from module `from`. Intermediate segments must be modules (the
+    /// `{Module, Item}` split makes this unambiguous — they resolve in the
+    /// `Module` namespace). Bare names should use [`Self::resolve_in_scope`].
+    pub fn resolve_path(
+        &self,
+        segments: &[&str],
+        from: ModuleId,
+        final_ns: Namespace,
+    ) -> Option<DefId<'db>> {
+        let (mut module, start) = self.path_anchor(segments, from);
+        if start >= segments.len() {
+            return None;
+        }
+        let mut i = start;
+        while i + 1 < segments.len() {
+            let def = self.resolve_local(module, segments[i], Namespace::Module)?;
+            if self.def_data(def).map(|d| d.kind) != Some(DefKind::Mod) {
+                return None;
+            }
+            module = self.module_of_def(def)?;
+            i += 1;
+        }
+        self.resolve_local(module, segments[i], final_ns)
+    }
 }
 
 /// QUERY: the crate's name-resolution map, built from the root file's
@@ -697,7 +742,7 @@ impl<'db> Collector<'db> {
             let Some((&modname, _)) = prefix.split_last() else {
                 return false;
             };
-            let Some(def) = self.resolve_path(prefix, module, Namespace::Module) else {
+            let Some(def) = self.map.resolve_path(prefix, module, Namespace::Module) else {
                 return false;
             };
             let name = alias.unwrap_or(modname);
@@ -707,7 +752,7 @@ impl<'db> Collector<'db> {
         let mut changed = false;
         // Import the name in whichever namespace(s) it resolves to.
         for ns in [Namespace::Module, Namespace::Item] {
-            if let Some(def) = self.resolve_path(segments, module, ns) {
+            if let Some(def) = self.map.resolve_path(segments, module, ns) {
                 changed |= self.import_binding(module, name, ns, def, vis);
             }
         }
@@ -793,53 +838,7 @@ impl<'db> Collector<'db> {
         }
     }
 
-    // ----- path resolution -----
-
-    /// Resolve `crate`/`super`/`self` anchors. Returns the module the first
-    /// *named* segment is looked up in and that segment's index.
-    fn path_anchor(&self, segments: &[&str], from: ModuleId) -> (ModuleId, usize) {
-        match segments.first().copied() {
-            Some("crate") => (self.map.root, 1),
-            Some("self") => (from, 1),
-            Some("super") => {
-                let mut module = from;
-                let mut i = 0;
-                while segments.get(i).copied() == Some("super") {
-                    module = self.map.modules[module.0 as usize].parent.unwrap_or(module);
-                    i += 1;
-                }
-                (module, i)
-            }
-            _ => (from, 0),
-        }
-    }
-
-    /// Resolve a path's final segment to a def in `final_ns`. Intermediate
-    /// segments must be modules (the `{Module, Item}` split makes this
-    /// unambiguous — they always resolve in the `Module` namespace).
-    fn resolve_path(
-        &self,
-        segments: &[&str],
-        from: ModuleId,
-        final_ns: Namespace,
-    ) -> Option<DefId<'db>> {
-        let (mut module, start) = self.path_anchor(segments, from);
-        if start >= segments.len() {
-            return None;
-        }
-        let mut i = start;
-        while i + 1 < segments.len() {
-            let def = self
-                .map
-                .resolve_local(module, segments[i], Namespace::Module)?;
-            if self.map.def_data(def).map(|d| d.kind) != Some(DefKind::Mod) {
-                return None;
-            }
-            module = self.map.module_of_def(def)?;
-            i += 1;
-        }
-        self.map.resolve_local(module, segments[i], final_ns)
-    }
+    // ----- path resolution ----- (the primitives live on `CrateDefMap`)
 
     /// Resolve a path whose final segment must itself be a module.
     fn resolve_path_to_module(&self, segments: &[&str], from: ModuleId) -> Option<ModuleId> {
@@ -847,7 +846,7 @@ impl<'db> Collector<'db> {
             // Empty prefix (`{ … }` / `*` at the current module).
             return Some(from);
         }
-        let def = self.resolve_path(segments, from, Namespace::Module)?;
+        let def = self.map.resolve_path(segments, from, Namespace::Module)?;
         if self.map.def_data(def).map(|d| d.kind) != Some(DefKind::Mod) {
             return None;
         }
@@ -889,7 +888,7 @@ impl<'db> Collector<'db> {
     /// Walk a path's bindings (intermediate modules, then the final name) from
     /// `from`, recording the first failure as a diagnostic.
     fn check_path_access(&mut self, segments: &[&str], from: ModuleId) {
-        let (mut module, start) = self.path_anchor(segments, from);
+        let (mut module, start) = self.map.path_anchor(segments, from);
         if start >= segments.len() {
             return;
         }

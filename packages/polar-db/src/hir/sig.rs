@@ -392,6 +392,24 @@ impl<'db> TypeLowerer<'_, 'db> {
     }
 }
 
+/// Lower a single `type_expression` node against a module + the enclosing def's
+/// generic params. Shared with body lowering (Q3c), which lowers `var x: T`
+/// annotations the same way `sig_of` lowers param/field types.
+pub(crate) fn lower_type_expr<'db>(
+    map: &CrateDefMap<'db>,
+    module: ModuleId,
+    generics: &[GenericParam],
+    node: &Node,
+    source: &str,
+) -> Type<'db> {
+    TypeLowerer {
+        map,
+        module,
+        generics,
+    }
+    .lower_type(node, source)
+}
+
 // ----- CST helpers -----
 
 enum ParamClass {
