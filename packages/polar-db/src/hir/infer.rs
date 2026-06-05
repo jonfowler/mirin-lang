@@ -25,7 +25,9 @@ use std::collections::HashMap;
 use crate::base::db::SourceRoot;
 use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
-use crate::hir::types::{ConstArg, Domain, GenericArg, GenericParamKind, LocalId, Type, ValueKind};
+use crate::hir::types::{
+    ConstArg, Domain, GenericArg, GenericArgs, GenericParamKind, LocalId, Type, ValueKind,
+};
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
 
@@ -255,7 +257,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             },
             Type::Port { def, args, domain } => Type::Port {
                 def,
-                args,
+                args: self.deep_resolve_args(&args),
                 domain: self.resolve_domain_default(domain),
             },
             Type::Infer(_) => Type::Error, // unconstrained — surfaces as a hole
@@ -266,14 +268,35 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn deep_resolve_kind(&self, kind: &ValueKind<'db>) -> ValueKind<'db> {
         match kind {
             ValueKind::UInt { width } => ValueKind::UInt {
-                // An unbound const var has no determined width yet → `Deferred`.
-                width: match self.resolve_const(width) {
-                    ConstArg::Infer(_) => ConstArg::Deferred,
-                    other => other,
-                },
+                width: self.deep_resolve_const(width),
+            },
+            ValueKind::Struct { def, args } => ValueKind::Struct {
+                def: *def,
+                args: self.deep_resolve_args(args),
             },
             other => other.clone(),
         }
+    }
+
+    /// An unbound const var has no determined width yet → `Deferred`.
+    fn deep_resolve_const(&self, w: &ConstArg) -> ConstArg {
+        match self.resolve_const(w) {
+            ConstArg::Infer(_) => ConstArg::Deferred,
+            other => other,
+        }
+    }
+
+    fn deep_resolve_args(&self, args: &GenericArgs<'db>) -> GenericArgs<'db> {
+        GenericArgs(
+            args.0
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(self.deep_resolve(t)),
+                    GenericArg::Const(c) => GenericArg::Const(self.deep_resolve_const(c)),
+                    GenericArg::Domain(d) => GenericArg::Domain(self.resolve_domain_default(*d)),
+                })
+                .collect(),
+        )
     }
 
     fn resolve_domain_default(&self, d: Domain) -> Domain {
@@ -309,17 +332,19 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             (
                 Type::Port {
                     def: da,
+                    args: aa,
                     domain: dda,
-                    ..
                 },
                 Type::Port {
                     def: dbb,
+                    args: ab,
                     domain: ddb,
-                    ..
                 },
             ) => {
                 if da != dbb {
                     self.diagnostics.push(InferDiagnostic::TypeMismatch);
+                } else {
+                    self.unify_args(aa, ab);
                 }
                 self.unify_domain(*dda, *ddb);
             }
@@ -337,9 +362,27 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             | (ValueKind::Reset, ValueKind::Reset)
             | (ValueKind::Event, ValueKind::Event)
             | (ValueKind::Usize, ValueKind::Usize) => {}
-            (ValueKind::Struct { def: x, .. }, ValueKind::Struct { def: y, .. }) if x == y => {}
+            (ValueKind::Struct { def: x, args: ax }, ValueKind::Struct { def: y, args: ay })
+                if x == y =>
+            {
+                self.unify_args(ax, ay)
+            }
             (ValueKind::Param(i), ValueKind::Param(j)) if i == j => {}
             _ => self.diagnostics.push(InferDiagnostic::TypeMismatch),
+        }
+    }
+
+    /// Unify two argument lists of the *same* parametric def pairwise, by kind.
+    fn unify_args(&mut self, a: &GenericArgs<'db>, b: &GenericArgs<'db>) {
+        for (x, y) in a.0.iter().zip(b.0.iter()) {
+            match (x, y) {
+                (GenericArg::Type(tx), GenericArg::Type(ty)) => self.unify(tx, ty),
+                (GenericArg::Const(cx), GenericArg::Const(cy)) => {
+                    self.unify_width(cx.clone(), cy.clone())
+                }
+                (GenericArg::Domain(dx), GenericArg::Domain(dy)) => self.unify_domain(*dx, *dy),
+                _ => self.diagnostics.push(InferDiagnostic::TypeMismatch),
+            }
         }
     }
 
@@ -438,6 +481,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     domain: Domain::Const,
                 }
             }
+            ExprKind::Bool(_) => Type::Value {
+                kind: ValueKind::Bool,
+                domain: Domain::Const,
+            },
             ExprKind::Local(l) => self.local_types.get(l).cloned().unwrap_or(Type::Error),
             ExprKind::Def(_) => Type::Error, // a bare item ref is not a value
             ExprKind::Call {
@@ -565,19 +612,19 @@ impl<'a, 'db> InferCtx<'a, 'db> {
 
     fn infer_field(&mut self, body: &Body<'db>, receiver: ExprId, field: &str) -> Type<'db> {
         let recv = self.infer_expr(body, receiver);
-        let def = match self.resolve_ty(&recv) {
+        // The field type is declared in terms of the def's generic params; we
+        // instantiate it with the receiver's type args (`EarlyBinder::instantiate`).
+        let (def, args) = match self.resolve_ty(&recv) {
             Type::Value {
-                kind: ValueKind::Struct { def, .. },
+                kind: ValueKind::Struct { def, args },
                 ..
-            } => def,
-            Type::Port { def, .. } => def,
+            } => (def, args),
+            Type::Port { def, args, .. } => (def, args),
             _ => return Type::Error,
         };
         let sig = sig_of(self.db, self.krate, def);
         match sig.fields.iter().find(|f| f.name == field) {
-            // Field generic substitution from the receiver's args is deferred;
-            // the field's own type (which may contain `Param`) is returned.
-            Some(f) => f.ty.clone(),
+            Some(f) => self.substitute(&f.ty, &args.0),
             None => Type::Error,
         }
     }
@@ -632,15 +679,21 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             return Type::Error;
         };
-        // The constructor is owned by its struct/port type.
+        // The constructor is owned by its struct/port type. Instantiate the
+        // struct's generic params with fresh vars, unify each field value against
+        // the *instantiated* field type, and report the parametric struct type
+        // `Struct { def, args }` carrying those (now-constrained) args.
         let owner = self.map.def_data(ctor).and_then(|d| d.owner);
         let field_sig = owner.map(|o| sig_of(self.db, self.krate, o));
+        let args = field_sig
+            .map(|s| self.fresh_subst(&s.generic_params))
+            .unwrap_or_default();
         for f in fields {
             let vt = self.infer_expr(body, f.value);
             if let Some(sig) = field_sig
                 && let Some(decl) = sig.fields.iter().find(|d| d.name == f.name)
             {
-                let dt = self.freshen_domains(&decl.ty);
+                let dt = self.substitute(&decl.ty, &args);
                 self.unify(&dt, &vt);
             }
         }
@@ -648,7 +701,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             Some(def) => Type::Value {
                 kind: ValueKind::Struct {
                     def,
-                    args: crate::hir::types::GenericArgs(Vec::new()),
+                    args: GenericArgs(args),
                 },
                 domain: self.fresh_domain(),
             },
@@ -925,6 +978,63 @@ mod tests {
         assert_eq!(kind_str(&return_ty(&db, krate, "caller").unwrap()), "bool");
         let inf = infer(&db, krate, def_of(&db, krate, "caller"));
         assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
+    }
+
+    #[test]
+    fn parametric_struct_field_is_instantiated_at_access() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // `b: Bus(uint(8))`, field `data: A` → `b.data` instantiates A = uint(8).
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "struct Bus(A: Type) = bus { valid: bool, data: A }\nfn f (b: Bus(uint(8))) -> uint(8) { return b.data; }",
+        );
+        assert_eq!(kind_str(&return_ty(&db, krate, "f").unwrap()), "uint");
+        assert!(
+            infer(&db, krate, def_of(&db, krate, "f"))
+                .diagnostics()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_parametric_field_type_mismatch_is_caught() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // `b: Bus(bool)` → `b.data` is bool, but the fn returns uint(8): mismatch.
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "struct Bus(A: Type) = bus { valid: bool, data: A }\nfn f (b: Bus(bool)) -> uint(8) { return b.data; }",
+        );
+        assert!(
+            infer(&db, krate, def_of(&db, krate, "f"))
+                .diagnostics()
+                .iter()
+                .any(|d| matches!(d, InferDiagnostic::TypeMismatch)),
+            "instantiating A=bool should make `b.data` (bool) clash with uint(8)"
+        );
+    }
+
+    #[test]
+    fn constructing_a_parametric_struct_infers_its_arg() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // `bus { valid: true, data: 0 }` infers A from the `data` value; the
+        // result unifies cleanly with the declared `Bus(uint(8))` return.
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "struct Bus(A: Type) = bus { valid: bool, data: A }\nfn f () -> Bus(uint(8)) { return bus { valid: true, data: 0 }; }",
+        );
+        assert!(
+            infer(&db, krate, def_of(&db, krate, "f"))
+                .diagnostics()
+                .is_empty(),
+            "{:?}",
+            infer(&db, krate, def_of(&db, krate, "f")).diagnostics()
+        );
     }
 
     #[test]

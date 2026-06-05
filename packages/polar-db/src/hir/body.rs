@@ -67,6 +67,8 @@ pub enum ExprKind<'db> {
     Missing,
     /// A numeric literal.
     Number(u64),
+    /// A boolean literal (`true` / `false`).
+    Bool(bool),
     /// A resolved local (param / let / var).
     Local(LocalId),
     /// A resolved item reference (fn, constructor, builtin).
@@ -495,6 +497,11 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         let segments = path_segments(node, source);
         if segments.len() == 1 {
             let name = &segments[0];
+            // `true` / `false` are boolean literals (the grammar parses them as
+            // bare identifiers). A user binding of the same name still shadows.
+            if (name == "true" || name == "false") && self.lookup_local(name).is_none() {
+                return ExprKind::Bool(name == "true");
+            }
             if let Some(local) = self.lookup_local(name) {
                 return ExprKind::Local(local);
             }

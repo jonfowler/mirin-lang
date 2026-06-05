@@ -38,11 +38,10 @@ fn examples() -> Vec<(String, String)> {
     out
 }
 
-/// Examples that use only features the new front end already supports, so the
-/// whole stack (name resolution, body lowering, inference, driver checks) runs
-/// clean. The others lean on deferred features — named-argument / out-argument
-/// instantiation calls and parametric field substitution — and are expected to
-/// carry diagnostics until those land.
+/// Examples that type-check clean through the whole front-end stack (name
+/// resolution, body lowering, inference incl. parametric instantiation, driver +
+/// direction checks). The entire working corpus is now clean — a fully
+/// functional type checker over it.
 const CLEAN: &[&str] = &[
     "accumulator.plr",
     "add_constant.plr",
@@ -54,7 +53,10 @@ const CLEAN: &[&str] = &[
     "module_wrapped.plr",
     "mult_add.plr",
     "multi_call.plr",
+    "packet_struct.plr",
     "parameterized_port.plr",
+    "parametric_struct.plr",
+    "parametric_struct_extended.plr",
     "parametric_width_fn.plr",
     "parametric_width_port.plr",
     "pipeline.plr",
