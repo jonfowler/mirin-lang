@@ -180,6 +180,12 @@ impl<'db> Body<'db> {
         &self.exprs[id.0 as usize]
     }
 
+    /// All expressions in the body's arena (for whole-body walks like the
+    /// direction check).
+    pub fn exprs(&self) -> impl Iterator<Item = &Expr<'db>> {
+        self.exprs.iter()
+    }
+
     pub fn local(&self, id: LocalId) -> &LocalData<'db> {
         &self.locals[id.0 as usize]
     }

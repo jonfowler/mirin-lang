@@ -1,20 +1,20 @@
 //! Per-def **check** queries over the body HIR (`planning/q3_typed_hir.md`,
 //! pass #8). Diagnostics that need the lowered body but little else.
 //!
-//! Q3e ships [`check_drivers`]: every `var` must have exactly one driving
-//! equation. The other Q3-plan checks are blocked on later slices and land with
-//! them:
+//! - [`check_drivers`] (Q3e): every `var` has exactly one driver — a driving
+//!   equation or an out-connection (`=>`) target.
+//! - [`directions`] (Q5a): a call's connection operators agree with the callee's
+//!   parameter directions (`=`→`in`, `=>`→`out`).
 //!
-//! - **`check_directions`** (connection operator `=`/`=>` vs port-field
-//!   direction) needs the named-argument / out-argument connections that `body`
-//!   currently defers — so it lands with that lowering (Q5).
-//! - **ground width checks** need `const_eval` (Q4).
+//! Still deferred: port-to-port equation field-direction pairing (a flatten-time
+//! concern, Q5d) and ground width checks (`const_eval`, Q4).
 
 use std::collections::HashMap;
 
 use crate::base::db::SourceRoot;
 use crate::hir::body::{Block, Body, ExprId, ExprKind, LocalKind, Stmt, body};
-use crate::hir::types::LocalId;
+use crate::hir::sig::sig_of;
+use crate::hir::types::{Direction, LocalId};
 use crate::nameres::def_map::crate_def_map;
 use crate::nameres::ids::{DefId, DefKind};
 
@@ -93,8 +93,9 @@ fn count_block(body: &Body, block: &Block, counts: &mut HashMap<LocalId, usize>)
     }
 }
 
-/// Recurse into the blocks nested inside an expression (`if`/`when`/`block`),
-/// so an equation in a `when` body or an `if` branch is counted too.
+/// Recurse into the blocks nested in an expression (`if`/`when`/`block`), and
+/// count out-connection (`=>`) targets as drivers — an `out` arg wires the
+/// callee's output *into* its target local, which is a driver of that local.
 fn count_expr(body: &Body, expr: ExprId, counts: &mut HashMap<LocalId, usize>) {
     match &body.expr(expr).kind {
         ExprKind::If {
@@ -107,7 +108,104 @@ fn count_expr(body: &Body, expr: ExprId, counts: &mut HashMap<LocalId, usize>) {
         }
         ExprKind::When { body: b, .. } => count_block(body, b, counts),
         ExprKind::Block(b) => count_block(body, b, counts),
+        ExprKind::Call { args, named, .. } => {
+            for a in args {
+                if a.out
+                    && let ExprKind::Local(l) = body.expr(a.expr).kind
+                {
+                    *counts.entry(l).or_default() += 1;
+                }
+                count_expr(body, a.expr, counts);
+            }
+            for n in named {
+                if n.out
+                    && let ExprKind::Local(l) = body.expr(n.expr).kind
+                {
+                    *counts.entry(l).or_default() += 1;
+                }
+                count_expr(body, n.expr, counts);
+            }
+        }
         _ => {}
+    }
+}
+
+/// A connection whose operator disagrees with the callee param's direction.
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub enum DirectionDiagnostic {
+    /// A value connection (`name = v` / positional / shorthand) to an `out` param.
+    ValueToOut { param: String },
+    /// An out-connection (`=>`) to a param that is not `out`.
+    OutToNonOut { param: String },
+}
+
+/// QUERY: check that each call's connection operators agree with the callee's
+/// parameter directions — a value (`=`) connects to an `in`/undirected param, an
+/// out-connection (`=>`) to an `out` param. Mirrors the old `check_directions`'s
+/// call-site rule. (Port-to-port equation field pairing is a flatten-time
+/// concern, Q5d.) Per-def, over `body` + callee `sig_of`; no types.
+#[salsa::tracked(returns(ref))]
+pub fn directions<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+) -> Vec<DirectionDiagnostic> {
+    let map = crate_def_map(db, krate);
+    let Some(data) = map.def_data(def) else {
+        return Vec::new();
+    };
+    if !matches!(data.kind, DefKind::Fn | DefKind::Method) {
+        return Vec::new();
+    }
+    let body = body(db, krate, def);
+
+    let mut out = Vec::new();
+    for expr in body.exprs() {
+        let ExprKind::Call {
+            callee,
+            args,
+            named,
+        } = &expr.kind
+        else {
+            continue;
+        };
+        let ExprKind::Def(callee) = body.expr(*callee).kind else {
+            continue;
+        };
+        let sig = sig_of(db, krate, callee);
+        // Positional args bind the positional value params (declared order).
+        let positional: Vec<_> = sig
+            .params
+            .iter()
+            .filter(|p| !p.from_named_section && !p.is_self)
+            .collect();
+        for (i, a) in args.iter().enumerate() {
+            if let Some(p) = positional.get(i) {
+                check_dir(a.out, p.direction, &p.name, &mut out);
+            }
+        }
+        for n in named {
+            if let Some(p) = sig
+                .params
+                .iter()
+                .find(|p| p.from_named_section && p.name == n.name)
+            {
+                check_dir(n.out, p.direction, &p.name, &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn check_dir(is_out: bool, dir: Option<Direction>, name: &str, out: &mut Vec<DirectionDiagnostic>) {
+    if is_out && dir != Some(Direction::Out) {
+        out.push(DirectionDiagnostic::OutToNonOut {
+            param: name.to_owned(),
+        });
+    } else if !is_out && dir == Some(Direction::Out) {
+        out.push(DirectionDiagnostic::ValueToOut {
+            param: name.to_owned(),
+        });
     }
 }
 
@@ -133,6 +231,68 @@ mod tests {
             .resolve_in_scope(map.root(), name, Namespace::Item)
             .expect("def");
         check_drivers(db, krate, def)
+    }
+
+    fn dirs<'db>(
+        db: &'db RootDatabase,
+        krate: SourceRoot,
+        name: &str,
+    ) -> &'db Vec<DirectionDiagnostic> {
+        let map = crate_def_map(db, krate);
+        let def = map
+            .resolve_in_scope(map.root(), name, Namespace::Item)
+            .expect("def");
+        directions(db, krate, def)
+    }
+
+    #[test]
+    fn an_out_connection_to_an_out_param_is_fine() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn snk { out o: uint(8) } (i: uint(8)) { o = i; }\nfn t (i: uint(8), out r: uint(8)) { snk{o => r}(i); }",
+        );
+        assert!(
+            dirs(&db, krate, "t").is_empty(),
+            "{:?}",
+            dirs(&db, krate, "t")
+        );
+    }
+
+    #[test]
+    fn a_value_connection_to_an_out_param_is_flagged() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // `o = r` connects a value to the `out` param `o` — wrong operator.
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn snk { out o: uint(8) } (i: uint(8)) { o = i; }\nfn t (i: uint(8), r: uint(8)) { snk{o = r}(i); }",
+        );
+        assert!(
+            dirs(&db, krate, "t")
+                .iter()
+                .any(|d| matches!(d, DirectionDiagnostic::ValueToOut { param } if param == "o"))
+        );
+    }
+
+    #[test]
+    fn an_out_connection_to_an_in_param_is_flagged() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // positional `out => x` to `f`'s `in`/undirected param.
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f (i: uint(8)) -> uint(8) { return i; }\nfn t (out x: uint(8)) { f(out => x); }",
+        );
+        assert!(
+            dirs(&db, krate, "t")
+                .iter()
+                .any(|d| matches!(d, DirectionDiagnostic::OutToNonOut { param } if param == "i"))
+        );
     }
 
     #[test]

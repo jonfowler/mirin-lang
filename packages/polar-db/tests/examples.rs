@@ -17,7 +17,8 @@
 use std::path::{Path, PathBuf};
 
 use polar_db::{
-    DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, crate_def_map, infer, sig_of,
+    DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, crate_def_map, directions, infer,
+    sig_of,
 };
 
 fn working_dir() -> PathBuf {
@@ -46,6 +47,7 @@ const CLEAN: &[&str] = &[
     "accumulator.plr",
     "add_constant.plr",
     "counter.plr",
+    "delay.plr",
     "delay_impl.plr",
     "equal_width_fn.plr",
     "if_expression.plr",
@@ -63,15 +65,15 @@ const CLEAN: &[&str] = &[
     "when_counter.plr",
 ];
 
-/// `(name-resolution, body, inference, driver)` diagnostic counts for one file.
-fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize) {
+/// `(name-resolution, body, inference, driver, direction)` diagnostic counts.
+fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize, usize) {
     let mut db = RootDatabase::default();
     let mut vfs = Vfs::new();
     vfs.set_file_text(&mut db, "t.plr", src.to_owned());
     let krate: SourceRoot = vfs.source_root(&mut db, "t.plr");
     let map = crate_def_map(&db, krate);
 
-    let (mut body_d, mut infer_d, mut driver_d) = (0, 0, 0);
+    let (mut body_d, mut infer_d, mut driver_d, mut dir_d) = (0, 0, 0, 0);
     for def in map.defs().collect::<Vec<_>>() {
         match map.def_data(def).map(|d| d.kind) {
             Some(DefKind::Fn | DefKind::Method) => {
@@ -79,6 +81,7 @@ fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize) {
                 body_d += body(&db, krate, def).diagnostics().len();
                 infer_d += infer(&db, krate, def).diagnostics().len();
                 driver_d += check_drivers(&db, krate, def).len();
+                dir_d += directions(&db, krate, def).len();
             }
             Some(DefKind::Struct | DefKind::Port) => {
                 let _ = sig_of(&db, krate, def);
@@ -86,7 +89,7 @@ fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize) {
             _ => {}
         }
     }
-    (map.diagnostics().len(), body_d, infer_d, driver_d)
+    (map.diagnostics().len(), body_d, infer_d, driver_d, dir_d)
 }
 
 #[test]
@@ -102,13 +105,13 @@ fn every_working_example_runs_the_query_stack() {
 fn clean_examples_typecheck_without_diagnostics() {
     for (name, src) in examples() {
         let counts = diagnostic_counts(&src);
-        let total = counts.0 + counts.1 + counts.2 + counts.3;
+        let total = counts.0 + counts.1 + counts.2 + counts.3 + counts.4;
         if CLEAN.contains(&name.as_str()) {
             assert_eq!(
                 counts,
-                (0, 0, 0, 0),
+                (0, 0, 0, 0, 0),
                 "{name} is listed CLEAN but produced diagnostics \
-                 (nameres, body, infer, drivers) = {counts:?}"
+                 (nameres, body, infer, drivers, directions) = {counts:?}"
             );
         } else {
             assert!(
