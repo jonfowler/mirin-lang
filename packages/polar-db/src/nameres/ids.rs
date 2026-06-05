@@ -16,8 +16,8 @@
 //! are built over this in `crate_def_map` (Q2d); for now the whole local repo is
 //! one crate (§3.5).
 
-use crate::ast_id::FileAstId;
-use crate::db::SourceFile;
+use crate::base::db::SourceFile;
+use crate::syntax::ast_id::FileAstId;
 
 /// A definition's stable identity: the interned syntactic location of the item
 /// that introduced it, plus a [`DefRole`]. `DefId::new(db, file, ast_id, role)`
@@ -31,7 +31,7 @@ use crate::db::SourceFile;
 ///
 /// Carries the `'db` lifetime that salsa threads through interned entities — the
 /// ergonomic cost flagged in `planning/query_engine.md` §7. Everything that
-/// stores a `DefId` (the [`crate::def_map`] tables) inherits it.
+/// stores a `DefId` (the [`crate::nameres::def_map`] tables) inherits it.
 #[salsa::interned]
 pub struct DefId<'db> {
     /// The file the defining item lives in.

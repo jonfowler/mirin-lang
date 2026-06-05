@@ -20,14 +20,15 @@
 
 use tree_sitter::Node;
 
-use crate::db::SourceRoot;
-use crate::def_map::{CrateDefMap, ModuleId, crate_def_map};
-use crate::hir::{
+use crate::base::db::SourceRoot;
+use crate::base::parser;
+use crate::hir::types::{
     ConstArg, Direction, Domain, GenericArg, GenericArgs, GenericParam, GenericParamKind, LocalId,
     Type, ValueKind,
 };
-use crate::ids::{DefId, DefKind, Namespace};
-use crate::{ast_id, parser};
+use crate::nameres::def_map::{CrateDefMap, ModuleId, crate_def_map};
+use crate::nameres::ids::{DefId, DefKind, Namespace};
+use crate::syntax::ast_id;
 
 /// A def's lowered signature. Which fields are populated depends on the def kind:
 /// fns fill `params`/`return_type`; structs/ports fill `fields`; all may have
@@ -477,8 +478,8 @@ fn node_text(node: &Node, source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::RootDatabase;
-    use crate::vfs::Vfs;
+    use crate::base::db::RootDatabase;
+    use crate::base::vfs::Vfs;
 
     /// Load one file as the crate root and return `(SourceRoot, def of `name`)`.
     fn fn_def<'db>(db: &'db RootDatabase, krate: SourceRoot, name: &str) -> DefId<'db> {

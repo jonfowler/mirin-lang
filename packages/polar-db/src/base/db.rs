@@ -13,7 +13,7 @@
 
 /// A source file input. Its `text` is the only mutable *content* input in the
 /// system; salsa tracks the revision and drives all downstream invalidation.
-/// Created and updated through the [`crate::vfs::Vfs`] bridge.
+/// Created and updated through the [`crate::base::vfs::Vfs`] bridge.
 #[salsa::input]
 pub struct SourceFile {
     #[returns(ref)]

@@ -12,9 +12,9 @@
 
 use tree_sitter::Node;
 
-use crate::ast_id::{AstIdMap, FileAstId, ast_id_map};
-use crate::db::SourceFile;
-use crate::parser;
+use crate::base::db::SourceFile;
+use crate::base::parser;
+use crate::syntax::ast_id::{AstIdMap, FileAstId, ast_id_map};
 
 /// The items of one file, in source order. Top level only at the root; modules
 /// nest their own items.
@@ -297,7 +297,7 @@ fn use_path_segments(node: &Node, source: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::RootDatabase;
+    use crate::base::db::RootDatabase;
 
     /// Pure lowering for tests — builds its own `AstIdMap`, no db.
     fn lower(source: &str) -> ItemTree {
@@ -392,7 +392,7 @@ impl Widget {
     fn query_item_tree_is_stable_across_a_body_edit() {
         // Same firewall, exercised through the salsa query + a real input edit.
         let mut db = RootDatabase::default();
-        let mut vfs = crate::vfs::Vfs::new();
+        let mut vfs = crate::base::vfs::Vfs::new();
         let f = vfs.set_file_text(&mut db, "t.plr", "fn a () -> uint(8) { return 0; }");
         let before = item_tree(&db, f).clone();
         vfs.set_file_text(&mut db, "t.plr", "fn a () -> uint(8) { return 0 + 1 + 2; }");
@@ -406,7 +406,7 @@ impl Widget {
     #[test]
     fn query_reflects_a_new_item() {
         let mut db = RootDatabase::default();
-        let mut vfs = crate::vfs::Vfs::new();
+        let mut vfs = crate::base::vfs::Vfs::new();
         let f = vfs.set_file_text(&mut db, "t.plr", "fn a () -> uint(8) { return 0; }");
         assert_eq!(item_tree(&db, f).top_level.len(), 1);
         vfs.set_file_text(

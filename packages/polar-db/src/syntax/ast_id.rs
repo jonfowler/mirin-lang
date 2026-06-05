@@ -197,20 +197,20 @@ fn ident_hash(parent: Option<FileAstId>, name: &str) -> u16 {
 }
 
 /// QUERY: the stable id map for a file. Parses transiently (the tree-sitter
-/// `Tree` cannot be a tracked value — see [`crate::db`]) and returns the owned,
+/// `Tree` cannot be a tracked value — see [`crate::base::db`]) and returns the owned,
 /// comparable map. Re-runs when the file text changes, but its value is
 /// unchanged by edits that don't touch item identity, so dependents survive.
 #[salsa::tracked(returns(ref))]
-pub fn ast_id_map(db: &dyn salsa::Database, file: crate::db::SourceFile) -> AstIdMap {
+pub fn ast_id_map(db: &dyn salsa::Database, file: crate::base::db::SourceFile) -> AstIdMap {
     let source = file.text(db);
-    let tree = crate::parser::parse_text(source);
+    let tree = crate::base::parser::parse_text(source);
     AstIdMap::from_tree(&tree, source)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{RootDatabase, SourceFile};
+    use crate::base::db::{RootDatabase, SourceFile};
 
     fn file(db: &mut RootDatabase, text: &str) -> SourceFile {
         SourceFile::new(db, "t.plr".into(), text.to_string())
@@ -261,8 +261,8 @@ fn b (y: uint(8)) -> uint(8) { return y; }
 fn a (x: uint(8)) -> uint(8) { return x + x; }
 fn b (y: uint(8)) -> uint(8) { return y; }
 ";
-        let tree_a = crate::parser::parse_text(src_a);
-        let tree_b = crate::parser::parse_text(src_b);
+        let tree_a = crate::base::parser::parse_text(src_a);
+        let tree_b = crate::base::parser::parse_text(src_b);
         let map_a = AstIdMap::from_tree(&tree_a, src_a);
         let map_b = AstIdMap::from_tree(&tree_b, src_b);
         assert_eq!(
@@ -282,8 +282,8 @@ fn a (x: uint(8)) -> uint(8) { return x; }
 fn c (z: uint(8)) -> uint(8) { return z; }
 fn b (y: uint(8)) -> uint(8) { return y; }
 ";
-        let tree_a = crate::parser::parse_text(src_a);
-        let tree_b = crate::parser::parse_text(src_b);
+        let tree_a = crate::base::parser::parse_text(src_a);
+        let tree_b = crate::base::parser::parse_text(src_b);
         let map_a = AstIdMap::from_tree(&tree_a, src_a);
         let map_b = AstIdMap::from_tree(&tree_b, src_b);
         assert_eq!(
@@ -321,7 +321,7 @@ impl Widget {
     #[test]
     fn query_memoizes_and_invalidates() {
         let mut db = RootDatabase::default();
-        let mut vfs = crate::vfs::Vfs::new();
+        let mut vfs = crate::base::vfs::Vfs::new();
         let f = vfs.set_file_text(&mut db, "t.plr", TWO_FNS);
         let len_before = ast_id_map(&db, f).entries().len();
         assert_eq!(len_before, 2);

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use salsa::Setter;
 
-use crate::db::{RootDatabase, SourceFile, SourceRoot};
+use crate::base::db::{RootDatabase, SourceFile, SourceRoot};
 
 /// The path → input map. Holds salsa `SourceFile` handles (which are `Copy`),
 /// interning each path to a stable handle on first sight.

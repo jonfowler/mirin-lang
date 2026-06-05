@@ -2,7 +2,7 @@
 //! §3.1).
 //!
 //! Builds the crate's **module tree** and **name tables** from the per-file
-//! [`item_tree`](crate::item_tree)s. Depends only on item-tree *names and
+//! [`item_tree`](crate::syntax::item_tree)s. Depends only on item-tree *names and
 //! structure*, never on bodies or types, so a body edit cannot reach it: the
 //! item_tree firewall absorbs the edit (its value is unchanged), this query
 //! backdates, and every dependent survives. This is the boundary that keeps
@@ -12,7 +12,7 @@
 //! (`collect_items` → the module + def tree). The body-resolution half
 //! (`resolve_items`) is deliberately **not** here — it lands in Q3 behind the
 //! `sig_of`/`body` split. The whole local repo is one crate (§3.5); this query
-//! is keyed on the crate's [`SourceRoot`](crate::db::SourceRoot) (root file +
+//! is keyed on the crate's [`SourceRoot`](crate::base::db::SourceRoot) (root file +
 //! file set), which is what lets it resolve `mod foo;` to another file.
 //!
 //! **Scope so far:** the module tree — root, inline `mod`, and `mod foo;` file
@@ -26,12 +26,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::db::{SourceFile, SourceRoot};
-use crate::ids::{
+use crate::base::db::{SourceFile, SourceRoot};
+use crate::nameres::ids::{
     DefId, DefKind, DefPath, DefPathHash, DefPathSegment, DefPathSegmentKind, DefRole, Namespace,
     StableCrateId,
 };
-use crate::item_tree::{
+use crate::syntax::item_tree::{
     ImplItem, Item, ModItem, ModKind, UseTree, Visibility as SurfaceVisibility, item_tree,
 };
 
@@ -399,7 +399,7 @@ impl<'db> Collector<'db> {
             ("*", DefKind::Fn),
         ];
         for (i, (name, kind)) in BUILTINS.iter().enumerate() {
-            let ast_id = crate::ast_id::FileAstId::synthetic(i as u16);
+            let ast_id = crate::syntax::ast_id::FileAstId::synthetic(i as u16);
             let def = DefId::new(self.db, self.root_file, ast_id, DefRole::Item);
             self.map.defs.insert(
                 def,
@@ -456,7 +456,7 @@ impl<'db> Collector<'db> {
     fn declare_adt(
         &mut self,
         file: SourceFile,
-        item: &crate::item_tree::NamedItem,
+        item: &crate::syntax::item_tree::NamedItem,
         kind: DefKind,
         module: ModuleId,
     ) {
@@ -490,7 +490,7 @@ impl<'db> Collector<'db> {
     fn declare(
         &mut self,
         file: SourceFile,
-        ast_id: crate::ast_id::FileAstId,
+        ast_id: crate::syntax::ast_id::FileAstId,
         role: DefRole,
         name: &str,
         kind: DefKind,
@@ -1059,8 +1059,8 @@ fn use_leaves(tree: &UseTree, prefix: &[String], f: &mut impl FnMut(Vec<String>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::RootDatabase;
-    use crate::vfs::Vfs;
+    use crate::base::db::RootDatabase;
+    use crate::base::vfs::Vfs;
 
     /// A 'static projection of the def map — names/kinds/module structure with
     /// the `'db`-bound `DefId`s dropped — so a test can compare two revisions

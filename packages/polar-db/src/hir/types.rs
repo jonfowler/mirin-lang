@@ -15,7 +15,7 @@
 //! Most of these types embed a [`DefId`], which has no `std::fmt::Debug` (its
 //! fields need the db), so the `DefId`-carrying types omit `#[derive(Debug)]`.
 
-use crate::ids::DefId;
+use crate::nameres::ids::DefId;
 
 /// Owner-relative local id: a value parameter (Q3b) or, later, a body local
 /// (Q3c). Index into the owning def's local space; reset to 0 per def.
