@@ -25,6 +25,7 @@ pub use base::db::{RootDatabase, SourceFile, SourceRoot};
 pub use base::parser::{language, parse_text};
 pub use base::vfs::Vfs;
 pub use hir::body::{Block, Body, BodyDiagnostic, Expr, ExprId, ExprKind, LocalKind, Stmt, body};
+pub use hir::infer::{InferDiagnostic, Inference, infer};
 pub use hir::sig::{Field, Param, Signature, sig_of};
 pub use hir::types::{
     ConstArg, Direction, Domain, GenericArg, GenericArgs, GenericParam, GenericParamKind, LocalId,

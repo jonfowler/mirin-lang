@@ -45,6 +45,9 @@ pub enum Type<'db> {
     },
     /// The meta-type `Clock` — a domain witness, never the type of a value.
     Clock,
+    /// An inference variable. **Transient**: produced and resolved away within
+    /// `infer` (Q3d); never appears in a `sig_of` result.
+    Infer(u32),
     /// A type name that did not resolve. Keeps lowering total; surfaces as a
     /// diagnostic rather than an `unwrap`.
     Error,
@@ -84,6 +87,8 @@ pub enum Domain {
     /// A concrete clock bound to a local. Produced by body inference (Q3c/d),
     /// not by `sig_of`.
     Clock(LocalId),
+    /// A domain inference variable. **Transient**: resolved away within `infer`.
+    Infer(u32),
 }
 
 /// A compile-time constant in const position (a `uint(W)` width). Arithmetic
