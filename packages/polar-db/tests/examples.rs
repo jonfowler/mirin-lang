@@ -92,6 +92,22 @@ fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize, usize) {
     (map.diagnostics().len(), body_d, infer_d, driver_d, dir_d)
 }
 
+/// Dev aid: per-example diagnostic tally. `cargo test -p polar-db --test examples
+/// report -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn report() {
+    for (name, src) in examples() {
+        let (n, b, i, d, dir) = diagnostic_counts(&src);
+        let tag = if n + b + i + d + dir == 0 {
+            "CLEAN"
+        } else {
+            "----"
+        };
+        eprintln!("{tag} {name:<32} nameres={n} body={b} infer={i} drivers={d} dirs={dir}");
+    }
+}
+
 #[test]
 fn every_working_example_runs_the_query_stack() {
     // No panic on any example == the smoke test passes.
