@@ -12,9 +12,11 @@
 pub mod ast_id;
 pub mod db;
 pub mod def_map;
+pub mod hir;
 pub mod ids;
 pub mod item_tree;
 pub mod parser;
+pub mod sig;
 pub mod vfs;
 
 pub use ast_id::{AstIdKind, AstIdMap, FileAstId, ast_id_map};
@@ -23,10 +25,15 @@ pub use def_map::{
     Binding, BindingSource, CrateDefMap, DefData, DefDiagnostic, ModuleData, ModuleId, ModuleKind,
     Visibility, crate_def_map,
 };
+pub use hir::{
+    ConstArg, Direction, Domain, GenericArg, GenericArgs, GenericParam, GenericParamKind, LocalId,
+    Type, ValueKind,
+};
 pub use ids::{
     AnonConstRole, DefId, DefKind, DefPath, DefPathHash, DefPathSegment, DefPathSegmentKind,
     DefRole, Namespace, StableCrateId,
 };
 pub use item_tree::ItemTree; // the query is `item_tree::item_tree` (avoids a module/fn name clash)
 pub use parser::{language, parse_text};
+pub use sig::{Field, Param, Signature, sig_of};
 pub use vfs::Vfs;
