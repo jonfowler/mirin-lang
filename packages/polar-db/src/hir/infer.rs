@@ -12,11 +12,13 @@
 //! concrete clock, an unconstrained domain variable defaults to `@const`. It is
 //! not a parallel solve.
 //!
-//! **Q3d scope:** structural-kind + domain inference for the monomorphic core,
-//! with generic callees instantiated by substituting their `Param`s with fresh
-//! variables. **Widths are not checked** (`uint ~ uint` regardless of width) —
-//! that, and symbolic-width obligations, land in `const_eval` (Q4). Residual
-//! propagation across calls is likewise Q4.
+//! **Scope:** structural-kind + domain inference for the monomorphic core, with
+//! generic callees instantiated by substituting their `Param`s with fresh
+//! variables. **Widths are checked** (Q4a): a literal's width and a Const-kind
+//! generic both infer through a `const_vars` pool, and two ground literal widths
+//! that disagree are a `WidthMismatch`. Symbolic widths — generic params,
+//! arithmetic, anon-consts — are accepted here and deferred to the residual +
+//! `const_eval` machinery (Q4b/c, `planning/q4_const_eval.md`).
 
 use std::collections::HashMap;
 
@@ -32,6 +34,9 @@ use crate::nameres::ids::{DefId, DefKind, Namespace};
 pub enum InferDiagnostic {
     /// Two types that had to be equal could not be unified.
     TypeMismatch,
+    /// Two `uint` widths that had to be equal are different (`uint(8)` vs
+    /// `uint(16)`, or two distinct width params).
+    WidthMismatch,
     /// Two concrete clock domains that had to match did not.
     DomainMismatch,
     /// A `recv.method(…)` whose method did not resolve on the receiver's type.
@@ -116,6 +121,7 @@ struct InferCtx<'a, 'db> {
     map: &'a CrateDefMap<'db>,
     type_vars: Vec<Option<Type<'db>>>,
     domain_vars: Vec<Option<Domain>>,
+    const_vars: Vec<Option<ConstArg>>,
     expr_types: HashMap<ExprId, Type<'db>>,
     local_types: HashMap<LocalId, Type<'db>>,
     method_resolutions: HashMap<ExprId, DefId<'db>>,
@@ -130,6 +136,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             map,
             type_vars: Vec::new(),
             domain_vars: Vec::new(),
+            const_vars: Vec::new(),
             expr_types: HashMap::new(),
             local_types: HashMap::new(),
             method_resolutions: HashMap::new(),
@@ -171,6 +178,22 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn fresh_domain(&mut self) -> Domain {
         self.domain_vars.push(None);
         Domain::Infer(self.domain_vars.len() as u32 - 1)
+    }
+
+    fn fresh_const(&mut self) -> ConstArg {
+        self.const_vars.push(None);
+        ConstArg::Infer(self.const_vars.len() as u32 - 1)
+    }
+
+    fn resolve_const(&self, w: &ConstArg) -> ConstArg {
+        let mut cur = w.clone();
+        while let ConstArg::Infer(v) = cur {
+            match &self.const_vars[v as usize] {
+                Some(c) => cur = c.clone(),
+                None => break,
+            }
+        }
+        cur
     }
 
     /// Replace every `Unspecified` domain in `ty` with a fresh domain var, so an
@@ -241,7 +264,16 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     }
 
     fn deep_resolve_kind(&self, kind: &ValueKind<'db>) -> ValueKind<'db> {
-        kind.clone()
+        match kind {
+            ValueKind::UInt { width } => ValueKind::UInt {
+                // An unbound const var has no determined width yet → `Deferred`.
+                width: match self.resolve_const(width) {
+                    ConstArg::Infer(_) => ConstArg::Deferred,
+                    other => other,
+                },
+            },
+            other => other.clone(),
+        }
     }
 
     fn resolve_domain_default(&self, d: Domain) -> Domain {
@@ -297,19 +329,38 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     }
 
     fn unify_kind(&mut self, a: &ValueKind<'db>, b: &ValueKind<'db>) {
-        let ok = match (a, b) {
-            // Widths are not checked here — that is `const_eval` (Q4).
-            (ValueKind::UInt { .. }, ValueKind::UInt { .. }) => true,
-            (ValueKind::Bool, ValueKind::Bool) => true,
-            (ValueKind::Reset, ValueKind::Reset) => true,
-            (ValueKind::Event, ValueKind::Event) => true,
-            (ValueKind::Usize, ValueKind::Usize) => true,
-            (ValueKind::Struct { def: x, .. }, ValueKind::Struct { def: y, .. }) => x == y,
-            (ValueKind::Param(i), ValueKind::Param(j)) => i == j,
-            _ => false,
-        };
-        if !ok {
-            self.diagnostics.push(InferDiagnostic::TypeMismatch);
+        match (a, b) {
+            (ValueKind::UInt { width: wa }, ValueKind::UInt { width: wb }) => {
+                self.unify_width(wa.clone(), wb.clone());
+            }
+            (ValueKind::Bool, ValueKind::Bool)
+            | (ValueKind::Reset, ValueKind::Reset)
+            | (ValueKind::Event, ValueKind::Event)
+            | (ValueKind::Usize, ValueKind::Usize) => {}
+            (ValueKind::Struct { def: x, .. }, ValueKind::Struct { def: y, .. }) if x == y => {}
+            (ValueKind::Param(i), ValueKind::Param(j)) if i == j => {}
+            _ => self.diagnostics.push(InferDiagnostic::TypeMismatch),
+        }
+    }
+
+    /// Unify two `uint` widths. A const var binds to the other side. The only
+    /// hard error Q4a can soundly raise is **two ground literals that differ**
+    /// (`uint(8)` vs `uint(16)`). Anything symbolic — a generic-param width, or a
+    /// `Deferred` arithmetic/anon-const width — *cannot be decided* without the
+    /// residual + `const_eval` machinery (Q4b/c), so it is accepted here rather
+    /// than producing a false mismatch. (`pair_add{n,m}` unifying `n ~ m` is a
+    /// residual, not an error.)
+    fn unify_width(&mut self, a: ConstArg, b: ConstArg) {
+        let a = self.resolve_const(&a);
+        let b = self.resolve_const(&b);
+        match (&a, &b) {
+            (ConstArg::Infer(v), _) => self.const_vars[*v as usize] = Some(b.clone()),
+            (_, ConstArg::Infer(v)) => self.const_vars[*v as usize] = Some(a.clone()),
+            (ConstArg::Lit(x), ConstArg::Lit(y)) if x != y => {
+                self.diagnostics.push(InferDiagnostic::WidthMismatch)
+            }
+            // Ground-equal, or symbolic (param/deferred) → defer to Q4b.
+            _ => {}
         }
     }
 
@@ -378,13 +429,15 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn infer_expr_inner(&mut self, body: &Body<'db>, expr: ExprId) -> Type<'db> {
         match &body.expr(expr).kind {
             ExprKind::Missing => Type::Error,
-            // A literal is `uint @const`; its width is left for `const_eval` (Q4).
-            ExprKind::Number(_) => Type::Value {
-                kind: ValueKind::UInt {
-                    width: ConstArg::Deferred,
-                },
-                domain: Domain::Const,
-            },
+            // A literal is `uint @const` of an inferred width — a fresh const var
+            // that unifies to the width its context demands.
+            ExprKind::Number(_) => {
+                let width = self.fresh_const();
+                Type::Value {
+                    kind: ValueKind::UInt { width },
+                    domain: Domain::Const,
+                }
+            }
             ExprKind::Local(l) => self.local_types.get(l).cloned().unwrap_or(Type::Error),
             ExprKind::Def(_) => Type::Error, // a bare item ref is not a value
             ExprKind::Call { callee, args } => self.infer_call(body, *callee, args),
@@ -614,7 +667,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             .map(|p| match p.kind {
                 GenericParamKind::Type => GenericArg::Type(self.fresh_type()),
                 GenericParamKind::Domain => GenericArg::Domain(self.fresh_domain()),
-                GenericParamKind::Const => GenericArg::Const(ConstArg::Deferred),
+                GenericParamKind::Const => GenericArg::Const(self.fresh_const()),
             })
             .collect()
     }
@@ -779,6 +832,50 @@ mod tests {
                 .any(|d| matches!(d, InferDiagnostic::TypeMismatch)),
             "expected a type mismatch, got {:?}",
             inf.diagnostics()
+        );
+    }
+
+    #[test]
+    fn mismatched_literal_widths_are_caught() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // Returning a uint(8) where uint(16) is declared — a width mismatch.
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f (a: uint(8)) -> uint(16) { return a; }",
+        );
+        let inf = infer(&db, krate, def_of(&db, krate, "f"));
+        assert!(
+            inf.diagnostics()
+                .iter()
+                .any(|d| matches!(d, InferDiagnostic::WidthMismatch)),
+            "expected a width mismatch, got {:?}",
+            inf.diagnostics()
+        );
+    }
+
+    #[test]
+    fn matching_and_symbolic_widths_do_not_error() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // Equal literal widths: fine. Two distinct generic widths constrained
+        // equal by `a + b` is a residual (Q4b), not a Q4a error.
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn ok (a: uint(8), b: uint(8)) -> uint(8) { return a + b; }\nfn sym { param n: usize, param m: usize } (a: uint(n), b: uint(m)) -> uint(n) { return a + b; }",
+        );
+        assert!(
+            infer(&db, krate, def_of(&db, krate, "ok"))
+                .diagnostics()
+                .is_empty()
+        );
+        assert!(
+            infer(&db, krate, def_of(&db, krate, "sym"))
+                .diagnostics()
+                .is_empty(),
+            "n ~ m is a residual, not a width mismatch"
         );
     }
 

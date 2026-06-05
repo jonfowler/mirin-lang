@@ -99,8 +99,14 @@ pub enum ConstArg {
     Lit(u64),
     /// The enclosing def's i-th generic (Const-kind) parameter.
     Param(u32),
-    /// A width expression not yet representable (e.g. arithmetic) — deferred to
-    /// `const_eval`. Keeps lowering total.
+    /// A const **inference variable**. Transient: produced and resolved away
+    /// within `infer` (Q4a) — a literal's width, or a Const-kind generic
+    /// instantiated at a call site. Never appears in a `sig_of` result.
+    Infer(u32),
+    /// A width not yet representable here — arithmetic (`N+1`) or an anon-const
+    /// body (`uint(cfg.bits())`). Deferred to `NormalConst`/`const_eval` (Q4b/c,
+    /// see `planning/q4_const_eval.md`); unified leniently so it never produces a
+    /// false mismatch.
     Deferred,
 }
 
