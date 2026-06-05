@@ -197,6 +197,12 @@ impl<'db> CrateDefMap<'db> {
         self.defs.len()
     }
 
+    /// Every def in the crate, in no particular order (fns, structs, ports,
+    /// ctors, mods, impl methods, prelude builtins).
+    pub fn defs(&self) -> impl Iterator<Item = DefId<'db>> + '_ {
+        self.defs.keys().copied()
+    }
+
     pub fn diagnostics(&self) -> &[DefDiagnostic] {
         &self.diagnostics
     }
@@ -362,7 +368,7 @@ struct Collector<'db> {
     files: HashMap<PathBuf, SourceFile>,
     /// `(module, use-tree)` for every `use`, recorded during collection and
     /// consumed by the import fixpoint and the privacy check.
-    uses: Vec<(ModuleId, UseTree)>,
+    uses: Vec<(ModuleId, SurfaceVisibility, UseTree)>,
     /// `pub(in path)` defs to re-resolve once the whole tree is built:
     /// `(module, name, ns, path)`.
     pending_vis: Vec<(ModuleId, String, Namespace, Vec<String>)>,
@@ -488,7 +494,9 @@ impl<'db> Collector<'db> {
                 Item::Struct(s) => self.declare_adt(file, s, DefKind::Struct, module),
                 Item::Port(p) => self.declare_adt(file, p, DefKind::Port, module),
                 Item::Mod(m) => self.collect_mod(m, file, module, dir),
-                Item::Use(u) => self.uses.push((module, u.tree.clone())),
+                Item::Use(u) => self
+                    .uses
+                    .push((module, u.visibility.clone(), u.tree.clone())),
                 Item::Impl(i) => self.impls.push((module, file, i.clone())),
             }
         }
@@ -683,8 +691,11 @@ impl<'db> Collector<'db> {
         let uses = std::mem::take(&mut self.uses);
         loop {
             let mut changed = false;
-            for (module, tree) in &uses {
-                let vis = Visibility::Restricted(*module); // plain `use`: module-private
+            for (module, use_vis, tree) in &uses {
+                // The binding's visibility is the re-export visibility: a plain
+                // `use` (Inherited) → module-private; a `pub use` → its declared
+                // visibility. `resolve_visibility` maps both correctly.
+                let vis = self.resolve_visibility(use_vis, *module);
                 changed |= self.import_tree(*module, &[], tree, vis);
             }
             if !changed {
@@ -868,7 +879,7 @@ impl<'db> Collector<'db> {
     fn check_uses(&mut self) {
         let uses = std::mem::take(&mut self.uses);
         let mut leaves: Vec<(ModuleId, Vec<String>)> = Vec::new();
-        for (module, tree) in &uses {
+        for (module, _vis, tree) in &uses {
             use_leaves(tree, &[], &mut |segs| leaves.push((*module, segs)));
         }
         for (module, mut segs) in leaves {

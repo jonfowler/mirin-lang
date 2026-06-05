@@ -225,7 +225,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         generics: &'a [GenericParam],
         params: &[super::sig::Param<'db>],
     ) -> Self {
-        // Param locals come first; their ids match `sig_of`.
+        // Value-param locals come first; their ids match `sig_of`.
         let mut locals = Vec::new();
         let mut base = HashMap::new();
         for p in params {
@@ -236,6 +236,21 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 kind: LocalKind::Param,
                 declared_ty: Some(p.ty.clone()),
             });
+        }
+        // A `dom clk` generic param is referenced in the body as a `Clock` value
+        // (`clk.posedge()`), so it is in scope as a local. (Const/Type generics
+        // appear only in type position.) These come *after* the value params so
+        // those keep the ids `sig_of` assigned.
+        for g in generics {
+            if g.kind == crate::hir::types::GenericParamKind::Domain {
+                let id = LocalId(locals.len() as u32);
+                base.insert(g.name.clone(), id);
+                locals.push(LocalData {
+                    name: g.name.clone(),
+                    kind: LocalKind::Param,
+                    declared_ty: Some(Type::Clock),
+                });
+            }
         }
         Self {
             map,
