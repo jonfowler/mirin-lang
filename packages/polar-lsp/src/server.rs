@@ -113,6 +113,7 @@ impl LanguageServer for Backend {
                     ),
                 ),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 ..Default::default()
@@ -200,6 +201,37 @@ impl LanguageServer for Backend {
         };
         let symbols = syntax::document_symbols(&doc.rope, &doc.tree, enc);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri.as_str().to_owned();
+        let enc = self.encoding();
+        let Some(doc) = self.documents.get(&uri) else {
+            return Ok(None);
+        };
+
+        // Reuse the live tree-sitter parse the document already holds — no
+        // re-parse. `polar-fmt` refuses files with syntax errors; surface that
+        // as "no edits" rather than wiping a buffer the user is mid-typing in.
+        let source = doc.rope.to_string();
+        let formatted = match polar_fmt::format_tree(&source, &doc.tree) {
+            Ok(text) => text,
+            Err(_) => return Ok(None),
+        };
+        if formatted == source {
+            return Ok(Some(Vec::new()));
+        }
+
+        // A single edit replacing the whole document: (0,0) .. end-of-document,
+        // with the end position computed in the negotiated encoding.
+        let end = crate::encoding::byte_to_position(&doc.rope, doc.rope.len_bytes(), enc);
+        Ok(Some(vec![TextEdit {
+            range: Range {
+                start: Position::new(0, 0),
+                end,
+            },
+            new_text: formatted,
+        }]))
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {

@@ -2,8 +2,12 @@
 
 Language support for the [Polar](../../planning/top.md) HDL: a TextMate grammar
 for cold-start colour, plus a thin client for the `polar-lsp` language server
-(semantic tokens, outline, folding, selection ranges, and diagnostics — growing
-as the server does, see `planning/lsp.md`).
+(semantic tokens, outline, folding, selection ranges, diagnostics, and document
+formatting — growing as the server does, see `planning/lsp.md`).
+
+Document formatting is served by `polar-lsp` via the `polar-fmt` crate, so
+**Format Document** (and `editor.formatOnSave`) reformat `.plr` files the same
+way the `polar-fmt` CLI does. Files with syntax errors are left untouched.
 
 The extension is editor-agnostic at heart: the same `polar-lsp` binary serves
 Neovim, Helix, and Zed. This package is just the VS Code client.

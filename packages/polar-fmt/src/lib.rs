@@ -7,7 +7,11 @@
 
 mod doc;
 mod format;
-mod parser;
+
+// The tree-sitter grammar is owned by `polar-compiler`; we reuse its parser so
+// the workspace links a single copy of the C grammar.
+pub use polar_compiler::parse_text;
+use tree_sitter::Tree;
 
 use crate::doc::MAX_WIDTH;
 use crate::format::Formatter;
@@ -38,7 +42,19 @@ pub fn format_str(source: &str) -> Result<String, FormatError> {
 /// Format Polar source at a caller-chosen width. Useful for tests that want to
 /// exercise breaking at narrow widths.
 pub fn format_str_width(source: &str, width: usize) -> Result<String, FormatError> {
-    let tree = parser::parse_text(source);
+    let tree = parse_text(source);
+    format_tree_width(source, &tree, width)
+}
+
+/// Format from an already-parsed tree, at the default width. Lets callers that
+/// already hold a [`Tree`] (e.g. an editor keeping a live parse) avoid
+/// re-parsing. `tree` must be the parse of `source`.
+pub fn format_tree(source: &str, tree: &Tree) -> Result<String, FormatError> {
+    format_tree_width(source, tree, MAX_WIDTH)
+}
+
+/// Format from an already-parsed tree at a caller-chosen width.
+pub fn format_tree_width(source: &str, tree: &Tree, width: usize) -> Result<String, FormatError> {
     let root = tree.root_node();
     if root.has_error() {
         return Err(FormatError::Parse);
@@ -74,7 +90,7 @@ mod tests {
                 walk(child, out);
             }
         }
-        let tree = parser::parse_text(source);
+        let tree = parse_text(source);
         let mut out = Vec::new();
         walk(tree.root_node(), &mut out);
         out
@@ -123,7 +139,7 @@ mod tests {
                 continue;
             }
             let src = fs::read_to_string(&path).unwrap();
-            let has_parse_error = parser::parse_text(&src).root_node().has_error();
+            let has_parse_error = parse_text(&src).root_node().has_error();
             let result = format_str(&src);
             if has_parse_error {
                 assert_eq!(

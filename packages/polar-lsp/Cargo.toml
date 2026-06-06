@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 polar-compiler = { path = "../polar-compiler" }
+polar-fmt = { path = "../polar-fmt" }
 tree-sitter = "0.25"
 streaming-iterator = "0.1"
 
