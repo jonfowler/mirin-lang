@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 polar-db = { path = "../polar-db" }
 tree-sitter = "0.25"
+streaming-iterator = "0.1"
 
 tower-lsp-server = "0.23"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }

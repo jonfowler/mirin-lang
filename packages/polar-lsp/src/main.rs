@@ -4,6 +4,8 @@
 //! the compiler and the editor tooling (`planning/lsp.md`).
 
 mod document;
+mod encoding;
+mod semantic_tokens;
 mod server;
 
 use server::Backend;

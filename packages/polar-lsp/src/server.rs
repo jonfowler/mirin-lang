@@ -10,8 +10,11 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer};
 use tracing::info;
+use tree_sitter::Query;
 
 use crate::document::Document;
+use crate::encoding::Encoding;
+use crate::semantic_tokens;
 
 pub struct Backend {
     client: Client,
@@ -22,6 +25,9 @@ pub struct Backend {
     /// supports it, else UTF-16 (the LSP default). Set once, before any
     /// document opens.
     encoding: OnceLock<PositionEncodingKind>,
+    /// The highlight query, compiled once at startup (`QueryCursor` is
+    /// per-request; the immutable `Query` is shared).
+    highlight_query: Query,
 }
 
 impl Backend {
@@ -30,7 +36,16 @@ impl Backend {
             client,
             documents: DashMap::new(),
             encoding: OnceLock::new(),
+            highlight_query: semantic_tokens::query(),
         }
+    }
+
+    /// The negotiated position encoding (UTF-16 until `initialize` runs).
+    fn encoding(&self) -> Encoding {
+        self.encoding
+            .get()
+            .map(Encoding::from_kind)
+            .unwrap_or(Encoding::Utf16)
     }
 }
 
@@ -54,8 +69,17 @@ impl LanguageServer for Backend {
             capabilities: ServerCapabilities {
                 position_encoding: Some(encoding),
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
+                    TextDocumentSyncKind::INCREMENTAL,
                 )),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: semantic_tokens::legend(),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            ..Default::default()
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -91,14 +115,16 @@ impl LanguageServer for Backend {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.as_str().to_owned();
-        // FULL sync: the single change event carries the whole new text.
-        let Some(change) = params.content_changes.into_iter().next_back() else {
-            return;
+        let enc = self.encoding();
+        let Some(mut doc) = self.documents.get_mut(&uri) else {
+            return; // a change before didOpen — ignore.
         };
-        match self.documents.get_mut(&uri) {
-            Some(mut doc) => doc.set_text(&change.text),
-            None => {
-                self.documents.insert(uri, Document::open(&change.text));
+        // INCREMENTAL sync: apply each edit in order. A range-less change is a
+        // whole-document replace (also covers full-sync clients).
+        for change in params.content_changes {
+            match change.range {
+                Some(range) => doc.apply_incremental(range, &change.text, enc),
+                None => doc.apply_full(&change.text),
             }
         }
     }
@@ -107,5 +133,18 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.as_str().to_owned();
         info!(%uri, "did_close");
         self.documents.remove(&uri);
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri.as_str().to_owned();
+        let enc = self.encoding();
+        let Some(doc) = self.documents.get(&uri) else {
+            return Ok(None);
+        };
+        let tokens = semantic_tokens::compute(&doc.rope, &doc.tree, &self.highlight_query, enc);
+        Ok(Some(SemanticTokensResult::Tokens(tokens)))
     }
 }
