@@ -126,18 +126,12 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    /// Re-emit a node's source bytes, preserving its lines (each becomes a
-    /// hard line). Used as a safe fallback for shapes we don't format.
+    /// Re-emit a node's source bytes exactly, preserving its original layout.
+    /// Used as a safe fallback for shapes we don't reformat — chiefly lists
+    /// carrying comments, which rustfmt likewise leaves untouched rather than
+    /// risk moving a comment away from what it annotates.
     fn verbatim(&self, n: Node) -> Doc {
-        let raw = self.text(n);
-        let mut parts = Vec::new();
-        for (i, line) in raw.split('\n').enumerate() {
-            if i > 0 {
-                parts.push(HardLine);
-            }
-            parts.push(text(line.trim_end()));
-        }
-        concat(parts)
+        Doc::Raw(self.text(n).trim_end().to_string())
     }
 
     // ---- comma-separated sections -----------------------------------------
@@ -179,6 +173,62 @@ impl<'a> Formatter<'a> {
             edge,
             text(close),
         ]))
+    }
+
+    /// A struct/port *definition* body. Per the Rust Style Guide, definition
+    /// fields are always one-per-line with a trailing comma and the brace on
+    /// the header line — never collapsed onto one line even when short (unlike
+    /// record *literals*, which do collapse). Laying the body out vertically
+    /// also means a long header is decided independently of its body.
+    fn def_body(&self, node: Node, elem_kind: &str) -> Doc {
+        let kids = self.named_children(node);
+        if !kids.iter().any(|k| k.kind() == elem_kind) {
+            // No fields (possibly only stray comments): keep braces together.
+            if kids.is_empty() {
+                return text("{}");
+            }
+            return self.verbatim(node);
+        }
+
+        // Thread fields and comments, mirroring `sequence` but appending a
+        // trailing comma after each field.
+        let mut parts = Vec::new();
+        let mut prev_end: Option<usize> = None;
+        for k in kids {
+            let start = k.start_position().row;
+            let is_comment = k.kind() == "comment";
+            match prev_end {
+                None => parts.push(self.field_with_comma(k, is_comment)),
+                Some(pe) => {
+                    if is_comment && start == pe {
+                        parts.push(text(" "));
+                        parts.push(self.doc(k));
+                    } else {
+                        parts.push(HardLine);
+                        if start > pe + 1 {
+                            parts.push(HardLine);
+                        }
+                        parts.push(self.field_with_comma(k, is_comment));
+                    }
+                }
+            }
+            prev_end = Some(k.end_position().row);
+        }
+
+        concat([
+            text("{"),
+            indent(concat([HardLine, concat(parts)])),
+            HardLine,
+            text("}"),
+        ])
+    }
+
+    fn field_with_comma(&self, k: Node, is_comment: bool) -> Doc {
+        if is_comment {
+            self.doc(k)
+        } else {
+            concat([self.elem(k), text(",")])
+        }
     }
 
     fn named_section(&self, n: Node) -> Doc {
@@ -250,13 +300,7 @@ impl<'a> Formatter<'a> {
             .map(|p| self.params_section(p))
             .unwrap_or(NIL);
         let ctor = self.text(self.field(n, "constructor").unwrap());
-        let body = self.delimited(
-            self.field(n, "body").unwrap(),
-            "{",
-            "}",
-            "record_field_type",
-            true,
-        );
+        let body = self.def_body(self.field(n, "body").unwrap(), "record_field_type");
         concat([
             vis,
             text("struct "),
@@ -275,7 +319,7 @@ impl<'a> Formatter<'a> {
         let named = self.field(n, "named_parameters");
         let params = self.field(n, "parameters");
         let ctor = self.text(self.field(n, "constructor").unwrap());
-        let body = self.delimited(self.field(n, "body").unwrap(), "{", "}", "port_field", true);
+        let body = self.def_body(self.field(n, "body").unwrap(), "port_field");
 
         let header = if let Some(named) = named {
             let mut sections = vec![Line, self.named_section(named)];
@@ -410,25 +454,20 @@ impl<'a> Formatter<'a> {
 
     // ---- statements --------------------------------------------------------
 
+    // The right-hand side is kept on the same line as `=`; any breaking happens
+    // *inside* the value (e.g. a method chain or a call's argument list). This
+    // matches rustfmt, which only drops the RHS to its own line as a last
+    // resort — a case we don't yet handle (a long unbreakable RHS overflows).
+
     fn let_stmt(&self, n: Node) -> Doc {
         let name = self.text(self.field(n, "name").unwrap());
         let value = self.doc(self.field(n, "value").unwrap());
-        group(concat([
-            text("let "),
-            text(name),
-            text(" ="),
-            indent(concat([Line, value])),
-            text(";"),
-        ]))
+        concat([text("let "), text(name), text(" = "), value, text(";")])
     }
 
     fn return_stmt(&self, n: Node) -> Doc {
         let value = self.doc(self.field(n, "value").unwrap());
-        group(concat([
-            text("return"),
-            indent(concat([Line, value])),
-            text(";"),
-        ]))
+        concat([text("return "), value, text(";")])
     }
 
     fn var_stmt(&self, n: Node) -> Doc {
@@ -442,25 +481,16 @@ impl<'a> Formatter<'a> {
             parts.push(concat([text(": "), self.doc(ty)]));
         }
         if let Some(val) = self.field(n, "value") {
-            return group(concat([
-                concat(parts),
-                text(" ="),
-                indent(concat([Line, self.doc(val)])),
-                text(";"),
-            ]));
+            parts.push(concat([text(" = "), self.doc(val)]));
         }
-        concat([concat(parts), text(";")])
+        parts.push(text(";"));
+        concat(parts)
     }
 
     fn assignment_stmt(&self, n: Node) -> Doc {
         let left = self.doc(self.field(n, "left").unwrap());
         let right = self.doc(self.field(n, "right").unwrap());
-        group(concat([
-            left,
-            text(" ="),
-            indent(concat([Line, right])),
-            text(";"),
-        ]))
+        concat([left, text(" = "), right, text(";")])
     }
 
     // ---- expressions -------------------------------------------------------
@@ -472,21 +502,61 @@ impl<'a> Formatter<'a> {
         concat([left, text(" "), text(op), text(" "), right])
     }
 
+    /// A receiver followed by a run of `.field`, `(args)`, and `{named}`
+    /// suffixes. Each `.field` (with its attached call args) is a *link*. When
+    /// there are two or more links and the whole thing doesn't fit, rustfmt
+    /// breaks before each `.` — receiver and first link on line one, the rest
+    /// indented one level below. `(args)` never detaches from its method.
     fn postfix(&self, n: Node) -> Doc {
-        let mut parts = Vec::new();
-        for child in self.named_children(n) {
+        let children = self.named_children(n);
+        let receiver = self.doc(children[0]);
+
+        // `base` is the receiver plus any calls applied directly to it (before
+        // the first `.field`). Each later `.field`+args becomes a link.
+        let mut base = vec![receiver];
+        let mut links: Vec<Doc> = Vec::new();
+        let mut cur: Option<Vec<Doc>> = None;
+        for &child in &children[1..] {
             match child.kind() {
                 "field_access" => {
+                    if let Some(link) = cur.take() {
+                        links.push(concat(link));
+                    }
                     let field = self.text(self.field(child, "field").unwrap());
-                    parts.push(concat([text("."), text(field)]));
+                    cur = Some(vec![text("."), text(field)]);
                 }
-                "argument_list" => parts.push(self.argument_list(child)),
-                "named_argument_list" => parts.push(self.named_argument_list(child)),
-                // The receiver (path_expression / number / parenthesized).
-                _ => parts.push(self.doc(child)),
+                "argument_list" | "named_argument_list" => {
+                    let d = if child.kind() == "argument_list" {
+                        self.argument_list(child)
+                    } else {
+                        self.named_argument_list(child)
+                    };
+                    match cur.as_mut() {
+                        Some(link) => link.push(d),
+                        None => base.push(d),
+                    }
+                }
+                _ => base.push(self.doc(child)),
             }
         }
-        concat(parts)
+        if let Some(link) = cur.take() {
+            links.push(concat(link));
+        }
+
+        // Fewer than two links is a plain call/field access, not a chain: keep
+        // it inline and let the argument lists break on their own.
+        if links.len() < 2 {
+            base.extend(links);
+            return concat(base);
+        }
+
+        let first = links.remove(0);
+        let head = concat([concat(base), first]);
+        let tail: Vec<Doc> = links
+            .into_iter()
+            .map(|link| concat([Doc::SoftLine, link]))
+            .collect();
+        group(concat([head, indent(concat(tail))]))
     }
 
     fn argument_list(&self, n: Node) -> Doc {

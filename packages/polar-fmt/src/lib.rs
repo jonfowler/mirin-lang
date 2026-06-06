@@ -175,16 +175,74 @@ fn add3(x: uint(8)) -> uint(8) {
     }
 
     #[test]
-    fn narrow_width_breaks_lists_one_per_line() {
-        let src = "struct Packet = packet { valid: bool, payload: uint(8) }\n";
-        let out = format_str_width(src, 30).unwrap();
+    fn narrow_width_breaks_record_literal_one_per_line() {
+        // Record *literals* (unlike definitions) collapse when they fit and
+        // break by width — exercise the width-based delimited path.
+        let src = "fn f() -> Packet { packet { valid: false, payload: 0 } }\n";
+        let wide = format_str_width(src, 100).unwrap();
+        assert!(
+            wide.contains("packet { valid: false, payload: 0 }"),
+            "should collapse when it fits:\n{wide}"
+        );
+        let narrow = format_str_width(src, 24).unwrap();
+        assert!(
+            narrow.contains("packet {\n"),
+            "should break when narrow:\n{narrow}"
+        );
+        assert!(narrow.contains("        valid: false,\n"), "got:\n{narrow}");
+    }
+
+    #[test]
+    fn struct_definition_is_always_vertical_even_when_short() {
+        let src = "struct P = p { a: bool, b: bool }\n";
         let expected = "\
-struct Packet = packet {
-    valid: bool,
-    payload: uint(8),
+struct P = p {
+    a: bool,
+    b: bool,
 }
 ";
-        assert_eq!(out, expected);
+        assert_eq!(format_str(src).unwrap(), expected);
+    }
+
+    #[test]
+    fn port_header_stays_on_one_line_with_vertical_body() {
+        let src = "port S { dom clk: Clock } = s { in ready: bool @clk, out valid: bool @clk }\n";
+        let out = format_str(src).unwrap();
+        assert!(
+            out.starts_with("port S { dom clk: Clock } = s {\n"),
+            "got:\n{out}"
+        );
+        assert!(out.contains("\n    in ready: bool @clk,\n"), "got:\n{out}");
+    }
+
+    #[test]
+    fn method_chain_breaks_before_dots_when_over_width() {
+        // Two links, narrow width: receiver + first link on line 1, rest below.
+        let src = "fn f() -> uint(8) { let y = recv.alpha(p).beta(q); return y; }\n";
+        let out = format_str_width(src, 28).unwrap();
+        assert!(out.contains("let y = recv.alpha(p)\n"), "got:\n{out}");
+        assert!(out.contains("\n        .beta(q);\n"), "got:\n{out}");
+    }
+
+    #[test]
+    fn single_call_does_not_chain_break() {
+        // One link is a plain call, never a chain — its args break instead.
+        let src = "fn f() -> uint(8) { let y = recv.only(aaaa, bbbb); return y; }\n";
+        let out = format_str_width(src, 24).unwrap();
+        assert!(
+            !out.contains("\n        .only"),
+            "should not chain-break:\n{out}"
+        );
+    }
+
+    #[test]
+    fn comments_in_argument_lists_are_preserved_verbatim() {
+        let src = "fn f() {\n    g(\n        a, // first\n        b,\n    );\n}\n";
+        let out = format_str(src).unwrap();
+        // rustfmt-style: we don't reformat a comment-bearing list; the original
+        // text (including the trailing comment) survives intact.
+        assert!(out.contains("a, // first"), "comment lost:\n{out}");
+        assert!(out.contains('b'), "arg lost:\n{out}");
     }
 
     #[test]

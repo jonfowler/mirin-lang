@@ -29,6 +29,11 @@ pub enum Doc {
     Nil,
     /// Literal text. Must not contain newlines.
     Text(String),
+    /// Verbatim text emitted exactly as-is, newlines and all, with no
+    /// reindentation. Used to preserve constructs we deliberately don't
+    /// reformat (rustfmt does the same when a comment sits mid-expression).
+    /// A multi-line `Raw` ends the current line for fit purposes.
+    Raw(String),
     /// A space when flat, a newline + indent when broken.
     Line,
     /// Nothing when flat, a newline + indent when broken.
@@ -112,6 +117,8 @@ fn contains_hardline(doc: &Doc) -> bool {
         // An IfBreak's hard line only fires in one mode; conservatively treat a
         // hard line in either branch as forcing a break.
         Doc::IfBreak { broken, flat } => contains_hardline(broken) || contains_hardline(flat),
+        // A multi-line raw block behaves like a hard line: it forces breaks.
+        Doc::Raw(s) => s.contains('\n'),
         _ => false,
     }
 }
@@ -136,6 +143,13 @@ pub fn render(doc: &Doc, width: usize) -> String {
             Doc::Text(s) => {
                 out.push_str(s);
                 col += s.chars().count();
+            }
+            Doc::Raw(s) => {
+                out.push_str(s);
+                col = match s.rsplit_once('\n') {
+                    Some((_, last)) => last.chars().count(),
+                    None => col + s.chars().count(),
+                };
             }
             Doc::Concat(parts) => {
                 for p in parts.iter().rev() {
@@ -211,6 +225,13 @@ fn fits(remaining: usize, ind: usize, doc: &Doc, rest: &[(usize, Mode, &Doc)]) -
         match d {
             Doc::Nil => {}
             Doc::Text(s) => remaining -= s.chars().count() as isize,
+            // A multi-line raw block ends the line; otherwise count its width.
+            Doc::Raw(s) => {
+                if s.contains('\n') {
+                    return true;
+                }
+                remaining -= s.chars().count() as isize;
+            }
             Doc::Concat(parts) => {
                 for p in parts.iter().rev() {
                     local.push((i, mode, p));
@@ -249,6 +270,8 @@ fn flat_width(doc: &Doc) -> Option<usize> {
         Doc::Line => Some(1),
         Doc::HardLine => None,
         Doc::Text(s) => Some(s.chars().count()),
+        Doc::Raw(s) if s.contains('\n') => None,
+        Doc::Raw(s) => Some(s.chars().count()),
         Doc::Concat(parts) => {
             let mut total = 0;
             for p in parts {
