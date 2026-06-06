@@ -1,8 +1,8 @@
 {
   "name": "polar-syntax",
-  "displayName": "Polar Syntax",
-  "description": "Syntax highlighting for the Polar HDL",
-  "version": "0.0.2",
+  "displayName": "Polar",
+  "description": "Polar HDL language support: syntax highlighting + the polar-lsp language server",
+  "version": "0.1.0",
   "publisher": "jonfowler",
   "engines": {
     "vscode": "^1.90.0"
@@ -10,6 +10,23 @@
   "categories": [
     "Programming Languages"
   ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:polar"
+  ],
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  },
   "contributes": {
     "languages": [
       {
@@ -30,6 +47,26 @@
         "scopeName": "source.polar",
         "path": "./syntaxes/polar.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Polar",
+      "properties": {
+        "polar.server.path": {
+          "type": "string",
+          "default": "polar-lsp",
+          "description": "Path to the polar-lsp language server binary. Defaults to `polar-lsp` on your PATH; set an absolute path (e.g. the repo's target/release/polar-lsp) otherwise."
+        },
+        "polar.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the JSON-RPC traffic between VS Code and polar-lsp."
+        }
+      }
+    }
   }
 }
