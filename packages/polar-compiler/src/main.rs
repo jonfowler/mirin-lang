@@ -12,7 +12,7 @@ use std::{env, fs, process};
 
 use polar_compiler::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, crate_def_map, directions, infer,
-    parse_text, render, sig_of, syntax_errors, verilog,
+    parse_text, render, reserved_words, sig_of, syntax_errors, verilog,
 };
 
 struct CliArgs {
@@ -145,6 +145,16 @@ fn main() {
     if !diagnostics.is_empty() {
         for d in &diagnostics {
             eprintln!("{d}");
+        }
+        process::exit(1);
+    }
+
+    // Reserved-word collisions in the emitted SV are a hard error (the output
+    // would be invalid SystemVerilog otherwise).
+    let reserved = reserved_words(&db, krate);
+    if !reserved.is_empty() {
+        for r in reserved {
+            eprintln!("error: {r}");
         }
         process::exit(1);
     }

@@ -361,13 +361,20 @@ fn unique_local_names(body: &Body<'_>) -> Vec<String> {
     names
 }
 
-/// QUERY: the crate's SystemVerilog — every `fn`/method as a module. (Driver:
+/// QUERY: the crate's SystemVerilog as text — the deterministic print of
+/// [`sv_file`].
+#[salsa::tracked(returns(ref))]
+pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
+    sv_file(db, krate).to_string()
+}
+
+/// QUERY: the crate's SystemVerilog IR — every `fn`/method as a module. (Driver:
 /// "force `verilog` for each top-level item.") Modules are erased before codegen,
 /// so every `fn`/method in the crate (at the root or nested in a `mod`/`impl`)
 /// becomes a top-level SV module, emitted in **source order** (across files by
 /// path, within a file by byte position) to match the reference compiler.
 #[salsa::tracked(returns(ref))]
-pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
+pub fn sv_file(db: &dyn salsa::Database, krate: SourceRoot) -> SvFile {
     let map = crate_def_map(db, krate);
     let prelude = map.prelude();
     // Concrete fns/methods in source order; a type-generic fn is *not* emitted
@@ -412,7 +419,7 @@ pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
     }
     mono.sort_by(|a, b| a.name.cmp(&b.name));
     modules.extend(mono);
-    SvFile { modules }.to_string()
+    SvFile { modules }
 }
 
 struct SvLower<'a, 'db> {
