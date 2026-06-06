@@ -232,7 +232,9 @@ impl<'a> Formatter<'a> {
     }
 
     fn named_section(&self, n: Node) -> Doc {
-        self.delimited(n, "{", "}", "named_parameter", true)
+        // No inner padding — the named-parameter section mirrors the positional
+        // `(…)` section: `{dom clk: Clock}`, not `{ dom clk: Clock }`.
+        self.delimited(n, "{", "}", "named_parameter", false)
     }
 
     fn params_section(&self, n: Node) -> Doc {

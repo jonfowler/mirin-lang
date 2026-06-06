@@ -182,8 +182,9 @@ fn add3(x: uint(8)) -> uint(8) {
     fn long_signature_breaks_sections() {
         let src = "fn f { dom clk: Clock, rstn: Reset @clk = high, c: uint(8) @clk = 0 } (a: uint(8) @clk, b: uint(8) @clk) -> uint(8) @clk { return a; }\n";
         let out = format_str(src).unwrap();
-        // The named and positional sections each land on their own line.
-        assert!(out.contains("\n    { dom clk: Clock"), "got:\n{out}");
+        // The named and positional sections each land on their own line, with
+        // the named section unpadded to match the positional `(…)` style.
+        assert!(out.contains("\n    {dom clk: Clock"), "got:\n{out}");
         assert!(
             out.contains("\n    (a: uint(8) @clk, b: uint(8) @clk)"),
             "got:\n{out}"
@@ -225,7 +226,7 @@ struct P = p {
         let src = "port S { dom clk: Clock } = s { in ready: bool @clk, out valid: bool @clk }\n";
         let out = format_str(src).unwrap();
         assert!(
-            out.starts_with("port S { dom clk: Clock } = s {\n"),
+            out.starts_with("port S {dom clk: Clock} = s {\n"),
             "got:\n{out}"
         );
         assert!(out.contains("\n    in ready: bool @clk,\n"), "got:\n{out}");
