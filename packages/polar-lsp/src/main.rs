@@ -7,6 +7,7 @@ mod document;
 mod encoding;
 mod semantic_tokens;
 mod server;
+mod syntax;
 
 use server::Backend;
 use tower_lsp_server::{LspService, Server};

@@ -14,7 +14,7 @@ use tree_sitter::Query;
 
 use crate::document::Document;
 use crate::encoding::Encoding;
-use crate::semantic_tokens;
+use crate::{semantic_tokens, syntax};
 
 pub struct Backend {
     client: Client,
@@ -46,6 +46,17 @@ impl Backend {
             .get()
             .map(Encoding::from_kind)
             .unwrap_or(Encoding::Utf16)
+    }
+
+    /// Recompute and publish syntactic diagnostics for `uri`. Computes under
+    /// the document lock, then releases it before awaiting the client send.
+    async fn publish(&self, uri: Uri) {
+        let enc = self.encoding();
+        let diags = match self.documents.get(uri.as_str()) {
+            Some(doc) => syntax::diagnostics(&doc.rope, &doc.tree, enc),
+            None => return,
+        };
+        self.client.publish_diagnostics(uri, diags, None).await;
     }
 }
 
@@ -80,6 +91,9 @@ impl LanguageServer for Backend {
                         },
                     ),
                 ),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -107,32 +121,38 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let doc = params.text_document;
-        let uri = doc.uri.as_str().to_owned();
-        info!(%uri, "did_open");
-        self.documents.insert(uri, Document::open(&doc.text));
+        let item = params.text_document;
+        let uri = item.uri;
+        info!(uri = uri.as_str(), "did_open");
+        self.documents
+            .insert(uri.as_str().to_owned(), Document::open(&item.text));
+        self.publish(uri).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri.as_str().to_owned();
+        let uri = params.text_document.uri;
+        let key = uri.as_str().to_owned();
         let enc = self.encoding();
-        let Some(mut doc) = self.documents.get_mut(&uri) else {
-            return; // a change before didOpen — ignore.
-        };
-        // INCREMENTAL sync: apply each edit in order. A range-less change is a
-        // whole-document replace (also covers full-sync clients).
-        for change in params.content_changes {
-            match change.range {
-                Some(range) => doc.apply_incremental(range, &change.text, enc),
-                None => doc.apply_full(&change.text),
+        // INCREMENTAL sync: apply each edit in order under the doc lock, then
+        // release it before publishing. A range-less change is a whole-document
+        // replace (also covers full-sync clients).
+        if let Some(mut doc) = self.documents.get_mut(&key) {
+            for change in params.content_changes {
+                match change.range {
+                    Some(range) => doc.apply_incremental(range, &change.text, enc),
+                    None => doc.apply_full(&change.text),
+                }
             }
         }
+        self.publish(uri).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let uri = params.text_document.uri.as_str().to_owned();
-        info!(%uri, "did_close");
-        self.documents.remove(&uri);
+        let uri = params.text_document.uri;
+        info!(uri = uri.as_str(), "did_close");
+        self.documents.remove(uri.as_str());
+        // Clear diagnostics for the closed document.
+        self.client.publish_diagnostics(uri, Vec::new(), None).await;
     }
 
     async fn semantic_tokens_full(
@@ -146,5 +166,39 @@ impl LanguageServer for Backend {
         };
         let tokens = semantic_tokens::compute(&doc.rope, &doc.tree, &self.highlight_query, enc);
         Ok(Some(SemanticTokensResult::Tokens(tokens)))
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri.as_str().to_owned();
+        let enc = self.encoding();
+        let Some(doc) = self.documents.get(&uri) else {
+            return Ok(None);
+        };
+        let symbols = syntax::document_symbols(&doc.rope, &doc.tree, enc);
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        let uri = params.text_document.uri.as_str().to_owned();
+        let Some(doc) = self.documents.get(&uri) else {
+            return Ok(None);
+        };
+        Ok(Some(syntax::folding_ranges(&doc.tree)))
+    }
+
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        let uri = params.text_document.uri.as_str().to_owned();
+        let enc = self.encoding();
+        let Some(doc) = self.documents.get(&uri) else {
+            return Ok(None);
+        };
+        let ranges = syntax::selection_ranges(&doc.rope, &doc.tree, &params.positions, enc);
+        Ok(Some(ranges))
     }
 }

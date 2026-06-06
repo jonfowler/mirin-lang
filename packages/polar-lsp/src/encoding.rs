@@ -9,8 +9,8 @@
 //! malformed client position can never panic the rope.
 
 use ropey::Rope;
-use tower_lsp_server::ls_types::{Position, PositionEncodingKind};
-use tree_sitter::Point;
+use tower_lsp_server::ls_types::{Position, PositionEncodingKind, Range};
+use tree_sitter::{Node, Point};
 
 /// The negotiated position encoding (`initialize`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -102,6 +102,14 @@ pub fn line_content_end_byte(rope: &Rope, line: usize) -> usize {
         content -= 1;
     }
     rope.char_to_byte(start_char + content)
+}
+
+/// A tree-sitter node's byte span → LSP [`Range`].
+pub fn node_range(rope: &Rope, node: Node, enc: Encoding) -> Range {
+    Range {
+        start: byte_to_position(rope, node.start_byte(), enc),
+        end: byte_to_position(rope, node.end_byte(), enc),
+    }
 }
 
 #[cfg(test)]
