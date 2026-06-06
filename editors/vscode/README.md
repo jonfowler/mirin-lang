@@ -36,5 +36,5 @@ Neovim, Helix, and Zed. This package is just the VS Code client.
 ## Packaging
 
 ```bash
-npm run compile && npx vsce package      # produces polar-syntax-<version>.vsix
+npm run compile && npx vsce package      # produces polar-lsp-<version>.vsix
 ```

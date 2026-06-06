@@ -1,5 +1,5 @@
 {
-  "name": "polar-syntax",
+  "name": "polar-lsp",
   "displayName": "Polar",
   "description": "Polar HDL language support: syntax highlighting + the polar-lsp language server",
   "version": "0.1.0",
