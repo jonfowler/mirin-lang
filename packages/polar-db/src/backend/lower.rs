@@ -10,19 +10,34 @@
 //! `if c { a } else { b }` → an `always_comb` mux. The last two write a synthetic
 //! `__block_N` whose value the surrounding assignment reads. Shadowed `let`s are
 //! uniquified (`data` / `data_1` / `data_2`) the way the reference compiler does.
-//! Aggregates (flatten) and instances arrive in Q5d.
+//!
+//! **Q5d scope:** flatten + instantiation. Struct/port-typed params, return, and
+//! locals erase to per-field scalar leaves (`base__field`) via [`flatten_leaves`]:
+//! field access projects, record literals rebuild, `.reg` on an aggregate emits
+//! one `always_ff` per field, and a port equation becomes one connection per
+//! field (the sink chosen by each leaf's module direction). A user `fn`/method
+//! call becomes a submodule [`SvInstance`](crate::backend::ir::SvInstance):
+//! positional params match `[receiver?] ++ args`, named params match the call's
+//! named section, `out`-args bind callee `out` params to caller places, and the
+//! return wires to the binding / `result` / a fresh `__call_N`. Methods qualify
+//! their module name by owner (`Option::reg` → `Option__reg`). Parametric type/
+//! width substitution stays for Q5-mono.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::backend::ir::{
-    SvAlwaysComb, SvAlwaysFf, SvBinOp, SvCombIf, SvCombStmt, SvExpr, SvFile, SvItem, SvLogicDecl,
-    SvModule, SvPort, SvPortDirection, SvSeqAssign, SvType,
+    SvAlwaysComb, SvAlwaysFf, SvBinOp, SvCombIf, SvCombStmt, SvExpr, SvFile, SvInstance, SvItem,
+    SvLogicDecl, SvModule, SvPort, SvPortDirection, SvSeqAssign, SvType,
 };
 use crate::base::db::SourceRoot;
-use crate::hir::body::{Block, Body, ExprId, ExprKind, RecordField, Stmt, body};
+use crate::hir::body::{
+    Block, Body, ConnArg, ExprId, ExprKind, LocalKind, NamedArg, RecordField, Stmt, body,
+};
 use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::{Signature, sig_of};
-use crate::hir::types::{ConstArg, Direction, Domain, GenericParamKind, LocalId, Type, ValueKind};
+use crate::hir::types::{
+    ConstArg, Direction, Domain, GenericArgs, GenericParamKind, LocalId, Type, ValueKind,
+};
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind};
 
@@ -59,8 +74,13 @@ pub fn sv_module<'db>(
         }
     }
     for p in &sig.params {
+        let ty = if p.is_self {
+            self_param_type(map, def).unwrap_or_else(|| p.ty.clone())
+        } else {
+            p.ty.clone()
+        };
         let drives = p.direction == Some(Direction::Out);
-        for leaf in flatten_leaves(db, krate, &p.ty, drives) {
+        for leaf in flatten_leaves(db, krate, &ty, drives) {
             ports.push(SvPort {
                 direction: if leaf.drives {
                     SvPortDirection::Output
@@ -86,6 +106,7 @@ pub fn sv_module<'db>(
     let mut lower = SvLower {
         db,
         krate,
+        def,
         map,
         body,
         inf,
@@ -93,14 +114,53 @@ pub fn sv_module<'db>(
         local_names: unique_local_names(body),
         items: Vec::new(),
         synth: 0,
+        instance_counts: HashMap::new(),
+        declared: HashSet::new(),
     };
     lower.lower_top_block(body.block());
 
     SvModule {
-        name: data.name.clone(),
+        name: module_name(map, def),
         parameters: Vec::new(),
         ports,
         items: lower.items,
+    }
+}
+
+/// A def's SV module name: a `fn` keeps its name; a `method` is qualified by its
+/// owner type (`Option::reg` → `Option__reg`), matching the reference compiler.
+fn module_name<'db>(map: &CrateDefMap<'db>, def: DefId<'db>) -> String {
+    let Some(data) = map.def_data(def) else {
+        return String::new();
+    };
+    if data.kind == DefKind::Method
+        && let Some(owner) = data.owner.and_then(|o| map.def_data(o))
+    {
+        return format!("{}__{}", owner.name, data.name);
+    }
+    data.name.clone()
+}
+
+/// A method's `self` type: the owner struct/port the `impl` is on. `self`'s
+/// structural type is left `Error` in the signature (it is method-dispatch's job
+/// in `infer`), but flatten only needs the aggregate shape, so the domain is
+/// irrelevant here.
+fn self_param_type<'db>(map: &CrateDefMap<'db>, method: DefId<'db>) -> Option<Type<'db>> {
+    let owner = map.def_data(method)?.owner?;
+    match map.def_data(owner)?.kind {
+        DefKind::Struct => Some(Type::Value {
+            kind: ValueKind::Struct {
+                def: owner,
+                args: GenericArgs(Vec::new()),
+            },
+            domain: Domain::Unspecified,
+        }),
+        DefKind::Port => Some(Type::Port {
+            def: owner,
+            args: GenericArgs(Vec::new()),
+            domain: Domain::Unspecified,
+        }),
+        _ => None,
     }
 }
 
@@ -135,8 +195,10 @@ pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
     let mut fns: Vec<(String, DefId)> = map
         .defs()
         .filter_map(|d| map.def_data(d).map(|data| (d, data)))
-        .filter(|(_, data)| data.kind == DefKind::Fn && data.module != prelude)
-        .map(|(d, data)| (data.name.clone(), d))
+        .filter(|(_, data)| {
+            matches!(data.kind, DefKind::Fn | DefKind::Method) && data.module != prelude
+        })
+        .map(|(d, _)| (module_name(map, d), d))
         .collect();
     fns.sort_by(|a, b| a.0.cmp(&b.0));
     let modules = fns
@@ -149,6 +211,8 @@ pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
 struct SvLower<'a, 'db> {
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
+    /// The def being lowered (to resolve its `self` param's owner type).
+    def: DefId<'db>,
     map: &'a CrateDefMap<'db>,
     body: &'a Body<'db>,
     inf: &'a Inference<'db>,
@@ -156,8 +220,14 @@ struct SvLower<'a, 'db> {
     /// Uniquified SV name per [`LocalId`].
     local_names: Vec<String>,
     items: Vec<SvItem>,
-    /// Counter for synthetic `__block_N` result locals (`when`/`if`).
+    /// Counter for synthetic `__block_N` (`when`/`if`) and `__call_N` (nested
+    /// call-value) locals.
     synth: u32,
+    /// Per-callee instance counter (first instance bare, then `_1`, `_2`, …).
+    instance_counts: HashMap<String, u32>,
+    /// Locals already given a `logic` declaration (so an out-target reused as a
+    /// later input is declared once).
+    declared: HashSet<LocalId>,
 }
 
 impl<'db> SvLower<'_, 'db> {
@@ -176,8 +246,14 @@ impl<'db> SvLower<'_, 'db> {
                 Stmt::VarDecl { local } => self.declare_local(*local),
                 Stmt::Equation { lhs, rhs } => self.lower_equation(*lhs, *rhs),
                 Stmt::Return { value } => self.drive_result(*value),
-                // Bare expression statements (instance calls) land in Q5d-2.
-                Stmt::Expr(_) => {}
+                // A bare call statement: a (void) submodule instantiation whose
+                // out-arg connections bind callee `out` params to caller places.
+                Stmt::Expr(e) => {
+                    if let Some(uc) = self.as_user_call(*e) {
+                        self.declare_out_targets(&uc);
+                        self.emit_instance(uc, Vec::new());
+                    }
+                }
             }
         }
     }
@@ -187,10 +263,19 @@ impl<'db> SvLower<'_, 'db> {
     /// the corresponding leaf of the value.
     fn lower_let(&mut self, local: LocalId, value: ExprId) {
         if let Some(reg) = self.as_reg(value) {
-            let leaves = self.local_type_leaves(local);
+            // A register is typed by its D-input (also covers a target whose own
+            // type inference left unknown).
+            let leaves = self.expr_type_leaves(reg.d_input);
             let base = self.local_name(local);
             let clock = self.clock_of_type(self.inf.local_type(local));
             self.emit_registers(&base, &leaves, reg, clock, true);
+            return;
+        }
+        // `let x = f(args)` — `x` is the callee's (flattened) result.
+        if let Some(uc) = self.as_user_call(value) {
+            self.declare_local(local);
+            let target = self.local_leaves(local);
+            self.emit_instance(uc, target);
             return;
         }
         self.declare_local(local);
@@ -213,6 +298,14 @@ impl<'db> SvLower<'_, 'db> {
             self.emit_registers(&base, &leaves, reg, clock, false);
             return;
         }
+        // `place = f(args)` — the callee's result drives `place`.
+        if let ExprKind::Local(l) = self.body.expr(lhs).kind
+            && let Some(uc) = self.as_user_call(rhs)
+        {
+            let target = self.local_leaves(l);
+            self.emit_instance(uc, target);
+            return;
+        }
         let lhs_leaves = self.place_leaves_dir(lhs);
         let rhs_leaves = self.value_leaves_dir(rhs);
         for ((lp, ld), (rp, rd)) in lhs_leaves.into_iter().zip(rhs_leaves) {
@@ -232,14 +325,26 @@ impl<'db> SvLower<'_, 'db> {
             return;
         };
         let result_leaves = flatten_leaves(self.db, self.krate, &rt, true);
+        // `return f(args)` — connect the callee's result straight to `result`.
+        if let Some(uc) = self.as_user_call(value) {
+            let target = result_leaves
+                .into_iter()
+                .map(|l| (l.suffix.clone(), SvExpr::Ident(join("result", &l.suffix))))
+                .collect();
+            self.emit_instance(uc, target);
+            return;
+        }
         let value_leaves = self.expr_leaves(value);
         for (rl, (_, v)) in result_leaves.into_iter().zip(value_leaves) {
             self.push_assign(SvExpr::Ident(join("result", &rl.suffix)), v);
         }
     }
 
-    /// Declare a `logic` for each of a local's leaves.
+    /// Declare a `logic` for each of a local's leaves, once per local.
     fn declare_local(&mut self, local: LocalId) {
+        if !self.declared.insert(local) {
+            return;
+        }
         let base = self.local_name(local);
         for leaf in self.local_type_leaves(local) {
             self.items.push(SvItem::Logic(SvLogicDecl {
@@ -258,12 +363,67 @@ impl<'db> SvLower<'_, 'db> {
         self.local_names[local.0 as usize].clone()
     }
 
-    /// A local's type: inferred, falling back to declared.
+    /// A local's type: inferred, falling back to declared. A `self` param's
+    /// structural type is the `impl`'s owner (it is `Error` in the signature).
     fn local_ty(&self, local: LocalId) -> Option<Type<'db>> {
+        if self
+            .sig
+            .params
+            .iter()
+            .any(|p| p.local == local && p.is_self)
+        {
+            return self_param_type(self.map, self.def);
+        }
         self.inf
             .local_type(local)
             .cloned()
             .or_else(|| self.body.local(local).declared_ty.clone())
+    }
+
+    /// The scalar leaves (suffix + type) of an expression's type. Mirrors
+    /// [`Self::expr_leaves`] but yields field types — used to type a register
+    /// from its D-input (a register is the same type as what feeds it), which
+    /// also covers `self.field` where `self` is untyped in inference.
+    fn expr_type_leaves(&self, expr: ExprId) -> Vec<Leaf> {
+        match &self.body.expr(expr).kind {
+            ExprKind::Local(l) => self.local_type_leaves(*l),
+            ExprKind::Field { receiver, field } => self
+                .expr_type_leaves(*receiver)
+                .into_iter()
+                .filter_map(|leaf| {
+                    strip_field(&leaf.suffix, field).map(|rest| Leaf {
+                        suffix: rest,
+                        ..leaf
+                    })
+                })
+                .collect(),
+            ExprKind::Record { ctor, .. } => {
+                match ctor.and_then(|c| self.map.def_data(c).and_then(|d| d.owner)) {
+                    Some(owner) => flatten_leaves(
+                        self.db,
+                        self.krate,
+                        &Type::Value {
+                            kind: ValueKind::Struct {
+                                def: owner,
+                                args: GenericArgs(Vec::new()),
+                            },
+                            domain: Domain::Unspecified,
+                        },
+                        true,
+                    ),
+                    None => vec![Leaf {
+                        suffix: String::new(),
+                        ty: SvType::bit(),
+                        drives: true,
+                    }],
+                }
+            }
+            _ => vec![Leaf {
+                suffix: String::new(),
+                ty: self.expr_type(expr),
+                drives: true,
+            }],
+        }
     }
 
     /// The scalar leaves of a local's type (scalar → one bit-typed leaf).
@@ -433,6 +593,15 @@ impl<'db> SvLower<'_, 'db> {
     /// Lower an expression to its SV value, emitting any items its evaluation
     /// requires (registers / combinational blocks for `reg`/`when`/`if`).
     fn expr_value(&mut self, expr: ExprId) -> SvExpr {
+        // A user call in scalar value position: instantiate, take the one leaf.
+        if let Some(uc) = self.as_user_call(expr) {
+            return self
+                .call_value_leaves(uc)
+                .into_iter()
+                .next()
+                .map(|(_, e)| e)
+                .unwrap_or_else(|| SvExpr::Lit("0".to_owned()));
+        }
         match &self.body.expr(expr).kind {
             ExprKind::Number(n) => SvExpr::Lit(n.to_string()),
             ExprKind::Bool(b) => SvExpr::Lit(if *b { "1'b1" } else { "1'b0" }.to_owned()),
@@ -499,6 +668,10 @@ impl<'db> SvLower<'_, 'db> {
     /// projects, a record literal rebuilds); scalars are a single empty-suffix
     /// leaf via [`Self::expr_value`].
     fn expr_leaves(&mut self, expr: ExprId) -> Vec<(String, SvExpr)> {
+        // A user call in value position instantiates into a fresh `__call_N`.
+        if let Some(uc) = self.as_user_call(expr) {
+            return self.call_value_leaves(uc);
+        }
         match &self.body.expr(expr).kind {
             ExprKind::Local(l) => self.local_leaves(*l),
             ExprKind::Field { receiver, field } => {
@@ -667,6 +840,188 @@ impl<'db> SvLower<'_, 'db> {
             _ => None,
         }
     }
+
+    // ----- instantiation (user calls / methods → submodules) -----
+
+    /// `Some(call)` if `expr` is a user `fn` call or a resolved user method call
+    /// (not a prelude operator and not the builtin `.reg`).
+    fn as_user_call(&self, expr: ExprId) -> Option<UserCall<'db>> {
+        match &self.body.expr(expr).kind {
+            ExprKind::Call {
+                callee,
+                args,
+                named,
+            } => {
+                let ExprKind::Def(def) = self.body.expr(*callee).kind else {
+                    return None;
+                };
+                let data = self.map.def_data(def)?;
+                if data.module == self.map.prelude()
+                    || !matches!(data.kind, DefKind::Fn | DefKind::Method)
+                {
+                    return None;
+                }
+                Some(UserCall {
+                    def,
+                    receiver: None,
+                    args: args.clone(),
+                    named: named.clone(),
+                })
+            }
+            ExprKind::MethodCall { receiver, args, .. } if self.as_reg(expr).is_none() => {
+                Some(UserCall {
+                    def: self.inf.method_resolution(expr)?,
+                    receiver: Some(*receiver),
+                    args: args.clone(),
+                    named: Vec::new(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Emit a submodule instance for a user call, connecting `result_target` to
+    /// the callee's (flattened) return. Connection order is the callee's module
+    /// order: `dom` clocks, then params (named-then-positional, each flattened),
+    /// then the return. Positional params zip with `[receiver?] ++ args`; named
+    /// params match the call's named section by name.
+    fn emit_instance(&mut self, uc: UserCall<'db>, result_target: Vec<(String, SvExpr)>) {
+        let csig = sig_of(self.db, self.krate, uc.def);
+        let doms: Vec<String> = csig
+            .generic_params
+            .iter()
+            .filter(|g| g.kind == GenericParamKind::Domain)
+            .map(|g| g.name.clone())
+            .collect();
+        let params: Vec<(String, Type<'db>, bool)> = csig
+            .params
+            .iter()
+            .map(|p| {
+                let ty = if p.is_self {
+                    self_param_type(self.map, uc.def).unwrap_or_else(|| p.ty.clone())
+                } else {
+                    p.ty.clone()
+                };
+                (p.name.clone(), ty, p.from_named_section)
+            })
+            .collect();
+        let return_type = csig.return_type.clone();
+
+        let module = module_name(self.map, uc.def);
+
+        let mut connections = Vec::new();
+        // 1. `dom` generics → the caller's clock.
+        let clk = self.first_clock();
+        for d in &doms {
+            connections.push((d.clone(), SvExpr::Ident(clk.clone())));
+        }
+        // 2. value/out params, matched to caller connections.
+        let mut positional: Vec<ExprId> = uc.receiver.into_iter().collect();
+        positional.extend(uc.args.iter().map(|a| a.expr));
+        let mut pos_i = 0;
+        for (pname, pty, from_named) in &params {
+            let caller_expr = if *from_named {
+                uc.named.iter().find(|n| &n.name == pname).map(|n| n.expr)
+            } else {
+                let e = positional.get(pos_i).copied();
+                pos_i += 1;
+                e
+            };
+            let callee_leaves = flatten_leaves(self.db, self.krate, pty, true);
+            let caller_leaves = match caller_expr {
+                Some(e) => self.expr_leaves(e),
+                None => Vec::new(),
+            };
+            for (cl, (_, cv)) in callee_leaves.into_iter().zip(caller_leaves) {
+                connections.push((join(pname, &cl.suffix), cv));
+            }
+        }
+        // 3. return → the result target.
+        if let Some(rt) = return_type {
+            let ret_leaves = flatten_leaves(self.db, self.krate, &rt, true);
+            for (rl, (_, tv)) in ret_leaves.into_iter().zip(result_target) {
+                connections.push((join("result", &rl.suffix), tv));
+            }
+        }
+        // Name after building connections, so a nested call (emitted while
+        // resolving an argument) takes the earlier instance number.
+        let name = self.instance_name(&module);
+        self.items.push(SvItem::Instance(SvInstance {
+            module,
+            name,
+            connections,
+        }));
+    }
+
+    /// A user call in value position: instantiate into a fresh `__call_N`
+    /// (declared per field) and return its leaves. A void callee yields a single
+    /// placeholder leaf.
+    fn call_value_leaves(&mut self, uc: UserCall<'db>) -> Vec<(String, SvExpr)> {
+        let Some(rt) = sig_of(self.db, self.krate, uc.def).return_type.clone() else {
+            self.emit_instance(uc, Vec::new());
+            return vec![(String::new(), SvExpr::Lit("0".to_owned()))];
+        };
+        let base = self.fresh_call();
+        let target: Vec<(String, SvExpr)> = flatten_leaves(self.db, self.krate, &rt, true)
+            .into_iter()
+            .map(|l| {
+                let name = join(&base, &l.suffix);
+                self.items.push(SvItem::Logic(SvLogicDecl {
+                    ty: l.ty,
+                    name: name.clone(),
+                }));
+                (l.suffix, SvExpr::Ident(name))
+            })
+            .collect();
+        self.emit_instance(uc, target.clone());
+        target
+    }
+
+    /// Declare each out-arg target that is a fresh implicit `var` (not a port),
+    /// so a `=> ds` binding gets its `logic` before the instance that drives it.
+    fn declare_out_targets(&mut self, uc: &UserCall<'db>) {
+        let targets: Vec<ExprId> = uc
+            .named
+            .iter()
+            .filter(|n| n.out)
+            .map(|n| n.expr)
+            .chain(uc.args.iter().filter(|a| a.out).map(|a| a.expr))
+            .collect();
+        for e in targets {
+            if let ExprKind::Local(l) = self.body.expr(e).kind
+                && self.body.local(l).kind != LocalKind::Param
+            {
+                self.declare_local(l);
+            }
+        }
+    }
+
+    fn fresh_call(&mut self) -> String {
+        let n = self.synth;
+        self.synth += 1;
+        format!("__call_{n}")
+    }
+
+    /// A per-callee instance name: the first instance is the bare module name,
+    /// later ones get `_1`, `_2`, ….
+    fn instance_name(&mut self, module: &str) -> String {
+        let n = self.instance_counts.entry(module.to_owned()).or_insert(0);
+        let name = if *n == 0 {
+            module.to_owned()
+        } else {
+            format!("{module}_{n}")
+        };
+        *n += 1;
+        name
+    }
+}
+
+/// A user `fn`/method call decomposed for instantiation.
+struct UserCall<'db> {
+    def: DefId<'db>,
+    receiver: Option<ExprId>,
+    args: Vec<ConnArg>,
+    named: Vec<NamedArg>,
 }
 
 /// The decomposed parts of a `receiver.reg(reset, init)` method call.
@@ -942,6 +1297,73 @@ endmodule
         assert!(sv.contains("payloadd <= a__payload;"), "{sv}");
         assert!(sv.contains("assign result__valid = a__valid;"), "{sv}");
         assert!(sv.contains("assign result__payload = payloadd;"), "{sv}");
+    }
+
+    #[test]
+    fn user_fn_call_becomes_a_submodule_instance() {
+        // `let x = add3(x)` instantiates add3, wiring its result to the binding;
+        // a nested call value goes through a synthetic `__call_N`.
+        let sv = emit(
+            "fn add3 (x: uint(8)) -> uint(8) { return x + 3; }\n\
+             fn add9 (x: uint(8)) -> uint(8) { let x = add3(x); return add3(x); }",
+        );
+        // The let binds the second `x` (uniquified to x_1), driven by the instance.
+        assert!(sv.contains("    logic [7:0] x_1;"), "{sv}");
+        assert!(sv.contains("    add3 add3 ("), "{sv}");
+        assert!(sv.contains(".x(x)"), "{sv}");
+        assert!(sv.contains(".result(x_1)"), "{sv}");
+        // A second instance drives `result` directly from the return.
+        assert!(sv.contains("    add3 add3_1 ("), "{sv}");
+        assert!(sv.contains(".result(result)"), "{sv}");
+    }
+
+    #[test]
+    fn out_arg_connection_becomes_an_instance() {
+        // A void user call with an out-arg (`downstream => ds`) instantiates the
+        // callee, binding its `out` param to the (implicit-`var`) target `ds`.
+        let sv = emit(
+            "struct Option = option { valid: bool, payload: uint(8) }\n\
+             fn snk { dom clk: Clock, out downstream: Option @clk } ( in upstream: Option @clk ) {\n\
+               downstream = upstream;\n\
+             }\n\
+             fn top { dom clk: Clock } ( in upstream: Option @clk, out downstream: Option @clk ) {\n\
+               snk{downstream => ds}(upstream);\n\
+               snk{downstream => downstream}(ds);\n\
+             }",
+        );
+        // `ds` is a fresh implicit var, declared once before the first instance.
+        assert_eq!(sv.matches("logic ds__valid;").count(), 1, "{sv}");
+        assert!(sv.contains("    snk snk ("), "{sv}");
+        assert!(sv.contains(".downstream__valid(ds__valid)"), "{sv}");
+        assert!(sv.contains("    snk snk_1 ("), "{sv}");
+        assert!(sv.contains(".upstream__valid(ds__valid)"), "{sv}");
+    }
+
+    #[test]
+    fn impl_method_call_instantiates_a_qualified_module() {
+        // `upstream.reg(rstn)` resolves to `Option::reg` → an `Option__reg`
+        // instance with the receiver wired to the `self__…` ports.
+        let sv = emit(
+            "struct Option = option { valid: bool, payload: uint(8) }\n\
+             impl Option {\n\
+               fn reg { dom clk: Clock } (self @clk, rstn: Reset @clk) -> Option @clk {\n\
+                 let payloadd = self.payload.reg(rstn, 0);\n\
+                 return option { valid: self.valid, payload: payloadd };\n\
+               }\n\
+             }\n\
+             fn use_it { dom clk: Clock, rstn: Reset @clk } ( in upstream: Option @clk, out downstream: Option @clk ) {\n\
+               downstream = upstream.reg(rstn);\n\
+             }",
+        );
+        // The method becomes a module named after its owner.
+        assert!(sv.contains("module Option__reg ("), "{sv}");
+        assert!(sv.contains("input  logic self__valid,"), "{sv}");
+        assert!(sv.contains("    logic [7:0] payloadd;"), "{sv}");
+        assert!(sv.contains("payloadd <= self__payload;"), "{sv}");
+        // The call site instantiates it, wiring `self` from `upstream`.
+        assert!(sv.contains("    Option__reg Option__reg ("), "{sv}");
+        assert!(sv.contains(".self__valid(upstream__valid)"), "{sv}");
+        assert!(sv.contains(".result__valid(downstream__valid)"), "{sv}");
     }
 
     #[test]

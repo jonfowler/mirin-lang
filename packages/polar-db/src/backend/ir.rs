@@ -73,6 +73,18 @@ pub enum SvItem {
     AlwaysFf(SvAlwaysFf),
     /// `always_comb begin … end` — combinational procedural block.
     AlwaysComb(SvAlwaysComb),
+    /// `module inst (.port(expr), …);` — a submodule instantiation.
+    Instance(SvInstance),
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SvInstance {
+    /// The instantiated module's name (the callee).
+    pub module: String,
+    /// The instance name within the surrounding module.
+    pub name: String,
+    /// Port connections in declaration order: `(port_name, expression)`.
+    pub connections: Vec<(String, SvExpr)>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -197,6 +209,18 @@ impl fmt::Display for SvItem {
                     fmt_comb_stmt(f, s, 8)?;
                 }
                 writeln!(f, "    end")
+            }
+            Self::Instance(inst) => {
+                writeln!(f, "    {} {} (", inst.module, inst.name)?;
+                for (i, (port, expr)) in inst.connections.iter().enumerate() {
+                    let sep = if i + 1 < inst.connections.len() {
+                        ","
+                    } else {
+                        ""
+                    };
+                    writeln!(f, "        .{port}({expr}){sep}")?;
+                }
+                writeln!(f, "    );")
             }
         }
     }

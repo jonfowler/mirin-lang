@@ -2,5 +2,6 @@
 members = [
   "packages/polar-compiler",
   "packages/polar-db",
+  "packages/polar-lsp",
 ]
 resolver = "3"

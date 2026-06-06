@@ -120,9 +120,21 @@ simplest programs — then widen to instantiation, then parametrics.
   `shift_register`/`if_expression` modulo `__block_N` numbering; all verilator-
   clean. (The `lowered_body`/out-arg desugar + method→module split move to Q5d
   alongside instantiation, where they first matter.)
-- **Q5d — flatten + instantiation.** `flat_body`: aggregate erasure, per-field
-  locals, struct/port domain stamping, submodule `Instance` items. Brings in
-  `packet_struct`/`delay`/`pipeline`/`simple_port`.
+- **Q5d — flatten + instantiation. _(done)_** Done directly in `backend/lower.rs`
+  (no separate `flat_body` query): struct/port params, return, and locals erase
+  to per-field scalar leaves (`base__field`) via `flatten_leaves` — field access
+  projects, record literals rebuild, aggregate `.reg` emits one `always_ff` per
+  field, and a port equation becomes one connection per field (sink chosen by the
+  leaf's module direction). A user `fn`/method call → an `SvInstance` (positional
+  match `[receiver?] ++ args`, named match the named section, `out`-args bind
+  callee `out` params to caller places, return → binding / `result` / a fresh
+  `__call_N`); methods qualify their module name by owner (`Option__reg`). The
+  driver emits every `fn`/method crate-wide (modules erased), prelude excluded.
+  Byte-equivalent to `polar-compiler` on `packet_struct`/`simple_port`/`delay`/
+  `delay_impl`/`multi_call`/`use_across_modules`/`pub_use_reexport` (modulo
+  synthetic `__call_N`/`__block_N` numbering and module ordering); all
+  verilator-clean. **Deferred to Q5-mono:** parametric type/width substitution
+  (`parameterized_port`, `parametric_*`, `equal_width_fn`'s `#(parameter …)`).
 - **Q5e — parity + CLI swap** (non-generic corpus). Output parity (and verilator
   lint via the existing harness); optional top-entity CLI arg; point the CLI at
   `polar-db`; retire `polar-compiler`.

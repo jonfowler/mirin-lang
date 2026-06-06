@@ -1,0 +1,20 @@
+[package]
+name = "polar-lsp"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "polar-lsp"
+path = "src/main.rs"
+
+[dependencies]
+polar-db = { path = "../polar-db" }
+tree-sitter = "0.25"
+
+tower-lsp-server = "0.23"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+ropey = "1.6"
+dashmap = "6"
+
+tracing = "0.1"
+tracing-subscriber = "0.3"
