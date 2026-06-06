@@ -19,12 +19,12 @@ use crate::backend::ir::{
     SvModule, SvPort, SvPortDirection, SvSeqAssign, SvType,
 };
 use crate::base::db::SourceRoot;
-use crate::hir::body::{Block, Body, ExprId, ExprKind, Stmt, body};
+use crate::hir::body::{Block, Body, ExprId, ExprKind, RecordField, Stmt, body};
 use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::{Signature, sig_of};
 use crate::hir::types::{ConstArg, Direction, Domain, GenericParamKind, LocalId, Type, ValueKind};
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
-use crate::nameres::ids::{DefId, DefKind, Namespace};
+use crate::nameres::ids::{DefId, DefKind};
 
 /// QUERY: lower one fn/method to a SystemVerilog module (combinational scalar
 /// subset). Non-fn defs yield an empty module.
@@ -44,8 +44,10 @@ pub fn sv_module<'db>(
     let sig = sig_of(db, krate, def);
     let body = body(db, krate, def);
 
-    // Ports: `dom` generics → clock inputs; value params → in/out by direction;
-    // the return type → an `output` named `result`.
+    // Ports: `dom` generics → clock inputs; value params and the return type are
+    // flattened per-field (`inp: Packet @clk` → `inp__valid` / `inp__payload`),
+    // each field's module direction folding the param/return direction with the
+    // port-field direction.
     let mut ports = Vec::new();
     for g in &sig.generic_params {
         if g.kind == GenericParamKind::Domain {
@@ -57,26 +59,33 @@ pub fn sv_module<'db>(
         }
     }
     for p in &sig.params {
-        ports.push(SvPort {
-            direction: if p.direction == Some(Direction::Out) {
-                SvPortDirection::Output
-            } else {
-                SvPortDirection::Input
-            },
-            ty: sv_type(&p.ty),
-            name: p.name.clone(),
-        });
+        let drives = p.direction == Some(Direction::Out);
+        for leaf in flatten_leaves(db, krate, &p.ty, drives) {
+            ports.push(SvPort {
+                direction: if leaf.drives {
+                    SvPortDirection::Output
+                } else {
+                    SvPortDirection::Input
+                },
+                ty: leaf.ty,
+                name: join(&p.name, &leaf.suffix),
+            });
+        }
     }
     if let Some(rt) = &sig.return_type {
-        ports.push(SvPort {
-            direction: SvPortDirection::Output,
-            ty: sv_type(rt),
-            name: "result".to_owned(),
-        });
+        for leaf in flatten_leaves(db, krate, rt, true) {
+            ports.push(SvPort {
+                direction: SvPortDirection::Output,
+                ty: leaf.ty,
+                name: join("result", &leaf.suffix),
+            });
+        }
     }
 
     let inf = infer(db, krate, def);
     let mut lower = SvLower {
+        db,
+        krate,
         map,
         body,
         inf,
@@ -119,14 +128,15 @@ fn unique_local_names(body: &Body<'_>) -> Vec<String> {
 #[salsa::tracked(returns(ref))]
 pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
     let map = crate_def_map(db, krate);
-    let root = map.root();
+    // Modules are erased before codegen, so every `fn` in the crate (at the root
+    // or nested in a `mod`) becomes a top-level SV module. Name-sorted for a
+    // deterministic order (source-order parity with the oracle is a Q5e detail).
+    let prelude = map.prelude();
     let mut fns: Vec<(String, DefId)> = map
-        .module(root)
-        .items()
-        .filter(|((_, ns), b)| {
-            *ns == Namespace::Item && map.def_data(b.def).map(|d| d.kind) == Some(DefKind::Fn)
-        })
-        .map(|((name, _), b)| (name.clone(), b.def))
+        .defs()
+        .filter_map(|d| map.def_data(d).map(|data| (d, data)))
+        .filter(|(_, data)| data.kind == DefKind::Fn && data.module != prelude)
+        .map(|(d, data)| (data.name.clone(), d))
         .collect();
     fns.sort_by(|a, b| a.0.cmp(&b.0));
     let modules = fns
@@ -137,6 +147,8 @@ pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
 }
 
 struct SvLower<'a, 'db> {
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
     map: &'a CrateDefMap<'db>,
     body: &'a Body<'db>,
     inf: &'a Inference<'db>,
@@ -153,54 +165,87 @@ impl<'db> SvLower<'_, 'db> {
     fn lower_top_block(&mut self, block: &Block) {
         self.lower_stmts(&block.stmts);
         if let Some(tail) = block.tail {
-            let rhs = self.expr_value(tail);
-            self.push_assign(SvExpr::Ident("result".to_owned()), rhs);
+            self.drive_result(tail);
         }
     }
 
     fn lower_stmts(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             match stmt {
-                Stmt::Let { local, value } => {
-                    let name = self.local_name(*local);
-                    self.items.push(SvItem::Logic(SvLogicDecl {
-                        ty: self.local_type(*local),
-                        name: name.clone(),
-                    }));
-                    // `let x = e.reg(rst, init)` — the let *is* the register.
-                    if let Some(reg) = self.as_reg(*value) {
-                        let clock = self.clock_of_type(self.inf.local_type(*local));
-                        self.emit_reg(name, clock, reg);
-                    } else {
-                        let rhs = self.expr_value(*value);
-                        self.push_assign(SvExpr::Ident(name), rhs);
-                    }
-                }
-                Stmt::VarDecl { local } => self.items.push(SvItem::Logic(SvLogicDecl {
-                    ty: self.local_type(*local),
-                    name: self.local_name(*local),
-                })),
-                Stmt::Equation { lhs, rhs } => {
-                    // `place = e.reg(rst, init)` — `place` is the register.
-                    if let (ExprKind::Local(l), Some(reg)) =
-                        (&self.body.expr(*lhs).kind, self.as_reg(*rhs))
-                    {
-                        let name = self.local_name(*l);
-                        let clock = self.clock_of_type(self.inf.local_type(*l));
-                        self.emit_reg(name, clock, reg);
-                    } else {
-                        let lhs = self.expr_value(*lhs);
-                        let rhs = self.expr_value(*rhs);
-                        self.push_assign(lhs, rhs);
-                    }
-                }
-                Stmt::Return { value } => {
-                    let rhs = self.expr_value(*value);
-                    self.push_assign(SvExpr::Ident("result".to_owned()), rhs);
-                }
-                // Bare expression statements (instance calls) land in Q5d.
+                Stmt::Let { local, value } => self.lower_let(*local, *value),
+                Stmt::VarDecl { local } => self.declare_local(*local),
+                Stmt::Equation { lhs, rhs } => self.lower_equation(*lhs, *rhs),
+                Stmt::Return { value } => self.drive_result(*value),
+                // Bare expression statements (instance calls) land in Q5d-2.
                 Stmt::Expr(_) => {}
             }
+        }
+    }
+
+    /// `let x = value;`. A builtin `.reg` makes the let the register itself
+    /// (per field); otherwise the local's leaves are declared and each driven by
+    /// the corresponding leaf of the value.
+    fn lower_let(&mut self, local: LocalId, value: ExprId) {
+        if let Some(reg) = self.as_reg(value) {
+            let leaves = self.local_type_leaves(local);
+            let base = self.local_name(local);
+            let clock = self.clock_of_type(self.inf.local_type(local));
+            self.emit_registers(&base, &leaves, reg, clock, true);
+            return;
+        }
+        self.declare_local(local);
+        let target = self.local_leaves(local);
+        let value_leaves = self.expr_leaves(value);
+        for ((_, place), (_, v)) in target.into_iter().zip(value_leaves) {
+            self.push_assign(place, v);
+        }
+    }
+
+    /// A driving equation `lhs = rhs`, per field. A builtin `.reg` on the RHS
+    /// makes the (already-declared) LHS local the register; otherwise each field
+    /// is a connection whose sink is chosen by the leaves' module direction.
+    fn lower_equation(&mut self, lhs: ExprId, rhs: ExprId) {
+        if let (ExprKind::Local(l), Some(reg)) = (&self.body.expr(lhs).kind, self.as_reg(rhs)) {
+            let l = *l;
+            let leaves = self.local_type_leaves(l);
+            let base = self.local_name(l);
+            let clock = self.clock_of_type(self.inf.local_type(l));
+            self.emit_registers(&base, &leaves, reg, clock, false);
+            return;
+        }
+        let lhs_leaves = self.place_leaves_dir(lhs);
+        let rhs_leaves = self.value_leaves_dir(rhs);
+        for ((lp, ld), (rp, rd)) in lhs_leaves.into_iter().zip(rhs_leaves) {
+            // The leaf the body drives is the sink (LHS of the `assign`).
+            let (sink, src) = match (ld, rd) {
+                (true, _) => (lp, rp),
+                (false, true) => (rp, lp),
+                (false, false) => (lp, rp),
+            };
+            self.push_assign(sink, src);
+        }
+    }
+
+    /// Drive `result` (the return port) per field from `value`'s leaves.
+    fn drive_result(&mut self, value: ExprId) {
+        let Some(rt) = self.sig.return_type.clone() else {
+            return;
+        };
+        let result_leaves = flatten_leaves(self.db, self.krate, &rt, true);
+        let value_leaves = self.expr_leaves(value);
+        for (rl, (_, v)) in result_leaves.into_iter().zip(value_leaves) {
+            self.push_assign(SvExpr::Ident(join("result", &rl.suffix)), v);
+        }
+    }
+
+    /// Declare a `logic` for each of a local's leaves.
+    fn declare_local(&mut self, local: LocalId) {
+        let base = self.local_name(local);
+        for leaf in self.local_type_leaves(local) {
+            self.items.push(SvItem::Logic(SvLogicDecl {
+                ty: leaf.ty,
+                name: join(&base, &leaf.suffix),
+            }));
         }
     }
 
@@ -213,13 +258,86 @@ impl<'db> SvLower<'_, 'db> {
         self.local_names[local.0 as usize].clone()
     }
 
-    /// A local's SV type: its inferred type, falling back to its declared type.
-    fn local_type(&self, local: LocalId) -> SvType {
+    /// A local's type: inferred, falling back to declared.
+    fn local_ty(&self, local: LocalId) -> Option<Type<'db>> {
         self.inf
             .local_type(local)
-            .or(self.body.local(local).declared_ty.as_ref())
-            .map(sv_type)
-            .unwrap_or_else(SvType::bit)
+            .cloned()
+            .or_else(|| self.body.local(local).declared_ty.clone())
+    }
+
+    /// The scalar leaves of a local's type (scalar → one bit-typed leaf).
+    fn local_type_leaves(&self, local: LocalId) -> Vec<Leaf> {
+        match self.local_ty(local) {
+            Some(t) => flatten_leaves(self.db, self.krate, &t, true),
+            None => vec![Leaf {
+                suffix: String::new(),
+                ty: SvType::bit(),
+                drives: true,
+            }],
+        }
+    }
+
+    /// A local's leaves as `(suffix, place-ident)` value expressions.
+    fn local_leaves(&self, local: LocalId) -> Vec<(String, SvExpr)> {
+        let base = self.local_name(local);
+        self.local_type_leaves(local)
+            .into_iter()
+            .map(|leaf| {
+                (
+                    leaf.suffix.clone(),
+                    SvExpr::Ident(join(&base, &leaf.suffix)),
+                )
+            })
+            .collect()
+    }
+
+    /// A local's leaves as `(place-ident, drives)`, where `drives` folds the
+    /// local's own direction (an `out` param drives; an `in` param reads) with
+    /// each port field's direction — used to pick an equation's sink.
+    fn local_leaves_dir(&self, local: LocalId) -> Vec<(SvExpr, bool)> {
+        let base = self.local_name(local);
+        let drives = self.local_base_drives(local);
+        match self.local_ty(local) {
+            Some(t) => flatten_leaves(self.db, self.krate, &t, drives)
+                .into_iter()
+                .map(|leaf| (SvExpr::Ident(join(&base, &leaf.suffix)), leaf.drives))
+                .collect(),
+            None => vec![(SvExpr::Ident(base), drives)],
+        }
+    }
+
+    /// Does the body drive this local? An `out` value param does; everything
+    /// else (an `in`/undirected param, a `let`/`var`) is read or internally
+    /// driven, so it defaults to `true` (LHS-sink) for non-port equations.
+    fn local_base_drives(&self, local: LocalId) -> bool {
+        self.sig
+            .params
+            .iter()
+            .find(|p| p.local == local)
+            .map_or(true, |p| p.direction == Some(Direction::Out))
+    }
+
+    /// The leaves of an equation place (`lhs`/`rhs`): a local carries its
+    /// direction; anything else is a single driven scalar.
+    fn place_leaves_dir(&mut self, e: ExprId) -> Vec<(SvExpr, bool)> {
+        match self.body.expr(e).kind {
+            ExprKind::Local(l) => self.local_leaves_dir(l),
+            _ => vec![(self.expr_value(e), true)],
+        }
+    }
+
+    /// The leaves of an equation's RHS value: a local carries its direction;
+    /// anything else (field access, record) is flattened as a driven source.
+    fn value_leaves_dir(&mut self, e: ExprId) -> Vec<(SvExpr, bool)> {
+        match self.body.expr(e).kind {
+            ExprKind::Local(l) => self.local_leaves_dir(l),
+            _ => self
+                .expr_leaves(e)
+                .into_iter()
+                .map(|(_, v)| (v, true))
+                .collect(),
+        }
     }
 
     /// An expression's SV type, falling back to 1-bit.
@@ -246,27 +364,64 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
-    /// Emit `always_ff @(posedge clock) … <target> <= …` for a `.reg`. The
-    /// `logic` declaration for `target` is the caller's responsibility.
-    fn emit_reg(&mut self, target: String, clock: String, reg: RegCall) {
-        let d = self.expr_value(reg.d_input);
-        let init = self.expr_value(reg.init);
-        let reset = match self.expr_value(reg.reset) {
+    /// Emit one `always_ff @(posedge clock)` per leaf of a `.reg` target,
+    /// synchronous active-low reset. The D-input and init are flattened in the
+    /// same field order as the target's leaves. `declare` emits each leaf's
+    /// `logic` immediately before its block (the let form); an equation form
+    /// leaves declaration to the preceding `var`.
+    fn emit_registers(
+        &mut self,
+        base: &str,
+        leaves: &[Leaf],
+        reg: RegCall,
+        clock: String,
+        declare: bool,
+    ) {
+        let reset = self.reset_name(reg.reset);
+        let d = self.expr_leaves(reg.d_input);
+        let init = self.expr_leaves(reg.init);
+        for (i, leaf) in leaves.iter().enumerate() {
+            let name = join(base, &leaf.suffix);
+            if declare {
+                self.items.push(SvItem::Logic(SvLogicDecl {
+                    ty: leaf.ty.clone(),
+                    name: name.clone(),
+                }));
+            }
+            let zero = || SvExpr::Lit("0".to_owned());
+            let d_in = d.get(i).map(|(_, e)| e.clone()).unwrap_or_else(zero);
+            let init_v = init.get(i).map(|(_, e)| e.clone()).unwrap_or_else(zero);
+            self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
+                clock: clock.clone(),
+                reset: Some(reset.clone()),
+                reset_body: vec![SvSeqAssign {
+                    lhs: SvExpr::Ident(name.clone()),
+                    rhs: init_v,
+                }],
+                clocked_body: vec![SvSeqAssign {
+                    lhs: SvExpr::Ident(name),
+                    rhs: d_in,
+                }],
+            }));
+        }
+    }
+
+    /// The reset signal's name (a bare ident, else its rendered form).
+    fn reset_name(&mut self, reset: ExprId) -> String {
+        match self.expr_value(reset) {
             SvExpr::Ident(s) => s,
             other => other.to_string(),
+        }
+    }
+
+    /// Emit a single scalar register into an already-declared `target`.
+    fn emit_reg(&mut self, target: String, clock: String, reg: RegCall) {
+        let leaf = Leaf {
+            suffix: String::new(),
+            ty: SvType::bit(),
+            drives: true,
         };
-        self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
-            clock,
-            reset: Some(reset),
-            reset_body: vec![SvSeqAssign {
-                lhs: SvExpr::Ident(target.clone()),
-                rhs: init,
-            }],
-            clocked_body: vec![SvSeqAssign {
-                lhs: SvExpr::Ident(target),
-                rhs: d,
-            }],
-        }));
+        self.emit_registers(&target, std::slice::from_ref(&leaf), reg, clock, false);
     }
 
     fn fresh_block(&mut self) -> String {
@@ -327,9 +482,68 @@ impl<'db> SvLower<'_, 'db> {
                 let b = b.clone();
                 self.block_value(&b)
             }
-            // Field access, records, user method calls → Q5d.
+            // Field access / records in scalar position: take the single leaf.
+            ExprKind::Field { .. } | ExprKind::Record { .. } => self
+                .expr_leaves(expr)
+                .into_iter()
+                .next()
+                .map(|(_, e)| e)
+                .unwrap_or_else(|| SvExpr::Lit("0".to_owned())),
+            // User method calls → Q5d-2.
             _ => SvExpr::Lit("0".to_owned()),
         }
+    }
+
+    /// An expression's scalar leaves as `(suffix, value)`, in struct-field order.
+    /// Aggregates expand (a struct local → one leaf per field, a field access
+    /// projects, a record literal rebuilds); scalars are a single empty-suffix
+    /// leaf via [`Self::expr_value`].
+    fn expr_leaves(&mut self, expr: ExprId) -> Vec<(String, SvExpr)> {
+        match &self.body.expr(expr).kind {
+            ExprKind::Local(l) => self.local_leaves(*l),
+            ExprKind::Field { receiver, field } => {
+                let receiver = *receiver;
+                let field = field.clone();
+                self.expr_leaves(receiver)
+                    .into_iter()
+                    .filter_map(|(suf, e)| strip_field(&suf, &field).map(|rest| (rest, e)))
+                    .collect()
+            }
+            ExprKind::Record { ctor, fields } => {
+                let ctor = *ctor;
+                let fields = fields.clone();
+                self.record_leaves(ctor, &fields)
+            }
+            _ => vec![(String::new(), self.expr_value(expr))],
+        }
+    }
+
+    /// The leaves of a record literal, in the constructor's declared field order
+    /// (each field's value flattened and prefixed with the field name).
+    fn record_leaves(
+        &mut self,
+        ctor: Option<DefId<'db>>,
+        fields: &[RecordField],
+    ) -> Vec<(String, SvExpr)> {
+        // The constructor's fields live on the struct/port it is owned by.
+        let owner = ctor.and_then(|c| self.map.def_data(c).and_then(|d| d.owner));
+        let Some(owner) = owner else {
+            return vec![(String::new(), SvExpr::Lit("0".to_owned()))];
+        };
+        let order: Vec<String> = sig_of(self.db, self.krate, owner)
+            .fields
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        let mut out = Vec::new();
+        for fname in &order {
+            if let Some(rf) = fields.iter().find(|rf| &rf.name == fname) {
+                for (suf, e) in self.expr_leaves(rf.value) {
+                    out.push((join(fname, &suf), e));
+                }
+            }
+        }
+        out
     }
 
     /// `when ev { … d }` → a reset-less `always_ff @(posedge <ev-clock>)` whose
@@ -462,6 +676,95 @@ struct RegCall {
     init: ExprId,
 }
 
+/// One scalar leaf of a (possibly aggregate) value: its `__`-suffix relative to
+/// the binding's base name, its scalar SV type, and whether *this* module drives
+/// it (an output, vs. an input it reads).
+struct Leaf {
+    /// `""` for a scalar; `"valid"`, `"valid__x"` for (nested) struct/port fields.
+    suffix: String,
+    ty: SvType,
+    drives: bool,
+}
+
+/// Flatten a type into its scalar leaves. A struct/port erases to one leaf per
+/// terminal field (`Packet` → `valid` + `payload`); a port folds each field's
+/// direction with `drives` (the binding's own drive: an `out` param / a return
+/// drives, an `in` param reads) so a leaf is an output iff this module drives it.
+/// A scalar is a single leaf with the given `drives`.
+fn flatten_leaves(
+    db: &dyn salsa::Database,
+    krate: SourceRoot,
+    ty: &Type<'_>,
+    drives: bool,
+) -> Vec<Leaf> {
+    match ty {
+        Type::Value {
+            kind: ValueKind::Struct { def, .. },
+            ..
+        } => {
+            let sig = sig_of(db, krate, *def);
+            let mut out = Vec::new();
+            for f in &sig.fields {
+                for sub in flatten_leaves(db, krate, &f.ty, drives) {
+                    out.push(Leaf {
+                        suffix: join(&f.name, &sub.suffix),
+                        ty: sub.ty,
+                        drives: sub.drives,
+                    });
+                }
+            }
+            out
+        }
+        Type::Port { def, .. } => {
+            let sig = sig_of(db, krate, *def);
+            let mut out = Vec::new();
+            for f in &sig.fields {
+                // The module drives a port field iff its own drive matches the
+                // field's producer direction (`out` field of an `out` port, or
+                // `in` field of an `in` port).
+                let child = drives == (f.direction == Some(Direction::Out));
+                for sub in flatten_leaves(db, krate, &f.ty, child) {
+                    out.push(Leaf {
+                        suffix: join(&f.name, &sub.suffix),
+                        ty: sub.ty,
+                        drives: sub.drives,
+                    });
+                }
+            }
+            out
+        }
+        _ => vec![Leaf {
+            suffix: String::new(),
+            ty: sv_type(ty),
+            drives,
+        }],
+    }
+}
+
+/// Join a base name with a field suffix using the `__` separator. An empty
+/// suffix (a scalar leaf) leaves the base untouched.
+fn join(base: &str, suffix: &str) -> String {
+    if suffix.is_empty() {
+        base.to_owned()
+    } else {
+        format!("{base}__{suffix}")
+    }
+}
+
+/// Project a leaf suffix through a field access: `"payload"` under `.payload`
+/// becomes the scalar leaf `""`; `"a__b"` under `.a` becomes `"b"`; a suffix for
+/// a different field yields `None`.
+fn strip_field(suffix: &str, field: &str) -> Option<String> {
+    if suffix == field {
+        Some(String::new())
+    } else {
+        suffix
+            .strip_prefix(field)
+            .and_then(|r| r.strip_prefix("__"))
+            .map(str::to_owned)
+    }
+}
+
 /// Lower a value type to an SV type. Concrete `uint(W)` → `[W-1:0]`; `bool` /
 /// `Reset` / `Clock` → 1-bit. Parametric widths (`uint(N)`) become SV
 /// `parameter`s in a later slice; here a non-literal width falls back to 1-bit.
@@ -547,6 +850,98 @@ endmodule
         assert!(sv.contains("data_1 <= (data + 1);"), "{sv}");
         assert!(sv.contains("data_2 <= (data_1 * 2);"), "{sv}");
         assert!(sv.contains("assign result = data_2;"), "{sv}");
+    }
+
+    #[test]
+    fn struct_param_reg_and_return_flatten_per_field() {
+        // The `packet_struct.plr` shape: a struct param/return erase to
+        // per-field ports; `inp.reg(rstn, packet{…})` is a per-field register
+        // (note the `false` init renders `1'b0`); `return held` drives each
+        // result field. Byte-parity with polar-compiler.
+        let sv = emit(
+            "struct Packet = packet { valid: bool, payload: uint(8) }\n\
+             fn registerPacket { dom clk: Clock, rstn: Reset @clk = high } ( inp: Packet @clk ) -> Packet @clk {\n\
+               let held = inp.reg(rstn, packet { valid: false, payload: 0 });\n\
+               return held;\n\
+             }",
+        );
+        let expected = "\
+module registerPacket (
+    input  logic clk,
+    input  logic rstn,
+    input  logic inp__valid,
+    input  logic [7:0] inp__payload,
+    output logic result__valid,
+    output logic [7:0] result__payload
+);
+    logic held__valid;
+    always_ff @(posedge clk) begin
+        if (!rstn) begin
+            held__valid <= 1'b0;
+        end else begin
+            held__valid <= inp__valid;
+        end
+    end
+    logic [7:0] held__payload;
+    always_ff @(posedge clk) begin
+        if (!rstn) begin
+            held__payload <= 0;
+        end else begin
+            held__payload <= inp__payload;
+        end
+    end
+    assign result__valid = held__valid;
+    assign result__payload = held__payload;
+endmodule
+";
+        assert_eq!(sv, expected, "\n--- got ---\n{sv}");
+    }
+
+    #[test]
+    fn port_equation_flattens_with_per_field_direction() {
+        // The `simple_port.plr` shape: a port param flattens per field with the
+        // module direction folding param + field direction; `downstream =
+        // upstream` becomes one connection per field, the `in` field flowing the
+        // other way. Byte-parity with polar-compiler.
+        let sv = emit(
+            "port Stream8 = stream8 { out valid: bool, out data: uint(8), in ready: bool }\n\
+             fn connectStream { dom clk: Clock } ( upstream: Stream8 @clk, out downstream: Stream8 @clk ) {\n\
+               downstream = upstream;\n\
+             }",
+        );
+        let expected = "\
+module connectStream (
+    input  logic clk,
+    input  logic upstream__valid,
+    input  logic [7:0] upstream__data,
+    output logic upstream__ready,
+    output logic downstream__valid,
+    output logic [7:0] downstream__data,
+    input  logic downstream__ready
+);
+    assign downstream__valid = upstream__valid;
+    assign downstream__data = upstream__data;
+    assign upstream__ready = downstream__ready;
+endmodule
+";
+        assert_eq!(sv, expected, "\n--- got ---\n{sv}");
+    }
+
+    #[test]
+    fn field_access_and_record_literal_flatten() {
+        // The `reg2` shape (no instantiation): `a.payload` projects to a leaf,
+        // the returned `option { … }` record drives each result field.
+        let sv = emit(
+            "struct Option = option { valid: bool, payload: uint(8) }\n\
+             fn reg2 { dom clk: Clock } ( a: Option @clk, rstn: Reset @clk ) -> Option @clk {\n\
+               let payloadd = a.payload.reg(rstn, 0);\n\
+               return option { valid: a.valid, payload: payloadd };\n\
+             }",
+        );
+        assert!(sv.contains("    logic [7:0] payloadd;"), "{sv}");
+        assert!(sv.contains("payloadd <= a__payload;"), "{sv}");
+        assert!(sv.contains("assign result__valid = a__valid;"), "{sv}");
+        assert!(sv.contains("assign result__payload = payloadd;"), "{sv}");
     }
 
     #[test]
