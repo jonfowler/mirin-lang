@@ -36,6 +36,9 @@
 (function_definition name: (identifier) @function)
 (module_definition name: (identifier) @namespace)
 
+; Constructor uses — `packet { .. }` / `option { .. }` in expressions
+(record_constructor_expression constructor: (identifier) @constructor)
+
 ; Type expressions — the head name is always a type
 (type_expression name: (identifier) @type)
 

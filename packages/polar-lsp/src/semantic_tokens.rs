@@ -178,6 +178,26 @@ mod tests {
     }
 
     #[test]
+    fn constructor_is_highlighted_at_definition_and_use() {
+        // `packet` is the constructor; it must be tagged at the `struct` def
+        // AND at the `packet { .. }` use site (record_constructor_expression).
+        let src = "struct Packet = packet {\n  valid: bool,\n}\n\n\
+            fn f\n  { dom clk: Clock }\n  ( inp: Packet @clk )\n  -> Packet @clk\n  {\n    \
+            let held = packet { valid: false };\n    return held;\n  }\n";
+        let doc = Document::open(src);
+        let toks = compute(&doc.rope, &doc.tree, &query(), Encoding::Utf8);
+        // CONSTRUCTOR maps to FUNCTION (legend index 2); real `fn` names resolve
+        // to TYPE via an earlier pattern, so a type-2 count of 2 means both
+        // constructor sites (def + use) are tagged.
+        let decoded = decode(&toks);
+        let ctors = decoded.iter().filter(|&&(_, _, _, ty)| ty == 2).count();
+        assert_eq!(
+            ctors, 2,
+            "constructor not tagged at both sites: {decoded:?}"
+        );
+    }
+
+    #[test]
     fn tokens_are_sorted_and_non_overlapping() {
         let doc = Document::open(ADD_CONSTANT);
         let toks = compute(&doc.rope, &doc.tree, &query(), Encoding::Utf8);
