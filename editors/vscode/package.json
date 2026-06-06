@@ -4,6 +4,11 @@
   "description": "Polar HDL language support: syntax highlighting + the polar-lsp language server",
   "version": "0.1.0",
   "publisher": "jonfowler",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jonfowler/polar.git",
+    "directory": "editors/vscode"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
