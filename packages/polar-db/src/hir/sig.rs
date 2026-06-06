@@ -54,6 +54,9 @@ pub struct Param<'db> {
     /// `true` if declared in the `{ … }` named section — call sites match named
     /// args to these, positional args to the rest (in declared order).
     pub from_named_section: bool,
+    /// The raw source of a `= default` value, if any (`high`, `0`) — a call that
+    /// omits this param wires the default at the instance.
+    pub default: Option<String>,
 }
 
 /// A struct/port field: its name, type, and (ports only) direction.
@@ -226,6 +229,9 @@ fn lower_fn_sig<'db>(
             direction: direction_of(p, source),
             is_self,
             from_named_section: *named,
+            default: p
+                .child_by_field_name("default")
+                .map(|n| node_text(&n, source)),
         });
     }
 
@@ -427,16 +433,19 @@ fn classify(node: &Node, source: &str) -> ParamClass {
     if param_name(node, source) == "self" {
         return ParamClass::Value;
     }
-    match field_text(node, "kind", source).as_str() {
-        "dom" => return ParamClass::Generic(GenericParamKind::Domain),
-        "param" => return ParamClass::Generic(GenericParamKind::Const),
-        _ => {}
+    if field_text(node, "kind", source) == "dom" {
+        return ParamClass::Generic(GenericParamKind::Domain);
     }
-    // `A: Type` — a Type-kind generic.
+    // A `: Type` annotation makes it a Type-kind generic — this wins over a
+    // `param` keyword (`param A: Type` is type-generic, not const-generic).
     if let Some(ty) = node.child_by_field_name("type")
         && field_text(&ty, "name", source) == "Type"
     {
         return ParamClass::Generic(GenericParamKind::Type);
+    }
+    // `param N: usize` (or bare `param`) — a Const-kind generic.
+    if field_text(node, "kind", source) == "param" {
+        return ParamClass::Generic(GenericParamKind::Const);
     }
     ParamClass::Value
 }

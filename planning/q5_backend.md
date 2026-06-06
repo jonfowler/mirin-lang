@@ -160,12 +160,20 @@ simplest programs — then widen to instantiation, then parametrics.
     width equality as a `width_residual`; `sv_module` emits `initial assert
     (n == m)` (new `SvItem::InitialAssert`/`SvBinOp::Eq`). Parity on
     `equal_width_fn`. (First sliver of the deferred Q4b residual machinery.)
-  - **Q5-mono-d _(remaining)_** — true **Type-kind fn monomorphisation**: the
-    `mono_instances` collector + interned `MonoInstance` + specialised
-    `Callee__TypeArg` modules. Needed only by `parametric_struct_extended`
-    (`pipeline_para{ param A: Type }` → `pipeline_para__Write`). Gated on a
-    front-end fix: `param A: Type` must classify as **Type-kind** (today it
-    classifies Const). The 22nd-example parity holdout.
+  - **Q5-mono-d _(done)_** — true **Type-kind fn monomorphisation**. Front-end
+    fix: `param A: Type` now classifies as **Type-kind** (the `: Type` wins over
+    the `param` keyword), which exposed and fixed an `infer` bug — `substitute`
+    didn't recurse into struct/port *args*, so `Bus(A)` wasn't instantiated.
+    Back end: `verilog` skips type-generic fns from direct emission; `build_module`
+    takes a `self_subst` for the def's own generics; `emit_instance` binds a
+    type-generic callee's Type params by matching the call's actual arg types
+    (`match_type`), names the copy `Callee__Arg` (`mono_name`), records a
+    `MonoReq`, and the driver emits one specialised module per unique instance
+    (worklist, appended after the source-ordered concrete modules). Omitted
+    defaulted params wire their default at the instance (`sig::Param` gained
+    `default`; `default_value` renders `high`→`1'b1` etc.). `parametric_struct_
+    extended` byte-identical to polar-compiler — **whole 22-example corpus now at
+    parity** (non-parametric ones modulo synthetic `__call_N`/`__block_N`).
 
 Each slice promotes more of `tests/examples.rs` from "runs" to "emits matching
 Verilog".

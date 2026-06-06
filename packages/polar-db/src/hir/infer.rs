@@ -797,7 +797,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             },
             Type::Port { def, args, domain } => Type::Port {
                 def: *def,
-                args: args.clone(),
+                args: self.subst_args(args, subst),
                 domain: self.subst_domain(*domain, subst),
             },
             other => other.clone(),
@@ -809,8 +809,31 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             ValueKind::UInt { width } => ValueKind::UInt {
                 width: self.subst_const(width, subst),
             },
+            // A parametric struct's args are themselves in terms of the
+            // enclosing def's generics — instantiate them too.
+            ValueKind::Struct { def, args } => ValueKind::Struct {
+                def: *def,
+                args: self.subst_args(args, subst),
+            },
             other => other.clone(),
         }
+    }
+
+    fn subst_args(
+        &mut self,
+        args: &GenericArgs<'db>,
+        subst: &[GenericArg<'db>],
+    ) -> GenericArgs<'db> {
+        GenericArgs(
+            args.0
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(self.substitute(t, subst)),
+                    GenericArg::Const(c) => GenericArg::Const(self.subst_const(c, subst)),
+                    GenericArg::Domain(d) => GenericArg::Domain(self.subst_domain(*d, subst)),
+                })
+                .collect(),
+        )
     }
 
     fn subst_const(&self, width: &ConstArg, subst: &[GenericArg<'db>]) -> ConstArg {

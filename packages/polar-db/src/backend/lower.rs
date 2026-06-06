@@ -27,8 +27,11 @@
 //! (via [`sv_type`]). When [`flatten_leaves`] descends a struct/port with generic
 //! args, it substitutes the def's `Param`/`ConstArg::Param`/`Domain::Param` with
 //! the use-site args ([`subst_type`]) — a `Bus(uint(8))` field `data: A` becomes
-//! `uint(8)`. (Type-kind *fn* monomorphisation — a generic `fn` specialised per
-//! concrete type — is the remaining collector piece.)
+//! `uint(8)`. A **type-generic `fn`** is not emitted directly: [`verilog`] skips
+//! it, and each call ([`SvLower::emit_instance`]) binds its Type params from the
+//! actual arg types ([`match_type`]), names a specialised copy `Callee__Arg`
+//! ([`mono_name`]), and the driver emits one module per unique instance via
+//! [`build_module`] with a `self_subst`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -51,19 +54,44 @@ use crate::nameres::ids::{DefId, DefKind};
 use crate::syntax::ast_id::ast_id_map;
 
 /// QUERY: lower one fn/method to a SystemVerilog module (combinational scalar
-/// subset). Non-fn defs yield an empty module.
+/// subset). Non-fn defs yield an empty module. (A type-generic fn lowers with no
+/// substitution — its concrete copies come from [`verilog`]'s mono collector.)
 #[salsa::tracked(returns(ref))]
 pub fn sv_module<'db>(
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
     def: DefId<'db>,
 ) -> SvModule {
+    let name = module_name(crate_def_map(db, krate), def);
+    build_module(db, krate, def, &[], name).0
+}
+
+/// A request to monomorphise a type-generic callee at concrete type args: the
+/// callee def, the substitution for its own generics, and the specialised module
+/// name (`pipeline_para__Write`).
+struct MonoReq<'db> {
+    callee: DefId<'db>,
+    subst: Vec<Option<GenericArg<'db>>>,
+    name: String,
+}
+
+/// Lower a def to one `SvModule` named `name`, substituting the def's own
+/// generics by `self_subst` (empty for a plain fn; a Type-kind binding for a
+/// monomorphised copy). Returns the module plus any type-generic callees it
+/// instantiated (for the driver to emit specialised copies of).
+fn build_module<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+    self_subst: &[Option<GenericArg<'db>>],
+    name: String,
+) -> (SvModule, Vec<MonoReq<'db>>) {
     let map = crate_def_map(db, krate);
     let Some(data) = map.def_data(def) else {
-        return SvModule::default();
+        return (SvModule::default(), Vec::new());
     };
     if !matches!(data.kind, DefKind::Fn | DefKind::Method) {
-        return SvModule::default();
+        return (SvModule::default(), Vec::new());
     }
     let sig = sig_of(db, krate, def);
     let body = body(db, krate, def);
@@ -71,7 +99,7 @@ pub fn sv_module<'db>(
     // Ports: `dom` generics → clock inputs; value params and the return type are
     // flattened per-field (`inp: Packet @clk` → `inp__valid` / `inp__payload`),
     // each field's module direction folding the param/return direction with the
-    // port-field direction.
+    // port-field direction. `self_subst` resolves the def's own type generics.
     let mut ports = Vec::new();
     for g in &sig.generic_params {
         if g.kind == GenericParamKind::Domain {
@@ -83,11 +111,12 @@ pub fn sv_module<'db>(
         }
     }
     for p in &sig.params {
-        let ty = if p.is_self {
+        let ty0 = if p.is_self {
             self_param_type(map, def).unwrap_or_else(|| p.ty.clone())
         } else {
             p.ty.clone()
         };
+        let ty = subst_type(&ty0, self_subst);
         let drives = p.direction == Some(Direction::Out);
         for leaf in flatten_leaves(db, krate, &ty, drives, &sig.generic_params) {
             ports.push(SvPort {
@@ -102,7 +131,8 @@ pub fn sv_module<'db>(
         }
     }
     if let Some(rt) = &sig.return_type {
-        for leaf in flatten_leaves(db, krate, rt, true, &sig.generic_params) {
+        let rt = subst_type(rt, self_subst);
+        for leaf in flatten_leaves(db, krate, &rt, true, &sig.generic_params) {
             ports.push(SvPort {
                 direction: SvPortDirection::Output,
                 ty: leaf.ty,
@@ -120,11 +150,13 @@ pub fn sv_module<'db>(
         body,
         inf,
         sig,
+        self_subst: self_subst.to_vec(),
         local_names: unique_local_names(body),
         items: Vec::new(),
         synth: 0,
         instance_counts: HashMap::new(),
         declared: HashSet::new(),
+        mono_reqs: Vec::new(),
     };
     lower.lower_top_block(body.block());
 
@@ -157,11 +189,120 @@ pub fn sv_module<'db>(
         })
         .collect();
 
-    SvModule {
-        name: module_name(map, def),
-        parameters,
-        ports,
-        items: lower.items,
+    (
+        SvModule {
+            name,
+            parameters,
+            ports,
+            items: lower.items,
+        },
+        lower.mono_reqs,
+    )
+}
+
+/// `true` if a def has any Type-kind generic param (so it is not emitted
+/// directly — only its monomorphised copies are).
+fn is_type_generic(sig: &Signature<'_>) -> bool {
+    sig.generic_params
+        .iter()
+        .any(|g| g.kind == GenericParamKind::Type)
+}
+
+/// The specialised module name for a type-generic callee at `subst`:
+/// `Callee__Arg` per bound Type-kind generic (`pipeline_para__Write`).
+fn mono_name<'db>(
+    map: &CrateDefMap<'db>,
+    callee: DefId<'db>,
+    sig: &Signature<'db>,
+    subst: &[Option<GenericArg<'db>>],
+) -> String {
+    let mut name = module_name(map, callee);
+    for (i, g) in sig.generic_params.iter().enumerate() {
+        if g.kind == GenericParamKind::Type
+            && let Some(GenericArg::Type(t)) = subst.get(i).and_then(|o| o.as_ref())
+        {
+            name.push_str("__");
+            name.push_str(&type_arg_name(map, t));
+        }
+    }
+    name
+}
+
+/// A short name for a concrete type arg, for the monomorphised module name.
+fn type_arg_name<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> String {
+    match ty {
+        Type::Value {
+            kind: ValueKind::Struct { def, .. },
+            ..
+        } => map
+            .def_data(*def)
+            .map(|d| d.name.clone())
+            .unwrap_or_default(),
+        Type::Port { def, .. } => map
+            .def_data(*def)
+            .map(|d| d.name.clone())
+            .unwrap_or_default(),
+        Type::Value {
+            kind: ValueKind::UInt {
+                width: ConstArg::Lit(w),
+            },
+            ..
+        } => format!("uint{w}"),
+        Type::Value {
+            kind: ValueKind::Bool,
+            ..
+        } => "bool".to_owned(),
+        _ => "T".to_owned(),
+    }
+}
+
+/// Bind a type-generic callee's Type-kind params by matching its (declared)
+/// param types against the call's actual arg types — `w: Bus(A)` vs the actual
+/// `Bus(Write)` binds `A := Write`. Indexed by the callee's generic position.
+fn match_type<'db>(callee: &Type<'db>, actual: &Type<'db>, subst: &mut [Option<GenericArg<'db>>]) {
+    match (callee, actual) {
+        (
+            Type::Value {
+                kind: ValueKind::Param(i),
+                ..
+            },
+            _,
+        ) => {
+            if let Some(slot) = subst.get_mut(*i as usize) {
+                *slot = Some(GenericArg::Type(actual.clone()));
+            }
+        }
+        (
+            Type::Value {
+                kind: ValueKind::Struct { def: cd, args: ca },
+                ..
+            },
+            Type::Value {
+                kind: ValueKind::Struct { def: ad, args: aa },
+                ..
+            },
+        ) if cd == ad => match_args(ca, aa, subst),
+        (
+            Type::Port {
+                def: cd, args: ca, ..
+            },
+            Type::Port {
+                def: ad, args: aa, ..
+            },
+        ) if cd == ad => match_args(ca, aa, subst),
+        _ => {}
+    }
+}
+
+fn match_args<'db>(
+    callee: &GenericArgs<'db>,
+    actual: &GenericArgs<'db>,
+    subst: &mut [Option<GenericArg<'db>>],
+) {
+    for (c, a) in callee.0.iter().zip(&actual.0) {
+        if let (GenericArg::Type(ct), GenericArg::Type(at)) = (c, a) {
+            match_type(ct, at, subst);
+        }
     }
 }
 
@@ -229,12 +370,15 @@ fn unique_local_names(body: &Body<'_>) -> Vec<String> {
 pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
     let map = crate_def_map(db, krate);
     let prelude = map.prelude();
+    // Concrete fns/methods in source order; a type-generic fn is *not* emitted
+    // directly — only its monomorphised copies (collected from call sites).
     let mut fns: Vec<(String, usize, DefId)> = map
         .defs()
         .filter_map(|d| map.def_data(d).map(|data| (d, data)))
         .filter(|(_, data)| {
             matches!(data.kind, DefKind::Fn | DefKind::Method) && data.module != prelude
         })
+        .filter(|(d, _)| !is_type_generic(sig_of(db, krate, *d)))
         .map(|(d, _)| {
             let file = d.file(db);
             let start = ast_id_map(db, file)
@@ -245,10 +389,29 @@ pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
         })
         .collect();
     fns.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
-    let modules = fns
-        .iter()
-        .map(|(_, _, def)| sv_module(db, krate, *def).clone())
-        .collect();
+
+    let mut modules = Vec::new();
+    let mut reqs: Vec<MonoReq> = Vec::new();
+    for (_, _, def) in &fns {
+        let (m, r) = build_module(db, krate, *def, &[], module_name(map, *def));
+        modules.push(m);
+        reqs.extend(r);
+    }
+    // Emit one specialised module per unique monomorphised instance (a worklist:
+    // a mono copy may itself instantiate further generic callees). Appended after
+    // the source-ordered concrete modules, name-sorted for determinism.
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut mono: Vec<SvModule> = Vec::new();
+    while let Some(req) = reqs.pop() {
+        if !seen.insert(req.name.clone()) {
+            continue;
+        }
+        let (m, r) = build_module(db, krate, req.callee, &req.subst, req.name);
+        mono.push(m);
+        reqs.extend(r);
+    }
+    mono.sort_by(|a, b| a.name.cmp(&b.name));
+    modules.extend(mono);
     SvFile { modules }.to_string()
 }
 
@@ -261,6 +424,10 @@ struct SvLower<'a, 'db> {
     body: &'a Body<'db>,
     inf: &'a Inference<'db>,
     sig: &'a Signature<'db>,
+    /// Substitution for the def's own generics (a Type-kind binding when lowering
+    /// a monomorphised copy; empty otherwise). Applied to every type read from
+    /// the signature/inference before flattening.
+    self_subst: Vec<Option<GenericArg<'db>>>,
     /// Uniquified SV name per [`LocalId`].
     local_names: Vec<String>,
     items: Vec<SvItem>,
@@ -272,6 +439,9 @@ struct SvLower<'a, 'db> {
     /// Locals already given a `logic` declaration (so an out-target reused as a
     /// later input is declared once).
     declared: HashSet<LocalId>,
+    /// Type-generic callees instantiated here — specialised copies the driver
+    /// must emit.
+    mono_reqs: Vec<MonoReq<'db>>,
 }
 
 impl<'db> SvLower<'_, 'db> {
@@ -368,6 +538,7 @@ impl<'db> SvLower<'_, 'db> {
         let Some(rt) = self.sig.return_type.clone() else {
             return;
         };
+        let rt = subst_type(&rt, &self.self_subst);
         let result_leaves =
             flatten_leaves(self.db, self.krate, &rt, true, &self.sig.generic_params);
         // `return f(args)` — connect the callee's result straight to `result`.
@@ -423,6 +594,7 @@ impl<'db> SvLower<'_, 'db> {
             .local_type(local)
             .cloned()
             .or_else(|| self.body.local(local).declared_ty.clone())
+            .map(|t| subst_type(&t, &self.self_subst))
     }
 
     /// The scalar leaves (suffix + type) of an expression's type. Mirrors
@@ -939,7 +1111,14 @@ impl<'db> SvLower<'_, 'db> {
             .filter(|g| g.kind == GenericParamKind::Domain)
             .map(|g| g.name.clone())
             .collect();
-        let params: Vec<(String, Type<'db>, bool)> = csig
+        let return_type = csig.return_type.clone();
+
+        // Resolve each value param to its caller expression (positional zip with
+        // `[receiver?] ++ args`; named by name) — `(pname, pty, caller_expr)`.
+        let mut positional: Vec<ExprId> = uc.receiver.into_iter().collect();
+        positional.extend(uc.args.iter().map(|a| a.expr));
+        let mut pos_i = 0;
+        let slots: Vec<(String, Type<'db>, Option<ExprId>, Option<String>)> = csig
             .params
             .iter()
             .map(|p| {
@@ -948,12 +1127,43 @@ impl<'db> SvLower<'_, 'db> {
                 } else {
                     p.ty.clone()
                 };
-                (p.name.clone(), ty, p.from_named_section)
+                let caller_expr = if p.from_named_section {
+                    uc.named.iter().find(|n| n.name == p.name).map(|n| n.expr)
+                } else {
+                    let e = positional.get(pos_i).copied();
+                    pos_i += 1;
+                    e
+                };
+                (p.name.clone(), ty, caller_expr, p.default.clone())
             })
             .collect();
-        let return_type = csig.return_type.clone();
 
-        let module = module_name(self.map, uc.def);
+        // A type-generic callee is monomorphised: bind its Type params from the
+        // actual arg types, name the copy `Callee__Arg`, and request its emission.
+        let subst: Vec<Option<GenericArg<'db>>> = if is_type_generic(csig) {
+            let mut subst = vec![None; csig.generic_params.len()];
+            for (_, pty, caller_expr, _) in &slots {
+                if let Some(e) = caller_expr
+                    && let Some(at) = self.actual_type(*e)
+                {
+                    match_type(pty, &at, &mut subst);
+                }
+            }
+            subst
+        } else {
+            Vec::new()
+        };
+        let module = if subst.iter().any(Option::is_some) {
+            let name = mono_name(self.map, uc.def, csig, &subst);
+            self.mono_reqs.push(MonoReq {
+                callee: uc.def,
+                subst: subst.clone(),
+                name: name.clone(),
+            });
+            name
+        } else {
+            module_name(self.map, uc.def)
+        };
 
         let mut connections = Vec::new();
         // 1. `dom` generics → the caller's clock.
@@ -961,23 +1171,23 @@ impl<'db> SvLower<'_, 'db> {
         for d in &doms {
             connections.push((d.clone(), SvExpr::Ident(clk.clone())));
         }
-        // 2. value/out params, matched to caller connections.
-        let mut positional: Vec<ExprId> = uc.receiver.into_iter().collect();
-        positional.extend(uc.args.iter().map(|a| a.expr));
-        let mut pos_i = 0;
-        for (pname, pty, from_named) in &params {
-            let caller_expr = if *from_named {
-                uc.named.iter().find(|n| &n.name == pname).map(|n| n.expr)
-            } else {
-                let e = positional.get(pos_i).copied();
-                pos_i += 1;
-                e
-            };
+        // 2. value/out params (flattened through the mono subst), each connected
+        //    to its caller expression's leaves.
+        for (pname, pty, caller_expr, default) in &slots {
+            let pty = subst_type(pty, &subst);
             let callee_leaves =
-                flatten_leaves(self.db, self.krate, pty, true, &self.sig.generic_params);
-            let caller_leaves = match caller_expr {
-                Some(e) => self.expr_leaves(e),
-                None => Vec::new(),
+                flatten_leaves(self.db, self.krate, &pty, true, &self.sig.generic_params);
+            // A supplied arg flattens to its leaves; an omitted param with a
+            // default wires that default to each callee leaf.
+            let caller_leaves: Vec<(String, SvExpr)> = match caller_expr {
+                Some(e) => self.expr_leaves(*e),
+                None => match default {
+                    Some(d) => callee_leaves
+                        .iter()
+                        .map(|_| (String::new(), default_value(d)))
+                        .collect(),
+                    None => Vec::new(),
+                },
             };
             for (cl, (_, cv)) in callee_leaves.into_iter().zip(caller_leaves) {
                 connections.push((join(pname, &cl.suffix), cv));
@@ -985,6 +1195,7 @@ impl<'db> SvLower<'_, 'db> {
         }
         // 3. return → the result target.
         if let Some(rt) = return_type {
+            let rt = subst_type(&rt, &subst);
             let ret_leaves =
                 flatten_leaves(self.db, self.krate, &rt, true, &self.sig.generic_params);
             for (rl, (_, tv)) in ret_leaves.into_iter().zip(result_target) {
@@ -999,6 +1210,15 @@ impl<'db> SvLower<'_, 'db> {
             name,
             connections,
         }));
+    }
+
+    /// The concrete type of a call argument (for binding a type-generic callee):
+    /// a local's resolved type, else the expression's inferred type.
+    fn actual_type(&self, e: ExprId) -> Option<Type<'db>> {
+        match self.body.expr(e).kind {
+            ExprKind::Local(l) => self.local_ty(l),
+            _ => self.inf.expr_type(e).cloned(),
+        }
     }
 
     /// A user call in value position: instantiate into a fresh `__call_N`
@@ -1245,6 +1465,17 @@ fn join(base: &str, suffix: &str) -> String {
         base.to_owned()
     } else {
         format!("{base}__{suffix}")
+    }
+}
+
+/// Render a parameter's `= default` source as an SV value: `high`/`true` →
+/// `1'b1`, `low`/`false` → `1'b0`, a number verbatim, else the identifier.
+fn default_value(text: &str) -> SvExpr {
+    match text {
+        "high" | "true" => SvExpr::Lit("1'b1".to_owned()),
+        "low" | "false" => SvExpr::Lit("1'b0".to_owned()),
+        n if n.parse::<i64>().is_ok() => SvExpr::Lit(n.to_owned()),
+        other => SvExpr::Ident(other.to_owned()),
     }
 }
 
@@ -1571,6 +1802,30 @@ module pair_add #(parameter int n, parameter int m) (
 endmodule
 ";
         assert_eq!(sv, expected, "\n--- got ---\n{sv}");
+    }
+
+    #[test]
+    fn type_generic_fn_is_monomorphised_per_concrete_type() {
+        // A type-generic `fn pass{ param A: Type }(w: Bus(A))` is not emitted
+        // directly; a call at `Bus(Write)` emits a specialised `pass__Write`
+        // module (struct args substituted) and instantiates it. A defaulted,
+        // unsupplied param wires its default at the instance.
+        let sv = emit(
+            "struct Bus(A: Type) = bus { valid: bool, data: A }\n\
+             struct Write = write { addr: uint(8), data: uint(8) }\n\
+             fn pass { dom clk: Clock, rstn: Reset @clk = high, param A: Type } ( w: Bus(A) @clk ) -> Bus(A) @clk { w }\n\
+             fn top { dom clk: Clock } ( w: Bus(Write) @clk ) -> Bus(Write) @clk { pass(w) }",
+        );
+        // The generic `pass` is not emitted; its `Write` specialisation is.
+        assert!(!sv.contains("module pass ("), "{sv}");
+        assert!(!sv.contains("module pass #("), "{sv}");
+        assert!(sv.contains("module pass__Write ("), "{sv}");
+        // The specialised module flattens `Bus(Write)` fully.
+        assert!(sv.contains("input  logic [7:0] w__data__addr,"), "{sv}");
+        // `top` instantiates it, defaulting the omitted `rstn` to `1'b1`.
+        assert!(sv.contains("    pass__Write pass__Write ("), "{sv}");
+        assert!(sv.contains(".rstn(1'b1)"), "{sv}");
+        assert!(sv.contains(".w__data__addr(w__data__addr)"), "{sv}");
     }
 
     #[test]
