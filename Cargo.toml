@@ -2,6 +2,7 @@
 members = [
   "packages/polar-compiler",
   "packages/polar-compiler-old",
+  "packages/polar-fmt",
   "packages/polar-lsp",
 ]
 resolver = "3"

@@ -1,0 +1,25 @@
+[package]
+name = "polar-fmt"
+version = "0.1.0"
+edition = "2024"
+
+# A rustfmt-shaped formatter for Polar. Reuses the tree-sitter grammar (linked
+# directly from the C sources, like polar-compiler and polar-db) and re-emits
+# the source from the CST through a Wadler/Prettier-style width-aware pretty
+# printer. Standalone: it links the grammar itself and depends on neither the
+# reference compiler nor the query engine.
+
+[lib]
+name = "polar_fmt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "polar-fmt"
+path = "src/main.rs"
+
+[dependencies]
+tree-sitter = "0.25"
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1.1"
