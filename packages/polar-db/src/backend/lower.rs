@@ -40,6 +40,7 @@ use crate::hir::types::{
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind};
+use crate::syntax::ast_id::ast_id_map;
 
 /// QUERY: lower one fn/method to a SystemVerilog module (combinational scalar
 /// subset). Non-fn defs yield an empty module.
@@ -182,28 +183,34 @@ fn unique_local_names(body: &Body<'_>) -> Vec<String> {
     names
 }
 
-/// QUERY: the crate's SystemVerilog — every top-level `fn` as a module. (Driver:
-/// "force `verilog` for each top-level item.") Modules are emitted name-sorted
-/// for determinism; an explicit top-entity ordering can refine this later.
+/// QUERY: the crate's SystemVerilog — every `fn`/method as a module. (Driver:
+/// "force `verilog` for each top-level item.") Modules are erased before codegen,
+/// so every `fn`/method in the crate (at the root or nested in a `mod`/`impl`)
+/// becomes a top-level SV module, emitted in **source order** (across files by
+/// path, within a file by byte position) to match the reference compiler.
 #[salsa::tracked(returns(ref))]
 pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
     let map = crate_def_map(db, krate);
-    // Modules are erased before codegen, so every `fn` in the crate (at the root
-    // or nested in a `mod`) becomes a top-level SV module. Name-sorted for a
-    // deterministic order (source-order parity with the oracle is a Q5e detail).
     let prelude = map.prelude();
-    let mut fns: Vec<(String, DefId)> = map
+    let mut fns: Vec<(String, usize, DefId)> = map
         .defs()
         .filter_map(|d| map.def_data(d).map(|data| (d, data)))
         .filter(|(_, data)| {
             matches!(data.kind, DefKind::Fn | DefKind::Method) && data.module != prelude
         })
-        .map(|(d, _)| (module_name(map, d), d))
+        .map(|(d, _)| {
+            let file = d.file(db);
+            let start = ast_id_map(db, file)
+                .range_of(d.ast_id(db))
+                .map(|(s, _)| s)
+                .unwrap_or(0);
+            (file.path(db).to_string_lossy().into_owned(), start, d)
+        })
         .collect();
-    fns.sort_by(|a, b| a.0.cmp(&b.0));
+    fns.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
     let modules = fns
         .iter()
-        .map(|(_, def)| sv_module(db, krate, *def).clone())
+        .map(|(_, _, def)| sv_module(db, krate, *def).clone())
         .collect();
     SvFile { modules }.to_string()
 }

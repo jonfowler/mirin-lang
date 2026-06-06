@@ -10,6 +10,14 @@ edition = "2024"
 #
 # Engine: salsa (validated by the Q0 spike, see planning/query_engine.md §7).
 
+[lib]
+name = "polar_db"
+path = "src/lib.rs"
+
+[[bin]]
+name = "polar-db"
+path = "src/main.rs"
+
 [dependencies]
 tree-sitter = "0.25"
 tree-sitter-language = "0.1"

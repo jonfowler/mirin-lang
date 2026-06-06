@@ -135,9 +135,18 @@ simplest programs — then widen to instantiation, then parametrics.
   synthetic `__call_N`/`__block_N` numbering and module ordering); all
   verilator-clean. **Deferred to Q5-mono:** parametric type/width substitution
   (`parameterized_port`, `parametric_*`, `equal_width_fn`'s `#(parameter …)`).
-- **Q5e — parity + CLI swap** (non-generic corpus). Output parity (and verilator
-  lint via the existing harness); optional top-entity CLI arg; point the CLI at
-  `polar-db`; retire `polar-compiler`.
+- **Q5e — parity + CLI swap. _(done)_** Module emission switched to **source
+  order** (across files by path, within a file by byte position) — the whole
+  non-parametric corpus is now byte-identical to `polar-compiler` modulo only the
+  synthetic `__call_N`/`__block_N` numbering (left as-is; semantically identical,
+  loose-parity bar). New `polar-db` **bin** (`src/main.rs`): recursive FS loader
+  (root + `mod foo;` files into the `Vfs`), runs the query stack, prints
+  diagnostics (exit 1) / IO errors (exit 2), writes `verilog(crate)` to
+  `<out>/<stem>.sv`; `--emit cst` debug aid. `polar-db` is now the primary CLI.
+  Verification: `non_parametric_corpus_is_verilator_clean` lints the 15
+  non-parametric examples with verilator (`-Wall` minus cosmetic/expected lints),
+  gated on verilator being installed. **`polar-compiler` is kept as the parity
+  oracle** (Jon's call) until Q5-mono lands — not retired yet.
 - **Q5-mono — monomorphisation (deferred / later).** `mono_instances(crate)`
   collector + interned `MonoInstance` + `mono_body`; Const/Domain substitution at
   flatten; brings in `parametric_*`. **Out of near-term scope** (§0) — built once

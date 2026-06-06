@@ -124,6 +124,78 @@ fn dump_verilog() {
     }
 }
 
+/// The non-parametric corpus: every example whose emitted SystemVerilog is
+/// complete today (parametric type/width substitution — `parametric_*`,
+/// `parameterized_port`, `equal_width_fn`, `counter`'s `#(parameter …)` — is
+/// deferred to Q5-mono, so those are excluded from the lint).
+const VERILATOR_CLEAN: &[&str] = &[
+    "accumulator.plr",
+    "add_constant.plr",
+    "delay.plr",
+    "delay_impl.plr",
+    "if_expression.plr",
+    "module_wrapped.plr",
+    "mult_add.plr",
+    "multi_call.plr",
+    "packet_struct.plr",
+    "pipeline.plr",
+    "pub_use_reexport.plr",
+    "shift_register.plr",
+    "simple_port.plr",
+    "use_across_modules.plr",
+    "when_counter.plr",
+];
+
+/// Emit SystemVerilog for the non-parametric corpus and lint it with verilator.
+/// Skips (passes) when verilator is not installed, so CI without it stays green
+/// — the verification the project settled on (verilator lint over the new
+/// output) when the old crate is eventually retired.
+#[test]
+fn non_parametric_corpus_is_verilator_clean() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("verilator not installed — skipping lint");
+        return;
+    }
+    let dir = std::env::temp_dir().join("polar_db_verilator");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, src) in examples() {
+        if !VERILATOR_CLEAN.contains(&name.as_str()) {
+            continue;
+        }
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        vfs.set_file_text(&mut db, "t.plr", src);
+        let krate = vfs.source_root(&mut db, "t.plr");
+        let sv = verilog(&db, krate);
+        let path = dir.join(name.replace(".plr", ".sv"));
+        std::fs::write(&path, sv).unwrap();
+        // `-Wall` minus the cosmetic/expected lints: filename≠module name,
+        // intentionally-unused port-field signals, and multiple uninstantiated
+        // top modules (test harnesses with several roots).
+        let out = std::process::Command::new("verilator")
+            .args([
+                "--lint-only",
+                "-Wall",
+                "-Wno-DECLFILENAME",
+                "-Wno-UNUSEDSIGNAL",
+                "-Wno-MULTITOP",
+            ])
+            .arg(&path)
+            .output()
+            .expect("run verilator");
+        assert!(
+            out.status.success(),
+            "verilator rejected {name}:\n{}\n--- sv ---\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            std::fs::read_to_string(&path).unwrap_or_default(),
+        );
+    }
+}
+
 #[test]
 fn every_working_example_runs_the_query_stack() {
     // No panic on any example == the smoke test passes.
