@@ -26,6 +26,7 @@ pub mod syntax;
 pub use backend::ir::{SvFile, SvModule};
 pub use backend::lower::{sv_module, verilog};
 pub use base::db::{RootDatabase, SourceFile, SourceRoot};
+pub use base::diagnostics::{Span, render};
 pub use base::parser::{language, parse_text};
 pub use base::vfs::Vfs;
 pub use hir::body::{Block, Body, BodyDiagnostic, Expr, ExprId, ExprKind, LocalKind, Stmt, body};
@@ -46,3 +47,4 @@ pub use nameres::ids::{
 };
 pub use syntax::ast_id::{AstIdKind, AstIdMap, FileAstId, ast_id_map};
 pub use syntax::item_tree::ItemTree; // query is `syntax::item_tree::item_tree`
+pub use syntax::syntax_errors::{SyntaxError, syntax_errors};

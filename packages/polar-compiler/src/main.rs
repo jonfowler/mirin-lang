@@ -12,7 +12,7 @@ use std::{env, fs, process};
 
 use polar_compiler::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, crate_def_map, directions, infer,
-    parse_text, sig_of, verilog,
+    parse_text, render, sig_of, syntax_errors, verilog,
 };
 
 struct CliArgs {
@@ -125,6 +125,21 @@ fn main() {
             process::exit(2);
         }
     };
+
+    // Syntax errors short-circuit before semantic analysis (a parse-recovered
+    // tree would otherwise lower to partial, wrong output).
+    let mut syntax = Vec::new();
+    for &file in krate.files(&db) {
+        let path = file.path(&db).to_string_lossy().into_owned();
+        let source = file.text(&db);
+        for e in syntax_errors(&db, file) {
+            syntax.push(render(&path, source, e.span, &e.message));
+        }
+    }
+    if !syntax.is_empty() {
+        eprintln!("{}", syntax.join("\n\n"));
+        process::exit(1);
+    }
 
     let diagnostics = collect_diagnostics(&db, krate);
     if !diagnostics.is_empty() {
