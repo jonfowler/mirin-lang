@@ -20,8 +20,15 @@
 //! positional params match `[receiver?] ++ args`, named params match the call's
 //! named section, `out`-args bind callee `out` params to caller places, and the
 //! return wires to the binding / `result` / a fresh `__call_N`. Methods qualify
-//! their module name by owner (`Option::reg` → `Option__reg`). Parametric type/
-//! width substitution stays for Q5-mono.
+//! their module name by owner (`Option::reg` → `Option__reg`).
+//!
+//! **Q5-mono scope:** parametric widths/types. A Const-kind generic becomes an
+//! SV `#(parameter int N)`, and a symbolic width `uint(N)` renders `[N-1:0]`
+//! (via [`sv_type`]). When [`flatten_leaves`] descends a struct/port with generic
+//! args, it substitutes the def's `Param`/`ConstArg::Param`/`Domain::Param` with
+//! the use-site args ([`subst_type`]) — a `Bus(uint(8))` field `data: A` becomes
+//! `uint(8)`. (Type-kind *fn* monomorphisation — a generic `fn` specialised per
+//! concrete type — is the remaining collector piece.)
 
 use std::collections::{HashMap, HashSet};
 
@@ -36,7 +43,8 @@ use crate::hir::body::{
 use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::{Signature, sig_of};
 use crate::hir::types::{
-    ConstArg, Direction, Domain, GenericArgs, GenericParamKind, LocalId, Type, ValueKind,
+    ConstArg, Direction, Domain, GenericArg, GenericArgs, GenericParam, GenericParamKind, LocalId,
+    Type, ValueKind,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind};
@@ -81,7 +89,7 @@ pub fn sv_module<'db>(
             p.ty.clone()
         };
         let drives = p.direction == Some(Direction::Out);
-        for leaf in flatten_leaves(db, krate, &ty, drives) {
+        for leaf in flatten_leaves(db, krate, &ty, drives, &sig.generic_params) {
             ports.push(SvPort {
                 direction: if leaf.drives {
                     SvPortDirection::Output
@@ -94,7 +102,7 @@ pub fn sv_module<'db>(
         }
     }
     if let Some(rt) = &sig.return_type {
-        for leaf in flatten_leaves(db, krate, rt, true) {
+        for leaf in flatten_leaves(db, krate, rt, true, &sig.generic_params) {
             ports.push(SvPort {
                 direction: SvPortDirection::Output,
                 ty: leaf.ty,
@@ -120,9 +128,20 @@ pub fn sv_module<'db>(
     };
     lower.lower_top_block(body.block());
 
+    // Const-kind generics become SV `#(parameter int N)`, in declaration order.
+    let parameters = sig
+        .generic_params
+        .iter()
+        .filter(|g| g.kind == GenericParamKind::Const)
+        .map(|g| crate::backend::ir::SvParameter {
+            name: g.name.clone(),
+            default: None,
+        })
+        .collect();
+
     SvModule {
         name: module_name(map, def),
-        parameters: Vec::new(),
+        parameters,
         ports,
         items: lower.items,
     }
@@ -331,7 +350,8 @@ impl<'db> SvLower<'_, 'db> {
         let Some(rt) = self.sig.return_type.clone() else {
             return;
         };
-        let result_leaves = flatten_leaves(self.db, self.krate, &rt, true);
+        let result_leaves =
+            flatten_leaves(self.db, self.krate, &rt, true, &self.sig.generic_params);
         // `return f(args)` — connect the callee's result straight to `result`.
         if let Some(uc) = self.as_user_call(value) {
             let target = result_leaves
@@ -417,6 +437,7 @@ impl<'db> SvLower<'_, 'db> {
                             domain: Domain::Unspecified,
                         },
                         true,
+                        &self.sig.generic_params,
                     ),
                     None => vec![Leaf {
                         suffix: String::new(),
@@ -436,7 +457,7 @@ impl<'db> SvLower<'_, 'db> {
     /// The scalar leaves of a local's type (scalar → one bit-typed leaf).
     fn local_type_leaves(&self, local: LocalId) -> Vec<Leaf> {
         match self.local_ty(local) {
-            Some(t) => flatten_leaves(self.db, self.krate, &t, true),
+            Some(t) => flatten_leaves(self.db, self.krate, &t, true, &self.sig.generic_params),
             None => vec![Leaf {
                 suffix: String::new(),
                 ty: SvType::bit(),
@@ -466,7 +487,7 @@ impl<'db> SvLower<'_, 'db> {
         let base = self.local_name(local);
         let drives = self.local_base_drives(local);
         match self.local_ty(local) {
-            Some(t) => flatten_leaves(self.db, self.krate, &t, drives)
+            Some(t) => flatten_leaves(self.db, self.krate, &t, drives, &self.sig.generic_params)
                 .into_iter()
                 .map(|leaf| (SvExpr::Ident(join(&base, &leaf.suffix)), leaf.drives))
                 .collect(),
@@ -511,7 +532,7 @@ impl<'db> SvLower<'_, 'db> {
     fn expr_type(&self, expr: ExprId) -> SvType {
         self.inf
             .expr_type(expr)
-            .map(sv_type)
+            .map(|t| sv_type(t, &self.sig.generic_params))
             .unwrap_or_else(SvType::bit)
     }
 
@@ -934,7 +955,8 @@ impl<'db> SvLower<'_, 'db> {
                 pos_i += 1;
                 e
             };
-            let callee_leaves = flatten_leaves(self.db, self.krate, pty, true);
+            let callee_leaves =
+                flatten_leaves(self.db, self.krate, pty, true, &self.sig.generic_params);
             let caller_leaves = match caller_expr {
                 Some(e) => self.expr_leaves(e),
                 None => Vec::new(),
@@ -945,7 +967,8 @@ impl<'db> SvLower<'_, 'db> {
         }
         // 3. return → the result target.
         if let Some(rt) = return_type {
-            let ret_leaves = flatten_leaves(self.db, self.krate, &rt, true);
+            let ret_leaves =
+                flatten_leaves(self.db, self.krate, &rt, true, &self.sig.generic_params);
             for (rl, (_, tv)) in ret_leaves.into_iter().zip(result_target) {
                 connections.push((join("result", &rl.suffix), tv));
             }
@@ -969,17 +992,18 @@ impl<'db> SvLower<'_, 'db> {
             return vec![(String::new(), SvExpr::Lit("0".to_owned()))];
         };
         let base = self.fresh_call();
-        let target: Vec<(String, SvExpr)> = flatten_leaves(self.db, self.krate, &rt, true)
-            .into_iter()
-            .map(|l| {
-                let name = join(&base, &l.suffix);
-                self.items.push(SvItem::Logic(SvLogicDecl {
-                    ty: l.ty,
-                    name: name.clone(),
-                }));
-                (l.suffix, SvExpr::Ident(name))
-            })
-            .collect();
+        let target: Vec<(String, SvExpr)> =
+            flatten_leaves(self.db, self.krate, &rt, true, &self.sig.generic_params)
+                .into_iter()
+                .map(|l| {
+                    let name = join(&base, &l.suffix);
+                    self.items.push(SvItem::Logic(SvLogicDecl {
+                        ty: l.ty,
+                        name: name.clone(),
+                    }));
+                    (l.suffix, SvExpr::Ident(name))
+                })
+                .collect();
         self.emit_instance(uc, target.clone());
         target
     }
@@ -1053,21 +1077,30 @@ struct Leaf {
 /// direction with `drives` (the binding's own drive: an `out` param / a return
 /// drives, an `in` param reads) so a leaf is an output iff this module drives it.
 /// A scalar is a single leaf with the given `drives`.
+///
+/// `generics` is the enclosing def's generic params — used to render a symbolic
+/// width (`uint(N)` → `[N-1:0]`). When descending a struct/port, its generic
+/// args are substituted into the field types (a parametric `Bus(uint(8))` field
+/// `data: A` becomes `uint(8)`), so the leaves are concrete or in terms of the
+/// enclosing def's own params.
 fn flatten_leaves(
     db: &dyn salsa::Database,
     krate: SourceRoot,
     ty: &Type<'_>,
     drives: bool,
+    generics: &[GenericParam],
 ) -> Vec<Leaf> {
     match ty {
         Type::Value {
-            kind: ValueKind::Struct { def, .. },
+            kind: ValueKind::Struct { def, args },
             ..
         } => {
             let sig = sig_of(db, krate, *def);
+            let subst = build_subst(&sig.generic_params, args);
             let mut out = Vec::new();
             for f in &sig.fields {
-                for sub in flatten_leaves(db, krate, &f.ty, drives) {
+                let fty = subst_type(&f.ty, &subst);
+                for sub in flatten_leaves(db, krate, &fty, drives, generics) {
                     out.push(Leaf {
                         suffix: join(&f.name, &sub.suffix),
                         ty: sub.ty,
@@ -1077,15 +1110,17 @@ fn flatten_leaves(
             }
             out
         }
-        Type::Port { def, .. } => {
+        Type::Port { def, args, .. } => {
             let sig = sig_of(db, krate, *def);
+            let subst = build_subst(&sig.generic_params, args);
             let mut out = Vec::new();
             for f in &sig.fields {
                 // The module drives a port field iff its own drive matches the
                 // field's producer direction (`out` field of an `out` port, or
                 // `in` field of an `in` port).
                 let child = drives == (f.direction == Some(Direction::Out));
-                for sub in flatten_leaves(db, krate, &f.ty, child) {
+                let fty = subst_type(&f.ty, &subst);
+                for sub in flatten_leaves(db, krate, &fty, child, generics) {
                     out.push(Leaf {
                         suffix: join(&f.name, &sub.suffix),
                         ty: sub.ty,
@@ -1097,10 +1132,92 @@ fn flatten_leaves(
         }
         _ => vec![Leaf {
             suffix: String::new(),
-            ty: sv_type(ty),
+            ty: sv_type(ty, generics),
             drives,
         }],
     }
+}
+
+/// Build a substitution from a def's generic params to a use-site's args:
+/// positional args bind to positional params in order (the named section —
+/// `dom`/by-name — is matched elsewhere and does not affect SV structure).
+/// Indexed by full generic-param position; named params stay `None`.
+fn build_subst<'db>(
+    generic_params: &[GenericParam],
+    args: &GenericArgs<'db>,
+) -> Vec<Option<GenericArg<'db>>> {
+    let mut subst = vec![None; generic_params.len()];
+    let mut ai = 0;
+    for (i, g) in generic_params.iter().enumerate() {
+        if !g.from_named_section {
+            if let Some(a) = args.0.get(ai) {
+                subst[i] = Some(a.clone());
+            }
+            ai += 1;
+        }
+    }
+    subst
+}
+
+/// Substitute a def's generic args into a (field) type: a `Param(i)` type → the
+/// i-th type arg, a `uint(Param(i))` width → the i-th const arg; nested
+/// struct/port args are substituted recursively. Anything unbound is unchanged.
+fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<GenericArg<'db>>]) -> Type<'db> {
+    let arg = |i: u32| subst.get(i as usize).and_then(|o| o.as_ref());
+    match ty {
+        Type::Value {
+            kind: ValueKind::Param(i),
+            ..
+        } => match arg(*i) {
+            Some(GenericArg::Type(t)) => t.clone(),
+            _ => ty.clone(),
+        },
+        Type::Value {
+            kind: ValueKind::UInt {
+                width: ConstArg::Param(i),
+            },
+            domain,
+        } => match arg(*i) {
+            Some(GenericArg::Const(c)) => Type::Value {
+                kind: ValueKind::UInt { width: c.clone() },
+                domain: *domain,
+            },
+            _ => ty.clone(),
+        },
+        Type::Value {
+            kind: ValueKind::Struct { def, args },
+            domain,
+        } => Type::Value {
+            kind: ValueKind::Struct {
+                def: *def,
+                args: subst_args(args, subst),
+            },
+            domain: *domain,
+        },
+        Type::Port { def, args, domain } => Type::Port {
+            def: *def,
+            args: subst_args(args, subst),
+            domain: *domain,
+        },
+        other => other.clone(),
+    }
+}
+
+fn subst_args<'db>(args: &GenericArgs<'db>, subst: &[Option<GenericArg<'db>>]) -> GenericArgs<'db> {
+    let arg = |i: u32| subst.get(i as usize).and_then(|o| o.as_ref());
+    GenericArgs(
+        args.0
+            .iter()
+            .map(|a| match a {
+                GenericArg::Type(t) => GenericArg::Type(subst_type(t, subst)),
+                GenericArg::Const(ConstArg::Param(i)) => match arg(*i) {
+                    Some(c @ GenericArg::Const(_)) => c.clone(),
+                    _ => a.clone(),
+                },
+                other => other.clone(),
+            })
+            .collect(),
+    )
 }
 
 /// Join a base name with a field suffix using the `__` separator. An empty
@@ -1127,17 +1244,23 @@ fn strip_field(suffix: &str, field: &str) -> Option<String> {
     }
 }
 
-/// Lower a value type to an SV type. Concrete `uint(W)` → `[W-1:0]`; `bool` /
-/// `Reset` / `Clock` → 1-bit. Parametric widths (`uint(N)`) become SV
-/// `parameter`s in a later slice; here a non-literal width falls back to 1-bit.
-fn sv_type(ty: &Type) -> SvType {
+/// Lower a value type to an SV type. Concrete `uint(W)` → `[W-1:0]`; a symbolic
+/// `uint(N)` where `N` is a Const-kind generic → `[N-1:0]` (an SV `parameter`
+/// reference, rendered via `generics`); `bool`/`Reset`/`Clock` → 1-bit. A width
+/// still unresolved (arithmetic / out-of-range index) falls back to 1-bit.
+fn sv_type(ty: &Type, generics: &[GenericParam]) -> SvType {
     match ty {
         Type::Value {
-            kind: ValueKind::UInt {
-                width: ConstArg::Lit(w),
-            },
+            kind: ValueKind::UInt { width },
             ..
-        } => SvType::uint(SvExpr::Lit(w.to_string())),
+        } => match width {
+            ConstArg::Lit(w) => SvType::uint(SvExpr::Lit(w.to_string())),
+            ConstArg::Param(i) => match generics.get(*i as usize) {
+                Some(g) => SvType::uint(SvExpr::Ident(g.name.clone())),
+                None => SvType::bit(),
+            },
+            _ => SvType::bit(),
+        },
         _ => SvType::bit(),
     }
 }
@@ -1371,6 +1494,58 @@ endmodule
         assert!(sv.contains("    Option__reg Option__reg ("), "{sv}");
         assert!(sv.contains(".self__valid(upstream__valid)"), "{sv}");
         assert!(sv.contains(".result__valid(downstream__valid)"), "{sv}");
+    }
+
+    #[test]
+    fn const_generic_becomes_an_sv_parameter() {
+        // `param n: usize` → `#(parameter int n)`, and `uint(n)` → `[n-1:0]`.
+        // Byte-parity with polar-compiler on the `add_n` shape.
+        let sv = emit(
+            "fn add_n { dom clk: Clock } ( param n: usize, a: uint(n) @clk, b: uint(n) @clk ) -> uint(n) @clk {\n  return a + b;\n}",
+        );
+        let expected = "\
+module add_n #(parameter int n) (
+    input  logic clk,
+    input  logic [n-1:0] a,
+    input  logic [n-1:0] b,
+    output logic [n-1:0] result
+);
+    assign result = (a + b);
+endmodule
+";
+        assert_eq!(sv, expected, "\n--- got ---\n{sv}");
+    }
+
+    #[test]
+    fn parametric_struct_args_substitute_at_flatten() {
+        // `Bus(uint(8))` substitutes `A := uint(8)` into the `data: A` field, so
+        // the port flattens to `b__data` of width [7:0] (not 1-bit).
+        let sv = emit(
+            "struct Bus(A: Type) = bus { valid: bool, data: A }\n\
+             fn pipeline { dom clk: Clock } ( b: Bus(uint(8)) @clk ) -> Bus(uint(8)) @clk {\n  return b;\n}",
+        );
+        assert!(sv.contains("input  logic b__valid,"), "{sv}");
+        assert!(sv.contains("input  logic [7:0] b__data,"), "{sv}");
+        assert!(sv.contains("output logic [7:0] result__data"), "{sv}");
+        assert!(sv.contains("assign result__data = b__data;"), "{sv}");
+        // No SV parameter — the type arg is concrete.
+        assert!(!sv.contains("#("), "{sv}");
+    }
+
+    #[test]
+    fn parametric_port_width_substitutes_use_site_arg() {
+        // `Buf{clk}(8)` binds the port's `param N` to 8, so `data: uint(N)`
+        // flattens to width [7:0] — no parameter on the using module.
+        let sv = emit(
+            "port Buf { dom clk: Clock } ( param N: usize ) = buf { in ready: bool @clk, out data: uint(N) @clk }\n\
+             fn pipe { dom clk: Clock } ( upstream: Buf{clk}(8), out downstream: Buf{clk}(8) ) {\n  downstream = upstream;\n}",
+        );
+        assert!(sv.contains("input  logic [7:0] upstream__data,"), "{sv}");
+        assert!(sv.contains("output logic [7:0] downstream__data"), "{sv}");
+        assert!(
+            sv.contains("assign downstream__data = upstream__data;"),
+            "{sv}"
+        );
     }
 
     #[test]

@@ -124,13 +124,16 @@ fn dump_verilog() {
     }
 }
 
-/// The non-parametric corpus: every example whose emitted SystemVerilog is
-/// complete today (parametric type/width substitution — `parametric_*`,
-/// `parameterized_port`, `equal_width_fn`, `counter`'s `#(parameter …)` — is
-/// deferred to Q5-mono, so those are excluded from the lint).
+/// Examples whose emitted SystemVerilog is complete today and should lint clean.
+/// The deferred Q5-mono pieces are excluded: `equal_width_fn` (needs the
+/// width-obligation `initial assert`) and `parametric_struct_extended` (needs
+/// type-kind fn monomorphisation). The parametric examples that *are* done carry
+/// a `// verilator: -G…=N` directive (a parameter value for elaboration), which
+/// this harness reads and forwards.
 const VERILATOR_CLEAN: &[&str] = &[
     "accumulator.plr",
     "add_constant.plr",
+    "counter.plr",
     "delay.plr",
     "delay_impl.plr",
     "if_expression.plr",
@@ -138,6 +141,10 @@ const VERILATOR_CLEAN: &[&str] = &[
     "mult_add.plr",
     "multi_call.plr",
     "packet_struct.plr",
+    "parameterized_port.plr",
+    "parametric_struct.plr",
+    "parametric_width_fn.plr",
+    "parametric_width_port.plr",
     "pipeline.plr",
     "pub_use_reexport.plr",
     "shift_register.plr",
@@ -146,12 +153,25 @@ const VERILATOR_CLEAN: &[&str] = &[
     "when_counter.plr",
 ];
 
-/// Emit SystemVerilog for the non-parametric corpus and lint it with verilator.
-/// Skips (passes) when verilator is not installed, so CI without it stays green
-/// — the verification the project settled on (verilator lint over the new
-/// output) when the old crate is eventually retired.
+/// The `-G…` parameter-value flags from an example's leading `// verilator: …`
+/// directive (the `-Wno-…` tokens are already covered by the base flag set).
+fn verilator_directive(src: &str) -> Vec<String> {
+    src.lines()
+        .find_map(|l| l.trim().strip_prefix("// verilator:"))
+        .map(|rest| {
+            rest.split_whitespace()
+                .filter(|t| t.starts_with("-G"))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Emit SystemVerilog for the corpus and lint it with verilator. Skips (passes)
+/// when verilator is not installed, so CI without it stays green — the
+/// verification the project settled on (verilator lint over the new output).
 #[test]
-fn non_parametric_corpus_is_verilator_clean() {
+fn corpus_is_verilator_clean() {
     if std::process::Command::new("verilator")
         .arg("--version")
         .output()
@@ -168,14 +188,15 @@ fn non_parametric_corpus_is_verilator_clean() {
         }
         let mut db = RootDatabase::default();
         let mut vfs = Vfs::new();
-        vfs.set_file_text(&mut db, "t.plr", src);
+        vfs.set_file_text(&mut db, "t.plr", src.clone());
         let krate = vfs.source_root(&mut db, "t.plr");
         let sv = verilog(&db, krate);
         let path = dir.join(name.replace(".plr", ".sv"));
         std::fs::write(&path, sv).unwrap();
         // `-Wall` minus the cosmetic/expected lints: filename≠module name,
         // intentionally-unused port-field signals, and multiple uninstantiated
-        // top modules (test harnesses with several roots).
+        // top modules (test harnesses with several roots). Parameter values come
+        // from the example's `// verilator: -G…` directive.
         let out = std::process::Command::new("verilator")
             .args([
                 "--lint-only",
@@ -184,6 +205,7 @@ fn non_parametric_corpus_is_verilator_clean() {
                 "-Wno-UNUSEDSIGNAL",
                 "-Wno-MULTITOP",
             ])
+            .args(verilator_directive(&src))
             .arg(&path)
             .output()
             .expect("run verilator");
