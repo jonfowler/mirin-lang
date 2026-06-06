@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_polar-compiler"))
+    Command::new(env!("CARGO_BIN_EXE_polar-compiler-old"))
 }
 
 fn examples() -> PathBuf {

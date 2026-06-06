@@ -8,7 +8,7 @@ name = "polar-lsp"
 path = "src/main.rs"
 
 [dependencies]
-polar-db = { path = "../polar-db" }
+polar-compiler = { path = "../polar-compiler" }
 tree-sitter = "0.25"
 streaming-iterator = "0.1"
 

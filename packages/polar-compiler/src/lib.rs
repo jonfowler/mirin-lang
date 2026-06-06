@@ -1,49 +1,48 @@
+//! `polar-compiler` — the query-based compiler (`planning/query_engine.md`).
+//!
+//! Structured by conceptual layer / IR, mirroring rust-analyzer's crate split
+//! (`base-db` → `hir-def` → `hir-ty`) and the old compiler's by-IR modules:
+//!
+//! - [`base`] — the inputs and parsing: the salsa database, the [`vfs`](base::vfs)
+//!   overlay, and the tree-sitter [`parser`](base::parser).
+//! - [`syntax`] — the per-file **syntactic firewall**: stable
+//!   [`ast_id`](syntax::ast_id)s and the lean [`item_tree`](syntax::item_tree).
+//! - [`nameres`] — def **identity** ([`ids`](nameres::ids): `DefId`/`DefPath`)
+//!   and **name resolution** ([`def_map`](nameres::def_map): the module tree,
+//!   imports, prelude).
+//! - [`hir`] — the typed-HIR layer: the type vocabulary ([`types`](hir::types))
+//!   and the signature query ([`sig`](hir::sig)). Grows `body`/`infer` (Q3c–d).
+//!
+//! Front-to-back, each stage ported logic from the original whole-crate-pass
+//! compiler (now `polar-compiler-old`, kept as a parity oracle) one slice at a
+//! time, reaching corpus parity at Q5-mono.
+
+pub mod backend;
+pub mod base;
 pub mod hir;
-pub mod hirt;
-pub mod hirtl;
-pub mod resolve;
-pub mod surface;
-pub mod svir;
+pub mod nameres;
+pub mod syntax;
 
-#[cfg(test)]
-pub mod test_support;
-#[cfg(test)]
-mod verilator_lint;
-
-pub use hir::{DriverError, DriverErrorKind, check_drivers, lower_to_hir, render_driver_errors};
-pub use hirt::typeck::{WidthCheckResult, check_width_obligations};
-pub use hirtl::flatten::{
-    FlattenError, FlattenErrorKind, flatten_aggregates, render_flatten_errors,
+pub use backend::ir::{SvFile, SvModule};
+pub use backend::lower::{sv_module, verilog};
+pub use base::db::{RootDatabase, SourceFile, SourceRoot};
+pub use base::parser::{language, parse_text};
+pub use base::vfs::Vfs;
+pub use hir::body::{Block, Body, BodyDiagnostic, Expr, ExprId, ExprKind, LocalKind, Stmt, body};
+pub use hir::check::{DirectionDiagnostic, DriverDiagnostic, check_drivers, directions};
+pub use hir::infer::{InferDiagnostic, Inference, infer};
+pub use hir::sig::{Field, Param, Signature, sig_of};
+pub use hir::types::{
+    ConstArg, Direction, Domain, GenericArg, GenericArgs, GenericParam, GenericParamKind, LocalId,
+    Type, ValueKind,
 };
-pub use hirtl::lower_block_expressions::{BlockExprLowering, lower_block_expressions};
-pub use hirtl::method_lower::lower_method_calls;
-pub use hirtl::out_args::{OutArgsError, OutArgsErrorKind, desugar_user_calls};
-pub use resolve::{
-    DefId, DefInfo, DefKind, LocalInfo, LocalKind, Res, ResolveError, ResolveErrorKind,
-    ResolveResult, render_resolve_errors, resolve_file,
+pub use nameres::def_map::{
+    Binding, BindingSource, CrateDefMap, DefData, DefDiagnostic, ModuleData, ModuleId, ModuleKind,
+    Visibility, crate_def_map,
 };
-pub use surface::direction::{
-    DirectionError, DirectionErrorKind, NamedArgumentOperator, check_directions,
-    render_direction_errors,
+pub use nameres::ids::{
+    AnonConstRole, DefId, DefKind, DefPath, DefPathHash, DefPathSegment, DefPathSegmentKind,
+    DefRole, Namespace, StableCrateId,
 };
-pub use surface::ir::{
-    ArgumentList, AssignmentStatement, BinaryExpression, BinaryOperator, Block,
-    ConnectionDirection, Expression, ExpressionStatement, FieldAccess, FunctionDefinition,
-    Identifier, IfExpression, ImplBlock, Item, LetStatement, LowerError, ModuleBody,
-    ModuleDefinition, NamedArgument, NamedArgumentList, NamedParameter, NodeId, NumberLiteral,
-    ParamKind, Parameter, PathExpression, PortDefinition, PortField, PostfixExpression,
-    PostfixOperation, RecordConstructorExpression, RecordFieldType, RecordFieldValue,
-    ReturnStatement, SinkArgument, SourceArgument, SourceFile, Statement, StructDefinition,
-    SurfaceIrError, TypeExpression, TypeIndex, TypeSuffix, UseDecl, UseTree, VarStatement,
-    Visibility, WhenExpression, lower_cst, parse_surface_file, parse_surface_source,
-};
-pub use surface::loader::{
-    FsProvider, LoadError, LoadedCrate, MapProvider, SourceProvider, load_crate, load_crate_from_fs,
-};
-pub use surface::parser::tree_sitter::{
-    Cst, CstChild, CstNode, ParseError, ParsedSource, SourceExcerpt, SourcePosition, SourceSpan,
-    SyntaxDiagnostic, language, parse_file, parse_file_with_diagnostics, parse_source,
-    parse_source_with_diagnostics, render_parse_error,
-};
-pub use svir::emit::{EmitError, EmitErrorKind, emit as emit_sv, render_emit_errors};
-pub use svir::lower::lower_to_sv;
+pub use syntax::ast_id::{AstIdKind, AstIdMap, FileAstId, ast_id_map};
+pub use syntax::item_tree::ItemTree; // query is `syntax::item_tree::item_tree`

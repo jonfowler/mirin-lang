@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use polar_db::{
+use polar_compiler::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, crate_def_map, directions, infer,
     sig_of, verilog,
 };
@@ -94,7 +94,7 @@ fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize, usize) {
     (map.diagnostics().len(), body_d, infer_d, driver_d, dir_d)
 }
 
-/// Dev aid: per-example diagnostic tally. `cargo test -p polar-db --test examples
+/// Dev aid: per-example diagnostic tally. `cargo test -p polar-compiler --test examples
 /// report -- --ignored --nocapture`.
 #[test]
 #[ignore]
@@ -111,7 +111,7 @@ fn report() {
 }
 
 /// Dev aid: dump the emitted SystemVerilog for every example. `cargo test -p
-/// polar-db --test examples dump_verilog -- --ignored --nocapture`.
+/// polar-compiler --test examples dump_verilog -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn dump_verilog() {
@@ -181,7 +181,7 @@ fn corpus_is_verilator_clean() {
         eprintln!("verilator not installed — skipping lint");
         return;
     }
-    let dir = std::env::temp_dir().join("polar_db_verilator");
+    let dir = std::env::temp_dir().join("polar_compiler_verilator");
     std::fs::create_dir_all(&dir).unwrap();
     for (name, src) in examples() {
         if !VERILATOR_CLEAN.contains(&name.as_str()) {

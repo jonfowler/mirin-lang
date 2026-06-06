@@ -9,9 +9,10 @@ This repository is in a restart/planning state. Treat `planning/top.md` as the s
 ## Commands
 
 ```bash
-cargo test -p polar-compiler                                          # full test suite
-cargo test -p polar-compiler parses_add_constant_example -- --exact  # single test
-cargo run -p polar-compiler -- examples/mult_add.plr                 # parse a .plr file, print CST
+cargo test -p polar-compiler                                          # compiler test suite
+cargo test -p polar-compiler infer -- --exact                         # a single test by name
+cargo run -p polar-compiler -- examples/working/mult_add.plr          # compile a .plr → ./sv/<stem>.sv
+cargo run -p polar-compiler -- --emit cst examples/working/mult_add.plr   # print the CST instead
 cargo fmt --all                                                       # format Rust workspace
 
 cd packages/tree-sitter-polar && tree-sitter generate  # regenerate parser sources
@@ -24,12 +25,14 @@ The VS Code syntax extension lives in `editors/vscode/`.
 
 **Polar** is an HDL focused on RTL correctness, readability, and high-quality generated Verilog. The repo is a small monorepo:
 
-- `packages/polar-compiler/` — Rust crate: CST types, diagnostics, CLI. `build.rs` compiles the tree-sitter grammar (C sources) and links it in.
+- `packages/polar-compiler/` — the compiler: a query-based, demand-driven front-to-back implementation on salsa (`planning/query_engine.md`), structured by layer (`base` → `syntax` → `nameres` → `hir` → `backend`). Emits SystemVerilog; `build.rs` compiles the tree-sitter grammar (C sources) and links it in. This is the primary `polar-compiler`.
+- `packages/polar-compiler-old/` — the original whole-crate-pass compiler, kept as a **parity oracle** (the query-based one reached corpus parity at Q5-mono). Off the build path of everything else; retained for reference/diffing.
+- `packages/polar-lsp/` — the language server, built on `polar-compiler`'s query stack.
 - `packages/tree-sitter-polar/` — Tree-sitter grammar (JavaScript): concrete syntax, highlighting, editor integration.
 - `planning/` — Design docs that are the source of truth for language decisions.
-- `examples/` / `fail-examples/` — `.plr` source files used in parser tests.
+- `examples/` / `fail-examples/` — `.plr` source files used in tests.
 
-Data flow: `.plr` source → tree-sitter CST → Rust AST lowering → elaboration → type checking → IR → Verilog (later stages are planned but not yet implemented).
+Data flow: `.plr` source → tree-sitter CST → per-file `item_tree` → `crate_def_map` (name resolution) → `sig_of`/`body`/`infer` (typed HIR) → `verilog` (flatten + monomorphise + emit). Each is a salsa query.
 
 Tree-sitter owns concrete syntax; Rust owns CST-to-AST lowering, elaboration, and semantic analysis.
 

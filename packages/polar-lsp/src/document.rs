@@ -6,7 +6,7 @@
 //! proportional to the edit, not the file. A range-less change (or a client
 //! that only sends full text) still falls back to a whole-document replace.
 
-use polar_db::language;
+use polar_compiler::language;
 use ropey::Rope;
 use tower_lsp_server::ls_types::Range;
 use tree_sitter::{InputEdit, Parser, Tree};

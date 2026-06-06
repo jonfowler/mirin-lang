@@ -43,7 +43,7 @@ pub fn legend() -> SemanticTokensLegend {
 
 /// Compile the embedded highlight query against the Polar grammar.
 pub fn query() -> Query {
-    Query::new(&polar_db::language(), HIGHLIGHTS).expect("highlights.scm is a valid query")
+    Query::new(&polar_compiler::language(), HIGHLIGHTS).expect("highlights.scm is a valid query")
 }
 
 /// Map a `highlights.scm` capture name to a legend index.

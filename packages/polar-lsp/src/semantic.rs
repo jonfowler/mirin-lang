@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use polar_db::{
+use polar_compiler::{
     BodyDiagnostic, DefDiagnostic, DefKind, DirectionDiagnostic, DriverDiagnostic, InferDiagnostic,
     RootDatabase, Vfs, ast_id_map, body, check_drivers, crate_def_map, directions, infer,
 };
