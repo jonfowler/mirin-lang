@@ -137,6 +137,8 @@ pub enum DirectionDiagnostic {
     ValueToOut { param: String },
     /// An out-connection (`=>`) to a param that is not `out`.
     OutToNonOut { param: String },
+    /// A named argument with no matching named parameter on the callee.
+    UnknownNamedArg { callee: String, name: String },
 }
 
 /// QUERY: check that each call's connection operators agree with the callee's
@@ -191,6 +193,20 @@ pub fn directions<'db>(
                 .find(|p| p.from_named_section && p.name == n.name)
             {
                 check_dir(n.out, p.direction, &p.name, &mut out);
+            } else if !sig
+                .generic_params
+                .iter()
+                .any(|g| g.from_named_section && g.name == n.name)
+            {
+                // Not a named value param and not a named-section generic
+                // (`{clk}`/`{N}`) — there is no such named parameter.
+                out.push(DirectionDiagnostic::UnknownNamedArg {
+                    callee: map
+                        .def_data(callee)
+                        .map(|d| d.name.clone())
+                        .unwrap_or_default(),
+                    name: n.name.clone(),
+                });
             }
         }
     }
@@ -292,6 +308,42 @@ mod tests {
             dirs(&db, krate, "t")
                 .iter()
                 .any(|d| matches!(d, DirectionDiagnostic::OutToNonOut { param } if param == "i"))
+        );
+    }
+
+    #[test]
+    fn an_unknown_named_argument_is_flagged() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // `target` has no named parameter `typo`.
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn target { in a: uint(8) } (x: uint(8)) { a = x; }\nfn t (x: uint(8)) { target{typo = 5}(x); }",
+        );
+        assert!(
+            dirs(&db, krate, "t")
+                .iter()
+                .any(|d| matches!(d, DirectionDiagnostic::UnknownNamedArg { callee, name } if callee == "target" && name == "typo")),
+            "{:?}",
+            dirs(&db, krate, "t")
+        );
+    }
+
+    #[test]
+    fn a_named_section_generic_arg_is_not_unknown() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // `{clk}` is a named-section `dom` generic, not an unknown param.
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f { dom clk: Clock } (x: uint(8) @clk) -> uint(8) @clk { return x; }\nfn t { dom clk: Clock } (x: uint(8) @clk) -> uint(8) @clk { return f{clk}(x); }",
+        );
+        assert!(
+            dirs(&db, krate, "t").is_empty(),
+            "{:?}",
+            dirs(&db, krate, "t")
         );
     }
 

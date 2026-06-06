@@ -18,7 +18,7 @@
 //! up with the signature) and the generic params (to lower `var x: T`
 //! annotations). Never reads another def's body.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
@@ -163,6 +163,10 @@ pub enum BodyDiagnostic {
     /// An expression form not yet lowered (e.g. a named-argument instantiation
     /// call, deferred to a later slice).
     Unsupported { what: String },
+    /// The same name is declared as `var` more than once in one block.
+    DuplicateVar { name: String },
+    /// A `var x` declared after a `let x` binding in the same block.
+    VarAfterLet { name: String },
 }
 
 /// A function's lowered body: its locals (params first), its top-level block,
@@ -347,7 +351,9 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
 
     fn lower_block(&mut self, node: &Node, source: &str) -> Block {
         self.scopes.push(HashMap::new());
-        // Pre-scan: `var` bindings are visible throughout the block.
+        // Pre-scan: `var` bindings are visible throughout the block. A name
+        // declared `var` twice in one block is a duplicate.
+        let mut seen_vars: HashSet<String> = HashSet::new();
         let mut cursor = node.walk();
         for stmt in node
             .children(&mut cursor)
@@ -356,15 +362,36 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             if let Some(inner) = stmt.named_child(0)
                 && inner.kind() == "var_statement"
             {
+                for name in field_texts(&inner, "name", source) {
+                    if !seen_vars.insert(name.clone()) {
+                        self.diag(BodyDiagnostic::DuplicateVar { name });
+                    }
+                }
                 self.prescan_vars(&inner, source);
             }
         }
 
+        // Lower statements in order; a `var x` after a `let x` earlier in this
+        // block is illegal (the `let` already bound the name).
+        let mut lets: HashSet<String> = HashSet::new();
         let mut block = Block::default();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "statement" {
                 if let Some(inner) = child.named_child(0) {
+                    match inner.kind() {
+                        "let_statement" => {
+                            lets.insert(field_text(&inner, "name", source));
+                        }
+                        "var_statement" => {
+                            for name in field_texts(&inner, "name", source) {
+                                if lets.contains(&name) {
+                                    self.diag(BodyDiagnostic::VarAfterLet { name });
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                     self.lower_stmt(&inner, source, &mut block);
                 }
             } else if child.is_named() && child.kind() != "comment" {
@@ -780,6 +807,44 @@ mod tests {
             .resolve_in_scope(map.root(), name, Namespace::Item)
             .expect("def");
         body(db, krate, def)
+    }
+
+    #[test]
+    fn a_duplicate_var_is_a_diagnostic() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f () -> uint(8) { var x; var x; x = 0; return x; }",
+        );
+        let b = body_of(&db, krate, "f");
+        assert!(
+            b.diagnostics()
+                .iter()
+                .any(|d| matches!(d, BodyDiagnostic::DuplicateVar { name } if name == "x")),
+            "{:?}",
+            b.diagnostics()
+        );
+    }
+
+    #[test]
+    fn a_var_after_a_let_of_the_same_name_is_a_diagnostic() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f (a: uint(8)) -> uint(8) { let acc = a; var acc; acc = a; return acc; }",
+        );
+        let b = body_of(&db, krate, "f");
+        assert!(
+            b.diagnostics()
+                .iter()
+                .any(|d| matches!(d, BodyDiagnostic::VarAfterLet { name } if name == "acc")),
+            "{:?}",
+            b.diagnostics()
+        );
     }
 
     #[test]
