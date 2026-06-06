@@ -147,10 +147,25 @@ simplest programs — then widen to instantiation, then parametrics.
   non-parametric examples with verilator (`-Wall` minus cosmetic/expected lints),
   gated on verilator being installed. **`polar-compiler` is kept as the parity
   oracle** (Jon's call) until Q5-mono lands — not retired yet.
-- **Q5-mono — monomorphisation (deferred / later).** `mono_instances(crate)`
-  collector + interned `MonoInstance` + `mono_body`; Const/Domain substitution at
-  flatten; brings in `parametric_*`. **Out of near-term scope** (§0) — built once
-  the non-generic back end emits Verilog.
+- **Q5-mono — monomorphisation.** Done in three sub-slices in `backend/lower.rs`
+  (no separate `mono_body` query needed for the non-fn-generic cases):
+  - **Q5-mono-a/b _(done)_** — Const-kind generics → `#(parameter int N)` +
+    `[N-1:0]` widths (`sv_type` resolves `Param(i)` via the def's generic names);
+    `flatten_leaves` substitutes a struct/port's generic args into field types
+    (`build_subst`/`subst_type` — positional args ↔ positional params), so
+    `Bus(uint(8))`/`Buf{clk}(8)`/`DF{clk}(uint(8))` flatten with concrete widths.
+    Parity on `parametric_width_fn`/`parametric_width_port`/`parametric_struct`/
+    `parameterized_port`/`counter`.
+  - **Q5-mono-c _(done)_** — `infer` records an undecidable `uint(n)`~`uint(m)`
+    width equality as a `width_residual`; `sv_module` emits `initial assert
+    (n == m)` (new `SvItem::InitialAssert`/`SvBinOp::Eq`). Parity on
+    `equal_width_fn`. (First sliver of the deferred Q4b residual machinery.)
+  - **Q5-mono-d _(remaining)_** — true **Type-kind fn monomorphisation**: the
+    `mono_instances` collector + interned `MonoInstance` + specialised
+    `Callee__TypeArg` modules. Needed only by `parametric_struct_extended`
+    (`pipeline_para{ param A: Type }` → `pipeline_para__Write`). Gated on a
+    front-end fix: `param A: Type` must classify as **Type-kind** (today it
+    classifies Const). The 22nd-example parity holdout.
 
 Each slice promotes more of `tests/examples.rs` from "runs" to "emits matching
 Verilog".
