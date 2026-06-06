@@ -5,6 +5,7 @@
 
 mod document;
 mod encoding;
+mod semantic;
 mod semantic_tokens;
 mod server;
 mod syntax;

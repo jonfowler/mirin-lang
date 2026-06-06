@@ -3,7 +3,7 @@
 //! `polar-db` query engine. All real analysis lives in `polar-db`; the server
 //! never reimplements resolution or type checking (`planning/lsp.md`).
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use dashmap::DashMap;
 use tower_lsp_server::jsonrpc::Result;
@@ -14,7 +14,8 @@ use tree_sitter::Query;
 
 use crate::document::Document;
 use crate::encoding::Encoding;
-use crate::{semantic_tokens, syntax};
+use crate::semantic::Analysis;
+use crate::{semantic, semantic_tokens, syntax};
 
 pub struct Backend {
     client: Client,
@@ -28,6 +29,10 @@ pub struct Backend {
     /// The highlight query, compiled once at startup (`QueryCursor` is
     /// per-request; the immutable `Query` is shared).
     highlight_query: Query,
+    /// The incremental analysis engine (salsa db + VFS) for semantic
+    /// diagnostics. One per server; serialized behind a `Mutex` since edits
+    /// mutate salsa inputs.
+    analysis: Mutex<Analysis>,
 }
 
 impl Backend {
@@ -37,6 +42,7 @@ impl Backend {
             documents: DashMap::new(),
             encoding: OnceLock::new(),
             highlight_query: semantic_tokens::query(),
+            analysis: Mutex::new(Analysis::new()),
         }
     }
 
@@ -48,13 +54,28 @@ impl Backend {
             .unwrap_or(Encoding::Utf16)
     }
 
-    /// Recompute and publish syntactic diagnostics for `uri`. Computes under
-    /// the document lock, then releases it before awaiting the client send.
+    /// Recompute and publish diagnostics for `uri`: syntactic (ERROR/MISSING
+    /// nodes) always; semantic (the `polar-db` query stack) only once the file
+    /// parses cleanly, so a syntax typo doesn't trigger a cascade of spurious
+    /// name/type errors. All computed under the locks, which are released
+    /// before the async client send.
     async fn publish(&self, uri: Uri) {
         let enc = self.encoding();
-        let diags = match self.documents.get(uri.as_str()) {
-            Some(doc) => syntax::diagnostics(&doc.rope, &doc.tree, enc),
-            None => return,
+        let diags = {
+            let Some(doc) = self.documents.get(uri.as_str()) else {
+                return;
+            };
+            let mut diags = syntax::diagnostics(&doc.rope, &doc.tree, enc);
+            if diags.is_empty() {
+                // Clone (cheap: ropey is COW, Tree is ref-counted) so we don't
+                // hold the document lock while taking the analysis lock.
+                let (rope, tree) = (doc.rope.clone(), doc.tree.clone());
+                drop(doc);
+                let path = semantic::uri_to_path(&uri);
+                let mut analysis = self.analysis.lock().unwrap();
+                diags = semantic::diagnostics(&mut analysis, &path, &rope, &tree, enc);
+            }
+            diags
         };
         self.client.publish_diagnostics(uri, diags, None).await;
     }
