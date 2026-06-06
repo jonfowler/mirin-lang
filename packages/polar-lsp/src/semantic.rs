@@ -200,6 +200,14 @@ fn body_message(d: &BodyDiagnostic) -> (String, Option<String>) {
             format!("cannot find `{name}` in this scope"),
             Some(name.clone()),
         ),
+        BodyDiagnostic::DuplicateVar { name } => (
+            format!("`{name}` is declared more than once as `var` in this block"),
+            Some(name.clone()),
+        ),
+        BodyDiagnostic::VarAfterLet { name } => (
+            format!("cannot declare `var {name}` after a `let {name}` binding in the same block"),
+            Some(name.clone()),
+        ),
         BodyDiagnostic::Unsupported { what } => (format!("unsupported: {what}"), None),
     }
 }
@@ -236,6 +244,10 @@ fn direction_message(d: &DirectionDiagnostic) -> (String, Option<String>) {
         DirectionDiagnostic::OutToNonOut { param } => (
             format!("`{param}`: an `out` parameter is connected to a non-output target"),
             Some(param.clone()),
+        ),
+        DirectionDiagnostic::UnknownNamedArg { callee, name } => (
+            format!("`{callee}` has no named parameter `{name}`"),
+            Some(name.clone()),
         ),
     }
 }
