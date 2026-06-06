@@ -128,6 +128,24 @@ pub fn sv_module<'db>(
     };
     lower.lower_top_block(body.block());
 
+    // Discharge symbolic width obligations (`uint(n)` vs `uint(m)`) as
+    // `initial assert (n == m)`, rendering each param index via its name.
+    let name_of = |i: u32| {
+        sig.generic_params
+            .get(i as usize)
+            .map(|g| g.name.clone())
+            .unwrap_or_default()
+    };
+    for &(i, j) in inf.width_residuals() {
+        lower.items.push(SvItem::InitialAssert {
+            cond: SvExpr::BinOp(
+                SvBinOp::Eq,
+                Box::new(SvExpr::Ident(name_of(i))),
+                Box::new(SvExpr::Ident(name_of(j))),
+            ),
+        });
+    }
+
     // Const-kind generics become SV `#(parameter int N)`, in declaration order.
     let parameters = sig
         .generic_params
@@ -1530,6 +1548,29 @@ endmodule
         assert!(sv.contains("assign result__data = b__data;"), "{sv}");
         // No SV parameter — the type arg is concrete.
         assert!(!sv.contains("#("), "{sv}");
+    }
+
+    #[test]
+    fn equal_width_obligation_becomes_an_initial_assert() {
+        // `a: uint(n)`, `b: uint(m)`, `a + b` forces `n == m` — an undecidable
+        // width equality discharged as an `initial assert`. Byte-parity.
+        let sv = emit(
+            "fn pair_add { dom clk: Clock } ( param n: usize, param m: usize, a: uint(n) @clk, b: uint(m) @clk ) -> uint(n) @clk {\n  return a + b;\n}",
+        );
+        let expected = "\
+module pair_add #(parameter int n, parameter int m) (
+    input  logic clk,
+    input  logic [n-1:0] a,
+    input  logic [m-1:0] b,
+    output logic [n-1:0] result
+);
+    assign result = (a + b);
+    initial begin
+        assert ((n == m));
+    end
+endmodule
+";
+        assert_eq!(sv, expected, "\n--- got ---\n{sv}");
     }
 
     #[test]

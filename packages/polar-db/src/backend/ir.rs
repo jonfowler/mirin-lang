@@ -75,6 +75,8 @@ pub enum SvItem {
     AlwaysComb(SvAlwaysComb),
     /// `module inst (.port(expr), …);` — a submodule instantiation.
     Instance(SvInstance),
+    /// `initial begin assert (cond); end` — a discharged width obligation.
+    InitialAssert { cond: SvExpr },
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -142,6 +144,7 @@ pub enum SvExpr {
 pub enum SvBinOp {
     Add,
     Mul,
+    Eq,
 }
 
 // ----- Display: the deterministic pretty-printer -----
@@ -222,6 +225,11 @@ impl fmt::Display for SvItem {
                 }
                 writeln!(f, "    );")
             }
+            Self::InitialAssert { cond } => {
+                writeln!(f, "    initial begin")?;
+                writeln!(f, "        assert ({cond});")?;
+                writeln!(f, "    end")
+            }
         }
     }
 }
@@ -278,6 +286,7 @@ impl fmt::Display for SvExpr {
                 let op = match op {
                     SvBinOp::Add => "+",
                     SvBinOp::Mul => "*",
+                    SvBinOp::Eq => "==",
                 };
                 write!(f, "({l} {op} {r})")
             }

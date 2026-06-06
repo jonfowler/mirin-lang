@@ -53,6 +53,11 @@ pub struct Inference<'db> {
     local_types: HashMap<LocalId, Type<'db>>,
     method_resolutions: HashMap<ExprId, DefId<'db>>,
     diagnostics: Vec<InferDiagnostic>,
+    /// Width equalities that could not be decided here because both sides are
+    /// symbolic generic params (`uint(n)` vs `uint(m)`). Not an error — the
+    /// back end discharges them as `initial assert (n == m)` (the start of the
+    /// Q4b residual machinery; full `const_eval` is still deferred).
+    width_residuals: Vec<(u32, u32)>,
 }
 
 impl<'db> Inference<'db> {
@@ -70,6 +75,12 @@ impl<'db> Inference<'db> {
 
     pub fn diagnostics(&self) -> &[InferDiagnostic] {
         &self.diagnostics
+    }
+
+    /// Unresolved width equalities between two generic-param indices (`(n, m)`),
+    /// for the back end's `initial assert`.
+    pub fn width_residuals(&self) -> &[(u32, u32)] {
+        &self.width_residuals
     }
 }
 
@@ -128,6 +139,7 @@ struct InferCtx<'a, 'db> {
     local_types: HashMap<LocalId, Type<'db>>,
     method_resolutions: HashMap<ExprId, DefId<'db>>,
     diagnostics: Vec<InferDiagnostic>,
+    width_residuals: Vec<(u32, u32)>,
 }
 
 impl<'a, 'db> InferCtx<'a, 'db> {
@@ -143,6 +155,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             local_types: HashMap::new(),
             method_resolutions: HashMap::new(),
             diagnostics: Vec::new(),
+            width_residuals: Vec::new(),
         }
     }
 
@@ -167,6 +180,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             local_types: self.local_types,
             method_resolutions: self.method_resolutions,
             diagnostics: self.diagnostics,
+            width_residuals: self.width_residuals,
         }
     }
 
@@ -402,7 +416,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             (ConstArg::Lit(x), ConstArg::Lit(y)) if x != y => {
                 self.diagnostics.push(InferDiagnostic::WidthMismatch)
             }
-            // Ground-equal, or symbolic (param/deferred) → defer to Q4b.
+            // Two distinct generic-param widths can't be decided here — record
+            // the obligation for the back end's `initial assert` (Q4b residual).
+            (ConstArg::Param(x), ConstArg::Param(y)) if x != y => {
+                self.width_residuals.push((*x, *y));
+            }
+            // Ground-equal, or otherwise symbolic (deferred) → defer to Q4b.
             _ => {}
         }
     }

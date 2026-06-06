@@ -136,6 +136,7 @@ const VERILATOR_CLEAN: &[&str] = &[
     "counter.plr",
     "delay.plr",
     "delay_impl.plr",
+    "equal_width_fn.plr",
     "if_expression.plr",
     "module_wrapped.plr",
     "mult_add.plr",
