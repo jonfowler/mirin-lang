@@ -37,7 +37,7 @@ pub use hir::check::{
     DirectionDiagnostic, DirectionDiagnosticKind, DriverDiagnostic, DriverDiagnosticKind,
     check_drivers, directions,
 };
-pub use hir::infer::{InferDiagnostic, Inference, infer};
+pub use hir::infer::{InferDiagnostic, InferDiagnosticKind, Inference, infer};
 pub use hir::sig::{Field, Param, Signature, sig_of};
 pub use hir::types::{
     ConstArg, Direction, Domain, GenericArg, GenericArgs, GenericParam, GenericParamKind, LocalId,

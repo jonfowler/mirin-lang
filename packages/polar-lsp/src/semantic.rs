@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 
 use polar_compiler::{
     BodyDiagnostic, DefDiagnostic, DefKind, DirectionDiagnostic, DirectionDiagnosticKind,
-    DriverDiagnostic, DriverDiagnosticKind, InferDiagnostic, RootDatabase, Vfs, ast_id_map, body,
-    check_drivers, crate_def_map, directions, infer,
+    DriverDiagnostic, DriverDiagnosticKind, InferDiagnostic, InferDiagnosticKind, RootDatabase,
+    Vfs, ast_id_map, body, check_drivers, crate_def_map, directions, infer,
 };
 use ropey::Rope;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Range, Uri};
@@ -215,11 +215,11 @@ fn body_message(d: &BodyDiagnostic) -> (String, Option<String>) {
 }
 
 fn infer_message(d: &InferDiagnostic) -> (String, Option<String>) {
-    match d {
-        InferDiagnostic::TypeMismatch => ("type mismatch".to_owned(), None),
-        InferDiagnostic::WidthMismatch => ("width mismatch".to_owned(), None),
-        InferDiagnostic::DomainMismatch => ("clock-domain mismatch".to_owned(), None),
-        InferDiagnostic::UnresolvedMethod { name } => {
+    match &d.kind {
+        InferDiagnosticKind::TypeMismatch => ("type mismatch".to_owned(), None),
+        InferDiagnosticKind::WidthMismatch => ("width mismatch".to_owned(), None),
+        InferDiagnosticKind::DomainMismatch => ("clock-domain mismatch".to_owned(), None),
+        InferDiagnosticKind::UnresolvedMethod { name } => {
             (format!("no method `{name}`"), Some(name.clone()))
         }
     }

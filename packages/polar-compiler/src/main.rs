@@ -262,7 +262,7 @@ fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
                     out.push(render(&path, source, abs(d.span), &d.message()));
                 }
                 for d in infer(db, krate, def).diagnostics() {
-                    out.push(format!("error: {d:?}"));
+                    out.push(render(&path, source, abs(d.span), &d.message()));
                 }
             }
             Some(DefKind::Struct | DefKind::Port) => {

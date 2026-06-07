@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 
 use crate::base::db::SourceRoot;
+use crate::base::diagnostics::Span;
 use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{
@@ -31,9 +32,16 @@ use crate::hir::types::{
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
 
-/// A type/domain mismatch or unresolved method, found during inference.
+/// A type/domain mismatch or unresolved method, with the def-relative span of
+/// the expression under inference when it was found.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
-pub enum InferDiagnostic {
+pub struct InferDiagnostic {
+    pub span: Span,
+    pub kind: InferDiagnosticKind,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub enum InferDiagnosticKind {
     /// Two types that had to be equal could not be unified.
     TypeMismatch,
     /// Two `uint` widths that had to be equal are different (`uint(8)` vs
@@ -43,6 +51,19 @@ pub enum InferDiagnostic {
     DomainMismatch,
     /// A `recv.method(…)` whose method did not resolve on the receiver's type.
     UnresolvedMethod { name: String },
+}
+
+impl InferDiagnostic {
+    pub fn message(&self) -> String {
+        match &self.kind {
+            InferDiagnosticKind::TypeMismatch => "type mismatch".to_owned(),
+            InferDiagnosticKind::WidthMismatch => "mismatched `uint` widths".to_owned(),
+            InferDiagnosticKind::DomainMismatch => "mismatched clock domains".to_owned(),
+            InferDiagnosticKind::UnresolvedMethod { name } => {
+                format!("no method `{name}` on this type")
+            }
+        }
+    }
 }
 
 /// The result of inferring one def: a type per expression and per local, the
@@ -140,6 +161,9 @@ struct InferCtx<'a, 'db> {
     method_resolutions: HashMap<ExprId, DefId<'db>>,
     diagnostics: Vec<InferDiagnostic>,
     width_residuals: Vec<(u32, u32)>,
+    /// Def-relative span of the expression currently under inference — attached
+    /// to any diagnostic raised while unifying it.
+    current_span: Span,
 }
 
 impl<'a, 'db> InferCtx<'a, 'db> {
@@ -156,6 +180,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             method_resolutions: HashMap::new(),
             diagnostics: Vec::new(),
             width_residuals: Vec::new(),
+            current_span: Span::default(),
         }
     }
 
@@ -356,14 +381,14 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 },
             ) => {
                 if da != dbb {
-                    self.diagnostics.push(InferDiagnostic::TypeMismatch);
+                    self.diag(InferDiagnosticKind::TypeMismatch);
                 } else {
                     self.unify_args(aa, ab);
                 }
                 self.unify_domain(*dda, *ddb);
             }
             (Type::Clock, Type::Clock) => {}
-            _ => self.diagnostics.push(InferDiagnostic::TypeMismatch),
+            _ => self.diag(InferDiagnosticKind::TypeMismatch),
         }
     }
 
@@ -382,7 +407,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 self.unify_args(ax, ay)
             }
             (ValueKind::Param(i), ValueKind::Param(j)) if i == j => {}
-            _ => self.diagnostics.push(InferDiagnostic::TypeMismatch),
+            _ => self.diag(InferDiagnosticKind::TypeMismatch),
         }
     }
 
@@ -395,7 +420,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     self.unify_width(cx.clone(), cy.clone())
                 }
                 (GenericArg::Domain(dx), GenericArg::Domain(dy)) => self.unify_domain(*dx, *dy),
-                _ => self.diagnostics.push(InferDiagnostic::TypeMismatch),
+                _ => self.diag(InferDiagnosticKind::TypeMismatch),
             }
         }
     }
@@ -414,7 +439,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             (ConstArg::Infer(v), _) => self.const_vars[*v as usize] = Some(b.clone()),
             (_, ConstArg::Infer(v)) => self.const_vars[*v as usize] = Some(a.clone()),
             (ConstArg::Lit(x), ConstArg::Lit(y)) if x != y => {
-                self.diagnostics.push(InferDiagnostic::WidthMismatch)
+                self.diag(InferDiagnosticKind::WidthMismatch)
             }
             // Two distinct generic-param widths can't be decided here — record
             // the obligation for the back end's `initial assert` (Q4b residual).
@@ -438,7 +463,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             (Domain::Clock(x), Domain::Clock(y)) if x == y => {}
             (Domain::Param(x), Domain::Param(y)) if x == y => {}
             (Domain::Unspecified, _) | (_, Domain::Unspecified) => {}
-            _ => self.diagnostics.push(InferDiagnostic::DomainMismatch),
+            _ => self.diag(InferDiagnosticKind::DomainMismatch),
         }
     }
 
@@ -483,9 +508,22 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     }
 
     fn infer_expr(&mut self, body: &Body<'db>, expr: ExprId) -> Type<'db> {
+        // Locate any diagnostic raised while inferring this expression here. (A
+        // nested infer overwrites it, so a composite mismatch points at the
+        // sub-expression nearest the failure — close enough to be useful.)
+        self.current_span = body.expr_span(expr);
         let ty = self.infer_expr_inner(body, expr);
+        self.current_span = body.expr_span(expr);
         self.expr_types.insert(expr, ty.clone());
         ty
+    }
+
+    /// Push an inference diagnostic at the current expression's span.
+    fn diag(&mut self, kind: InferDiagnosticKind) {
+        self.diagnostics.push(InferDiagnostic {
+            span: self.current_span,
+            kind,
+        });
     }
 
     fn infer_expr_inner(&mut self, body: &Body<'db>, expr: ExprId) -> Type<'db> {
@@ -678,7 +716,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             // `x.reg(…)` : the registered value has the receiver's type.
             "reg" => recv,
             _ => {
-                self.diagnostics.push(InferDiagnostic::UnresolvedMethod {
+                self.diag(InferDiagnosticKind::UnresolvedMethod {
                     name: method.to_owned(),
                 });
                 Type::Error
@@ -957,7 +995,7 @@ mod tests {
         assert!(
             inf.diagnostics()
                 .iter()
-                .any(|d| matches!(d, InferDiagnostic::TypeMismatch)),
+                .any(|d| matches!(&d.kind, InferDiagnosticKind::TypeMismatch)),
             "expected a type mismatch, got {:?}",
             inf.diagnostics()
         );
@@ -977,7 +1015,7 @@ mod tests {
         assert!(
             inf.diagnostics()
                 .iter()
-                .any(|d| matches!(d, InferDiagnostic::WidthMismatch)),
+                .any(|d| matches!(&d.kind, InferDiagnosticKind::WidthMismatch)),
             "expected a width mismatch, got {:?}",
             inf.diagnostics()
         );
@@ -1054,7 +1092,7 @@ mod tests {
             infer(&db, krate, def_of(&db, krate, "f"))
                 .diagnostics()
                 .iter()
-                .any(|d| matches!(d, InferDiagnostic::TypeMismatch)),
+                .any(|d| matches!(&d.kind, InferDiagnosticKind::TypeMismatch)),
             "instantiating A=bool should make `b.data` (bool) clash with uint(8)"
         );
     }
