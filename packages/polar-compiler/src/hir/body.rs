@@ -223,6 +223,22 @@ impl<'db> Body<'db> {
         self.expr_spans[id.0 as usize]
     }
 
+    /// The innermost expression whose def-relative span contains `offset` (also
+    /// def-relative), i.e. the most specific expression at that point. Used by
+    /// IDE position→entity lookups (go-to-definition, hover).
+    pub fn expr_at(&self, offset: u32) -> Option<ExprId> {
+        let mut best: Option<(ExprId, u32)> = None;
+        for (i, span) in self.expr_spans.iter().enumerate() {
+            if span.start <= offset && offset < span.end {
+                let width = span.end - span.start;
+                if best.is_none_or(|(_, w)| width < w) {
+                    best = Some((ExprId(i as u32), width));
+                }
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+
     /// The def-relative span of a local's declaration.
     pub fn local_span(&self, id: LocalId) -> Span {
         self.local_spans[id.0 as usize]

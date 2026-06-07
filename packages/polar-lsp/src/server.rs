@@ -15,7 +15,7 @@ use tree_sitter::Query;
 use crate::document::Document;
 use crate::encoding::Encoding;
 use crate::semantic::Analysis;
-use crate::{semantic, semantic_tokens, syntax};
+use crate::{navigation, semantic, semantic_tokens, syntax};
 
 pub struct Backend {
     client: Client,
@@ -112,6 +112,7 @@ impl LanguageServer for Backend {
                         },
                     ),
                 ),
+                definition_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
@@ -188,6 +189,24 @@ impl LanguageServer for Backend {
         };
         let tokens = semantic_tokens::compute(&doc.rope, &doc.tree, &self.highlight_query, enc);
         Ok(Some(SemanticTokensResult::Tokens(tokens)))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let tdp = params.text_document_position_params;
+        let uri = tdp.text_document.uri;
+        let enc = self.encoding();
+        let Some(rope) = self.documents.get(uri.as_str()).map(|doc| doc.rope.clone()) else {
+            return Ok(None);
+        };
+        let path = semantic::uri_to_path(&uri);
+        let range = {
+            let mut analysis = self.analysis.lock().unwrap();
+            navigation::definition_range(&mut analysis, &path, &rope, tdp.position, enc)
+        };
+        Ok(range.map(|range| GotoDefinitionResponse::Scalar(Location { uri, range })))
     }
 
     async fn document_symbol(
