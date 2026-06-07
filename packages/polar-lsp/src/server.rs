@@ -67,13 +67,13 @@ impl Backend {
             };
             let mut diags = syntax::diagnostics(&doc.rope, &doc.tree, enc);
             if diags.is_empty() {
-                // Clone (cheap: ropey is COW, Tree is ref-counted) so we don't
-                // hold the document lock while taking the analysis lock.
-                let (rope, tree) = (doc.rope.clone(), doc.tree.clone());
+                // Clone (cheap: ropey is COW) so we don't hold the document lock
+                // while taking the analysis lock.
+                let rope = doc.rope.clone();
                 drop(doc);
                 let path = semantic::uri_to_path(&uri);
                 let mut analysis = self.analysis.lock().unwrap();
-                diags = semantic::diagnostics(&mut analysis, &path, &rope, &tree, enc);
+                diags = semantic::diagnostics(&mut analysis, &path, &rope, enc);
             }
             diags
         };

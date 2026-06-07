@@ -1,33 +1,31 @@
-//! Semantic diagnostics routed through the `polar-db` query engine
+//! Semantic diagnostics routed through the `polar-compiler` query engine
 //! (`planning/lsp.md` M2). The server holds one in-memory [`RootDatabase`] +
 //! [`Vfs`] (the incremental engine the doc's "sharing work" section calls for);
 //! editor buffers are overlaid into the VFS and the per-def diagnostic queries
 //! are run.
 //!
-//! `polar-db` diagnostics are message-only — they carry no source span (spans
-//! are a later "Q6" concern). So each diagnostic is *located* best-effort: it
-//! names the offending identifier, which we find in the owning def's CST range
-//! (the def range comes from `ast_id_map`). Span-less diagnostics fall back to
-//! the def's name. Go-to-def/hover wait on real source maps in `polar-db`.
+//! Each diagnostic carries a precise source span (Q6): per-def diagnostics
+//! (`body`/`infer`/`check_drivers`/`directions`) hold a **def-relative** [`Span`]
+//! (offset from the owning def's start, so it survives edits to other defs),
+//! and `DefDiagnostic` an item anchor. We turn both into absolute byte ranges
+//! (def start via `ast_id_map`) and map to LSP ranges through `encoding`.
 
 use std::path::{Path, PathBuf};
 
 use polar_compiler::{
-    BodyDiagnostic, DefDiagnostic, DefKind, DirectionDiagnostic, DirectionDiagnosticKind,
-    DriverDiagnostic, DriverDiagnosticKind, InferDiagnostic, InferDiagnosticKind, RootDatabase,
-    Vfs, ast_id_map, body, check_drivers, crate_def_map, directions, infer,
+    DefKind, RootDatabase, Span, Vfs, ast_id_map, body, check_drivers, crate_def_map, directions,
+    infer,
 };
 use ropey::Rope;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Range, Uri};
-use tree_sitter::{Node, Tree};
 
-use crate::encoding::{Encoding, byte_to_position, node_range};
+use crate::encoding::{Encoding, byte_to_position};
 
 /// The server's single incremental analysis engine: a salsa database plus the
 /// VFS overlay of editor buffers. Held behind a `Mutex` in the backend.
 pub struct Analysis {
-    db: RootDatabase,
-    vfs: Vfs,
+    pub(crate) db: RootDatabase,
+    pub(crate) vfs: Vfs,
 }
 
 impl Analysis {
@@ -48,206 +46,96 @@ pub fn uri_to_path(uri: &Uri) -> PathBuf {
 }
 
 /// Overlay `rope`'s text into the VFS and return the semantic diagnostics for
-/// that file, located against `tree`.
+/// the file at `path` (only diagnostics whose source is *this* file).
 pub fn diagnostics(
     analysis: &mut Analysis,
     path: &Path,
     rope: &Rope,
-    tree: &Tree,
     enc: Encoding,
 ) -> Vec<Diagnostic> {
     let src = rope.to_string();
-    analysis
-        .vfs
-        .set_file_text(&mut analysis.db, path, src.clone());
+    analysis.vfs.set_file_text(&mut analysis.db, path, src);
     let krate = analysis.vfs.source_root(&mut analysis.db, path);
 
+    let cur_file = analysis.vfs.file(path);
     let db = &analysis.db;
     let map = crate_def_map(db, krate);
     let mut out = Vec::new();
 
-    // Crate-level (name resolution / imports / duplicate defs).
+    // Crate-level (name resolution / imports / duplicate defs), anchored at the
+    // offending item. Only surface those anchored in this file.
     for d in map.diagnostics() {
-        let (message, name) = def_message(d);
-        out.push(locate(
-            tree,
-            &src,
-            rope,
-            enc,
-            None,
-            name.as_deref(),
-            message,
-        ));
+        match d.anchor {
+            Some((file, ast_id)) if Some(file) == cur_file => {
+                let range = ast_id_map(db, file).range_of(ast_id);
+                out.push(make_diag(rope, enc, range, d.message()));
+            }
+            _ => {}
+        }
     }
 
     // Per-def: body lowering, inference, driver + direction checks.
     for def in map.defs().collect::<Vec<_>>() {
+        if cur_file.is_some() && Some(def.file(db)) != cur_file {
+            continue; // a def in another file of the crate — not our diagnostics.
+        }
         if !matches!(
             map.def_data(def).map(|d| d.kind),
             Some(DefKind::Fn | DefKind::Method)
         ) {
             continue;
         }
-        let def_range = ast_id_map(db, def.file(db)).range_of(def.ast_id(db));
-        let mut push = |message: String, name: Option<String>| {
-            out.push(locate(
-                tree,
-                &src,
-                rope,
-                enc,
-                def_range,
-                name.as_deref(),
-                message,
-            ));
+        let Some((def_start, _)) = ast_id_map(db, def.file(db)).range_of(def.ast_id(db)) else {
+            continue;
         };
+        // def-relative span -> absolute byte range.
+        let abs = |span: Span| {
+            (
+                def_start + span.start as usize,
+                def_start + span.end as usize,
+            )
+        };
+
         for d in body(db, krate, def).diagnostics() {
-            let (m, n) = body_message(d);
-            push(m, n);
+            out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
         }
         for d in infer(db, krate, def).diagnostics() {
-            let (m, n) = infer_message(d);
-            push(m, n);
+            out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
         }
         for d in check_drivers(db, krate, def) {
-            let (m, n) = driver_message(&d);
-            push(m, n);
+            out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
         }
         for d in directions(db, krate, def) {
-            let (m, n) = direction_message(&d);
-            push(m, n);
+            out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
         }
     }
     out
 }
 
-/// Build a diagnostic, choosing the tightest range we can: the named
-/// identifier within `def_range` if given; else the def's name; else the def
-/// start.
-fn locate(
-    tree: &Tree,
-    src: &str,
+/// Build an error diagnostic at an absolute byte range (or the file start if
+/// none / unresolved).
+fn make_diag(
     rope: &Rope,
     enc: Encoding,
-    def_range: Option<(usize, usize)>,
-    name: Option<&str>,
+    range: Option<(usize, usize)>,
     message: String,
 ) -> Diagnostic {
-    let scope = match def_range {
-        Some((s, e)) => tree
-            .root_node()
-            .descendant_for_byte_range(s, e)
-            .unwrap_or_else(|| tree.root_node()),
-        None => tree.root_node(),
+    let range = match range {
+        Some((s, e)) => Range {
+            start: byte_to_position(rope, s, enc),
+            end: byte_to_position(rope, e, enc),
+        },
+        None => {
+            let z = byte_to_position(rope, 0, enc);
+            Range { start: z, end: z }
+        }
     };
-    let range = name
-        .and_then(|n| find_identifier(scope, src.as_bytes(), n))
-        .or_else(|| scope.child_by_field_name("name"))
-        .map(|node| node_range(rope, node, enc))
-        .unwrap_or_else(|| {
-            let start = byte_to_position(rope, scope.start_byte(), enc);
-            Range { start, end: start }
-        });
     Diagnostic {
         range,
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some("polar-lsp".to_owned()),
         message,
         ..Default::default()
-    }
-}
-
-/// First `identifier` node in `node`'s subtree whose text equals `name`.
-fn find_identifier<'a>(node: Node<'a>, src: &[u8], name: &str) -> Option<Node<'a>> {
-    if node.kind() == "identifier" && node.utf8_text(src).ok() == Some(name) {
-        return Some(node);
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(found) = find_identifier(child, src, name) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-// ----- message + offending-name extraction per diagnostic kind -----
-
-fn def_message(d: &DefDiagnostic) -> (String, Option<String>) {
-    use polar_compiler::DefDiagnosticKind as K;
-    match &d.kind {
-        K::UnresolvedModule { name } => (format!("unresolved module `{name}`"), Some(name.clone())),
-        K::UnresolvedImport { path } => (
-            format!("unresolved import `{}`", path.join("::")),
-            path.last().cloned(),
-        ),
-        K::PrivateImport { name } => (format!("`{name}` is private"), Some(name.clone())),
-        K::DuplicateDef { name } => (
-            format!("the name `{name}` is defined multiple times"),
-            Some(name.clone()),
-        ),
-        K::UnresolvedImplOwner { name } => (
-            format!("cannot find type `{name}` for this impl"),
-            Some(name.clone()),
-        ),
-    }
-}
-
-fn body_message(d: &BodyDiagnostic) -> (String, Option<String>) {
-    use polar_compiler::BodyDiagnosticKind as K;
-    match &d.kind {
-        K::UnresolvedName { name } => (
-            format!("cannot find `{name}` in this scope"),
-            Some(name.clone()),
-        ),
-        K::DuplicateVar { name } => (
-            format!("`{name}` is declared more than once as `var` in this block"),
-            Some(name.clone()),
-        ),
-        K::VarAfterLet { name } => (
-            format!("cannot declare `var {name}` after a `let {name}` binding in the same block"),
-            Some(name.clone()),
-        ),
-        K::Unsupported { what } => (format!("unsupported: {what}"), None),
-    }
-}
-
-fn infer_message(d: &InferDiagnostic) -> (String, Option<String>) {
-    match &d.kind {
-        InferDiagnosticKind::TypeMismatch => ("type mismatch".to_owned(), None),
-        InferDiagnosticKind::WidthMismatch => ("width mismatch".to_owned(), None),
-        InferDiagnosticKind::DomainMismatch => ("clock-domain mismatch".to_owned(), None),
-        InferDiagnosticKind::UnresolvedMethod { name } => {
-            (format!("no method `{name}`"), Some(name.clone()))
-        }
-    }
-}
-
-fn driver_message(d: &DriverDiagnostic) -> (String, Option<String>) {
-    match &d.kind {
-        DriverDiagnosticKind::Undriven { name } => {
-            (format!("`{name}` is never driven"), Some(name.clone()))
-        }
-        DriverDiagnosticKind::MultipleDrivers { name } => (
-            format!("`{name}` is driven more than once"),
-            Some(name.clone()),
-        ),
-    }
-}
-
-fn direction_message(d: &DirectionDiagnostic) -> (String, Option<String>) {
-    match &d.kind {
-        DirectionDiagnosticKind::ValueToOut { param } => (
-            format!("`{param}`: a value is connected to an `out` parameter"),
-            Some(param.clone()),
-        ),
-        DirectionDiagnosticKind::OutToNonOut { param } => (
-            format!("`{param}`: an `out` parameter is connected to a non-output target"),
-            Some(param.clone()),
-        ),
-        DirectionDiagnosticKind::UnknownNamedArg { callee, name } => (
-            format!("`{callee}` has no named parameter `{name}`"),
-            Some(name.clone()),
-        ),
     }
 }
 
@@ -259,13 +147,7 @@ mod tests {
     fn run(src: &str) -> Vec<Diagnostic> {
         let mut a = Analysis::new();
         let doc = Document::open(src);
-        diagnostics(
-            &mut a,
-            Path::new("/t.plr"),
-            &doc.rope,
-            &doc.tree,
-            Encoding::Utf8,
-        )
+        diagnostics(&mut a, Path::new("/t.plr"), &doc.rope, Encoding::Utf8)
     }
 
     #[test]
@@ -280,20 +162,24 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_name_is_reported_and_located() {
-        // `missing` is never bound.
+    fn unresolved_name_lands_exactly_on_the_span() {
+        // `missing` is never bound; line 5 is "    a + missing".
         let src = "fn f\n  { dom clk: Clock }\n  ( a: uint(8) @clk )\n  \
             -> uint(8) @clk\n  {\n    a + missing\n  }\n";
         let diags = run(src);
-        assert!(
-            diags.iter().any(|d| d.message.contains("missing")),
-            "expected an unresolved-name diagnostic, got {diags:?}"
-        );
-        // Located on the `missing` identifier (line 5), not at file start.
         let d = diags
             .iter()
             .find(|d| d.message.contains("missing"))
-            .unwrap();
-        assert_eq!(d.range.start.line, 5, "diag not on the right line: {d:?}");
+            .unwrap_or_else(|| panic!("no unresolved-name diagnostic: {diags:?}"));
+        // Span-accurate: starts at `missing` (col 8) and ends after it (col 15),
+        // not a whole-def or best-effort identifier match.
+        assert_eq!(
+            d.range.start,
+            tower_lsp_server::ls_types::Position::new(5, 8)
+        );
+        assert_eq!(
+            d.range.end,
+            tower_lsp_server::ls_types::Position::new(5, 15)
+        );
     }
 }
