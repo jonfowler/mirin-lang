@@ -7,9 +7,8 @@
 // Phase D records this as a residual on `pair_add`'s signature. Use
 // sites with concrete n/m discharge it; mismatched ones error.
 fn pair_add
-  { dom clk: Clock }
-  ( param n: usize, param m: usize, a: uint(n) @clk, b: uint(m) @clk )
-  -> uint(n) @clk
-{
-  return a + b;
+    {dom clk: Clock}
+    (param n: usize, param m: usize, a: uint(n) @clk, b: uint(m) @clk)
+    -> uint(n) @clk {
+    return a + b;
 }

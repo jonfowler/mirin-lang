@@ -5,36 +5,24 @@
 // expanding the struct through the substituted args into per-field
 // leaves (`b__valid`, `b__data`).
 struct Bus(A: Type) = bus {
-  valid: bool,
-  data: A,
+    valid: bool,
+    data: A,
 }
 
 struct Write = write {
-  addr: uint(8),
-  data: uint(8),
+    addr: uint(8),
+    data: uint(8),
 }
 
-fn pipeline
-  { dom clk: Clock, rstn: Reset @clk = high }
-  ( b: Bus(uint(8)) @clk )
-  -> Bus(uint(8)) @clk
-  {
-    let held = b.reg(rstn, bus {
-      valid: false,
-      data: 0,
-    });
+fn pipeline {dom clk: Clock, rstn: Reset @clk = high} (b: Bus(uint(8)) @clk) -> Bus(uint(8)) @clk {
+    let held = b.reg(rstn, bus { valid: false, data: 0 });
     return held;
-  }
+}
 
 fn pipeline_write
-  { dom clk: Clock, rstn: Reset @clk = high }
-  ( w: Bus(Write) @clk )
-  -> Bus(Write) @clk
-  {
-    let held = w.reg(rstn, bus { valid: false,
-      data: write {
-        addr: 0,
-        data: 0,
-    }});
+    {dom clk: Clock, rstn: Reset @clk = high}
+    (w: Bus(Write) @clk)
+    -> Bus(Write) @clk {
+    let held = w.reg(rstn, bus { valid: false, data: write { addr: 0, data: 0 } });
     held
-  }
+}

@@ -1,10 +1,6 @@
 // verilator: -Gbits=8
-fn counter
-  { dom clk: Clock, rstn: Reset @clk = high }
-  ( param bits: usize )
-  -> uint(bits) @clk
-  {
+fn counter {dom clk: Clock, rstn: Reset @clk = high} (param bits: usize) -> uint(bits) @clk {
     var count: uint(bits) @clk;
     count = (count + 1).reg(rstn, 0);
     return count;
-  }
+}

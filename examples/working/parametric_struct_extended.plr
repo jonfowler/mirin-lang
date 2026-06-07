@@ -6,40 +6,33 @@
 // expanding the struct through the substituted args into per-field
 // leaves (`b__valid`, `b__data`).
 struct Bus(A: Type) = bus {
-  valid: bool,
-  data: A,
+    valid: bool,
+    data: A,
 }
 
 struct Write = write {
-  addr: uint(8),
-  data: uint(8),
+    addr: uint(8),
+    data: uint(8),
 }
 
 fn pipeline
-  { dom clk: Clock, rstn: Reset @clk, param N: usize }
-  ( b: Bus(uint(N)) @clk )
-  -> Bus(uint(N)) @clk
-  {
-    let held = b.reg(rstn, bus {
-      valid: false,
-      data: 0,
-    });
+    {dom clk: Clock, rstn: Reset @clk, param N: usize}
+    (b: Bus(uint(N)) @clk)
+    -> Bus(uint(N)) @clk {
+    let held = b.reg(rstn, bus { valid: false, data: 0 });
     return held;
-  }
+}
 
 fn pipeline_para
-  { dom clk: Clock, rstn: Reset @clk = high, param A: Type }
-  ( w: Bus(A) @clk )
-  -> Bus(A) @clk
-  {
+    {dom clk: Clock, rstn: Reset @clk = high, param A: Type}
+    (w: Bus(A) @clk)
+    -> Bus(A) @clk {
     w // todo, require constraint on A so we can reg
-  }
-
+}
 
 fn pipeline_write
-  { dom clk: Clock, rstn: Reset @clk = high }
-  ( w: Bus(Write) @clk )
-  -> Bus(Write) @clk
-{
-  pipeline_para(w)
+    {dom clk: Clock, rstn: Reset @clk = high}
+    (w: Bus(Write) @clk)
+    -> Bus(Write) @clk {
+    pipeline_para(w)
 }

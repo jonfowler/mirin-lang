@@ -3,13 +3,13 @@
 // can call it by its bare name. Modules are erased before HIR, so the
 // generated SystemVerilog is two ordinary modules — `top` instantiating `add3`.
 mod parts {
-  pub fn add3 (x: uint(8)) -> uint(8) {
-    return x + 3;
-  }
+    pub fn add3(x: uint(8)) -> uint(8) {
+        return x + 3;
+    }
 }
 
 use crate::parts::add3;
 
-fn top (x: uint(8)) -> uint(8) {
-  return add3(add3(x));
+fn top(x: uint(8)) -> uint(8) {
+    return add3(add3(x));
 }

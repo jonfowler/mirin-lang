@@ -4,21 +4,21 @@
 // even though it lives in `mul`. Modules are erased before HIR — the generated
 // SystemVerilog is just `top` instantiating `scale`.
 mod mul {
-  fn add3 (x: uint(8)) -> uint(8) {
-    return x + 3;
-  }
+    fn add3(x: uint(8)) -> uint(8) {
+        return x + 3;
+    }
 
-  pub fn scale (x: uint(8)) -> uint(8) {
-    return add3(x) + add3(x);
-  }
+    pub fn scale(x: uint(8)) -> uint(8) {
+        return add3(x) + add3(x);
+    }
 }
 
 mod api {
-  pub use crate::mul::scale;
+    pub use crate::mul::scale;
 }
 
 use crate::api::scale;
 
-fn top (x: uint(8)) -> uint(8) {
-  return scale(x);
+fn top(x: uint(8)) -> uint(8) {
+    return scale(x);
 }

@@ -4,14 +4,14 @@ struct Option = option {
 }
 
 impl Option {
-    fn reg { dom clk: Clock } (self @clk, rstn: Reset @clk) -> Option @clk {
+    fn reg {dom clk: Clock} (self @clk, rstn: Reset @clk) -> Option @clk {
         let payloadd = self.payload.reg(rstn, 0);
         return option { valid: self.valid, payload: payloadd };
     }
 }
 
 fn double_delay
-    { dom clk: Clock, rstn: Reset @clk }
+    {dom clk: Clock, rstn: Reset @clk}
     (in upstream: Option @clk, out downstream: Option @clk) {
     downstream = upstream.reg(rstn).reg(rstn);
 }

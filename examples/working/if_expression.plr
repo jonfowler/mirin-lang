@@ -1,6 +1,6 @@
 // A simple combinational 2:1 mux exercising the if-expression form.
 // `if cond { a } else { b }` is the function body's tail expression, so the
 // implicit return picks up its value directly.
-fn pickOne (a: uint(8), b: uint(8), cond: bool) -> uint(8) {
-  if cond { a } else { b }
+fn pickOne(a: uint(8), b: uint(8), cond: bool) -> uint(8) {
+    if cond { a } else { b }
 }

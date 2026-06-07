@@ -2,18 +2,12 @@
 // Parametric port with a value-level `param N: usize` arg — the field
 // `data: uint(N) @clk` substitutes the use-site width at flatten time.
 // Use sites pass the width positionally: `Buf{clk}(8)` binds clk and N=8.
-port Buf
-  { dom clk: Clock }
-  ( param N: usize )
-  = buf {
-    in  ready: bool @clk,
+port Buf {dom clk: Clock} (param N: usize) = buf {
+    in ready: bool @clk,
     out valid: bool @clk,
-    out data:  uint(N) @clk,
-  }
+    out data: uint(N) @clk,
+}
 
-fn pipe
-  { dom clk: Clock }
-  ( upstream: Buf{clk}(8), out downstream: Buf{clk}(8) )
-  {
+fn pipe {dom clk: Clock} (upstream: Buf{clk}(8), out downstream: Buf{clk}(8)) {
     downstream = upstream;
-  }
+}
