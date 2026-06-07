@@ -44,8 +44,8 @@ pub use hir::types::{
     Type, ValueKind,
 };
 pub use nameres::def_map::{
-    Binding, BindingSource, CrateDefMap, DefData, DefDiagnostic, ModuleData, ModuleId, ModuleKind,
-    Visibility, crate_def_map,
+    Binding, BindingSource, CrateDefMap, DefData, DefDiagnostic, DefDiagnosticKind, ModuleData,
+    ModuleId, ModuleKind, Visibility, crate_def_map,
 };
 pub use nameres::ids::{
     AnonConstRole, DefId, DefKind, DefPath, DefPathHash, DefPathSegment, DefPathSegmentKind,

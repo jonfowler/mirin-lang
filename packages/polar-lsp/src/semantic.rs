@@ -173,22 +173,19 @@ fn find_identifier<'a>(node: Node<'a>, src: &[u8], name: &str) -> Option<Node<'a
 // ----- message + offending-name extraction per diagnostic kind -----
 
 fn def_message(d: &DefDiagnostic) -> (String, Option<String>) {
-    match d {
-        DefDiagnostic::UnresolvedModule { name } => {
-            (format!("unresolved module `{name}`"), Some(name.clone()))
-        }
-        DefDiagnostic::UnresolvedImport { path } => (
+    use polar_compiler::DefDiagnosticKind as K;
+    match &d.kind {
+        K::UnresolvedModule { name } => (format!("unresolved module `{name}`"), Some(name.clone())),
+        K::UnresolvedImport { path } => (
             format!("unresolved import `{}`", path.join("::")),
             path.last().cloned(),
         ),
-        DefDiagnostic::PrivateImport { name } => {
-            (format!("`{name}` is private"), Some(name.clone()))
-        }
-        DefDiagnostic::DuplicateDef { name } => (
+        K::PrivateImport { name } => (format!("`{name}` is private"), Some(name.clone())),
+        K::DuplicateDef { name } => (
             format!("the name `{name}` is defined multiple times"),
             Some(name.clone()),
         ),
-        DefDiagnostic::UnresolvedImplOwner { name } => (
+        K::UnresolvedImplOwner { name } => (
             format!("cannot find type `{name}` for this impl"),
             Some(name.clone()),
         ),

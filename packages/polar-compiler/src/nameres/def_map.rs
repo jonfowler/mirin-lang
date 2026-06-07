@@ -31,6 +31,7 @@ use crate::nameres::ids::{
     DefId, DefKind, DefPath, DefPathHash, DefPathSegment, DefPathSegmentKind, DefRole, Namespace,
     StableCrateId,
 };
+use crate::syntax::ast_id::FileAstId;
 use crate::syntax::item_tree::{
     ImplItem, Item, ModItem, ModKind, UseTree, Visibility as SurfaceVisibility, item_tree,
 };
@@ -91,8 +92,20 @@ pub struct Binding<'db> {
 /// A name-resolution diagnostic carried by the def map (RA's `DefMap` carries
 /// its diagnostics the same way). Spans arrive with the diagnostics infra (Q6);
 /// for now the offending name/path is enough to test behaviour.
+/// A name-resolution diagnostic, optionally anchored at the offending item
+/// (`file` + `ast_id`) so the renderer can resolve its source range — a stable
+/// anchor that survives edits to other items (the item-tree firewall). Imports
+/// have no anchor yet (the leaf resolver doesn't thread the use item down).
+// No `Debug`: `SourceFile` (in `anchor`) carries none (its fields need the db),
+// like the other input-holding types here.
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
+pub struct DefDiagnostic {
+    pub anchor: Option<(SourceFile, FileAstId)>,
+    pub kind: DefDiagnosticKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, salsa::Update)]
-pub enum DefDiagnostic {
+pub enum DefDiagnosticKind {
     /// A `mod foo;` whose file was not found in the crate.
     UnresolvedModule { name: String },
     /// A `use` path that resolved to nothing.
@@ -104,6 +117,26 @@ pub enum DefDiagnostic {
     DuplicateDef { name: String },
     /// An `impl T { … }` whose owner type `T` did not resolve.
     UnresolvedImplOwner { name: String },
+}
+
+impl DefDiagnostic {
+    pub fn message(&self) -> String {
+        match &self.kind {
+            DefDiagnosticKind::UnresolvedModule { name } => {
+                format!("unresolved module `{name}` (no matching `.plr` file)")
+            }
+            DefDiagnosticKind::UnresolvedImport { path } => {
+                format!("unresolved import `{}`", path.join("::"))
+            }
+            DefDiagnosticKind::PrivateImport { name } => format!("`{name}` is private"),
+            DefDiagnosticKind::DuplicateDef { name } => {
+                format!("the name `{name}` is defined more than once in this module")
+            }
+            DefDiagnosticKind::UnresolvedImplOwner { name } => {
+                format!("cannot find type `{name}` for this `impl`")
+            }
+        }
+    }
 }
 
 /// One module's data: what it is, its parent, the names visible in it (defs +
@@ -590,8 +623,11 @@ impl<'db> Collector<'db> {
             }
         };
         if duplicate {
-            self.map.diagnostics.push(DefDiagnostic::DuplicateDef {
-                name: name.to_owned(),
+            self.map.diagnostics.push(DefDiagnostic {
+                anchor: Some((file, ast_id)),
+                kind: DefDiagnosticKind::DuplicateDef {
+                    name: name.to_owned(),
+                },
             });
         }
         def
@@ -627,8 +663,11 @@ impl<'db> Collector<'db> {
                     let tree = item_tree(self.db, mod_file);
                     self.collect_items(&tree.top_level, mod_file, sub, &child_dir);
                 } else {
-                    self.map.diagnostics.push(DefDiagnostic::UnresolvedModule {
-                        name: m.name.clone(),
+                    self.map.diagnostics.push(DefDiagnostic {
+                        anchor: Some((file, m.ast_id)),
+                        kind: DefDiagnosticKind::UnresolvedModule {
+                            name: m.name.clone(),
+                        },
                     });
                 }
             }
@@ -912,8 +951,11 @@ impl<'db> Collector<'db> {
                 .map
                 .binding_local(module, segments[i], Namespace::Module)
             else {
-                self.map.diagnostics.push(DefDiagnostic::UnresolvedImport {
-                    path: segments.iter().map(|s| s.to_string()).collect(),
+                self.map.diagnostics.push(DefDiagnostic {
+                    anchor: None,
+                    kind: DefDiagnosticKind::UnresolvedImport {
+                        path: segments.iter().map(|s| s.to_string()).collect(),
+                    },
                 });
                 return;
             };
@@ -937,15 +979,21 @@ impl<'db> Collector<'db> {
                 return;
             }
         }
-        self.map.diagnostics.push(DefDiagnostic::UnresolvedImport {
-            path: segments.iter().map(|s| s.to_string()).collect(),
+        self.map.diagnostics.push(DefDiagnostic {
+            anchor: None,
+            kind: DefDiagnosticKind::UnresolvedImport {
+                path: segments.iter().map(|s| s.to_string()).collect(),
+            },
         });
     }
 
     fn push_private(&mut self, def: DefId<'db>) {
         if let Some(data) = self.map.def_data(def) {
-            self.map.diagnostics.push(DefDiagnostic::PrivateImport {
-                name: data.name.clone(),
+            self.map.diagnostics.push(DefDiagnostic {
+                anchor: None,
+                kind: DefDiagnosticKind::PrivateImport {
+                    name: data.name.clone(),
+                },
             });
         }
     }
@@ -962,11 +1010,12 @@ impl<'db> Collector<'db> {
             let owner = match owner.and_then(|o| self.map.def_data(o).map(|d| (o, d.kind))) {
                 Some((o, DefKind::Struct | DefKind::Port)) => o,
                 _ => {
-                    self.map
-                        .diagnostics
-                        .push(DefDiagnostic::UnresolvedImplOwner {
+                    self.map.diagnostics.push(DefDiagnostic {
+                        anchor: Some((file, item.ast_id)),
+                        kind: DefDiagnosticKind::UnresolvedImplOwner {
                             name: item.owner.clone(),
-                        });
+                        },
+                    });
                     continue;
                 }
             };
@@ -1330,7 +1379,14 @@ mod inner {
             map.resolve_local(map.root(), "f", Namespace::Item)
                 .is_some()
         );
-        assert!(map.diagnostics().is_empty(), "{:?}", map.diagnostics());
+        assert!(
+            map.diagnostics().is_empty(),
+            "{:?}",
+            map.diagnostics()
+                .iter()
+                .map(|d| &d.kind)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1385,7 +1441,14 @@ mod inner {
             map.resolve_local(map.root(), "b", Namespace::Module)
                 .is_some()
         );
-        assert!(map.diagnostics().is_empty(), "{:?}", map.diagnostics());
+        assert!(
+            map.diagnostics().is_empty(),
+            "{:?}",
+            map.diagnostics()
+                .iter()
+                .map(|d| &d.kind)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1421,11 +1484,14 @@ mod inner {
         );
         let map = crate_def_map(&db, krate);
         assert!(
-            map.diagnostics()
-                .iter()
-                .any(|d| matches!(d, DefDiagnostic::PrivateImport { name } if name == "secret")),
+            map.diagnostics().iter().any(
+                |d| matches!(&d.kind, DefDiagnosticKind::PrivateImport { name } if name == "secret")
+            ),
             "{:?}",
             map.diagnostics()
+                .iter()
+                .map(|d| &d.kind)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1442,7 +1508,14 @@ mod inner {
         let map = crate_def_map(&db, krate);
         let b = named_module(map, "b", Namespace::Module).expect("module b");
         assert!(map.resolve_local(b, "f", Namespace::Item).is_some());
-        assert!(map.diagnostics().is_empty(), "{:?}", map.diagnostics());
+        assert!(
+            map.diagnostics().is_empty(),
+            "{:?}",
+            map.diagnostics()
+                .iter()
+                .map(|d| &d.kind)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1454,9 +1527,12 @@ mod inner {
         assert!(
             map.diagnostics()
                 .iter()
-                .any(|d| matches!(d, DefDiagnostic::UnresolvedImport { .. })),
+                .any(|d| matches!(&d.kind, DefDiagnosticKind::UnresolvedImport { .. })),
             "{:?}",
             map.diagnostics()
+                .iter()
+                .map(|d| &d.kind)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1484,7 +1560,14 @@ mod inner {
         assert_eq!(map.def_data(ty).unwrap().kind, DefKind::Struct);
         assert_eq!(map.def_data(ctor).unwrap().kind, DefKind::Ctor);
         assert!(map.def_data(ctor).unwrap().owner == Some(ty));
-        assert!(map.diagnostics().is_empty(), "{:?}", map.diagnostics());
+        assert!(
+            map.diagnostics().is_empty(),
+            "{:?}",
+            map.diagnostics()
+                .iter()
+                .map(|d| &d.kind)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1494,11 +1577,14 @@ mod inner {
         let krate = single(&mut db, &mut vfs, "t.plr", "struct S = S { a: uint(8) }");
         let map = crate_def_map(&db, krate);
         assert!(
-            map.diagnostics()
-                .iter()
-                .any(|d| matches!(d, DefDiagnostic::DuplicateDef { name } if name == "S")),
+            map.diagnostics().iter().any(
+                |d| matches!(&d.kind, DefDiagnosticKind::DuplicateDef { name } if name == "S")
+            ),
             "{:?}",
             map.diagnostics()
+                .iter()
+                .map(|d| &d.kind)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1539,10 +1625,10 @@ mod inner {
         let map = crate_def_map(&db, krate);
         assert!(
             map.diagnostics().iter().any(
-                |d| matches!(d, DefDiagnostic::UnresolvedImplOwner { name } if name == "Ghost")
+                |d| matches!(&d.kind, DefDiagnosticKind::UnresolvedImplOwner { name } if name == "Ghost")
             ),
             "{:?}",
-            map.diagnostics()
+            map.diagnostics().iter().map(|d| &d.kind).collect::<Vec<_>>()
         );
     }
 

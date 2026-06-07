@@ -231,11 +231,25 @@ fn discover_file_mods(
 /// land in later slices).
 fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
     let map = crate_def_map(db, krate);
-    let mut out: Vec<String> = map
-        .diagnostics()
-        .iter()
-        .map(|d| format!("error: {d:?}"))
-        .collect();
+    let mut out: Vec<String> = Vec::new();
+    // Crate-level (name resolution): render with the item's anchor when present.
+    for d in map.diagnostics() {
+        match d.anchor {
+            Some((file, ast_id)) => {
+                let path = file.path(db).to_string_lossy().into_owned();
+                let source = file.text(db);
+                let span = ast_id_map(db, file)
+                    .range_of(ast_id)
+                    .map(|(s, e)| Span {
+                        start: s as u32,
+                        end: e as u32,
+                    })
+                    .unwrap_or_default();
+                out.push(render(&path, source, span, &d.message()));
+            }
+            None => out.push(format!("error: {}", d.message())),
+        }
+    }
     for def in map.defs().collect::<Vec<_>>() {
         match map.def_data(def).map(|d| d.kind) {
             Some(DefKind::Fn | DefKind::Method) => {
