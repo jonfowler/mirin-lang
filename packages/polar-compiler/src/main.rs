@@ -248,20 +248,20 @@ fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
                     .range_of(def.ast_id(db))
                     .map(|(s, _)| s as u32)
                     .unwrap_or(0);
+                let abs = |s: Span| Span {
+                    start: def_start + s.start,
+                    end: def_start + s.end,
+                };
                 for d in body(db, krate, def).diagnostics() {
-                    let span = Span {
-                        start: def_start + d.span.start,
-                        end: def_start + d.span.end,
-                    };
-                    out.push(render(&path, source, span, &d.message()));
-                }
-                for d in infer(db, krate, def).diagnostics() {
-                    out.push(format!("error: {d:?}"));
+                    out.push(render(&path, source, abs(d.span), &d.message()));
                 }
                 for d in check_drivers(db, krate, def) {
-                    out.push(format!("error: {d:?}"));
+                    out.push(render(&path, source, abs(d.span), &d.message()));
                 }
                 for d in directions(db, krate, def) {
+                    out.push(render(&path, source, abs(d.span), &d.message()));
+                }
+                for d in infer(db, krate, def).diagnostics() {
                     out.push(format!("error: {d:?}"));
                 }
             }

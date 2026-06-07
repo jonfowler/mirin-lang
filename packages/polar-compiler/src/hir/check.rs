@@ -12,19 +12,39 @@
 use std::collections::HashMap;
 
 use crate::base::db::SourceRoot;
+use crate::base::diagnostics::Span;
 use crate::hir::body::{Block, Body, ExprId, ExprKind, LocalKind, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{Direction, LocalId};
 use crate::nameres::def_map::crate_def_map;
 use crate::nameres::ids::{DefId, DefKind};
 
-/// A `var`-driver violation.
+/// A `var`-driver violation, with the var's def-relative declaration span.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
-pub enum DriverDiagnostic {
+pub struct DriverDiagnostic {
+    pub span: Span,
+    pub kind: DriverDiagnosticKind,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub enum DriverDiagnosticKind {
     /// A `var` with no driving equation.
     Undriven { name: String },
     /// A `var` with two or more driving equations.
     MultipleDrivers { name: String },
+}
+
+impl DriverDiagnostic {
+    pub fn message(&self) -> String {
+        match &self.kind {
+            DriverDiagnosticKind::Undriven { name } => {
+                format!("`var {name}` is never driven (needs an equation or out-connection)")
+            }
+            DriverDiagnosticKind::MultipleDrivers { name } => {
+                format!("`var {name}` is driven more than once")
+            }
+        }
+    }
 }
 
 /// QUERY: check that every `var` in a function body has exactly one driver.
@@ -59,13 +79,20 @@ pub fn check_drivers<'db>(
         if local.kind != LocalKind::Var {
             continue;
         }
+        let span = body.local_span(LocalId(i as u32));
         match counts.get(&LocalId(i as u32)).copied().unwrap_or(0) {
             1 => {}
-            0 => out.push(DriverDiagnostic::Undriven {
-                name: local.name.clone(),
+            0 => out.push(DriverDiagnostic {
+                span,
+                kind: DriverDiagnosticKind::Undriven {
+                    name: local.name.clone(),
+                },
             }),
-            _ => out.push(DriverDiagnostic::MultipleDrivers {
-                name: local.name.clone(),
+            _ => out.push(DriverDiagnostic {
+                span,
+                kind: DriverDiagnosticKind::MultipleDrivers {
+                    name: local.name.clone(),
+                },
             }),
         }
     }
@@ -130,15 +157,38 @@ fn count_expr(body: &Body, expr: ExprId, counts: &mut HashMap<LocalId, usize>) {
     }
 }
 
-/// A connection whose operator disagrees with the callee param's direction.
+/// A connection whose operator disagrees with the callee param's direction,
+/// with the connection's def-relative span.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
-pub enum DirectionDiagnostic {
+pub struct DirectionDiagnostic {
+    pub span: Span,
+    pub kind: DirectionDiagnosticKind,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub enum DirectionDiagnosticKind {
     /// A value connection (`name = v` / positional / shorthand) to an `out` param.
     ValueToOut { param: String },
     /// An out-connection (`=>`) to a param that is not `out`.
     OutToNonOut { param: String },
     /// A named argument with no matching named parameter on the callee.
     UnknownNamedArg { callee: String, name: String },
+}
+
+impl DirectionDiagnostic {
+    pub fn message(&self) -> String {
+        match &self.kind {
+            DirectionDiagnosticKind::ValueToOut { param } => {
+                format!("`{param}` is an `out` parameter — connect it with `=>`, not `=`")
+            }
+            DirectionDiagnosticKind::OutToNonOut { param } => {
+                format!("`=>` cannot drive `{param}`; only an `out` parameter accepts it")
+            }
+            DirectionDiagnosticKind::UnknownNamedArg { callee, name } => {
+                format!("`{callee}` has no named parameter `{name}`")
+            }
+        }
+    }
 }
 
 /// QUERY: check that each call's connection operators agree with the callee's
@@ -183,7 +233,13 @@ pub fn directions<'db>(
             .collect();
         for (i, a) in args.iter().enumerate() {
             if let Some(p) = positional.get(i) {
-                check_dir(a.out, p.direction, &p.name, &mut out);
+                check_dir(
+                    a.out,
+                    p.direction,
+                    &p.name,
+                    body.expr_span(a.expr),
+                    &mut out,
+                );
             }
         }
         for n in named {
@@ -192,7 +248,13 @@ pub fn directions<'db>(
                 .iter()
                 .find(|p| p.from_named_section && p.name == n.name)
             {
-                check_dir(n.out, p.direction, &p.name, &mut out);
+                check_dir(
+                    n.out,
+                    p.direction,
+                    &p.name,
+                    body.expr_span(n.expr),
+                    &mut out,
+                );
             } else if !sig
                 .generic_params
                 .iter()
@@ -200,12 +262,15 @@ pub fn directions<'db>(
             {
                 // Not a named value param and not a named-section generic
                 // (`{clk}`/`{N}`) — there is no such named parameter.
-                out.push(DirectionDiagnostic::UnknownNamedArg {
-                    callee: map
-                        .def_data(callee)
-                        .map(|d| d.name.clone())
-                        .unwrap_or_default(),
-                    name: n.name.clone(),
+                out.push(DirectionDiagnostic {
+                    span: body.expr_span(n.expr),
+                    kind: DirectionDiagnosticKind::UnknownNamedArg {
+                        callee: map
+                            .def_data(callee)
+                            .map(|d| d.name.clone())
+                            .unwrap_or_default(),
+                        name: n.name.clone(),
+                    },
                 });
             }
         }
@@ -213,16 +278,25 @@ pub fn directions<'db>(
     out
 }
 
-fn check_dir(is_out: bool, dir: Option<Direction>, name: &str, out: &mut Vec<DirectionDiagnostic>) {
-    if is_out && dir != Some(Direction::Out) {
-        out.push(DirectionDiagnostic::OutToNonOut {
+fn check_dir(
+    is_out: bool,
+    dir: Option<Direction>,
+    name: &str,
+    span: Span,
+    out: &mut Vec<DirectionDiagnostic>,
+) {
+    let kind = if is_out && dir != Some(Direction::Out) {
+        DirectionDiagnosticKind::OutToNonOut {
             param: name.to_owned(),
-        });
+        }
     } else if !is_out && dir == Some(Direction::Out) {
-        out.push(DirectionDiagnostic::ValueToOut {
+        DirectionDiagnosticKind::ValueToOut {
             param: name.to_owned(),
-        });
-    }
+        }
+    } else {
+        return;
+    };
+    out.push(DirectionDiagnostic { span, kind });
 }
 
 #[cfg(test)]
@@ -287,11 +361,9 @@ mod tests {
             &mut vfs,
             "fn snk { out o: uint(8) } (i: uint(8)) { o = i; }\nfn t (i: uint(8), r: uint(8)) { snk{o = r}(i); }",
         );
-        assert!(
-            dirs(&db, krate, "t")
-                .iter()
-                .any(|d| matches!(d, DirectionDiagnostic::ValueToOut { param } if param == "o"))
-        );
+        assert!(dirs(&db, krate, "t").iter().any(
+            |d| matches!(&d.kind, DirectionDiagnosticKind::ValueToOut { param } if param == "o")
+        ));
     }
 
     #[test]
@@ -304,11 +376,9 @@ mod tests {
             &mut vfs,
             "fn f (i: uint(8)) -> uint(8) { return i; }\nfn t (out x: uint(8)) { f(out => x); }",
         );
-        assert!(
-            dirs(&db, krate, "t")
-                .iter()
-                .any(|d| matches!(d, DirectionDiagnostic::OutToNonOut { param } if param == "i"))
-        );
+        assert!(dirs(&db, krate, "t").iter().any(
+            |d| matches!(&d.kind, DirectionDiagnosticKind::OutToNonOut { param } if param == "i")
+        ));
     }
 
     #[test]
@@ -324,7 +394,7 @@ mod tests {
         assert!(
             dirs(&db, krate, "t")
                 .iter()
-                .any(|d| matches!(d, DirectionDiagnostic::UnknownNamedArg { callee, name } if callee == "target" && name == "typo")),
+                .any(|d| matches!(&d.kind, DirectionDiagnosticKind::UnknownNamedArg { callee, name } if callee == "target" && name == "typo")),
             "{:?}",
             dirs(&db, krate, "t")
         );
@@ -379,7 +449,7 @@ mod tests {
         assert!(
             drivers(&db, krate, "f")
                 .iter()
-                .any(|d| matches!(d, DriverDiagnostic::Undriven { name } if name == "x"))
+                .any(|d| matches!(&d.kind, DriverDiagnosticKind::Undriven { name } if name == "x"))
         );
     }
 
@@ -392,11 +462,9 @@ mod tests {
             &mut vfs,
             "fn h (a: uint(8)) -> uint(8) { var x; x = a; x = a; return x; }",
         );
-        assert!(
-            drivers(&db, krate, "h")
-                .iter()
-                .any(|d| matches!(d, DriverDiagnostic::MultipleDrivers { name } if name == "x"))
-        );
+        assert!(drivers(&db, krate, "h").iter().any(
+            |d| matches!(&d.kind, DriverDiagnosticKind::MultipleDrivers { name } if name == "x")
+        ));
     }
 
     #[test]

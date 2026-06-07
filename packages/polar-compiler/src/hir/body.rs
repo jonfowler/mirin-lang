@@ -205,6 +205,8 @@ pub struct Body<'db> {
     /// to `exprs`; let `infer`/`check` locate an expression for diagnostics.
     expr_spans: Vec<Span>,
     locals: Vec<LocalData<'db>>,
+    /// Def-relative span per local (its declaration site), parallel to `locals`.
+    local_spans: Vec<Span>,
     /// The first `param_count` locals are the value params (ids match `sig_of`).
     param_count: u32,
     block: Block,
@@ -219,6 +221,11 @@ impl<'db> Body<'db> {
     /// The def-relative span of an expression (the renderer adds the def start).
     pub fn expr_span(&self, id: ExprId) -> Span {
         self.expr_spans[id.0 as usize]
+    }
+
+    /// The def-relative span of a local's declaration.
+    pub fn local_span(&self, id: LocalId) -> Span {
+        self.local_spans[id.0 as usize]
     }
 
     /// All expressions in the body's arena (for whole-body walks like the
@@ -290,6 +297,7 @@ struct BodyLowerer<'a, 'db> {
     exprs: Vec<Expr<'db>>,
     expr_spans: Vec<Span>,
     locals: Vec<LocalData<'db>>,
+    local_spans: Vec<Span>,
     param_count: u32,
     /// Lexical scopes (ribs): name → local. Inner scopes shadow outer.
     scopes: Vec<HashMap<String, LocalId>>,
@@ -331,6 +339,8 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 });
             }
         }
+        // Params/`dom` generics have no body declaration site → default span.
+        let local_spans = vec![Span::default(); locals.len()];
         Self {
             map,
             module,
@@ -340,6 +350,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             expr_spans: Vec::new(),
             param_count: params.len() as u32,
             locals,
+            local_spans,
             scopes: vec![base],
             diagnostics: Vec::new(),
         }
@@ -350,6 +361,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             exprs: self.exprs,
             expr_spans: self.expr_spans,
             locals: self.locals,
+            local_spans: self.local_spans,
             param_count: self.param_count,
             block,
             diagnostics: self.diagnostics,
@@ -360,6 +372,14 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         let id = ExprId(self.exprs.len() as u32);
         self.exprs.push(Expr { kind });
         self.expr_spans.push(Span::default());
+        id
+    }
+
+    /// Allocate an expression and record its source span (for exprs built
+    /// outside [`Self::lower_expr`], which sets spans itself).
+    fn alloc_spanned(&mut self, kind: ExprKind<'db>, node: &Node) -> ExprId {
+        let id = self.alloc(kind);
+        self.expr_spans[id.0 as usize] = self.rel_span(node);
         id
     }
 
@@ -382,6 +402,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         name: &str,
         kind: LocalKind,
         declared_ty: Option<Type<'db>>,
+        span: Span,
     ) -> LocalId {
         let id = LocalId(self.locals.len() as u32);
         self.locals.push(LocalData {
@@ -389,6 +410,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             kind,
             declared_ty,
         });
+        self.local_spans.push(span);
         self.define(name, id);
         id
     }
@@ -461,8 +483,9 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         let declared_ty = node
             .child_by_field_name("type")
             .map(|t| lower_type_expr(self.map, self.module, self.generics, &t, source));
+        let span = self.rel_span(node);
         for name in field_texts(node, "name", source) {
-            self.alloc_local(&name, LocalKind::Var, declared_ty.clone());
+            self.alloc_local(&name, LocalKind::Var, declared_ty.clone(), span);
         }
     }
 
@@ -471,7 +494,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             "let_statement" => {
                 let value = self.lower_field_expr(node, "value", source);
                 let name = field_text(node, "name", source);
-                let local = self.alloc_local(&name, LocalKind::Let, None);
+                let local = self.alloc_local(&name, LocalKind::Let, None, self.rel_span(node));
                 block.stmts.push(Stmt::Let { local, value });
             }
             "var_statement" => {
@@ -717,11 +740,13 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 }),
                 // Positional out-arg `[out] => target`.
                 "out_argument" => {
-                    let target = field_text(&arg, "target", source);
-                    args.push(ConnArg {
-                        out: true,
-                        expr: self.lower_place(&target),
-                    });
+                    if let Some(target) = arg.child_by_field_name("target") {
+                        let name = node_text(&target, source);
+                        args.push(ConnArg {
+                            out: true,
+                            expr: self.lower_place(&name, &target),
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -747,11 +772,11 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 });
             } else if let Some(target) = a.child_by_field_name("target") {
                 // `name => target` — an out-connection.
-                let target = node_text(&target, source);
+                let tname = node_text(&target, source);
                 out.push(NamedArg {
                     name,
                     out: true,
-                    expr: self.lower_place(&target),
+                    expr: self.lower_place(&tname, &target),
                 });
             } else {
                 // shorthand `name` — pass the local of the same name as the value.
@@ -770,13 +795,13 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     /// argument's CST node, for locating an unresolved-name diagnostic.
     fn lower_name_value(&mut self, name: &str, node: &Node) -> ExprId {
         if let Some(local) = self.lookup_local(name) {
-            return self.alloc(ExprKind::Local(local));
+            return self.alloc_spanned(ExprKind::Local(local), node);
         }
         if let Some(def) = self
             .map
             .resolve_in_scope(self.module, name, Namespace::Item)
         {
-            return self.alloc(ExprKind::Def(def));
+            return self.alloc_spanned(ExprKind::Def(def), node);
         }
         self.diag_at(
             node,
@@ -789,12 +814,13 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
 
     /// An out-connection *target* place. An existing local is reused; a fresh
     /// name introduces an implicit `var` (forward-only), mirroring the old
-    /// `ImplicitVar`.
-    fn lower_place(&mut self, name: &str) -> ExprId {
+    /// `ImplicitVar`. `node` is the target's CST node (for its span).
+    fn lower_place(&mut self, name: &str, node: &Node) -> ExprId {
+        let span = self.rel_span(node);
         let local = self
             .lookup_local(name)
-            .unwrap_or_else(|| self.alloc_local(name, LocalKind::Var, None));
-        self.alloc(ExprKind::Local(local))
+            .unwrap_or_else(|| self.alloc_local(name, LocalKind::Var, None, span));
+        self.alloc_spanned(ExprKind::Local(local), node)
     }
 
     fn lower_record(&mut self, node: &Node, source: &str) -> ExprId {

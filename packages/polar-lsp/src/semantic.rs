@@ -13,8 +13,9 @@
 use std::path::{Path, PathBuf};
 
 use polar_compiler::{
-    BodyDiagnostic, DefDiagnostic, DefKind, DirectionDiagnostic, DriverDiagnostic, InferDiagnostic,
-    RootDatabase, Vfs, ast_id_map, body, check_drivers, crate_def_map, directions, infer,
+    BodyDiagnostic, DefDiagnostic, DefKind, DirectionDiagnostic, DirectionDiagnosticKind,
+    DriverDiagnostic, DriverDiagnosticKind, InferDiagnostic, RootDatabase, Vfs, ast_id_map, body,
+    check_drivers, crate_def_map, directions, infer,
 };
 use ropey::Rope;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Range, Uri};
@@ -225,11 +226,11 @@ fn infer_message(d: &InferDiagnostic) -> (String, Option<String>) {
 }
 
 fn driver_message(d: &DriverDiagnostic) -> (String, Option<String>) {
-    match d {
-        DriverDiagnostic::Undriven { name } => {
+    match &d.kind {
+        DriverDiagnosticKind::Undriven { name } => {
             (format!("`{name}` is never driven"), Some(name.clone()))
         }
-        DriverDiagnostic::MultipleDrivers { name } => (
+        DriverDiagnosticKind::MultipleDrivers { name } => (
             format!("`{name}` is driven more than once"),
             Some(name.clone()),
         ),
@@ -237,16 +238,16 @@ fn driver_message(d: &DriverDiagnostic) -> (String, Option<String>) {
 }
 
 fn direction_message(d: &DirectionDiagnostic) -> (String, Option<String>) {
-    match d {
-        DirectionDiagnostic::ValueToOut { param } => (
+    match &d.kind {
+        DirectionDiagnosticKind::ValueToOut { param } => (
             format!("`{param}`: a value is connected to an `out` parameter"),
             Some(param.clone()),
         ),
-        DirectionDiagnostic::OutToNonOut { param } => (
+        DirectionDiagnosticKind::OutToNonOut { param } => (
             format!("`{param}`: an `out` parameter is connected to a non-output target"),
             Some(param.clone()),
         ),
-        DirectionDiagnostic::UnknownNamedArg { callee, name } => (
+        DirectionDiagnosticKind::UnknownNamedArg { callee, name } => (
             format!("`{callee}` has no named parameter `{name}`"),
             Some(name.clone()),
         ),

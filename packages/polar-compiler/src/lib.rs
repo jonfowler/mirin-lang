@@ -33,7 +33,10 @@ pub use base::vfs::Vfs;
 pub use hir::body::{
     Block, Body, BodyDiagnostic, BodyDiagnosticKind, Expr, ExprId, ExprKind, LocalKind, Stmt, body,
 };
-pub use hir::check::{DirectionDiagnostic, DriverDiagnostic, check_drivers, directions};
+pub use hir::check::{
+    DirectionDiagnostic, DirectionDiagnosticKind, DriverDiagnostic, DriverDiagnosticKind,
+    check_drivers, directions,
+};
 pub use hir::infer::{InferDiagnostic, Inference, infer};
 pub use hir::sig::{Field, Param, Signature, sig_of};
 pub use hir::types::{
