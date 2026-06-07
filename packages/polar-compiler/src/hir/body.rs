@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 use crate::base::db::SourceRoot;
+use crate::base::diagnostics::Span;
 use crate::base::parser;
 use crate::hir::sig::{lower_type_expr, sig_of};
 use crate::hir::types::{GenericParam, LocalId, Type};
@@ -155,9 +156,17 @@ pub enum Stmt {
     Expr(ExprId),
 }
 
-/// A body-resolution diagnostic (RA-style; spans arrive in Q6).
+/// A body-resolution diagnostic. The [`Span`] is **def-relative** (a byte offset
+/// from the start of the owning def) so it survives edits to other defs; the
+/// renderer adds the def's current start to get an absolute location.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
-pub enum BodyDiagnostic {
+pub struct BodyDiagnostic {
+    pub span: Span,
+    pub kind: BodyDiagnosticKind,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub enum BodyDiagnosticKind {
     /// A name reference that did not resolve to a local or a def.
     UnresolvedName { name: String },
     /// An expression form not yet lowered (e.g. a named-argument instantiation
@@ -169,11 +178,32 @@ pub enum BodyDiagnostic {
     VarAfterLet { name: String },
 }
 
+impl BodyDiagnostic {
+    /// A human-readable message (no location — the renderer adds that).
+    pub fn message(&self) -> String {
+        match &self.kind {
+            BodyDiagnosticKind::UnresolvedName { name } => format!("undefined name `{name}`"),
+            BodyDiagnosticKind::Unsupported { what } => format!("unsupported syntax: {what}"),
+            BodyDiagnosticKind::DuplicateVar { name } => {
+                format!("`{name}` is declared more than once as `var` in this block")
+            }
+            BodyDiagnosticKind::VarAfterLet { name } => {
+                format!(
+                    "cannot declare `var {name}` after a `let {name}` binding in the same block"
+                )
+            }
+        }
+    }
+}
+
 /// A function's lowered body: its locals (params first), its top-level block,
 /// and the diagnostics produced while lowering it.
 #[derive(Clone, PartialEq, Eq, Default, salsa::Update)]
 pub struct Body<'db> {
     exprs: Vec<Expr<'db>>,
+    /// Def-relative source span per expression (the body's source map). Parallel
+    /// to `exprs`; let `infer`/`check` locate an expression for diagnostics.
+    expr_spans: Vec<Span>,
     locals: Vec<LocalData<'db>>,
     /// The first `param_count` locals are the value params (ids match `sig_of`).
     param_count: u32,
@@ -184,6 +214,11 @@ pub struct Body<'db> {
 impl<'db> Body<'db> {
     pub fn expr(&self, id: ExprId) -> &Expr<'db> {
         &self.exprs[id.0 as usize]
+    }
+
+    /// The def-relative span of an expression (the renderer adds the def start).
+    pub fn expr_span(&self, id: ExprId) -> Span {
+        self.expr_spans[id.0 as usize]
     }
 
     /// All expressions in the body's arena (for whole-body walks like the
@@ -240,7 +275,7 @@ pub fn body<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db
         return Body::default();
     };
 
-    let mut lowerer = BodyLowerer::new(map, module, &sig.generic_params, &sig.params);
+    let mut lowerer = BodyLowerer::new(map, module, start, &sig.generic_params, &sig.params);
     let block = lowerer.lower_block(&block_node, source);
     lowerer.finish(block)
 }
@@ -248,8 +283,12 @@ pub fn body<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db
 struct BodyLowerer<'a, 'db> {
     map: &'a CrateDefMap<'db>,
     module: ModuleId,
+    /// The owning def's absolute start byte — subtracted to make spans
+    /// def-relative (edit-stable across other defs).
+    def_start: usize,
     generics: &'a [GenericParam],
     exprs: Vec<Expr<'db>>,
+    expr_spans: Vec<Span>,
     locals: Vec<LocalData<'db>>,
     param_count: u32,
     /// Lexical scopes (ribs): name → local. Inner scopes shadow outer.
@@ -261,6 +300,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     fn new(
         map: &'a CrateDefMap<'db>,
         module: ModuleId,
+        def_start: usize,
         generics: &'a [GenericParam],
         params: &[super::sig::Param<'db>],
     ) -> Self {
@@ -294,8 +334,10 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         Self {
             map,
             module,
+            def_start,
             generics,
             exprs: Vec::new(),
+            expr_spans: Vec::new(),
             param_count: params.len() as u32,
             locals,
             scopes: vec![base],
@@ -306,6 +348,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     fn finish(self, block: Block) -> Body<'db> {
         Body {
             exprs: self.exprs,
+            expr_spans: self.expr_spans,
             locals: self.locals,
             param_count: self.param_count,
             block,
@@ -316,7 +359,22 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     fn alloc(&mut self, kind: ExprKind<'db>) -> ExprId {
         let id = ExprId(self.exprs.len() as u32);
         self.exprs.push(Expr { kind });
+        self.expr_spans.push(Span::default());
         id
+    }
+
+    /// A node's span, relative to the owning def's start.
+    fn rel_span(&self, node: &Node) -> Span {
+        Span::new(
+            node.start_byte().saturating_sub(self.def_start),
+            node.end_byte().saturating_sub(self.def_start),
+        )
+    }
+
+    /// Record a diagnostic located at `node`.
+    fn diag_at(&mut self, node: &Node, kind: BodyDiagnosticKind) {
+        let span = self.rel_span(node);
+        self.diagnostics.push(BodyDiagnostic { span, kind });
     }
 
     fn alloc_local(
@@ -343,10 +401,6 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         self.scopes.iter().rev().find_map(|s| s.get(name).copied())
     }
 
-    fn diag(&mut self, d: BodyDiagnostic) {
-        self.diagnostics.push(d);
-    }
-
     // ----- blocks / statements -----
 
     fn lower_block(&mut self, node: &Node, source: &str) -> Block {
@@ -364,7 +418,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             {
                 for name in field_texts(&inner, "name", source) {
                     if !seen_vars.insert(name.clone()) {
-                        self.diag(BodyDiagnostic::DuplicateVar { name });
+                        self.diag_at(&inner, BodyDiagnosticKind::DuplicateVar { name });
                     }
                 }
                 self.prescan_vars(&inner, source);
@@ -386,7 +440,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                         "var_statement" => {
                             for name in field_texts(&inner, "name", source) {
                                 if lets.contains(&name) {
-                                    self.diag(BodyDiagnostic::VarAfterLet { name });
+                                    self.diag_at(&inner, BodyDiagnosticKind::VarAfterLet { name });
                                 }
                             }
                         }
@@ -465,7 +519,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     }
 
     fn lower_expr(&mut self, node: &Node, source: &str) -> ExprId {
-        match node.kind() {
+        let id = match node.kind() {
             // Unwrap the `expression` / parenthesised wrappers.
             "expression" | "parenthesized_expression" => match node.named_child(0) {
                 Some(inner) => self.lower_expr(&inner, source),
@@ -502,12 +556,18 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 self.alloc(ExprKind::Block(b))
             }
             other => {
-                self.diag(BodyDiagnostic::Unsupported {
-                    what: other.to_owned(),
-                });
+                self.diag_at(
+                    node,
+                    BodyDiagnosticKind::Unsupported {
+                        what: other.to_owned(),
+                    },
+                );
                 self.alloc(ExprKind::Missing)
             }
-        }
+        };
+        // Record this expression's source span (the body source map).
+        self.expr_spans[id.0 as usize] = self.rel_span(node);
+        id
     }
 
     fn lower_block_field(&mut self, node: &Node, field: &str, source: &str) -> Block {
@@ -544,9 +604,12 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 return ExprKind::Def(def);
             }
         }
-        self.diag(BodyDiagnostic::UnresolvedName {
-            name: segments.join("::"),
-        });
+        self.diag_at(
+            node,
+            BodyDiagnosticKind::UnresolvedName {
+                name: segments.join("::"),
+            },
+        );
         ExprKind::Missing
     }
 
@@ -558,7 +621,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         let callee = match self.map.resolve_in_scope(self.module, &op, Namespace::Item) {
             Some(def) => self.alloc(ExprKind::Def(def)),
             None => {
-                self.diag(BodyDiagnostic::UnresolvedName { name: op });
+                self.diag_at(node, BodyDiagnosticKind::UnresolvedName { name: op });
                 self.alloc(ExprKind::Missing)
             }
         };
@@ -692,7 +755,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 });
             } else {
                 // shorthand `name` — pass the local of the same name as the value.
-                let expr = self.lower_name_value(&name);
+                let expr = self.lower_name_value(&name, &a);
                 out.push(NamedArg {
                     name,
                     out: false,
@@ -703,8 +766,9 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         out
     }
 
-    /// A name used as a value (shorthand arg): a local, else a def.
-    fn lower_name_value(&mut self, name: &str) -> ExprId {
+    /// A name used as a value (shorthand arg): a local, else a def. `node` is the
+    /// argument's CST node, for locating an unresolved-name diagnostic.
+    fn lower_name_value(&mut self, name: &str, node: &Node) -> ExprId {
         if let Some(local) = self.lookup_local(name) {
             return self.alloc(ExprKind::Local(local));
         }
@@ -714,9 +778,12 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         {
             return self.alloc(ExprKind::Def(def));
         }
-        self.diag(BodyDiagnostic::UnresolvedName {
-            name: name.to_owned(),
-        });
+        self.diag_at(
+            node,
+            BodyDiagnosticKind::UnresolvedName {
+                name: name.to_owned(),
+            },
+        );
         self.alloc(ExprKind::Missing)
     }
 
@@ -736,7 +803,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             .map
             .resolve_in_scope(self.module, &ctor_name, Namespace::Item);
         if ctor.is_none() {
-            self.diag(BodyDiagnostic::UnresolvedName { name: ctor_name });
+            self.diag_at(node, BodyDiagnosticKind::UnresolvedName { name: ctor_name });
         }
         let mut fields = Vec::new();
         if let Some(body) = node.child_by_field_name("body") {
@@ -820,9 +887,9 @@ mod tests {
         );
         let b = body_of(&db, krate, "f");
         assert!(
-            b.diagnostics()
-                .iter()
-                .any(|d| matches!(d, BodyDiagnostic::DuplicateVar { name } if name == "x")),
+            b.diagnostics().iter().any(
+                |d| matches!(&d.kind, BodyDiagnosticKind::DuplicateVar { name } if name == "x")
+            ),
             "{:?}",
             b.diagnostics()
         );
@@ -839,9 +906,9 @@ mod tests {
         );
         let b = body_of(&db, krate, "f");
         assert!(
-            b.diagnostics()
-                .iter()
-                .any(|d| matches!(d, BodyDiagnostic::VarAfterLet { name } if name == "acc")),
+            b.diagnostics().iter().any(
+                |d| matches!(&d.kind, BodyDiagnosticKind::VarAfterLet { name } if name == "acc")
+            ),
             "{:?}",
             b.diagnostics()
         );
@@ -962,7 +1029,7 @@ mod tests {
         assert!(
             !b.diagnostics()
                 .iter()
-                .any(|d| matches!(d, BodyDiagnostic::Unsupported { .. })),
+                .any(|d| matches!(&d.kind, BodyDiagnosticKind::Unsupported { .. })),
             "{:?}",
             b.diagnostics()
         );
@@ -978,11 +1045,9 @@ mod tests {
             unreachable!()
         };
         assert!(matches!(b.expr(value).kind, ExprKind::Missing));
-        assert!(
-            b.diagnostics()
-                .iter()
-                .any(|d| matches!(d, BodyDiagnostic::UnresolvedName { name } if name == "zzz"))
-        );
+        assert!(b.diagnostics().iter().any(
+            |d| matches!(&d.kind, BodyDiagnosticKind::UnresolvedName { name } if name == "zzz")
+        ));
     }
 
     #[test]

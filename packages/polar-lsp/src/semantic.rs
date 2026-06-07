@@ -195,20 +195,21 @@ fn def_message(d: &DefDiagnostic) -> (String, Option<String>) {
 }
 
 fn body_message(d: &BodyDiagnostic) -> (String, Option<String>) {
-    match d {
-        BodyDiagnostic::UnresolvedName { name } => (
+    use polar_compiler::BodyDiagnosticKind as K;
+    match &d.kind {
+        K::UnresolvedName { name } => (
             format!("cannot find `{name}` in this scope"),
             Some(name.clone()),
         ),
-        BodyDiagnostic::DuplicateVar { name } => (
+        K::DuplicateVar { name } => (
             format!("`{name}` is declared more than once as `var` in this block"),
             Some(name.clone()),
         ),
-        BodyDiagnostic::VarAfterLet { name } => (
+        K::VarAfterLet { name } => (
             format!("cannot declare `var {name}` after a `let {name}` binding in the same block"),
             Some(name.clone()),
         ),
-        BodyDiagnostic::Unsupported { what } => (format!("unsupported: {what}"), None),
+        K::Unsupported { what } => (format!("unsupported: {what}"), None),
     }
 }
 

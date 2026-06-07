@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::{env, fs, process};
 
 use polar_compiler::{
-    DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, crate_def_map, directions, infer,
-    parse_text, render, reserved_words, sig_of, syntax_errors, verilog,
+    DefKind, RootDatabase, SourceRoot, Span, Vfs, ast_id_map, body, check_drivers, crate_def_map,
+    directions, infer, parse_text, render, reserved_words, sig_of, syntax_errors, verilog,
 };
 
 struct CliArgs {
@@ -226,8 +226,9 @@ fn discover_file_mods(
 }
 
 /// Run the front-end query stack over every def and collect its diagnostics as
-/// rendered lines. (Spans arrive with the Q6 diagnostics infra; until then the
-/// CLI prints each diagnostic's structured form.)
+/// rendered lines. Body diagnostics carry def-relative spans, resolved here to
+/// an absolute source location; the rest still print structurally (their spans
+/// land in later slices).
 fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
     let map = crate_def_map(db, krate);
     let mut out: Vec<String> = map
@@ -239,8 +240,20 @@ fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
         match map.def_data(def).map(|d| d.kind) {
             Some(DefKind::Fn | DefKind::Method) => {
                 let _ = sig_of(db, krate, def);
+                // The def's absolute start, to lift def-relative body spans.
+                let file = def.file(db);
+                let path = file.path(db).to_string_lossy().into_owned();
+                let source = file.text(db);
+                let def_start = ast_id_map(db, file)
+                    .range_of(def.ast_id(db))
+                    .map(|(s, _)| s as u32)
+                    .unwrap_or(0);
                 for d in body(db, krate, def).diagnostics() {
-                    out.push(format!("error: {d:?}"));
+                    let span = Span {
+                        start: def_start + d.span.start,
+                        end: def_start + d.span.end,
+                    };
+                    out.push(render(&path, source, span, &d.message()));
                 }
                 for d in infer(db, krate, def).diagnostics() {
                     out.push(format!("error: {d:?}"));
