@@ -131,11 +131,24 @@ mod tests {
     }
 
     #[test]
-    fn goto_param_has_no_jump_yet() {
-        // Cursor on `a` in `let x = a;` (line 5, col 12) resolves to the param
-        // `a`, but params have no declaration span in the lowerer yet, so we
-        // offer no (misleading) jump. TODO: populate param local_spans.
-        assert_eq!(goto(LET_SRC, Position::new(5, 12)), None);
+    fn goto_param_jumps_to_its_declaration() {
+        // Cursor on `a` in `let x = a;` (line 5, col 12) → the param `a`
+        // declaration in the signature (line 2, col 4).
+        let r = goto(LET_SRC, Position::new(5, 12)).expect("goto on param `a`");
+        assert_eq!(
+            r.start,
+            Position::new(2, 4),
+            "expected param `a` at (2,4): {r:?}"
+        );
+    }
+
+    #[test]
+    fn goto_local_lands_on_just_the_name() {
+        // The jump to `let x` is the `x` identifier (line 5, col 8), not the
+        // whole `let x = a;` statement.
+        let r = goto(LET_SRC, Position::new(6, 4)).expect("goto on `x`");
+        assert_eq!(r.start, Position::new(5, 8));
+        assert_eq!(r.end, Position::new(5, 9));
     }
 
     #[test]

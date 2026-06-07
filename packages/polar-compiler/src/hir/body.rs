@@ -299,6 +299,7 @@ pub fn body<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db
     };
 
     let mut lowerer = BodyLowerer::new(map, module, start, &sig.generic_params, &sig.params);
+    lowerer.record_param_spans(&node, source);
     let block = lowerer.lower_block(&block_node, source);
     lowerer.finish(block)
 }
@@ -381,6 +382,28 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             param_count: self.param_count,
             block,
             diagnostics: self.diagnostics,
+        }
+    }
+
+    /// Point the param locals' spans at their name identifiers in the signature
+    /// sections. Params have no *body* declaration site, so without this they
+    /// keep the default span and go-to-definition can't target them.
+    fn record_param_spans(&mut self, def_node: &Node, source: &str) {
+        for field in ["parameters", "named_parameters"] {
+            let Some(section) = def_node.child_by_field_name(field) else {
+                continue;
+            };
+            let mut cursor = section.walk();
+            for p in section.named_children(&mut cursor) {
+                let Some(name_node) = p.child_by_field_name("name") else {
+                    continue;
+                };
+                let name = name_node.utf8_text(source.as_bytes()).unwrap_or_default();
+                // Only value params + `dom` generics are locals (in the base rib).
+                if let Some(&id) = self.scopes[0].get(name) {
+                    self.local_spans[id.0 as usize] = self.rel_span(&name_node);
+                }
+            }
         }
     }
 
@@ -499,8 +522,14 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         let declared_ty = node
             .child_by_field_name("type")
             .map(|t| lower_type_expr(self.map, self.module, self.generics, &t, source));
-        let span = self.rel_span(node);
-        for name in field_texts(node, "name", source) {
+        // Span each var at its own name identifier, not the whole statement.
+        let mut cursor = node.walk();
+        for name_node in node.children_by_field_name("name", &mut cursor) {
+            let name = name_node
+                .utf8_text(source.as_bytes())
+                .unwrap_or_default()
+                .to_owned();
+            let span = self.rel_span(&name_node);
             self.alloc_local(&name, LocalKind::Var, declared_ty.clone(), span);
         }
     }
@@ -510,7 +539,11 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             "let_statement" => {
                 let value = self.lower_field_expr(node, "value", source);
                 let name = field_text(node, "name", source);
-                let local = self.alloc_local(&name, LocalKind::Let, None, self.rel_span(node));
+                // Span the local at its name identifier, not the whole statement.
+                let span = node
+                    .child_by_field_name("name")
+                    .map_or_else(|| self.rel_span(node), |n| self.rel_span(&n));
+                let local = self.alloc_local(&name, LocalKind::Let, None, span);
                 block.stmts.push(Stmt::Let { local, value });
             }
             "var_statement" => {
