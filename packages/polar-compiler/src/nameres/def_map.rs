@@ -94,8 +94,9 @@ pub struct Binding<'db> {
 /// for now the offending name/path is enough to test behaviour.
 /// A name-resolution diagnostic, optionally anchored at the offending item
 /// (`file` + `ast_id`) so the renderer can resolve its source range — a stable
-/// anchor that survives edits to other items (the item-tree firewall). Imports
-/// have no anchor yet (the leaf resolver doesn't thread the use item down).
+/// anchor that survives edits to other items (the item-tree firewall). All
+/// current producers set an anchor; the `Option` stays for future crate-wide
+/// diagnostics with no single item to point at.
 // No `Debug`: `SourceFile` (in `anchor`) carries none (its fields need the db),
 // like the other input-holding types here.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
@@ -399,9 +400,10 @@ struct Collector<'db> {
     root_file: SourceFile,
     /// Path → file, for resolving `mod foo;` to another file in the crate.
     files: HashMap<PathBuf, SourceFile>,
-    /// `(module, use-tree)` for every `use`, recorded during collection and
-    /// consumed by the import fixpoint and the privacy check.
-    uses: Vec<(ModuleId, SurfaceVisibility, UseTree)>,
+    /// `(module, file, use-item ast-id, vis, use-tree)` for every `use`,
+    /// recorded during collection and consumed by the import fixpoint and the
+    /// privacy check. The file + ast-id anchor the check's diagnostics.
+    uses: Vec<(ModuleId, SourceFile, FileAstId, SurfaceVisibility, UseTree)>,
     /// `pub(in path)` defs to re-resolve once the whole tree is built:
     /// `(module, name, ns, path)`.
     pending_vis: Vec<(ModuleId, String, Namespace, Vec<String>)>,
@@ -527,9 +529,10 @@ impl<'db> Collector<'db> {
                 Item::Struct(s) => self.declare_adt(file, s, DefKind::Struct, module),
                 Item::Port(p) => self.declare_adt(file, p, DefKind::Port, module),
                 Item::Mod(m) => self.collect_mod(m, file, module, dir),
-                Item::Use(u) => self
-                    .uses
-                    .push((module, u.visibility.clone(), u.tree.clone())),
+                Item::Use(u) => {
+                    self.uses
+                        .push((module, file, u.ast_id, u.visibility.clone(), u.tree.clone()))
+                }
                 Item::Impl(i) => self.impls.push((module, file, i.clone())),
             }
         }
@@ -730,7 +733,7 @@ impl<'db> Collector<'db> {
         let uses = std::mem::take(&mut self.uses);
         loop {
             let mut changed = false;
-            for (module, use_vis, tree) in &uses {
+            for (module, _file, _ast_id, use_vis, tree) in &uses {
                 // The binding's visibility is the re-export visibility: a plain
                 // `use` (Inherited) → module-private; a `pub use` → its declared
                 // visibility. `resolve_visibility` maps both correctly.
@@ -917,11 +920,14 @@ impl<'db> Collector<'db> {
     /// diagnostic. Mirrors `resolve.rs::check_use_privacy`.
     fn check_uses(&mut self) {
         let uses = std::mem::take(&mut self.uses);
-        let mut leaves: Vec<(ModuleId, Vec<String>)> = Vec::new();
-        for (module, _vis, tree) in &uses {
-            use_leaves(tree, &[], &mut |segs| leaves.push((*module, segs)));
+        // Each leaf carries its `use` item's anchor, for located diagnostics.
+        let mut leaves: Vec<(ModuleId, (SourceFile, FileAstId), Vec<String>)> = Vec::new();
+        for (module, file, ast_id, _vis, tree) in &uses {
+            use_leaves(tree, &[], &mut |segs| {
+                leaves.push((*module, (*file, *ast_id), segs))
+            });
         }
-        for (module, mut segs) in leaves {
+        for (module, anchor, mut segs) in leaves {
             // A trailing `self` names the prefix module.
             if segs.last().map(String::as_str) == Some("self") {
                 segs.pop();
@@ -930,14 +936,20 @@ impl<'db> Collector<'db> {
                 continue;
             }
             let refs: Vec<&str> = segs.iter().map(String::as_str).collect();
-            self.check_path_access(&refs, module);
+            self.check_path_access(&refs, module, anchor);
         }
         self.uses = uses;
     }
 
     /// Walk a path's bindings (intermediate modules, then the final name) from
-    /// `from`, recording the first failure as a diagnostic.
-    fn check_path_access(&mut self, segments: &[&str], from: ModuleId) {
+    /// `from`, recording the first failure as a diagnostic located at `anchor`
+    /// (the `use` item).
+    fn check_path_access(
+        &mut self,
+        segments: &[&str],
+        from: ModuleId,
+        anchor: (SourceFile, FileAstId),
+    ) {
         let (mut module, start) = self.map.path_anchor(segments, from);
         if start >= segments.len() {
             return;
@@ -952,7 +964,7 @@ impl<'db> Collector<'db> {
                 .binding_local(module, segments[i], Namespace::Module)
             else {
                 self.map.diagnostics.push(DefDiagnostic {
-                    anchor: None,
+                    anchor: Some(anchor),
                     kind: DefDiagnosticKind::UnresolvedImport {
                         path: segments.iter().map(|s| s.to_string()).collect(),
                     },
@@ -960,7 +972,7 @@ impl<'db> Collector<'db> {
                 return;
             };
             if !own_scope && !self.vis_accessible(binding.vis, from) {
-                self.push_private(binding.def);
+                self.push_private(binding.def, anchor);
                 return;
             }
             let Some(next) = self.map.module_of_def(binding.def) else {
@@ -974,23 +986,23 @@ impl<'db> Collector<'db> {
         for ns in [Namespace::Module, Namespace::Item] {
             if let Some(binding) = self.map.binding_local(module, segments[i], ns) {
                 if !own_scope && !self.vis_accessible(binding.vis, from) {
-                    self.push_private(binding.def);
+                    self.push_private(binding.def, anchor);
                 }
                 return;
             }
         }
         self.map.diagnostics.push(DefDiagnostic {
-            anchor: None,
+            anchor: Some(anchor),
             kind: DefDiagnosticKind::UnresolvedImport {
                 path: segments.iter().map(|s| s.to_string()).collect(),
             },
         });
     }
 
-    fn push_private(&mut self, def: DefId<'db>) {
+    fn push_private(&mut self, def: DefId<'db>, anchor: (SourceFile, FileAstId)) {
         if let Some(data) = self.map.def_data(def) {
             self.map.diagnostics.push(DefDiagnostic {
-                anchor: None,
+                anchor: Some(anchor),
                 kind: DefDiagnosticKind::PrivateImport {
                     name: data.name.clone(),
                 },
