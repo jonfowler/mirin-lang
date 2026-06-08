@@ -57,6 +57,14 @@
         "language": "polar",
         "scopeName": "source.polar",
         "path": "./syntaxes/polar.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.polar.codeblock",
+        "path": "./syntaxes/polar.markdown-injection.json",
+        "injectTo": ["text.html.markdown"],
+        "embeddedLanguages": {
+          "meta.embedded.block.polar": "polar"
+        }
       }
     ],
     "configuration": {
