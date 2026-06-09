@@ -1,0 +1,4 @@
+// no domain on the output type, but this should have to be uint(8) @clk.
+fn test {dom clk: Clock} (x: uint(8)) -> uint(8) {
+    when clk.posedge() { x + 1 }
+}

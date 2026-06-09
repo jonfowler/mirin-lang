@@ -2,8 +2,12 @@
 // `when clk.posedge() { … }` lowers to `always_ff @(posedge clk)` —
 // the body's tail value (`count + 1`) is the D-input, and the expression's
 // value is the held register output (the previous cycle's value).
-fn counter {dom clk: Clock} () -> uint(8) @clk {
+fn counter {dom clk: Clock} (rst: Reset @clk) -> uint(8) @clk {
     var count: uint(8) @clk;
-    count = when clk.posedge() { count + 1 };
+
+    count = when clk.posedge() {
+        if rst { count + 1 } else { 0 }
+    };
+
     count
 }

@@ -1,0 +1,7 @@
+fn adder(x: uint(8), y: uint(8)) -> uint(8) {
+    x + y
+}
+
+fn add7_dom {dom clk: Clock, dom clk2: Clock} (x: uint(8) @clk, y: uint(8) @clk2) -> uint(8) @clk {
+    adder(x, y)
+}
