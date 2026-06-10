@@ -1,27 +1,24 @@
 # todo-incorrect-pass
 
-Examples that the compiler currently accepts but that **must be rejected** once
-domain checking (planning/domain_checking_redux.md) is implemented. No test
-consumes this directory; it is a worklist. As each file starts failing for the
-documented reason, move it to `examples/fail-expected/`.
+Examples that the compiler currently accepts but that **must be rejected**
+once the corresponding checker lands (see `planning/q7_terms_and_domains.md`
+and `planning/domain_checking_redux.md`). No test consumes this directory; it
+is a worklist. As each file starts failing for the documented reason, move it
+to `examples/fail-expected/` (covered by the
+`fail_expected_examples_produce_diagnostics` harness).
 
-- `cross-reset.plr` — `.reg` with a reset on a different clock than the data
-  (reg's one `dom D: Clock` covers both). [Q7 phase C2]
-- `clocked-width.plr` — a clocked value in `uint(...)` width position (const
-  position requires domain @const). [Q7 phase C2]
-- `mixed-struct-clocks.plr` — one lifted single-domain struct constructed with
-  fields from two clocks. [Q7 phase C3]
+Currently empty — the whole Q7 phase-C worklist has flipped:
 
-Each entry's passing twin, where one exists, lives in `examples/working/`
-(`reg_const_input`, `struct_two_clocks`, `dual_clock_lift`,
-`const_then_clocked`) — those exercise the same machinery from the legal side
-and must stay green while these flip.
+- `two-doms-fn.plr`, `when_no_clk.plr` — C1 (shared-domain lifting,
+  explicit-mode annotation requirement).
+- `cross-reset.plr`, `clocked-width.plr` — C2 (reg's one Clock-sorted domain
+  for data + reset; const-position domain check).
+- `mixed-struct-clocks.plr` — C3 (single-domain record stamping).
+
+Each fail's passing twin lives in `examples/working/` (`reg_const_input`,
+`struct_two_clocks`, `dual_clock_lift`, `const_then_clocked`) and must stay
+green.
 
 `no-dom-reg.plr` used to live here under the assumption that a bare body type
 meant `@const`; the elision rules settled the other way (bare types in bodies
 are domain-inferred), so it moved to `working/inferred_dom_reg.plr`.
-
-Flipped so far (now in `fail-expected/`, covered by the
-`fail_expected_examples_produce_diagnostics` harness): `two-doms-fn.plr` and
-`when_no_clk.plr` (Q7 phase C1: shared-domain lifting + explicit-mode
-annotation requirement).

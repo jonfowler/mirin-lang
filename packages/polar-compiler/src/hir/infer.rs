@@ -27,8 +27,8 @@ use crate::base::diagnostics::Span;
 use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{
-    ConstArg, Domain, DomainSort, Folder, GenericArgs, InferVar, LocalId, Term, TermKind, Type,
-    ValueKind, super_fold_type,
+    ConstArg, Domain, DomainSort, Folder, GenericArgs, GenericParam, InferVar, LocalId, Term,
+    TermKind, Type, ValueKind, super_fold_type,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -53,6 +53,11 @@ pub enum InferDiagnosticKind {
     /// A `@const` value where an edge-bearing clock domain is required (the
     /// domain variable has sort `Clock` — e.g. a register's clock).
     RequiresClock,
+    /// A `.reg` call that doesn't match the builtin's signature
+    /// `(rstn: Reset @ D, init: T @const)`.
+    RegForm,
+    /// A clocked value used in const position (a `uint(n)` width).
+    ClockedWidth,
     /// A `recv.method(…)` whose method did not resolve on the receiver's type.
     UnresolvedMethod { name: String },
 }
@@ -65,6 +70,10 @@ impl InferDiagnostic {
             InferDiagnosticKind::DomainMismatch => "mismatched clock domains".to_owned(),
             InferDiagnosticKind::RequiresClock => {
                 "a clock domain is required here, but the domain is `@const`".to_owned()
+            }
+            InferDiagnosticKind::RegForm => "`.reg` expects `(reset, init)` arguments".to_owned(),
+            InferDiagnosticKind::ClockedWidth => {
+                "a width must be a compile-time constant, but this value is clocked".to_owned()
             }
             InferDiagnosticKind::UnresolvedMethod { name } => {
                 format!("no method `{name}` on this type")
@@ -130,7 +139,7 @@ pub fn infer<'db>(
     let sig = sig_of(db, krate, def);
     let body = body(db, krate, def);
 
-    let mut cx = InferCtx::new(db, krate, map);
+    let mut cx = InferCtx::new(db, krate, map, &sig.generic_params);
 
     // Seed locals: params get their signature type (own generic `Param`s stay
     // rigid; only unspecified domains become fresh vars). Other locals start as
@@ -147,6 +156,14 @@ pub fn infer<'db>(
         let var = cx.fresh_type();
         cx.local_types.insert(id, var.clone());
         if let Some(declared) = &local.declared_ty {
+            // A width naming a local (`uint(n)`) obligates that local's domain
+            // to be `@const` — hardware can't have a runtime-varying width.
+            for l in width_locals(declared) {
+                cx.obligations.push(Obligation {
+                    span: Span::default(),
+                    kind: ObligationKind::ConstDomain(l),
+                });
+            }
             let declared = cx.freshen_domains(declared);
             cx.unify(&var, &declared);
         }
@@ -282,6 +299,9 @@ struct InferCtx<'a, 'db> {
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
     map: &'a CrateDefMap<'db>,
+    /// The inferred def's own generic params (to map a clock local back to its
+    /// `dom` generic index for `when`).
+    own_generics: &'a [GenericParam],
     table: InferenceTable<'db>,
     expr_types: HashMap<ExprId, Type<'db>>,
     local_types: HashMap<LocalId, Type<'db>>,
@@ -305,14 +325,39 @@ struct Obligation {
 enum ObligationKind {
     /// Two consts that must be equal (symbolic widths).
     ConstEq(ConstArg, ConstArg),
+    /// The local appears in const position (a width): its domain must resolve
+    /// to `@const` (an unbound domain defaults const, so unbound passes).
+    ConstDomain(LocalId),
+}
+
+/// The body locals referenced in const (width) position anywhere in `ty`.
+fn width_locals(ty: &Type<'_>) -> Vec<LocalId> {
+    struct Collect(Vec<LocalId>);
+    impl<'db> Folder<'db> for Collect {
+        fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+            if let ConstArg::Local(l) = c {
+                self.0.push(*l);
+            }
+            c.clone()
+        }
+    }
+    let mut c = Collect(Vec::new());
+    let _ = c.fold_type(ty);
+    c.0
 }
 
 impl<'a, 'db> InferCtx<'a, 'db> {
-    fn new(db: &'db dyn salsa::Database, krate: SourceRoot, map: &'a CrateDefMap<'db>) -> Self {
+    fn new(
+        db: &'db dyn salsa::Database,
+        krate: SourceRoot,
+        map: &'a CrateDefMap<'db>,
+        own_generics: &'a [GenericParam],
+    ) -> Self {
         Self {
             db,
             krate,
             map,
+            own_generics,
             table: InferenceTable::new(),
             expr_types: HashMap::new(),
             local_types: HashMap::new(),
@@ -360,6 +405,26 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             let pending = std::mem::take(&mut self.obligations);
             for ob in pending {
                 match &ob.kind {
+                    ObligationKind::ConstDomain(l) => {
+                        let dom = self
+                            .local_types
+                            .get(l)
+                            .cloned()
+                            .and_then(|t| self.domain_of(&t))
+                            .map(|d| self.resolve_domain(d));
+                        match dom {
+                            // Unbound defaults to @const at finish — fine.
+                            None | Some(Domain::Const) | Some(Domain::Infer(_)) => {
+                                progress = true;
+                            }
+                            Some(Domain::Unspecified) => progress = true,
+                            Some(_) => {
+                                self.current_span = ob.span;
+                                self.diag(InferDiagnosticKind::ClockedWidth);
+                                progress = true;
+                            }
+                        }
+                    }
                     ObligationKind::ConstEq(a, b) => {
                         let a = self.resolve_const(a);
                         let b = self.resolve_const(b);
@@ -388,6 +453,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         for ob in std::mem::take(&mut self.obligations) {
             match ob.kind {
                 ObligationKind::ConstEq(a, b) => residuals.push((a, b)),
+                ObligationKind::ConstDomain(_) => {}
             }
         }
         residuals
@@ -810,6 +876,14 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 let inner = inner.clone();
                 let result = self.fresh_type();
                 self.infer_block(body, &inner, Some(&result));
+                // The registered value lives on the event's clock: the body's
+                // domain coerces in (@const may register), the result is ON it.
+                if let Some(clock) = self.event_clock(body, *event) {
+                    if let Some(rd) = self.domain_of(&result) {
+                        self.subsume_domain(rd, clock);
+                    }
+                    return self.with_domain(&result, clock);
+                }
                 result
             }
             ExprKind::Block(inner) => {
@@ -926,7 +1000,15 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         };
         let sig = sig_of(self.db, self.krate, def);
         match sig.fields.iter().find(|f| f.name == field) {
-            Some(f) => self.substitute(&f.ty, &args.0),
+            Some(f) => {
+                // Project the receiver's domain over the field's unannotated
+                // slots (incl. those inside substituted args): `p.a` on
+                // `p: Pair @c1` is wholly on `c1`.
+                match self.domain_of(&recv) {
+                    Some(rd) => self.substitute_stamped(&f.ty, &args.0, rd),
+                    None => self.substitute(&f.ty, &args.0),
+                }
+            }
             None => Type::Error,
         }
     }
@@ -949,17 +1031,39 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             return self.call_def(body, method_def, args, &[], true);
         }
         // Prelude methods not in the impl-method index yet (Q3a backfill pending).
-        for a in args {
-            self.infer_expr(body, a.expr);
-        }
+        let args_inferred: Vec<Type<'db>> =
+            args.iter().map(|a| self.infer_expr(body, a.expr)).collect();
+        let recv = self.resolve_ty(&recv);
         match method {
             // `clk.posedge()` : Clock -> Event @const.
             "posedge" => Type::Value {
                 kind: ValueKind::Event,
                 domain: Domain::Const,
             },
-            // `x.reg(…)` : the registered value has the receiver's type.
-            "reg" => recv,
+            // The builtin register:
+            //   reg : {dom D: Clock} (self: T @ D, rstn: Reset @ D, init: T @const) -> T @ D
+            // One Clock-sorted domain covers the data AND its reset (a reset on
+            // another clock is the CDC hazard this rejects). The receiver's
+            // domain coerces into D — registering a constant is legal — and
+            // the result is ON D regardless.
+            "reg" => {
+                let d = self.fresh_domain_sorted(DomainSort::Clock);
+                if let Some(rd) = self.domain_of(&recv) {
+                    self.subsume_domain(rd, d);
+                }
+                if let [rstn, init] = args_inferred.as_slice() {
+                    let want_rst = Type::Value {
+                        kind: ValueKind::Reset,
+                        domain: d,
+                    };
+                    self.subsume(rstn, &want_rst);
+                    let want_init = self.with_domain(&recv, Domain::Const);
+                    self.subsume(init, &want_init);
+                } else {
+                    self.diag(InferDiagnosticKind::RegForm);
+                }
+                self.with_domain(&recv, d)
+            }
             _ => {
                 self.diag(InferDiagnosticKind::UnresolvedMethod {
                     name: method.to_owned(),
@@ -990,12 +1094,17 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         let args = field_sig
             .map(|s| self.fresh_subst(&s.generic_params))
             .unwrap_or_default();
+        // A pure (single-domain) struct's unannotated field slots ARE the
+        // record's domain — stamping them with `rd` is the head-known
+        // discharge of `Ty @ D`. Mixing two clocks in one record then fails
+        // at the second field's subsume.
+        let rd = self.fresh_domain();
         for f in fields {
             let vt = self.infer_expr(body, f.value);
             if let Some(sig) = field_sig
                 && let Some(decl) = sig.fields.iter().find(|d| d.name == f.name)
             {
-                let dt = self.substitute(&decl.ty, &args);
+                let dt = self.substitute_stamped(&decl.ty, &args, rd);
                 self.subsume(&vt, &dt);
             }
         }
@@ -1005,7 +1114,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     def,
                     args: GenericArgs(args),
                 },
-                domain: self.fresh_domain(),
+                domain: rd,
             },
             None => Type::Error,
         }
@@ -1067,18 +1176,98 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         Substituter {
             table: &mut self.table,
             subst,
+            unspecified_to: None,
         }
         .fold_type(ty)
+    }
+
+    /// Like [`substitute`](Self::substitute), but every `Unspecified` slot —
+    /// including those inside substituted-in argument types — is stamped with
+    /// `dom`. The head-known discharge of `Ty @ D`.
+    fn substitute_stamped(
+        &mut self,
+        ty: &Type<'db>,
+        subst: &[Term<'db>],
+        dom: Domain,
+    ) -> Type<'db> {
+        Substituter {
+            table: &mut self.table,
+            subst,
+            unspecified_to: Some(dom),
+        }
+        .fold_type(ty)
+    }
+
+    /// The top-level domain of a value/port type (after resolution).
+    fn domain_of(&mut self, ty: &Type<'db>) -> Option<Domain> {
+        match self.resolve_ty(ty) {
+            Type::Value { domain, .. } | Type::Port { domain, .. } => Some(domain),
+            _ => None,
+        }
+    }
+
+    /// `ty` with its top-level domain replaced (resolved first). Non-value
+    /// types pass through.
+    fn with_domain(&mut self, ty: &Type<'db>, d: Domain) -> Type<'db> {
+        match self.resolve_ty(ty) {
+            Type::Value { kind, .. } => Type::Value { kind, domain: d },
+            Type::Port { def, args, .. } => Type::Port {
+                def,
+                args,
+                domain: d,
+            },
+            other => other,
+        }
+    }
+
+    /// The clock of a `when`'s event: `clk.posedge()` where `clk` is a body
+    /// local backed by a `dom` generic → that generic's `Domain::Param`.
+    fn event_clock(&mut self, body: &Body<'db>, event: ExprId) -> Option<Domain> {
+        let ExprKind::MethodCall {
+            receiver, method, ..
+        } = &body.expr(event).kind
+        else {
+            return None;
+        };
+        if method != "posedge" {
+            return None;
+        }
+        let ExprKind::Local(l) = body.expr(*receiver).kind else {
+            return None;
+        };
+        let name = &body.locals().get(l.0 as usize)?.name;
+        let idx = self
+            .own_generics
+            .iter()
+            .position(|g| matches!(g.kind, TermKind::Domain(_)) && &g.name == name)?;
+        Some(Domain::Param(idx as u32))
     }
 }
 
 // ----- folders -----------------------------------------------------------
 
-/// Substitution: map every `Param(i)` to `subst[i]` by kind; mint a fresh
-/// domain variable for every `Unspecified` domain encountered.
+/// Substitution: map every `Param(i)` to `subst[i]` by kind. An `Unspecified`
+/// domain becomes a fresh variable — or, with `unspecified_to`, the given
+/// domain (record/field stamping; applied inside substituted args too, but
+/// WITHOUT re-substituting their `Param`s, which belong to another binder).
 struct Substituter<'a, 's, 'db> {
     table: &'a mut InferenceTable<'db>,
     subst: &'s [Term<'db>],
+    unspecified_to: Option<Domain>,
+}
+
+/// Stamp a fixed domain over every `Unspecified` slot.
+struct Stamp {
+    dom: Domain,
+}
+
+impl<'db> Folder<'db> for Stamp {
+    fn fold_domain(&mut self, d: Domain) -> Domain {
+        match d {
+            Domain::Unspecified => self.dom,
+            other => other,
+        }
+    }
 }
 
 impl<'db> Folder<'db> for Substituter<'_, '_, 'db> {
@@ -1090,7 +1279,10 @@ impl<'db> Folder<'db> for Substituter<'_, '_, 'db> {
             } => match self.subst.get(*i as usize) {
                 // The type arg replaces the param; the annotation domain travels
                 // with the arg (a simplification — domain stamping is Q7 C/D).
-                Some(Term::Type(t)) => t.clone(),
+                Some(Term::Type(t)) => match self.unspecified_to {
+                    Some(dom) => Stamp { dom }.fold_type(t),
+                    None => t.clone(),
+                },
                 _ => Type::Value {
                     kind: ValueKind::Param(*i),
                     domain: self.fold_domain(*domain),
@@ -1116,9 +1308,10 @@ impl<'db> Folder<'db> for Substituter<'_, '_, 'db> {
                 Some(Term::Domain(dom)) => *dom,
                 _ => Domain::Unspecified,
             },
-            Domain::Unspecified => {
-                Domain::Infer(self.table.fresh(TermKind::Domain(DomainSort::Domain)))
-            }
+            Domain::Unspecified => match self.unspecified_to {
+                Some(dom) => dom,
+                None => Domain::Infer(self.table.fresh(TermKind::Domain(DomainSort::Domain))),
+            },
             other => other,
         }
     }
@@ -1324,24 +1517,34 @@ mod tests {
     }
 
     /// A width naming a body local (`let y: uint(n) = …`) lowers to
-    /// `ConstArg::Local` and survives as a recorded residual — the old
-    /// `Deferred` path silently unified it with anything.
+    /// `ConstArg::Local`: a `@const` local survives as a recorded residual
+    /// (const_eval's job), while a clocked local is a `ClockedWidth` error —
+    /// the old `Deferred` path silently unified both with anything.
     #[test]
-    fn local_width_is_a_recorded_residual() {
+    fn local_width_const_is_residual_clocked_is_error() {
         let mut db = RootDatabase::default();
         let mut vfs = Vfs::new();
         let krate = load(
             &mut db,
             &mut vfs,
-            "fn f (x: uint(8), n: uint(4)) -> uint(8) { let y: uint(n) = x; return y; }",
+            "fn ok (x: uint(8)) -> uint(8) { let n = 4; let y: uint(n) = x; return y; }\n\
+             fn bad {dom clk: Clock} (x: uint(8) @clk, n: uint(4) @clk) -> uint(8) @clk { let y: uint(n) @clk = x; return y; }",
         );
-        let inf = infer(&db, krate, def_of(&db, krate, "f"));
+        let inf = infer(&db, krate, def_of(&db, krate, "ok"));
         assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
         assert!(
             inf.const_residuals()
                 .iter()
                 .any(|(a, b)| matches!((a, b), (ConstArg::Local(_), _) | (_, ConstArg::Local(_)))),
-            "uint(n) ~ uint(8) should survive as a Local residual"
+            "uint(n) ~ uint(8) with a const n should survive as a Local residual"
+        );
+        let inf = infer(&db, krate, def_of(&db, krate, "bad"));
+        assert!(
+            inf.diagnostics()
+                .iter()
+                .any(|d| matches!(&d.kind, InferDiagnosticKind::ClockedWidth)),
+            "a clocked width must be rejected, got {:?}",
+            inf.diagnostics()
         );
     }
 
