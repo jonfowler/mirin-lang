@@ -168,14 +168,18 @@ fn build_module<'db>(
             .map(|g| g.name.clone())
             .unwrap_or_default()
     };
-    for &(i, j) in inf.width_residuals() {
-        lower.items.push(SvItem::InitialAssert {
-            cond: SvExpr::BinOp(
-                SvBinOp::Eq,
-                Box::new(SvExpr::Ident(name_of(i))),
-                Box::new(SvExpr::Ident(name_of(j))),
-            ),
-        });
+    for (a, b) in inf.const_residuals() {
+        // Param-Param residuals are dischargeable at elaboration; other
+        // symbolic shapes wait for const_eval (Q4c).
+        if let (ConstArg::Param(i), ConstArg::Param(j)) = (a, b) {
+            lower.items.push(SvItem::InitialAssert {
+                cond: SvExpr::BinOp(
+                    SvBinOp::Eq,
+                    Box::new(SvExpr::Ident(name_of(*i))),
+                    Box::new(SvExpr::Ident(name_of(*j))),
+                ),
+            });
+        }
     }
 
     // Const-kind generics become SV `#(parameter int N)`, in declaration order.

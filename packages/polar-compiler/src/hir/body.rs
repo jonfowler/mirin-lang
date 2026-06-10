@@ -519,9 +519,17 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     }
 
     fn prescan_vars(&mut self, node: &Node, source: &str) {
-        let declared_ty = node
-            .child_by_field_name("type")
-            .map(|t| lower_type_expr(self.map, self.module, self.generics, &t, source));
+        let lookup = |n: &str| self.lookup_local(n);
+        let declared_ty = node.child_by_field_name("type").map(|t| {
+            lower_type_expr(
+                self.map,
+                self.module,
+                self.generics,
+                Some(&lookup),
+                &t,
+                source,
+            )
+        });
         // Span each var at its own name identifier, not the whole statement.
         let mut cursor = node.walk();
         for name_node in node.children_by_field_name("name", &mut cursor) {
@@ -539,9 +547,17 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             "let_statement" => {
                 let value = self.lower_field_expr(node, "value", source);
                 let name = field_text(node, "name", source);
-                let declared_ty = node
-                    .child_by_field_name("type")
-                    .map(|t| lower_type_expr(self.map, self.module, self.generics, &t, source));
+                let lookup = |n: &str| self.lookup_local(n);
+                let declared_ty = node.child_by_field_name("type").map(|t| {
+                    lower_type_expr(
+                        self.map,
+                        self.module,
+                        self.generics,
+                        Some(&lookup),
+                        &t,
+                        source,
+                    )
+                });
                 // Span the local at its name identifier, not the whole statement.
                 let span = node
                     .child_by_field_name("name")

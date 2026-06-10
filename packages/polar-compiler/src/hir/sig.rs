@@ -138,6 +138,7 @@ fn lower_adt_sig<'db>(
         map,
         module,
         generics: &generic_params,
+        locals: None,
     };
 
     let field_kind = if is_port {
@@ -207,6 +208,7 @@ fn lower_fn_sig<'db>(
         map,
         module,
         generics: &generic_params,
+        locals: None,
     };
 
     // Pass 2: lower each value parameter's type, assigning owner-relative ids.
@@ -254,6 +256,9 @@ struct TypeLowerer<'a, 'db> {
     map: &'a CrateDefMap<'db>,
     module: ModuleId,
     generics: &'a [GenericParam],
+    /// Body-local resolver for widths in `let`/`var` ascriptions; `None` when
+    /// lowering signatures (no locals in scope).
+    locals: Option<&'a dyn Fn(&str) -> Option<LocalId>>,
 }
 
 impl<'db> TypeLowerer<'_, 'db> {
@@ -345,8 +350,9 @@ impl<'db> TypeLowerer<'_, 'db> {
         }
     }
 
-    /// The width inside `uint(W)`: a literal, a Const-kind generic ref, or
-    /// deferred (anything else — arithmetic widths land in `const_eval`, Q4).
+    /// The width inside `uint(W)`: a literal, a Const-kind generic ref, a body
+    /// local (in body-lowered ascriptions), or deferred (anything else —
+    /// arithmetic widths land in `const_eval`, Q4).
     fn lower_width(&self, node: &Node, source: &str) -> ConstArg {
         let Some(arg) = first_type_argument(node) else {
             return ConstArg::Deferred;
@@ -357,12 +363,16 @@ impl<'db> TypeLowerer<'_, 'db> {
                 .map(ConstArg::Lit)
                 .unwrap_or(ConstArg::Deferred);
         }
-        // A bare identifier naming a Const-kind generic param.
+        // A bare identifier naming a Const-kind generic param, or (in a body
+        // type ascription) a local in scope.
         let name = field_text(&arg, "name", source);
-        match self.generic_index(&name, TermKind::Const) {
-            Some(i) => ConstArg::Param(i),
-            None => ConstArg::Deferred,
+        if let Some(i) = self.generic_index(&name, TermKind::Const) {
+            return ConstArg::Param(i);
         }
+        if let Some(l) = self.locals.and_then(|f| f(&name)) {
+            return ConstArg::Local(l);
+        }
+        ConstArg::Deferred
     }
 
     /// Generic args at a struct/port reference (`Bus(uint(8))`). For Q3b a
@@ -403,12 +413,14 @@ impl<'db> TypeLowerer<'_, 'db> {
 }
 
 /// Lower a single `type_expression` node against a module + the enclosing def's
-/// generic params. Shared with body lowering (Q3c), which lowers `var x: T`
-/// annotations the same way `sig_of` lowers param/field types.
+/// generic params. Shared with body lowering (Q3c), which lowers `let`/`var`
+/// `x: T` annotations the same way `sig_of` lowers param/field types — plus a
+/// `locals` resolver so a width can reference a body local (`uint(n)`).
 pub(crate) fn lower_type_expr<'db>(
     map: &CrateDefMap<'db>,
     module: ModuleId,
     generics: &[GenericParam],
+    locals: Option<&dyn Fn(&str) -> Option<LocalId>>,
     node: &Node,
     source: &str,
 ) -> Type<'db> {
@@ -416,6 +428,7 @@ pub(crate) fn lower_type_expr<'db>(
         map,
         module,
         generics,
+        locals,
     }
     .lower_type(node, source)
 }

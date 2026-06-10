@@ -75,11 +75,12 @@ pub struct Inference<'db> {
     local_types: HashMap<LocalId, Type<'db>>,
     method_resolutions: HashMap<ExprId, DefId<'db>>,
     diagnostics: Vec<InferDiagnostic>,
-    /// Width equalities that could not be decided here because both sides are
-    /// symbolic generic params (`uint(n)` vs `uint(m)`). Not an error — the
-    /// back end discharges them as `initial assert (n == m)` (the start of the
-    /// Q4b residual machinery; full `const_eval` is still deferred).
-    width_residuals: Vec<(u32, u32)>,
+    /// Const equalities that could not be decided here — symbolic widths
+    /// (`uint(n)` vs `uint(m)`, deferred arithmetic, locals in const position).
+    /// Not errors: obligations that survived the end-of-body fixpoint. The
+    /// back end discharges Param-Param pairs as `initial assert (n == m)`;
+    /// `const_eval` (Q4c) takes the rest.
+    const_residuals: Vec<(ConstArg, ConstArg)>,
 }
 
 impl<'db> Inference<'db> {
@@ -99,10 +100,10 @@ impl<'db> Inference<'db> {
         &self.diagnostics
     }
 
-    /// Unresolved width equalities between two generic-param indices (`(n, m)`),
-    /// for the back end's `initial assert`.
-    pub fn width_residuals(&self) -> &[(u32, u32)] {
-        &self.width_residuals
+    /// Unresolved const equalities (residual obligations), for the back end's
+    /// `initial assert` and, later, `const_eval`.
+    pub fn const_residuals(&self) -> &[(ConstArg, ConstArg)] {
+        &self.const_residuals
     }
 }
 
@@ -265,10 +266,24 @@ struct InferCtx<'a, 'db> {
     local_types: HashMap<LocalId, Type<'db>>,
     method_resolutions: HashMap<ExprId, DefId<'db>>,
     diagnostics: Vec<InferDiagnostic>,
-    width_residuals: Vec<(u32, u32)>,
+    /// Undecided constraints, retried at end-of-body (`discharge_obligations`).
+    obligations: Vec<Obligation>,
     /// Def-relative span of the expression currently under inference — attached
     /// to any diagnostic raised while unifying it.
     current_span: Span,
+}
+
+/// A constraint that could not be decided eagerly — queued with the span of
+/// the expression that raised it, retried at the end-of-body fixpoint, and
+/// surviving as a signature residual (the OutsideIn split).
+struct Obligation {
+    span: Span,
+    kind: ObligationKind,
+}
+
+enum ObligationKind {
+    /// Two consts that must be equal (symbolic widths).
+    ConstEq(ConstArg, ConstArg),
 }
 
 impl<'a, 'db> InferCtx<'a, 'db> {
@@ -282,12 +297,13 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             local_types: HashMap::new(),
             method_resolutions: HashMap::new(),
             diagnostics: Vec::new(),
-            width_residuals: Vec::new(),
+            obligations: Vec::new(),
             current_span: Span::default(),
         }
     }
 
     fn finish(mut self) -> Inference<'db> {
+        let const_residuals = self.discharge_obligations();
         // Deep-resolve every recorded type: bind out inference vars, default
         // unconstrained domain vars to `@const` (MLsub: a var with no lower
         // bound simplifies to top).
@@ -308,8 +324,52 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             local_types: self.local_types,
             method_resolutions: self.method_resolutions,
             diagnostics: self.diagnostics,
-            width_residuals: self.width_residuals,
+            const_residuals,
         }
+    }
+
+    /// End-of-body fixpoint: retry every queued obligation against the final
+    /// bindings until none makes progress. Ground-and-unequal pairs become
+    /// diagnostics (at the span that raised them); still-symbolic survivors
+    /// are returned as the def's residuals.
+    fn discharge_obligations(&mut self) -> Vec<(ConstArg, ConstArg)> {
+        let mut residuals = Vec::new();
+        loop {
+            let mut progress = false;
+            let pending = std::mem::take(&mut self.obligations);
+            for ob in pending {
+                match &ob.kind {
+                    ObligationKind::ConstEq(a, b) => {
+                        let a = self.resolve_const(a);
+                        let b = self.resolve_const(b);
+                        if a == b {
+                            progress = true;
+                            continue;
+                        }
+                        match (&a, &b) {
+                            (ConstArg::Lit(_), ConstArg::Lit(_)) => {
+                                self.current_span = ob.span;
+                                self.diag(InferDiagnosticKind::WidthMismatch);
+                                progress = true;
+                            }
+                            _ => self.obligations.push(Obligation {
+                                span: ob.span,
+                                kind: ObligationKind::ConstEq(a, b),
+                            }),
+                        }
+                    }
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
+        for ob in std::mem::take(&mut self.obligations) {
+            match ob.kind {
+                ObligationKind::ConstEq(a, b) => residuals.push((a, b)),
+            }
+        }
+        residuals
     }
 
     // ----- inference variables -----
@@ -481,13 +541,14 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             (ConstArg::Lit(x), ConstArg::Lit(y)) if x != y => {
                 self.diag(InferDiagnosticKind::WidthMismatch)
             }
-            // Two distinct generic-param widths can't be decided here — record
-            // the obligation for the back end's `initial assert` (Q4b residual).
-            (ConstArg::Param(x), ConstArg::Param(y)) if x != y => {
-                self.width_residuals.push((*x, *y));
-            }
-            // Ground-equal, or otherwise symbolic (deferred) → defer to Q4b.
-            _ => {}
+            // Anything symbolic — generic params, deferred arithmetic, locals
+            // in const position — is undecidable here. Recorded, never
+            // silently dropped: retried at the end-of-body fixpoint, then
+            // surviving as a residual (`initial assert` / const_eval).
+            _ => self.obligations.push(Obligation {
+                span: self.current_span,
+                kind: ObligationKind::ConstEq(a, b),
+            }),
         }
     }
 
@@ -1117,6 +1178,28 @@ mod tests {
                 .diagnostics()
                 .is_empty(),
             "n ~ m is a residual, not a width mismatch"
+        );
+    }
+
+    /// A width naming a body local (`let y: uint(n) = …`) lowers to
+    /// `ConstArg::Local` and survives as a recorded residual — the old
+    /// `Deferred` path silently unified it with anything.
+    #[test]
+    fn local_width_is_a_recorded_residual() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f (x: uint(8), n: uint(4)) -> uint(8) { let y: uint(n) = x; return y; }",
+        );
+        let inf = infer(&db, krate, def_of(&db, krate, "f"));
+        assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
+        assert!(
+            inf.const_residuals()
+                .iter()
+                .any(|(a, b)| matches!((a, b), (ConstArg::Local(_), _) | (_, ConstArg::Local(_)))),
+            "uint(n) ~ uint(8) should survive as a Local residual"
         );
     }
 

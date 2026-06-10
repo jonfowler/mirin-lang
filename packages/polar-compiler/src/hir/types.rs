@@ -111,11 +111,16 @@ pub enum ConstArg {
     Lit(u64),
     /// The enclosing def's i-th generic (Const-kind) parameter.
     Param(u32),
+    /// A body local referenced in const position (`let y: uint(n) = …`). Legal
+    /// only when the local's domain is `@const` — checked by `infer` (Q7 C);
+    /// evaluation is `const_eval`'s job (Q4c).
+    Local(LocalId),
     /// A const inference variable.
     Infer(InferVar),
     /// A width not yet representable here — arithmetic (`N+1`) or an anon-const
-    /// body (`uint(cfg.bits())`). Deferred to `NormalConst`/`const_eval` (Q4b/c);
-    /// unified leniently so it never produces a false mismatch.
+    /// body (`uint(cfg.bits())`). Deferred to `NormalConst`/`const_eval` (Q4b/c).
+    /// Undecidable equalities involving it are **recorded as residual
+    /// obligations**, never silently dropped.
     Deferred,
 }
 

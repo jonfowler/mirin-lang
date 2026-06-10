@@ -210,9 +210,15 @@ generic, and the `Unspecified`-stamping path is deleted. `clock_name` resolves
   `Unspecified` survives temporarily. Whole corpus stays green. Also: rewrite
   `planning/ir_pipeline.md`, which still documents `polar-compiler-old`'s pass
   list, to describe the query pipeline (CLAUDE.md requires it kept in sync).
-- **Phase B — typed consts + obligations.** `Const { ty }`; `Deferred` →
-  `Unevaluated` + `TermEq` obligations; obligation queue replaces
-  `width_residuals`; backend reads residual obligations for `initial assert`.
+- **Phase B — obligations + const groundwork.** Obligation queue with the
+  end-of-body fixpoint (`ConstEq` first); `width_residuals: Vec<(u32, u32)>`
+  generalises to `const_residuals: Vec<(ConstArg, ConstArg)>` (backend still
+  asserts Param-Param pairs); `ConstArg::Local(LocalId)` so a body ascription
+  width (`uint(n)`) keeps naming its local instead of collapsing to the
+  lenient `Deferred`. *Scope decision:* the `Const { ty }` payload is deferred
+  to Q4c — `ConstArg` inside `Type` with a `Type` payload needs a `Box` cycle,
+  and until struct-valued consts land every const is implicitly `usize`;
+  `TermKind::Const` grows the payload when const_eval needs it.
 - **Phase C — domain checking** in the order §4.1 → §4.4. Each sub-phase flips
   specific examples: C1 makes `when_no_clk` fail; C2 makes `cross-reset` and
   `clocked-width` fail and keeps `reg_const_input` passing; C3 makes
