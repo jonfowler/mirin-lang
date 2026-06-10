@@ -40,8 +40,8 @@ pub use hir::check::{
 pub use hir::infer::{InferDiagnostic, InferDiagnosticKind, Inference, infer};
 pub use hir::sig::{Field, Param, Signature, sig_of};
 pub use hir::types::{
-    ConstArg, Direction, Domain, GenericArgs, GenericParam, InferVar, LocalId, Term, TermKind,
-    Type, ValueKind,
+    ConstArg, Direction, Domain, DomainSort, GenericArgs, GenericParam, InferVar, LocalId, Term,
+    TermKind, Type, ValueKind,
 };
 pub use nameres::def_map::{
     Binding, BindingSource, CrateDefMap, DefData, DefDiagnostic, DefDiagnosticKind, ModuleData,

@@ -27,8 +27,8 @@ use crate::base::diagnostics::Span;
 use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{
-    ConstArg, Domain, Folder, GenericArgs, InferVar, LocalId, Term, TermKind, Type, ValueKind,
-    super_fold_type,
+    ConstArg, Domain, DomainSort, Folder, GenericArgs, InferVar, LocalId, Term, TermKind, Type,
+    ValueKind, super_fold_type,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -50,6 +50,9 @@ pub enum InferDiagnosticKind {
     WidthMismatch,
     /// Two concrete clock domains that had to match did not.
     DomainMismatch,
+    /// A `@const` value where an edge-bearing clock domain is required (the
+    /// domain variable has sort `Clock` — e.g. a register's clock).
+    RequiresClock,
     /// A `recv.method(…)` whose method did not resolve on the receiver's type.
     UnresolvedMethod { name: String },
 }
@@ -60,6 +63,9 @@ impl InferDiagnostic {
             InferDiagnosticKind::TypeMismatch => "type mismatch".to_owned(),
             InferDiagnosticKind::WidthMismatch => "mismatched `uint` widths".to_owned(),
             InferDiagnosticKind::DomainMismatch => "mismatched clock domains".to_owned(),
+            InferDiagnosticKind::RequiresClock => {
+                "a clock domain is required here, but the domain is `@const`".to_owned()
+            }
             InferDiagnosticKind::UnresolvedMethod { name } => {
                 format!("no method `{name}` on this type")
             }
@@ -208,12 +214,27 @@ impl<'db> InferenceTable<'db> {
         }
     }
 
+    /// The kind recorded for `v` (at its root).
+    fn kind_of(&mut self, v: InferVar) -> TermKind {
+        let root = self.find(v);
+        self.vars[root.0 as usize].kind
+    }
+
     /// Merge two variables (callers resolve first, so both roots are unbound).
+    /// Domain sorts merge upward: if either side requires `Clock`, the merged
+    /// root does.
     fn union(&mut self, a: InferVar, b: InferVar) {
         let (ra, rb) = (self.find(a), self.find(b));
-        if ra != rb {
-            self.vars[rb.0 as usize].value = VarValue::Redirect(ra);
+        if ra == rb {
+            return;
         }
+        if let (TermKind::Domain(sa), TermKind::Domain(sb)) =
+            (self.vars[ra.0 as usize].kind, self.vars[rb.0 as usize].kind)
+            && (sa == DomainSort::Clock || sb == DomainSort::Clock)
+        {
+            self.vars[ra.0 as usize].kind = TermKind::Domain(DomainSort::Clock);
+        }
+        self.vars[rb.0 as usize].value = VarValue::Redirect(ra);
     }
 
     /// Bind `v`'s root to a (shallow-resolved, non-variable) term.
@@ -379,7 +400,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     }
 
     fn fresh_domain(&mut self) -> Domain {
-        Domain::Infer(self.table.fresh(TermKind::Domain))
+        Domain::Infer(self.table.fresh(TermKind::Domain(DomainSort::Domain)))
+    }
+
+    fn fresh_domain_sorted(&mut self, sort: DomainSort) -> Domain {
+        Domain::Infer(self.table.fresh(TermKind::Domain(sort)))
     }
 
     fn fresh_const(&mut self) -> ConstArg {
@@ -561,14 +586,115 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         match (a, b) {
             (Domain::Infer(v), Domain::Infer(w)) => self.table.union(v, w),
             (Domain::Infer(v), other) | (other, Domain::Infer(v)) => {
+                // Sort check at the bind: a Clock-sorted variable (a register's
+                // clock) cannot be `@const`.
+                if other == Domain::Const
+                    && self.table.kind_of(v) == TermKind::Domain(DomainSort::Clock)
+                {
+                    self.diag(InferDiagnosticKind::RequiresClock);
+                }
                 self.table.bind(v, Term::Domain(other));
             }
-            // `@const` is a subtype of every domain — compatible with anything.
-            (Domain::Const, _) | (_, Domain::Const) => {}
             (Domain::Clock(x), Domain::Clock(y)) if x == y => {}
             (Domain::Param(x), Domain::Param(y)) if x == y => {}
+            // Surface fact, resolved by lifting/stamping; lenient until the
+            // backend stops reading it (Q7 phase D).
             (Domain::Unspecified, _) | (_, Domain::Unspecified) => {}
+            // NOTE: `@const` vs a concrete clock is now a mismatch under
+            // *unification*. Coercion sites use `subsume`, where `@const`
+            // coerces into anything.
             _ => self.diag(InferDiagnosticKind::DomainMismatch),
+        }
+    }
+
+    // ----- subsumption (coercion sites) -----
+
+    /// `a` usable where `b` is expected: structural equality, except the
+    /// top-level domain may coerce (`@const <: @D`). Applied at the coercion
+    /// sites — argument positions, ascribed `let`, equations, `return` — the
+    /// rustc coercion-site set.
+    fn subsume(&mut self, a: &Type<'db>, b: &Type<'db>) {
+        let a = self.resolve_ty(a);
+        let b = self.resolve_ty(b);
+        if a == b {
+            return;
+        }
+        match (&a, &b) {
+            (
+                Type::Value {
+                    kind: ka,
+                    domain: da,
+                },
+                Type::Value {
+                    kind: kb,
+                    domain: db,
+                },
+            ) => {
+                self.unify_kind(ka, kb);
+                self.subsume_domain(*da, *db);
+            }
+            (
+                Type::Port {
+                    def: pa,
+                    args: aa,
+                    domain: da,
+                },
+                Type::Port {
+                    def: pb,
+                    args: ab,
+                    domain: db,
+                },
+            ) => {
+                if pa != pb {
+                    self.diag(InferDiagnosticKind::TypeMismatch);
+                } else {
+                    self.unify_args(aa, ab);
+                }
+                self.subsume_domain(*da, *db);
+            }
+            // No coercion through an unresolved or non-value side.
+            _ => self.unify(&a, &b),
+        }
+    }
+
+    /// Domain coercion: `@const` fits any expected domain (the lattice's one
+    /// edge); anything else must unify.
+    fn subsume_domain(&mut self, a: Domain, b: Domain) {
+        if self.resolve_domain(a) == Domain::Const {
+            return;
+        }
+        self.unify_domain(a, b);
+    }
+
+    /// Merge a branch/operand type into a join target (an `if`'s arms, an
+    /// operator's operands, a `return` against the declared type): structural
+    /// kinds unify; domains JOIN — `@const` is absorbed, clocks must agree.
+    fn merge_branch(&mut self, target: &Type<'db>, t: &Type<'db>) {
+        let t = self.resolve_ty(t);
+        let r = self.resolve_ty(target);
+        match (&r, &t) {
+            // First resolved branch seeds the target's kind at a fresh join
+            // domain, so a `@const` branch doesn't pin the result const.
+            (Type::Infer(_), Type::Value { kind, domain }) => {
+                let dv = self.fresh_domain();
+                let seeded = Type::Value {
+                    kind: kind.clone(),
+                    domain: dv,
+                };
+                self.unify(&r, &seeded);
+                self.subsume_domain(*domain, dv);
+            }
+            (
+                Type::Value {
+                    kind: rk,
+                    domain: rd,
+                },
+                Type::Value { kind, domain },
+            ) => {
+                self.unify_kind(kind, rk);
+                self.subsume_domain(*domain, *rd);
+            }
+            _ => self.unify(&r, &t),
         }
     }
 
@@ -585,18 +711,18 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 Stmt::Let { local, value } => {
                     let vt = self.infer_expr(body, *value);
                     let lt = self.local_types[local].clone();
-                    self.unify(&lt, &vt);
+                    self.subsume(&vt, &lt);
                 }
                 Stmt::VarDecl { .. } => {}
                 Stmt::Equation { lhs, rhs } => {
                     let l = self.infer_expr(body, *lhs);
                     let r = self.infer_expr(body, *rhs);
-                    self.unify(&l, &r);
+                    self.subsume(&r, &l);
                 }
                 Stmt::Return { value } => {
                     let v = self.infer_expr(body, *value);
                     if let Some(ret) = ret {
-                        self.unify(ret, &v);
+                        self.merge_branch(ret, &v);
                     }
                 }
                 Stmt::Expr(e) => {
@@ -607,7 +733,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         if let Some(tail) = block.tail {
             let t = self.infer_expr(body, tail);
             if let Some(ret) = ret {
-                self.unify(ret, &t);
+                self.merge_branch(ret, &t);
             }
         }
     }
@@ -707,17 +833,16 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             return Type::Error;
         };
-        // Prelude `+` / `*`: both operands share a type; the result is that type.
+        // Prelude `+` / `*`: operands share a structural kind; the result's
+        // domain is the JOIN of operand domains (`@const` absorbs — `x + 3`
+        // stays on x's clock, `3 + 4` stays const).
         if self.is_prelude_op(def) {
-            let mut acc: Option<Type<'db>> = None;
+            let result = self.fresh_type();
             for a in args {
                 let t = self.infer_expr(body, a.expr);
-                match &acc {
-                    Some(prev) => self.unify(prev, &t),
-                    None => acc = Some(t),
-                }
+                self.merge_branch(&result, &t);
             }
-            return acc.unwrap_or(Type::Error);
+            return result;
         }
         self.call_def(body, def, args, named, false)
     }
@@ -751,7 +876,13 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             let at = self.infer_expr(body, a.expr);
             if let Some(p) = positional.get(i) {
                 let pt = self.substitute(&p.ty, &subst);
-                self.unify(&pt, &at);
+                // Value args coerce into the param; an out-connection flows the
+                // callee's out param into the caller place.
+                if a.out {
+                    self.subsume(&pt, &at);
+                } else {
+                    self.subsume(&at, &pt);
+                }
             }
         }
         // Named args bind named-section params by name.
@@ -763,7 +894,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 .find(|p| p.from_named_section && p.name == n.name)
             {
                 let pt = self.substitute(&p.ty, &subst);
-                self.unify(&pt, &at);
+                if n.out {
+                    self.subsume(&pt, &at);
+                } else {
+                    self.subsume(&at, &pt);
+                }
             }
         }
         match &sig.return_type {
@@ -856,7 +991,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 && let Some(decl) = sig.fields.iter().find(|d| d.name == f.name)
             {
                 let dt = self.substitute(&decl.ty, &args);
-                self.unify(&dt, &vt);
+                self.subsume(&vt, &dt);
             }
         }
         match owner {
@@ -914,7 +1049,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             .iter()
             .map(|p| match p.kind {
                 TermKind::Type => Term::Type(self.fresh_type()),
-                TermKind::Domain => Term::Domain(self.fresh_domain()),
+                TermKind::Domain(sort) => Term::Domain(self.fresh_domain_sorted(sort)),
                 TermKind::Const => Term::Const(self.fresh_const()),
             })
             .collect()
@@ -976,7 +1111,9 @@ impl<'db> Folder<'db> for Substituter<'_, '_, 'db> {
                 Some(Term::Domain(dom)) => *dom,
                 _ => Domain::Unspecified,
             },
-            Domain::Unspecified => Domain::Infer(self.table.fresh(TermKind::Domain)),
+            Domain::Unspecified => {
+                Domain::Infer(self.table.fresh(TermKind::Domain(DomainSort::Domain)))
+            }
             other => other,
         }
     }

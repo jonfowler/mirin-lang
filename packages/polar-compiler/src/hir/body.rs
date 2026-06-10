@@ -346,7 +346,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         // appear only in type position.) These come *after* the value params so
         // those keep the ids `sig_of` assigned.
         for g in generics {
-            if g.kind == crate::hir::types::TermKind::Domain {
+            if matches!(g.kind, crate::hir::types::TermKind::Domain(_)) {
                 let id = LocalId(locals.len() as u32);
                 base.insert(g.name.clone(), id);
                 locals.push(LocalData {

@@ -102,7 +102,7 @@ fn build_module<'db>(
     // port-field direction. `self_subst` resolves the def's own type generics.
     let mut ports = Vec::new();
     for g in &sig.generic_params {
-        if g.kind == TermKind::Domain {
+        if matches!(g.kind, TermKind::Domain(_)) {
             ports.push(SvPort {
                 direction: SvPortDirection::Input,
                 ty: SvType::bit(),
@@ -1047,7 +1047,7 @@ impl<'db> SvLower<'_, 'db> {
         self.sig
             .generic_params
             .iter()
-            .find(|g| g.kind == TermKind::Domain)
+            .find(|g| matches!(g.kind, TermKind::Domain(_)))
             .map(|g| g.name.clone())
             .unwrap_or_else(|| "clk".to_owned())
     }
@@ -1117,7 +1117,7 @@ impl<'db> SvLower<'_, 'db> {
         let doms: Vec<String> = csig
             .generic_params
             .iter()
-            .filter(|g| g.kind == TermKind::Domain)
+            .filter(|g| matches!(g.kind, TermKind::Domain(_)))
             .map(|g| g.name.clone())
             .collect();
         let return_type = csig.return_type.clone();
@@ -1806,7 +1806,7 @@ module pair_add #(parameter int n, parameter int m) (
 );
     assign result = (a + b);
     initial begin
-        assert ((n == m));
+        assert ((m == n));
     end
 endmodule
 ";

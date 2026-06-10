@@ -23,8 +23,8 @@ use tree_sitter::Node;
 use crate::base::db::SourceRoot;
 use crate::base::parser;
 use crate::hir::types::{
-    ConstArg, Direction, Domain, GenericArgs, GenericParam, LocalId, Term, TermKind, Type,
-    ValueKind,
+    ConstArg, Direction, Domain, DomainSort, GenericArgs, GenericParam, LocalId, Term, TermKind,
+    Type, ValueKind,
 };
 use crate::nameres::def_map::{CrateDefMap, ModuleId, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -342,7 +342,7 @@ impl<'db> TypeLowerer<'_, 'db> {
             None => Domain::Unspecified,
             Some(d) => {
                 let name = node_text(&d, source);
-                match self.generic_index(&name, TermKind::Domain) {
+                match self.generic_index(&name, TermKind::Domain(DomainSort::Clock)) {
                     Some(i) => Domain::Param(i),
                     None => Domain::Unspecified,
                 }
@@ -447,7 +447,7 @@ fn classify(node: &Node, source: &str) -> ParamClass {
         return ParamClass::Value;
     }
     if field_text(node, "kind", source) == "dom" {
-        return ParamClass::Generic(TermKind::Domain);
+        return ParamClass::Generic(TermKind::Domain(DomainSort::Clock));
     }
     // A `: Type` annotation makes it a Type-kind generic — this wins over a
     // `param` keyword (`param A: Type` is type-generic, not const-generic).
@@ -589,7 +589,10 @@ mod tests {
         // Three generics, in named-section declaration order.
         assert_eq!(sig.generic_params.len(), 3);
         assert_eq!(sig.generic_params[0].name, "clk");
-        assert_eq!(sig.generic_params[0].kind, TermKind::Domain);
+        assert_eq!(
+            sig.generic_params[0].kind,
+            TermKind::Domain(DomainSort::Clock)
+        );
         assert_eq!(sig.generic_params[1].kind, TermKind::Const); // N
         assert_eq!(sig.generic_params[2].kind, TermKind::Type); // A
         assert!(sig.generic_params[0].from_named_section);
@@ -797,7 +800,10 @@ mod tests {
         let sig = sig_of(&db, krate, def);
         // clk (named, Domain) then A (positional, Type).
         assert_eq!(sig.generic_params.len(), 2);
-        assert_eq!(sig.generic_params[0].kind, TermKind::Domain);
+        assert_eq!(
+            sig.generic_params[0].kind,
+            TermKind::Domain(DomainSort::Clock)
+        );
         assert!(sig.generic_params[0].from_named_section);
         assert_eq!(sig.generic_params[1].kind, TermKind::Type);
         assert!(!sig.generic_params[1].from_named_section);

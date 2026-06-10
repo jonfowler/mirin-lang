@@ -138,16 +138,6 @@ pub enum Term<'db> {
     Domain(Domain),
 }
 
-impl<'db> Term<'db> {
-    pub fn kind(&self) -> TermKind {
-        match self {
-            Term::Type(_) => TermKind::Type,
-            Term::Const(_) => TermKind::Const,
-            Term::Domain(_) => TermKind::Domain,
-        }
-    }
-}
-
 /// One declared generic parameter of a def, in declaration order (named section
 /// then positional). The index here is what `Param(i)` references.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -160,13 +150,23 @@ pub struct GenericParam {
 }
 
 /// The kind of a [`Term`] / of a generic parameter / of an inference variable
-/// (chalk's `VariableKind`). Will grow payloads: `Const(Type)` — a const knows
-/// its type — and `Domain(DomainSort)`.
+/// (chalk's `VariableKind`). A domain knows its sort; a const will grow its
+/// type (`Const(Type)`) with const_eval (Q4c).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, salsa::Update)]
 pub enum TermKind {
     Type,
     Const,
+    Domain(DomainSort),
+}
+
+/// The sort of a domain: `Clock` is the sub-sort of edge-bearing domains;
+/// `Domain` is the full sort including `@const`. Registers quantify over
+/// `Clock`; lifted pure signatures over `Domain` (so constant folding
+/// survives). `@const` does not inhabit `Clock`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, salsa::Update)]
+pub enum DomainSort {
     Domain,
+    Clock,
 }
 
 // ----- folding ---------------------------------------------------------------
