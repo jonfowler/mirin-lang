@@ -1,8 +1,11 @@
 [workspace]
 members = [
   "packages/polar-compiler",
-  "packages/polar-compiler-old",
   "packages/polar-fmt",
   "packages/polar-lsp",
 ]
+# EOL: kept on disk for reference only (parity oracle until Q5-mono). Excluded
+# so `cargo test` no longer builds it — its bundled grammar predates `let`
+# type ascription and won't parse the current examples.
+exclude = ["packages/polar-compiler-old"]
 resolver = "3"

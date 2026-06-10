@@ -376,3 +376,53 @@ pub use crate::a::b;
         (identifier)
         (identifier)
         (identifier)))))
+
+========================================
+let with type ascription
+========================================
+
+fn f {dom clk: Clock} (x: uint(8) @clk) {
+  let y: uint(8) @clk = x;
+  let z: bool = true;
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    named_parameters: (named_parameter_section
+      (named_parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number)))
+          domain: (identifier))))
+    body: (block
+      (statement
+        (let_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              (type_argument
+                (number)))
+            domain: (identifier))
+          value: (expression
+            (path_expression
+              segment: (identifier)))))
+      (statement
+        (let_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier))
+          value: (expression
+            (path_expression
+              segment: (identifier))))))))

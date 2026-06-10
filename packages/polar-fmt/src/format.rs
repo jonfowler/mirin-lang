@@ -464,7 +464,12 @@ impl<'a> Formatter<'a> {
     fn let_stmt(&self, n: Node) -> Doc {
         let name = self.text(self.field(n, "name").unwrap());
         let value = self.doc(self.field(n, "value").unwrap());
-        concat([text("let "), text(name), text(" = "), value, text(";")])
+        let mut parts = vec![text("let "), text(name)];
+        if let Some(ty) = self.field(n, "type") {
+            parts.push(concat([text(": "), self.doc(ty)]));
+        }
+        parts.extend([text(" = "), value, text(";")]);
+        concat(parts)
     }
 
     fn return_stmt(&self, n: Node) -> Doc {

@@ -209,7 +209,14 @@ module.exports = grammar({
       ),
 
     let_statement: ($) =>
-      seq("let", field("name", $.identifier), "=", field("value", $.expression), ";"),
+      seq(
+        "let",
+        field("name", $.identifier),
+        optional(seq(":", field("type", $.type_expression))),
+        "=",
+        field("value", $.expression),
+        ";",
+      ),
 
     return_statement: ($) => seq("return", field("value", $.expression), ";"),
 

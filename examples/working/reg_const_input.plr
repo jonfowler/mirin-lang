@@ -5,6 +5,6 @@
 // `dom D: Clock` sort would reject). The passing twin of
 // todo-incorrect-pass/cross-reset.plr; see planning/domain_checking_redux.md.
 fn hold_one {dom clk: Clock, rstn: Reset @clk = high} () -> uint(8) @clk {
-    let one = 1;
+    let one: uint(8) = 1;
     one.reg(rstn, 0)
 }

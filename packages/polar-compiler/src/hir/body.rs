@@ -539,11 +539,14 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             "let_statement" => {
                 let value = self.lower_field_expr(node, "value", source);
                 let name = field_text(node, "name", source);
+                let declared_ty = node
+                    .child_by_field_name("type")
+                    .map(|t| lower_type_expr(self.map, self.module, self.generics, &t, source));
                 // Span the local at its name identifier, not the whole statement.
                 let span = node
                     .child_by_field_name("name")
                     .map_or_else(|| self.rel_span(node), |n| self.rel_span(&n));
-                let local = self.alloc_local(&name, LocalKind::Let, None, span);
+                let local = self.alloc_local(&name, LocalKind::Let, declared_ty, span);
                 block.stmts.push(Stmt::Let { local, value });
             }
             "var_statement" => {
