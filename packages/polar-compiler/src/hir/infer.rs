@@ -351,6 +351,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn unify(&mut self, a: &Type<'db>, b: &Type<'db>) {
         let a = self.resolve_ty(a);
         let b = self.resolve_ty(b);
+        // Same term — nothing to do. Crucially this covers the same *unbound
+        // variable* on both sides (`v + v`): without it the bind arm writes
+        // `Infer(v) := Infer(v)` and `resolve_*` chases the self-loop forever.
+        if a == b {
+            return;
+        }
         match (&a, &b) {
             (Type::Infer(v), _) => self.type_vars[*v as usize] = Some(b.clone()),
             (_, Type::Infer(v)) => self.type_vars[*v as usize] = Some(a.clone()),
@@ -435,6 +441,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn unify_width(&mut self, a: ConstArg, b: ConstArg) {
         let a = self.resolve_const(&a);
         let b = self.resolve_const(&b);
+        if a == b {
+            return; // incl. the same unbound var on both sides — see `unify`
+        }
         match (&a, &b) {
             (ConstArg::Infer(v), _) => self.const_vars[*v as usize] = Some(b.clone()),
             (_, ConstArg::Infer(v)) => self.const_vars[*v as usize] = Some(a.clone()),
@@ -454,6 +463,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn unify_domain(&mut self, a: Domain, b: Domain) {
         let a = self.resolve_domain(a);
         let b = self.resolve_domain(b);
+        if a == b {
+            return; // incl. the same unbound var on both sides — see `unify`
+        }
         match (a, b) {
             (Domain::Infer(v), other) | (other, Domain::Infer(v)) => {
                 self.domain_vars[v as usize] = Some(other);
@@ -954,6 +966,24 @@ mod tests {
         );
         assert_eq!(kind_str(&return_ty(&db, krate, "f").unwrap()), "uint");
         let inf = infer(&db, krate, def_of(&db, krate, "f"));
+        assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
+    }
+
+    /// `v + v` unifies a fresh domain var with ITSELF. Regression test for the
+    /// self-loop hang: the bind arm wrote `Infer(v) := Infer(v)` and every
+    /// later `resolve_*` chased it forever. (Same-term early-out in `unify`,
+    /// `unify_width`, `unify_domain`.)
+    #[test]
+    fn same_operand_unification_terminates() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn double(v: uint(8)) -> uint(8) { return v + v; }",
+        );
+        assert_eq!(kind_str(&return_ty(&db, krate, "double").unwrap()), "uint");
+        let inf = infer(&db, krate, def_of(&db, krate, "double"));
         assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
     }
 
