@@ -203,6 +203,39 @@ substitution of the lifted `__Dom` arg — Domain-kind args flow like every othe
 generic, and the `Unspecified`-stamping path is deleted. `clock_name` resolves
 `Domain::Param` through instantiated args as it already does.
 
+## 4.6 As built (implementation notes)
+
+Phases A-D landed; deviations from the sketch above, chosen during
+implementation:
+
+- **Structs are not given a materialised `__Dom` generic arg.** A pure
+  struct's "lifted domain" is represented by the aggregate's existing
+  top-level domain slot (`Type::Value { domain }` / `Type::Port { domain }`),
+  which the redux semantics make equivalent for single-domain aggregates.
+  Field access and record construction *stamp* that domain over the declared
+  field types' `Unspecified` slots (a `Substituter` policy, reaching inside
+  substituted-in args without re-substituting their `Param`s) — the
+  head-known discharge of `Ty @ D`. The backend's flatten stamping is the
+  same operation at emission time, so `Domain::Unspecified` survives as the
+  aggregate-internal "slot" marker until a future backend rework; `unify`
+  keeps one lenient `Unspecified` arm for exactly that flow.
+- **Fn lifting appends `__Dom` last** (`GenericParam::is_lifted_dom`); the
+  backend skips it when mapping Domain generics to clock ports/wiring, so a
+  pure fn stays combinational and emitted SV is unchanged.
+- **`subsume` with an unresolved expected side merges** (actual's kind at a
+  fresh join domain) rather than unifying — generic args are invariant, so a
+  `@const` actual must not pin an inference variable const.
+- **Eager-unification limitation:** a *variable* receiver domain flowing into
+  `reg` unifies with the register's clock rather than coercing (only a
+  resolved `@const` coerces). Consequence: `let one: uint(8) = 1;
+  one.reg(...)` infers `one` at the clock, not `@const`. Harmless for SV;
+  revisit if a const context ever needs such a binding.
+- **`when` arity:** the event's clock is recovered by mapping the `posedge`
+  receiver local back to its `dom` generic (`event_clock`).
+- The `ConstDomain` obligation (width locals must be `@const`) currently
+  carries a default span (def start) — span it at the ascription when sig/body
+  lowering grows type spans.
+
 ## 5. Staging
 
 - **Phase A — mechanical merge, zero behaviour change.** `Term`/`InferVar`/one

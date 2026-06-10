@@ -401,7 +401,9 @@ building (even while overall behaviour is incomplete):
 - **Q5** — back end as per-def / per-instantiation queries (`monomorphise`,
   block/method/out-arg lowering, `flatten`, `verilog`). Driver = "force
   `verilog` for each item". **At this point the new crate is at parity** — switch
-  the CLI over and retire `polar-compiler`.
+  the CLI over and retire `polar-compiler`. **Full plan:
+  `planning/q5_backend.md`** (prereqs Q5a; vertical slice Q5b; registers Q5c;
+  flatten/instantiation Q5d; monomorphise Q5e; parity+swap Q5f).
 - **Q6** — `diagnostics(def)` accumulator; point `polar-lsp` M2 at the engine.
 - **Q7** (deferred) — if still on the thin store: real red-green/backdating,
   durability, optional on-disk cache. If on salsa, these largely come for free.

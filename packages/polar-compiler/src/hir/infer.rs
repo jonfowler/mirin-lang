@@ -7,10 +7,12 @@
 //! callees/structs/ports it touches — **never their bodies**, so a caller
 //! re-infers only when a callee's *signature* changes (the firewall).
 //!
-//! Per `domain_checking.md`, the **domain is a component of the type**, inferred
-//! by the same walk but with its own lattice: `@const` is a supertype of every
-//! concrete clock, an unconstrained domain variable defaults to `@const`. It is
-//! not a parallel solve.
+//! Per `domain_checking_redux.md`, the **domain is a component of the type**,
+//! inferred by the same walk: `unify` is strict on domains; the lattice's one
+//! edge (`@const` below every clock) applies only through `subsume` at the
+//! coercion sites and through the join in `merge_branch`. Domain variables are
+//! sorted (`Clock` vs `Domain` — registers demand `Clock`); an unconstrained
+//! domain variable defaults to `@const`. It is not a parallel solve.
 //!
 //! **Scope:** structural-kind + domain inference for the monomorphic core, with
 //! generic callees instantiated by substituting their `Param`s with fresh
@@ -486,7 +488,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn freshen_domains(&mut self, ty: &Type<'db>) -> Type<'db> {
         match ty {
             Type::Value { kind, domain } => Type::Value {
-                kind: self.freshen_kind_domains(kind),
+                // Top-level only: an aggregate's inner `Unspecified` slots are
+                // the aggregate's own domain — stamped at field/record use and
+                // by flatten in the backend, never independent variables.
+                kind: kind.clone(),
                 domain: self.freshen_domain(*domain),
             },
             Type::Port { def, args, domain } => Type::Port {
@@ -496,11 +501,6 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             },
             other => other.clone(),
         }
-    }
-
-    fn freshen_kind_domains(&mut self, kind: &ValueKind<'db>) -> ValueKind<'db> {
-        // Only the top-level domain matters for the scalar kinds we infer here.
-        kind.clone()
     }
 
     fn freshen_domain(&mut self, d: Domain) -> Domain {
