@@ -253,7 +253,6 @@ fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
     for def in map.defs().collect::<Vec<_>>() {
         match map.def_data(def).map(|d| d.kind) {
             Some(DefKind::Fn | DefKind::Method) => {
-                let _ = sig_of(db, krate, def);
                 // The def's absolute start, to lift def-relative body spans.
                 let file = def.file(db);
                 let path = file.path(db).to_string_lossy().into_owned();
@@ -266,6 +265,9 @@ fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
                     start: def_start + s.start,
                     end: def_start + s.end,
                 };
+                for d in &sig_of(db, krate, def).diagnostics {
+                    out.push(render(&path, source, abs(d.span), &d.message()));
+                }
                 for d in body(db, krate, def).diagnostics() {
                     out.push(render(&path, source, abs(d.span), &d.message()));
                 }

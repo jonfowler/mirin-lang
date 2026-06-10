@@ -652,7 +652,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 }
                 self.subsume_domain(*da, *db);
             }
-            // No coercion through an unresolved or non-value side.
+            // An unresolved EXPECTED side takes the actual's kind at a fresh
+            // join domain (so a `@const` actual doesn't pin an inference
+            // variable const — generic args are invariant, the lattice edge
+            // only coerces at the top level).
+            (Type::Value { .. }, Type::Infer(_)) => self.merge_branch(&b, &a),
+            // No coercion through an unresolved actual or non-value side.
             _ => self.unify(&a, &b),
         }
     }

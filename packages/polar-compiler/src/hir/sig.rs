@@ -21,10 +21,11 @@
 use tree_sitter::Node;
 
 use crate::base::db::SourceRoot;
+use crate::base::diagnostics::Span;
 use crate::base::parser;
 use crate::hir::types::{
-    ConstArg, Direction, Domain, DomainSort, GenericArgs, GenericParam, LocalId, Term, TermKind,
-    Type, ValueKind,
+    ConstArg, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam, LIFTED_DOM,
+    LocalId, Term, TermKind, Type, ValueKind, super_fold_type,
 };
 use crate::nameres::def_map::{CrateDefMap, ModuleId, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -39,6 +40,35 @@ pub struct Signature<'db> {
     pub params: Vec<Param<'db>>,
     pub return_type: Option<Type<'db>>,
     pub fields: Vec<Field<'db>>,
+    /// Signature-level diagnostics (def-relative spans, like body diagnostics).
+    pub diagnostics: Vec<SigDiagnostic>,
+}
+
+/// A signature-lowering diagnostic. The [`Span`] is def-relative.
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SigDiagnostic {
+    pub span: Span,
+    pub kind: SigDiagnosticKind,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub enum SigDiagnosticKind {
+    /// In explicit mode (the signature introduces a `dom` or uses `@`), every
+    /// parameter and the return type must carry a domain annotation
+    /// (`domain_checking_redux.md`: explicit-mode annotation requirement).
+    MissingDomainAnnotation,
+}
+
+impl SigDiagnostic {
+    pub fn message(&self) -> String {
+        match &self.kind {
+            SigDiagnosticKind::MissingDomainAnnotation => {
+                "missing `@domain` annotation: this signature declares domains explicitly, \
+                 so every parameter and the return type must be annotated (or `@const`)"
+                    .to_owned()
+            }
+        }
+    }
 }
 
 /// A value parameter: its name, owner-relative local, type, and (for directed
@@ -174,6 +204,7 @@ fn lower_adt_sig<'db>(
         params: Vec::new(),
         return_type: None,
         fields,
+        diagnostics: Vec::new(),
     }
 }
 
@@ -241,11 +272,111 @@ fn lower_fn_sig<'db>(
         .child_by_field_name("return_type")
         .map(|t| lowerer.lower_type(&t, source));
 
+    // Domain mode (`domain_checking_redux.md`): a signature that introduces a
+    // `dom` generic or writes any `@` is EXPLICIT — every value param and the
+    // return type must carry a domain annotation. Anything else is PURE and is
+    // lifted: one implicit `__Dom` generic (appended LAST, so user `Param(i)`
+    // indices are untouched), stamped over every unannotated domain slot.
+    let explicit = generic_params
+        .iter()
+        .any(|g| matches!(g.kind, TermKind::Domain(_)))
+        || has_domain_annotation(node);
+    let mut generic_params = generic_params;
+    let mut params = params;
+    let mut return_type = return_type;
+    let mut diagnostics = Vec::new();
+    if explicit {
+        let def_start = node.start_byte();
+        let rel = |n: &Node| Span {
+            start: (n.start_byte() - def_start) as u32,
+            end: (n.end_byte() - def_start) as u32,
+        };
+        for (p, _) in &value_param_nodes {
+            let name = param_name(p, source);
+            if name == "self" {
+                continue; // the receiver's domain is its own annotation
+            }
+            let annotated = p.child_by_field_name("type").is_some_and(type_has_domain);
+            if !annotated {
+                diagnostics.push(SigDiagnostic {
+                    span: rel(p),
+                    kind: SigDiagnosticKind::MissingDomainAnnotation,
+                });
+            }
+        }
+        if let Some(rt) = node.child_by_field_name("return_type")
+            && !type_has_domain(rt)
+        {
+            diagnostics.push(SigDiagnostic {
+                span: rel(&rt),
+                kind: SigDiagnosticKind::MissingDomainAnnotation,
+            });
+        }
+    } else {
+        let dom_index = generic_params.len() as u32;
+        generic_params.push(GenericParam {
+            name: LIFTED_DOM.to_owned(),
+            kind: TermKind::Domain(DomainSort::Domain),
+            from_named_section: true,
+        });
+        let mut lift = LiftDomains { dom_index };
+        for p in &mut params {
+            p.ty = lift.fold_type(&p.ty);
+        }
+        return_type = return_type.map(|t| lift.fold_type(&t));
+    }
+
     Signature {
         generic_params,
         params,
         return_type,
         fields: Vec::new(),
+        diagnostics,
+    }
+}
+
+/// Is this written type domain-annotated? Either an `@domain` suffix, or a
+/// named-section type application (`DF{clk}(…)`) — a port/struct applied to
+/// its domain arguments is fully domain-specified.
+fn type_has_domain(t: Node) -> bool {
+    t.child_by_field_name("domain").is_some()
+        || t.children(&mut t.walk())
+            .any(|c| c.kind() == "type_named_args")
+}
+
+/// Does any type written in this signature carry an `@domain` annotation?
+/// (Checked syntactically: a `domain` field anywhere under the parameter
+/// sections or the return type.)
+fn has_domain_annotation(node: &Node) -> bool {
+    fn subtree_has_domain(n: &Node) -> bool {
+        if n.child_by_field_name("domain").is_some() {
+            return true;
+        }
+        let mut cursor = n.walk();
+        let children: Vec<Node> = n.children(&mut cursor).collect();
+        children.iter().any(subtree_has_domain)
+    }
+    ["named_parameters", "parameters", "return_type"]
+        .iter()
+        .filter_map(|f| node.child_by_field_name(f))
+        .any(|n| subtree_has_domain(&n))
+}
+
+/// Lifting: stamp the implicit `__Dom` over every unannotated domain slot.
+struct LiftDomains {
+    dom_index: u32,
+}
+
+impl<'db> Folder<'db> for LiftDomains {
+    fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
+        super_fold_type(self, t)
+    }
+
+    fn fold_domain(&mut self, d: Domain) -> Domain {
+        match d {
+            Domain::Unspecified => Domain::Param(self.dom_index),
+            other => other,
+        }
     }
 }
 
@@ -549,7 +680,10 @@ mod tests {
         let def = fn_def(&db, krate, "add");
         let sig = sig_of(&db, krate, def);
 
-        assert!(sig.generic_params.is_empty());
+        // A pure signature is LIFTED: one implicit `__Dom` generic appended,
+        // stamped over every unannotated domain slot.
+        assert_eq!(sig.generic_params.len(), 1);
+        assert!(sig.generic_params[0].is_lifted_dom());
         assert_eq!(sig.params.len(), 2);
         assert_eq!(sig.params[0].name, "a");
         assert_eq!(sig.params[0].local, LocalId(0));
@@ -560,7 +694,7 @@ mod tests {
                 kind: ValueKind::UInt {
                     width: ConstArg::Lit(8)
                 },
-                domain: Domain::Unspecified
+                domain: Domain::Param(0)
             }
         ));
         assert!(matches!(

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use polar_compiler::{
     DefKind, RootDatabase, Span, Vfs, ast_id_map, body, check_drivers, crate_def_map, directions,
-    infer,
+    infer, sig_of,
 };
 use ropey::Rope;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Range, Uri};
@@ -96,6 +96,9 @@ pub fn diagnostics(
             )
         };
 
+        for d in &sig_of(db, krate, def).diagnostics {
+            out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
+        }
         for d in body(db, krate, def).diagnostics() {
             out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
         }

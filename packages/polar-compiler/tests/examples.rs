@@ -18,11 +18,15 @@ use std::path::{Path, PathBuf};
 
 use polar_compiler::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, crate_def_map, directions, infer,
-    sig_of, verilog,
+    reserved_words, sig_of, syntax_errors, verilog,
 };
 
 fn working_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/working")
+}
+
+fn fail_expected_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/fail-expected")
 }
 
 fn examples() -> Vec<(String, String)> {
@@ -73,31 +77,38 @@ const CLEAN: &[&str] = &[
     "when_counter.plr",
 ];
 
-/// `(name-resolution, body, inference, driver, direction)` diagnostic counts.
-fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize, usize) {
+/// `(name-resolution, sig, body, inference, driver, direction)` diagnostic counts.
+fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize, usize, usize) {
     let mut db = RootDatabase::default();
     let mut vfs = Vfs::new();
     vfs.set_file_text(&mut db, "t.plr", src.to_owned());
     let krate: SourceRoot = vfs.source_root(&mut db, "t.plr");
     let map = crate_def_map(&db, krate);
 
-    let (mut body_d, mut infer_d, mut driver_d, mut dir_d) = (0, 0, 0, 0);
+    let (mut sig_d, mut body_d, mut infer_d, mut driver_d, mut dir_d) = (0, 0, 0, 0, 0);
     for def in map.defs().collect::<Vec<_>>() {
         match map.def_data(def).map(|d| d.kind) {
             Some(DefKind::Fn | DefKind::Method) => {
-                let _ = sig_of(&db, krate, def);
+                sig_d += sig_of(&db, krate, def).diagnostics.len();
                 body_d += body(&db, krate, def).diagnostics().len();
                 infer_d += infer(&db, krate, def).diagnostics().len();
                 driver_d += check_drivers(&db, krate, def).len();
                 dir_d += directions(&db, krate, def).len();
             }
             Some(DefKind::Struct | DefKind::Port) => {
-                let _ = sig_of(&db, krate, def);
+                sig_d += sig_of(&db, krate, def).diagnostics.len();
             }
             _ => {}
         }
     }
-    (map.diagnostics().len(), body_d, infer_d, driver_d, dir_d)
+    (
+        map.diagnostics().len(),
+        sig_d,
+        body_d,
+        infer_d,
+        driver_d,
+        dir_d,
+    )
 }
 
 /// Dev aid: per-example diagnostic tally. `cargo test -p polar-compiler --test examples
@@ -106,13 +117,15 @@ fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize, usize) {
 #[ignore]
 fn report() {
     for (name, src) in examples() {
-        let (n, b, i, d, dir) = diagnostic_counts(&src);
-        let tag = if n + b + i + d + dir == 0 {
+        let (n, sg, b, i, d, dir) = diagnostic_counts(&src);
+        let tag = if n + sg + b + i + d + dir == 0 {
             "CLEAN"
         } else {
             "----"
         };
-        eprintln!("{tag} {name:<32} nameres={n} body={b} infer={i} drivers={d} dirs={dir}");
+        eprintln!(
+            "{tag} {name:<32} nameres={n} sig={sg} body={b} infer={i} drivers={d} dirs={dir}"
+        );
     }
 }
 
@@ -231,6 +244,37 @@ fn corpus_is_verilator_clean() {
     }
 }
 
+/// Every `fail-expected/` example must produce at least one failure signal:
+/// a syntax error, a front-end diagnostic, or an SV reserved-word collision.
+/// The inverse ratchet of `CLEAN` — when a checker regresses and one of these
+/// starts passing, this fails.
+#[test]
+fn fail_expected_examples_produce_diagnostics() {
+    for entry in std::fs::read_dir(fail_expected_dir()).expect("examples/fail-expected") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("plr") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let src = std::fs::read_to_string(&path).unwrap();
+
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        vfs.set_file_text(&mut db, "t.plr", src.clone());
+        let krate: SourceRoot = vfs.source_root(&mut db, "t.plr");
+        let file = vfs.file("t.plr").unwrap();
+        let syntax = syntax_errors(&db, file).len();
+        let reserved = reserved_words(&db, krate).len();
+        let counts = diagnostic_counts(&src);
+        let total =
+            syntax + reserved + counts.0 + counts.1 + counts.2 + counts.3 + counts.4 + counts.5;
+        assert!(
+            total > 0,
+            "{name} is in fail-expected but produced no diagnostics"
+        );
+    }
+}
+
 #[test]
 fn every_working_example_runs_the_query_stack() {
     // No panic on any example == the smoke test passes.
@@ -244,13 +288,13 @@ fn every_working_example_runs_the_query_stack() {
 fn clean_examples_typecheck_without_diagnostics() {
     for (name, src) in examples() {
         let counts = diagnostic_counts(&src);
-        let total = counts.0 + counts.1 + counts.2 + counts.3 + counts.4;
+        let total = counts.0 + counts.1 + counts.2 + counts.3 + counts.4 + counts.5;
         if CLEAN.contains(&name.as_str()) {
             assert_eq!(
                 counts,
-                (0, 0, 0, 0, 0),
+                (0, 0, 0, 0, 0, 0),
                 "{name} is listed CLEAN but produced diagnostics \
-                 (nameres, body, infer, drivers, directions) = {counts:?}"
+                 (nameres, sig, body, infer, drivers, directions) = {counts:?}"
             );
         } else {
             assert!(

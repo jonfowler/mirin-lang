@@ -138,6 +138,11 @@ pub enum Term<'db> {
     Domain(Domain),
 }
 
+/// The reserved name of the **lifted** implicit domain parameter appended to a
+/// pure signature (`domain_checking_redux.md` lifting). Checking-only: the
+/// backend emits no clock port for it (a pure fn is combinational).
+pub const LIFTED_DOM: &str = "__Dom";
+
 /// One declared generic parameter of a def, in declaration order (named section
 /// then positional). The index here is what `Param(i)` references.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -147,6 +152,13 @@ pub struct GenericParam {
     /// `true` if declared in the `{ … }` named section, `false` if positional —
     /// use sites match named args to the former, positional to the latter.
     pub from_named_section: bool,
+}
+
+impl GenericParam {
+    /// The synthetic `__Dom` appended by lifting (never written by users).
+    pub fn is_lifted_dom(&self) -> bool {
+        self.name == LIFTED_DOM && matches!(self.kind, TermKind::Domain(_))
+    }
 }
 
 /// The kind of a [`Term`] / of a generic parameter / of an inference variable
