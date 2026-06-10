@@ -122,8 +122,13 @@ enum DomainSort { Domain, Clock }   // Clock ⊑ Domain; @const inhabits only Do
 ## 3. The table, one unifier, obligations
 
 - **`InferenceTable`**: one store keyed by `InferVar`, entries
-  `(TermKind, Option<Term>)`. Plain `Vec` first; ena union-find if/when keys
-  rank up. All `fresh_*` become `fresh(kind)`.
+  `(TermKind, Option<Term>)`, backed by **ena union-find from the start** (as
+  chalk does). Not speculative robustness: the `Vec<Option<_>>` buckets
+  already produced a real bug — `v + v` unified a domain var with itself,
+  the bind arm wrote `Infer(v) := Infer(v)`, and `resolve_*` hung forever
+  (found via `const_then_clocked.plr`; band-aided with same-term early-outs
+  in all three unifiers + a regression test). Union-find makes `unify(v, v)`
+  a no-op structurally. All `fresh_*` become `fresh(kind)`.
 - **One `unify(Term, Term)`** dispatching structurally. Kind mismatch is an ICE,
   not a diagnostic — terms are well-kinded by construction from lowering.
 - **`subsume(actual, expected)` distinct from `unify`.** Domain subtyping is
@@ -228,3 +233,8 @@ generic, and the `Unspecified`-stamping path is deleted. `clock_name` resolves
   channel.
 - `where`-clause surface syntax for `T @ D` — inline `A @clk` covers the
   current corpus; grammar work decides the rest.
+- **Grammar gap found while writing examples**: `let_statement` has no type
+  ascription at all (`let y: uint(8) @clk = x` is a parse error; only `var`
+  takes a type). The elision/lint design centres on exactly that form — the
+  grammar needs `let <name> (: <type>)? = <expr>` before the C4 elision rules
+  mean anything at `let` bindings.

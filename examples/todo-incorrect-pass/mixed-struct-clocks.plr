@@ -1,0 +1,16 @@
+// Must FAIL once domain checking lands (Q7 phase C3). `Pair` is a pure
+// struct, so it lifts to ONE shared domain parameter (`Pair{dom __Dom}`)
+// stamped over every field. Constructing a single Pair with `a` on c1 and
+// `b` on c2 has no valid __Dom: unifying the record against `Pair @c1`
+// (from the return type) forces b's field type to `uint(8) @c1`, and `y`
+// is on c2. Mixed-domain aggregates need a type that is generic over the
+// field types themselves (the Tuple story in domain_checking_redux.md).
+// The legal twin (two separately-stamped Pairs) is working/struct_two_clocks.plr.
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn mix {dom c1: Clock, dom c2: Clock} (x: uint(8) @c1, y: uint(8) @c2) -> Pair @c1 {
+    pair { a: x, b: y }
+}

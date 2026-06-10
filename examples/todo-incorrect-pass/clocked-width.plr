@@ -1,0 +1,13 @@
+// Must FAIL once domain checking lands (Q7 phase C2). A `uint(...)` width is
+// CONST position: the width term must have domain @const, and `n` here is a
+// clocked value — hardware whose width changes at runtime is not a type.
+// Today this slides through because an unresolvable width lowers to the
+// lenient `ConstArg::Deferred`, which unifies with anything; Q7 replaces
+// Deferred with `Unevaluated` + obligations, and the obligation
+// `domain(n) = @const` fails against `n: uint(4) @clk`.
+// (`var` rather than `let` because the grammar has no let ascription yet.)
+fn clocked_width {dom clk: Clock} (x: uint(8) @clk, n: uint(4) @clk) -> uint(8) @clk {
+    var y: uint(n) @clk;
+    y = x;
+    y
+}

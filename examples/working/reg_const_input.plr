@@ -1,0 +1,10 @@
+// Registering a CONSTANT is legal: `reg`'s domain instantiates at `clk` from
+// the expected return type, then the @const argument coerces up at the `self`
+// position (`@const <: @clk`). The coercion happens at the argument, before
+// the instantiation — `reg` is never instantiated at @const (which its
+// `dom D: Clock` sort would reject). The passing twin of
+// todo-incorrect-pass/cross-reset.plr; see planning/domain_checking_redux.md.
+fn hold_one {dom clk: Clock, rstn: Reset @clk = high} () -> uint(8) @clk {
+    let one = 1;
+    one.reg(rstn, 0)
+}
