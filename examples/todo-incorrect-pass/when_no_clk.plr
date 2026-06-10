@@ -1,4 +1,10 @@
-// no domain on the output type, but this should have to be uint(8) @clk.
+// Must FAIL once domain checking lands (planning/domain_checking_redux.md).
+// The signature introduces an explicit domain (`dom clk`), which puts the
+// item in explicit mode: every parameter and the return type must carry a
+// domain annotation (or be const) — `x: uint(8)` and `-> uint(8)` are
+// missing theirs. Independently, the body forces the result onto `clk`
+// (`when clk.posedge()` registers it), so the bare return type could not
+// be domain-polymorphic anyway. Fix is `x: uint(8) @clk` / `-> uint(8) @clk`.
 fn test {dom clk: Clock} (x: uint(8)) -> uint(8) {
     when clk.posedge() { x + 1 }
 }

@@ -19,26 +19,23 @@ impl Packet {
     };
   }
 
-  fn register{#clk}(self @clk, rstn: Reset @clk) -> Packet @clk {
+  fn register {dom clk: Clock} (self @clk, rstn: Reset @clk) -> Packet @clk {
     return self.reg(rstn, Packet::idle());
   }
 }
 
-port Stream8
-  { #clk: Clock }
-  = stream8 {
-    out valid: bool @clk,
-    out data: uint(8) @clk,
-    in ready: bool @clk,
-  }
+port Stream8 {dom clk: Clock} = stream8 {
+  out valid: bool @clk,
+  out data: uint(8) @clk,
+  in ready: bool @clk,
+}
 
-impl Stream8
-  { #clk: Clock }
-  {
-
-    fn connect(self @clk, out downstream: Stream8 @clk) {
-      downstream.valid = self.valid;
-      downstream.data = self.data;
-      self.ready = downstream.ready;
-    }
+// Generic impl: the block abstracts over the port's domain parameter.
+// (Exact impl-generics syntax TBD — cf. Rust's `impl<T> Foo<T>`.)
+impl Stream8 {dom clk: Clock} {
+  fn connect(self @clk, out downstream: Stream8 @clk) {
+    downstream.valid = self.valid;
+    downstream.data = self.data;
+    self.ready = downstream.ready;
   }
+}
