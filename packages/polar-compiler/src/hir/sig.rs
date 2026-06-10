@@ -23,8 +23,8 @@ use tree_sitter::Node;
 use crate::base::db::SourceRoot;
 use crate::base::parser;
 use crate::hir::types::{
-    ConstArg, Direction, Domain, GenericArg, GenericArgs, GenericParam, GenericParamKind, LocalId,
-    Type, ValueKind,
+    ConstArg, Direction, Domain, GenericArgs, GenericParam, LocalId, Term, TermKind, Type,
+    ValueKind,
 };
 use crate::nameres::def_map::{CrateDefMap, ModuleId, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -300,7 +300,7 @@ impl<'db> TypeLowerer<'_, 'db> {
         }
 
         // 2. A Type-kind generic parameter referenced by name (`data: A`).
-        if let Some(i) = self.generic_index(&name, GenericParamKind::Type) {
+        if let Some(i) = self.generic_index(&name, TermKind::Type) {
             return Type::Value {
                 kind: ValueKind::Param(i),
                 domain,
@@ -337,7 +337,7 @@ impl<'db> TypeLowerer<'_, 'db> {
             None => Domain::Unspecified,
             Some(d) => {
                 let name = node_text(&d, source);
-                match self.generic_index(&name, GenericParamKind::Domain) {
+                match self.generic_index(&name, TermKind::Domain) {
                     Some(i) => Domain::Param(i),
                     None => Domain::Unspecified,
                 }
@@ -359,7 +359,7 @@ impl<'db> TypeLowerer<'_, 'db> {
         }
         // A bare identifier naming a Const-kind generic param.
         let name = field_text(&arg, "name", source);
-        match self.generic_index(&name, GenericParamKind::Const) {
+        match self.generic_index(&name, TermKind::Const) {
             Some(i) => ConstArg::Param(i),
             None => ConstArg::Deferred,
         }
@@ -385,16 +385,16 @@ impl<'db> TypeLowerer<'_, 'db> {
                         .parse::<u64>()
                         .map(ConstArg::Lit)
                         .unwrap_or(ConstArg::Deferred);
-                    args.push(GenericArg::Const(c));
+                    args.push(Term::Const(c));
                 } else {
-                    args.push(GenericArg::Type(self.lower_type(&inner, source)));
+                    args.push(Term::Type(self.lower_type(&inner, source)));
                 }
             }
         }
         GenericArgs(args)
     }
 
-    fn generic_index(&self, name: &str, kind: GenericParamKind) -> Option<u32> {
+    fn generic_index(&self, name: &str, kind: TermKind) -> Option<u32> {
         self.generics
             .iter()
             .position(|g| g.name == name && g.kind == kind)
@@ -423,7 +423,7 @@ pub(crate) fn lower_type_expr<'db>(
 // ----- CST helpers -----
 
 enum ParamClass {
-    Generic(GenericParamKind),
+    Generic(TermKind),
     Value,
 }
 
@@ -434,18 +434,18 @@ fn classify(node: &Node, source: &str) -> ParamClass {
         return ParamClass::Value;
     }
     if field_text(node, "kind", source) == "dom" {
-        return ParamClass::Generic(GenericParamKind::Domain);
+        return ParamClass::Generic(TermKind::Domain);
     }
     // A `: Type` annotation makes it a Type-kind generic — this wins over a
     // `param` keyword (`param A: Type` is type-generic, not const-generic).
     if let Some(ty) = node.child_by_field_name("type")
         && field_text(&ty, "name", source) == "Type"
     {
-        return ParamClass::Generic(GenericParamKind::Type);
+        return ParamClass::Generic(TermKind::Type);
     }
     // `param N: usize` (or bare `param`) — a Const-kind generic.
     if field_text(node, "kind", source) == "param" {
-        return ParamClass::Generic(GenericParamKind::Const);
+        return ParamClass::Generic(TermKind::Const);
     }
     ParamClass::Value
 }
@@ -576,9 +576,9 @@ mod tests {
         // Three generics, in named-section declaration order.
         assert_eq!(sig.generic_params.len(), 3);
         assert_eq!(sig.generic_params[0].name, "clk");
-        assert_eq!(sig.generic_params[0].kind, GenericParamKind::Domain);
-        assert_eq!(sig.generic_params[1].kind, GenericParamKind::Const); // N
-        assert_eq!(sig.generic_params[2].kind, GenericParamKind::Type); // A
+        assert_eq!(sig.generic_params[0].kind, TermKind::Domain);
+        assert_eq!(sig.generic_params[1].kind, TermKind::Const); // N
+        assert_eq!(sig.generic_params[2].kind, TermKind::Type); // A
         assert!(sig.generic_params[0].from_named_section);
 
         // The value param `x: uint(N) @clk` references N (const #1) and clk (dom #0).
@@ -652,7 +652,7 @@ mod tests {
                 assert_eq!(args.0.len(), 1);
                 assert!(matches!(
                     &args.0[0],
-                    GenericArg::Type(Type::Value {
+                    Term::Type(Type::Value {
                         kind: ValueKind::UInt { .. },
                         ..
                     })
@@ -743,7 +743,7 @@ mod tests {
         let def = fn_def(&db, krate, "Bus");
         let sig = sig_of(&db, krate, def);
         assert_eq!(sig.generic_params.len(), 1);
-        assert_eq!(sig.generic_params[0].kind, GenericParamKind::Type);
+        assert_eq!(sig.generic_params[0].kind, TermKind::Type);
         // `data: A` references the 0-th generic param in type position.
         assert!(matches!(
             sig.fields[1].ty,
@@ -784,9 +784,9 @@ mod tests {
         let sig = sig_of(&db, krate, def);
         // clk (named, Domain) then A (positional, Type).
         assert_eq!(sig.generic_params.len(), 2);
-        assert_eq!(sig.generic_params[0].kind, GenericParamKind::Domain);
+        assert_eq!(sig.generic_params[0].kind, TermKind::Domain);
         assert!(sig.generic_params[0].from_named_section);
-        assert_eq!(sig.generic_params[1].kind, GenericParamKind::Type);
+        assert_eq!(sig.generic_params[1].kind, TermKind::Type);
         assert!(!sig.generic_params[1].from_named_section);
         // `in ready: bool @clk` — domain references the dom generic clk (#0).
         assert!(matches!(

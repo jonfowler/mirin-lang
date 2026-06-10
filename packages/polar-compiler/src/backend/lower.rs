@@ -46,8 +46,8 @@ use crate::hir::body::{
 use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::{Signature, sig_of};
 use crate::hir::types::{
-    ConstArg, Direction, Domain, GenericArg, GenericArgs, GenericParam, GenericParamKind, LocalId,
-    Type, ValueKind,
+    ConstArg, Direction, Domain, GenericArgs, GenericParam, LocalId, Term, TermKind, Type,
+    ValueKind,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind};
@@ -71,7 +71,7 @@ pub fn sv_module<'db>(
 /// name (`pipeline_para__Write`).
 struct MonoReq<'db> {
     callee: DefId<'db>,
-    subst: Vec<Option<GenericArg<'db>>>,
+    subst: Vec<Option<Term<'db>>>,
     name: String,
 }
 
@@ -83,7 +83,7 @@ fn build_module<'db>(
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
     def: DefId<'db>,
-    self_subst: &[Option<GenericArg<'db>>],
+    self_subst: &[Option<Term<'db>>],
     name: String,
 ) -> (SvModule, Vec<MonoReq<'db>>) {
     let map = crate_def_map(db, krate);
@@ -102,7 +102,7 @@ fn build_module<'db>(
     // port-field direction. `self_subst` resolves the def's own type generics.
     let mut ports = Vec::new();
     for g in &sig.generic_params {
-        if g.kind == GenericParamKind::Domain {
+        if g.kind == TermKind::Domain {
             ports.push(SvPort {
                 direction: SvPortDirection::Input,
                 ty: SvType::bit(),
@@ -182,7 +182,7 @@ fn build_module<'db>(
     let parameters = sig
         .generic_params
         .iter()
-        .filter(|g| g.kind == GenericParamKind::Const)
+        .filter(|g| g.kind == TermKind::Const)
         .map(|g| crate::backend::ir::SvParameter {
             name: g.name.clone(),
             default: None,
@@ -203,9 +203,7 @@ fn build_module<'db>(
 /// `true` if a def has any Type-kind generic param (so it is not emitted
 /// directly — only its monomorphised copies are).
 fn is_type_generic(sig: &Signature<'_>) -> bool {
-    sig.generic_params
-        .iter()
-        .any(|g| g.kind == GenericParamKind::Type)
+    sig.generic_params.iter().any(|g| g.kind == TermKind::Type)
 }
 
 /// The specialised module name for a type-generic callee at `subst`:
@@ -214,12 +212,12 @@ fn mono_name<'db>(
     map: &CrateDefMap<'db>,
     callee: DefId<'db>,
     sig: &Signature<'db>,
-    subst: &[Option<GenericArg<'db>>],
+    subst: &[Option<Term<'db>>],
 ) -> String {
     let mut name = module_name(map, callee);
     for (i, g) in sig.generic_params.iter().enumerate() {
-        if g.kind == GenericParamKind::Type
-            && let Some(GenericArg::Type(t)) = subst.get(i).and_then(|o| o.as_ref())
+        if g.kind == TermKind::Type
+            && let Some(Term::Type(t)) = subst.get(i).and_then(|o| o.as_ref())
         {
             name.push_str("__");
             name.push_str(&type_arg_name(map, t));
@@ -259,7 +257,7 @@ fn type_arg_name<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> String {
 /// Bind a type-generic callee's Type-kind params by matching its (declared)
 /// param types against the call's actual arg types — `w: Bus(A)` vs the actual
 /// `Bus(Write)` binds `A := Write`. Indexed by the callee's generic position.
-fn match_type<'db>(callee: &Type<'db>, actual: &Type<'db>, subst: &mut [Option<GenericArg<'db>>]) {
+fn match_type<'db>(callee: &Type<'db>, actual: &Type<'db>, subst: &mut [Option<Term<'db>>]) {
     match (callee, actual) {
         (
             Type::Value {
@@ -269,7 +267,7 @@ fn match_type<'db>(callee: &Type<'db>, actual: &Type<'db>, subst: &mut [Option<G
             _,
         ) => {
             if let Some(slot) = subst.get_mut(*i as usize) {
-                *slot = Some(GenericArg::Type(actual.clone()));
+                *slot = Some(Term::Type(actual.clone()));
             }
         }
         (
@@ -297,10 +295,10 @@ fn match_type<'db>(callee: &Type<'db>, actual: &Type<'db>, subst: &mut [Option<G
 fn match_args<'db>(
     callee: &GenericArgs<'db>,
     actual: &GenericArgs<'db>,
-    subst: &mut [Option<GenericArg<'db>>],
+    subst: &mut [Option<Term<'db>>],
 ) {
     for (c, a) in callee.0.iter().zip(&actual.0) {
-        if let (GenericArg::Type(ct), GenericArg::Type(at)) = (c, a) {
+        if let (Term::Type(ct), Term::Type(at)) = (c, a) {
             match_type(ct, at, subst);
         }
     }
@@ -434,7 +432,7 @@ struct SvLower<'a, 'db> {
     /// Substitution for the def's own generics (a Type-kind binding when lowering
     /// a monomorphised copy; empty otherwise). Applied to every type read from
     /// the signature/inference before flattening.
-    self_subst: Vec<Option<GenericArg<'db>>>,
+    self_subst: Vec<Option<Term<'db>>>,
     /// Uniquified SV name per [`LocalId`].
     local_names: Vec<String>,
     items: Vec<SvItem>,
@@ -1045,7 +1043,7 @@ impl<'db> SvLower<'_, 'db> {
         self.sig
             .generic_params
             .iter()
-            .find(|g| g.kind == GenericParamKind::Domain)
+            .find(|g| g.kind == TermKind::Domain)
             .map(|g| g.name.clone())
             .unwrap_or_else(|| "clk".to_owned())
     }
@@ -1115,7 +1113,7 @@ impl<'db> SvLower<'_, 'db> {
         let doms: Vec<String> = csig
             .generic_params
             .iter()
-            .filter(|g| g.kind == GenericParamKind::Domain)
+            .filter(|g| g.kind == TermKind::Domain)
             .map(|g| g.name.clone())
             .collect();
         let return_type = csig.return_type.clone();
@@ -1147,7 +1145,7 @@ impl<'db> SvLower<'_, 'db> {
 
         // A type-generic callee is monomorphised: bind its Type params from the
         // actual arg types, name the copy `Callee__Arg`, and request its emission.
-        let subst: Vec<Option<GenericArg<'db>>> = if is_type_generic(csig) {
+        let subst: Vec<Option<Term<'db>>> = if is_type_generic(csig) {
             let mut subst = vec![None; csig.generic_params.len()];
             for (_, pty, caller_expr, _) in &slots {
                 if let Some(e) = caller_expr
@@ -1390,7 +1388,7 @@ fn flatten_leaves(
 fn build_subst<'db>(
     generic_params: &[GenericParam],
     args: &GenericArgs<'db>,
-) -> Vec<Option<GenericArg<'db>>> {
+) -> Vec<Option<Term<'db>>> {
     let mut subst = vec![None; generic_params.len()];
     let mut ai = 0;
     for (i, g) in generic_params.iter().enumerate() {
@@ -1407,14 +1405,14 @@ fn build_subst<'db>(
 /// Substitute a def's generic args into a (field) type: a `Param(i)` type → the
 /// i-th type arg, a `uint(Param(i))` width → the i-th const arg; nested
 /// struct/port args are substituted recursively. Anything unbound is unchanged.
-fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<GenericArg<'db>>]) -> Type<'db> {
+fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
     let arg = |i: u32| subst.get(i as usize).and_then(|o| o.as_ref());
     match ty {
         Type::Value {
             kind: ValueKind::Param(i),
             ..
         } => match arg(*i) {
-            Some(GenericArg::Type(t)) => t.clone(),
+            Some(Term::Type(t)) => t.clone(),
             _ => ty.clone(),
         },
         Type::Value {
@@ -1423,7 +1421,7 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<GenericArg<'db>>]) -> Type<'d
             },
             domain,
         } => match arg(*i) {
-            Some(GenericArg::Const(c)) => Type::Value {
+            Some(Term::Const(c)) => Type::Value {
                 kind: ValueKind::UInt { width: c.clone() },
                 domain: *domain,
             },
@@ -1448,15 +1446,15 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<GenericArg<'db>>]) -> Type<'d
     }
 }
 
-fn subst_args<'db>(args: &GenericArgs<'db>, subst: &[Option<GenericArg<'db>>]) -> GenericArgs<'db> {
+fn subst_args<'db>(args: &GenericArgs<'db>, subst: &[Option<Term<'db>>]) -> GenericArgs<'db> {
     let arg = |i: u32| subst.get(i as usize).and_then(|o| o.as_ref());
     GenericArgs(
         args.0
             .iter()
             .map(|a| match a {
-                GenericArg::Type(t) => GenericArg::Type(subst_type(t, subst)),
-                GenericArg::Const(ConstArg::Param(i)) => match arg(*i) {
-                    Some(c @ GenericArg::Const(_)) => c.clone(),
+                Term::Type(t) => Term::Type(subst_type(t, subst)),
+                Term::Const(ConstArg::Param(i)) => match arg(*i) {
+                    Some(c @ Term::Const(_)) => c.clone(),
                     _ => a.clone(),
                 },
                 other => other.clone(),

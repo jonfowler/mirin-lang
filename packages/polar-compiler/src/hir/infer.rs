@@ -15,7 +15,7 @@
 //! **Scope:** structural-kind + domain inference for the monomorphic core, with
 //! generic callees instantiated by substituting their `Param`s with fresh
 //! variables. **Widths are checked** (Q4a): a literal's width and a Const-kind
-//! generic both infer through a `const_vars` pool, and two ground literal widths
+//! generic both infer through the one kinded variable table, and two ground literal widths
 //! that disagree are a `WidthMismatch`. Symbolic widths — generic params,
 //! arithmetic, anon-consts — are accepted here and deferred to the residual +
 //! `const_eval` machinery (Q4b/c, `planning/q4_const_eval.md`).
@@ -27,7 +27,8 @@ use crate::base::diagnostics::Span;
 use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{
-    ConstArg, Domain, GenericArg, GenericArgs, GenericParamKind, LocalId, Type, ValueKind,
+    ConstArg, Domain, Folder, GenericArgs, InferVar, LocalId, Term, TermKind, Type, ValueKind,
+    super_fold_type,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -149,13 +150,117 @@ pub fn infer<'db>(
     cx.finish()
 }
 
+/// One union-find table over a **single variable space**, kind-annotated —
+/// chalk's `InferenceTable` shape. Variables are merged by redirect (so
+/// `unify(v, v)` is structurally a no-op) and bound only at their root.
+struct InferenceTable<'db> {
+    vars: Vec<VarData<'db>>,
+}
+
+struct VarData<'db> {
+    /// What kind of term this variable ranges over. Recorded at mint time;
+    /// consumed once consts carry their type and domains their sort (Q7 B/C).
+    #[allow(dead_code)]
+    kind: TermKind,
+    value: VarValue<'db>,
+}
+
+enum VarValue<'db> {
+    Unbound,
+    /// Union-find: merged into another variable; follow to the root.
+    Redirect(InferVar),
+    /// Bound to a (shallow-resolved, non-variable) term.
+    Bound(Term<'db>),
+}
+
+impl<'db> InferenceTable<'db> {
+    fn new() -> Self {
+        Self { vars: Vec::new() }
+    }
+
+    fn fresh(&mut self, kind: TermKind) -> InferVar {
+        self.vars.push(VarData {
+            kind,
+            value: VarValue::Unbound,
+        });
+        InferVar(self.vars.len() as u32 - 1)
+    }
+
+    /// The root of `v`'s redirect chain, with path compression.
+    fn find(&mut self, v: InferVar) -> InferVar {
+        match self.vars[v.0 as usize].value {
+            VarValue::Redirect(next) => {
+                let root = self.find(next);
+                self.vars[v.0 as usize].value = VarValue::Redirect(root);
+                root
+            }
+            _ => v,
+        }
+    }
+
+    /// The term bound at `v`'s root, if any.
+    fn probe(&mut self, v: InferVar) -> Option<Term<'db>> {
+        let root = self.find(v);
+        match &self.vars[root.0 as usize].value {
+            VarValue::Bound(t) => Some(t.clone()),
+            _ => None,
+        }
+    }
+
+    /// Merge two variables (callers resolve first, so both roots are unbound).
+    fn union(&mut self, a: InferVar, b: InferVar) {
+        let (ra, rb) = (self.find(a), self.find(b));
+        if ra != rb {
+            self.vars[rb.0 as usize].value = VarValue::Redirect(ra);
+        }
+    }
+
+    /// Bind `v`'s root to a (shallow-resolved, non-variable) term.
+    fn bind(&mut self, v: InferVar, t: Term<'db>) {
+        let root = self.find(v);
+        self.vars[root.0 as usize].value = VarValue::Bound(t);
+    }
+
+    /// Follow `ty` through the table until its head is not a bound variable.
+    fn resolve_type_shallow(&mut self, ty: &Type<'db>) -> Type<'db> {
+        let mut cur = ty.clone();
+        while let Type::Infer(v) = cur {
+            match self.probe(v) {
+                Some(Term::Type(t)) => cur = t,
+                _ => return Type::Infer(self.find(v)),
+            }
+        }
+        cur
+    }
+
+    fn resolve_const_shallow(&mut self, c: &ConstArg) -> ConstArg {
+        let mut cur = c.clone();
+        while let ConstArg::Infer(v) = cur {
+            match self.probe(v) {
+                Some(Term::Const(t)) => cur = t,
+                _ => return ConstArg::Infer(self.find(v)),
+            }
+        }
+        cur
+    }
+
+    fn resolve_domain_shallow(&mut self, d: Domain) -> Domain {
+        let mut cur = d;
+        while let Domain::Infer(v) = cur {
+            match self.probe(v) {
+                Some(Term::Domain(t)) => cur = t,
+                _ => return Domain::Infer(self.find(v)),
+            }
+        }
+        cur
+    }
+}
+
 struct InferCtx<'a, 'db> {
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
     map: &'a CrateDefMap<'db>,
-    type_vars: Vec<Option<Type<'db>>>,
-    domain_vars: Vec<Option<Domain>>,
-    const_vars: Vec<Option<ConstArg>>,
+    table: InferenceTable<'db>,
     expr_types: HashMap<ExprId, Type<'db>>,
     local_types: HashMap<LocalId, Type<'db>>,
     method_resolutions: HashMap<ExprId, DefId<'db>>,
@@ -172,9 +277,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             db,
             krate,
             map,
-            type_vars: Vec::new(),
-            domain_vars: Vec::new(),
-            const_vars: Vec::new(),
+            table: InferenceTable::new(),
             expr_types: HashMap::new(),
             local_types: HashMap::new(),
             method_resolutions: HashMap::new(),
@@ -212,29 +315,19 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     // ----- inference variables -----
 
     fn fresh_type(&mut self) -> Type<'db> {
-        self.type_vars.push(None);
-        Type::Infer(self.type_vars.len() as u32 - 1)
+        Type::Infer(self.table.fresh(TermKind::Type))
     }
 
     fn fresh_domain(&mut self) -> Domain {
-        self.domain_vars.push(None);
-        Domain::Infer(self.domain_vars.len() as u32 - 1)
+        Domain::Infer(self.table.fresh(TermKind::Domain))
     }
 
     fn fresh_const(&mut self) -> ConstArg {
-        self.const_vars.push(None);
-        ConstArg::Infer(self.const_vars.len() as u32 - 1)
+        ConstArg::Infer(self.table.fresh(TermKind::Const))
     }
 
-    fn resolve_const(&self, w: &ConstArg) -> ConstArg {
-        let mut cur = w.clone();
-        while let ConstArg::Infer(v) = cur {
-            match &self.const_vars[v as usize] {
-                Some(c) => cur = c.clone(),
-                None => break,
-            }
-        }
-        cur
+    fn resolve_const(&mut self, w: &ConstArg) -> ConstArg {
+        self.table.resolve_const_shallow(w)
     }
 
     /// Replace every `Unspecified` domain in `ty` with a fresh domain var, so an
@@ -266,84 +359,22 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         }
     }
 
-    fn resolve_ty(&self, ty: &Type<'db>) -> Type<'db> {
-        let mut cur = ty.clone();
-        while let Type::Infer(v) = cur {
-            match &self.type_vars[v as usize] {
-                Some(t) => cur = t.clone(),
-                None => break,
-            }
-        }
-        cur
+    fn resolve_ty(&mut self, ty: &Type<'db>) -> Type<'db> {
+        self.table.resolve_type_shallow(ty)
     }
 
-    fn resolve_domain(&self, d: Domain) -> Domain {
-        let mut cur = d;
-        while let Domain::Infer(v) = cur {
-            match self.domain_vars[v as usize] {
-                Some(t) => cur = t,
-                None => break,
-            }
-        }
-        cur
+    fn resolve_domain(&mut self, d: Domain) -> Domain {
+        self.table.resolve_domain_shallow(d)
     }
 
-    fn deep_resolve(&self, ty: &Type<'db>) -> Type<'db> {
-        match self.resolve_ty(ty) {
-            Type::Value { kind, domain } => Type::Value {
-                kind: self.deep_resolve_kind(&kind),
-                domain: self.resolve_domain_default(domain),
-            },
-            Type::Port { def, args, domain } => Type::Port {
-                def,
-                args: self.deep_resolve_args(&args),
-                domain: self.resolve_domain_default(domain),
-            },
-            Type::Infer(_) => Type::Error, // unconstrained — surfaces as a hole
-            other => other,
+    /// Resolve every variable in `ty` (recursively), defaulting what is still
+    /// unbound: types to `Error` (a hole), widths to `Deferred`, domains to
+    /// `@const` (MLsub: a var with no lower bound simplifies to top).
+    fn deep_resolve(&mut self, ty: &Type<'db>) -> Type<'db> {
+        DeepResolver {
+            table: &mut self.table,
         }
-    }
-
-    fn deep_resolve_kind(&self, kind: &ValueKind<'db>) -> ValueKind<'db> {
-        match kind {
-            ValueKind::UInt { width } => ValueKind::UInt {
-                width: self.deep_resolve_const(width),
-            },
-            ValueKind::Struct { def, args } => ValueKind::Struct {
-                def: *def,
-                args: self.deep_resolve_args(args),
-            },
-            other => other.clone(),
-        }
-    }
-
-    /// An unbound const var has no determined width yet → `Deferred`.
-    fn deep_resolve_const(&self, w: &ConstArg) -> ConstArg {
-        match self.resolve_const(w) {
-            ConstArg::Infer(_) => ConstArg::Deferred,
-            other => other,
-        }
-    }
-
-    fn deep_resolve_args(&self, args: &GenericArgs<'db>) -> GenericArgs<'db> {
-        GenericArgs(
-            args.0
-                .iter()
-                .map(|a| match a {
-                    GenericArg::Type(t) => GenericArg::Type(self.deep_resolve(t)),
-                    GenericArg::Const(c) => GenericArg::Const(self.deep_resolve_const(c)),
-                    GenericArg::Domain(d) => GenericArg::Domain(self.resolve_domain_default(*d)),
-                })
-                .collect(),
-        )
-    }
-
-    fn resolve_domain_default(&self, d: Domain) -> Domain {
-        match self.resolve_domain(d) {
-            // Unconstrained domain var compacts to `@const` (MLsub top).
-            Domain::Infer(_) => Domain::Const,
-            other => other,
-        }
+        .fold_type(ty)
     }
 
     // ----- unification -----
@@ -351,15 +382,16 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn unify(&mut self, a: &Type<'db>, b: &Type<'db>) {
         let a = self.resolve_ty(a);
         let b = self.resolve_ty(b);
-        // Same term — nothing to do. Crucially this covers the same *unbound
-        // variable* on both sides (`v + v`): without it the bind arm writes
-        // `Infer(v) := Infer(v)` and `resolve_*` chases the self-loop forever.
+        // Same term — nothing to do (the union-find also makes same-var
+        // unification a structural no-op, but skipping equal ground terms here
+        // is still the cheap path).
         if a == b {
             return;
         }
         match (&a, &b) {
-            (Type::Infer(v), _) => self.type_vars[*v as usize] = Some(b.clone()),
-            (_, Type::Infer(v)) => self.type_vars[*v as usize] = Some(a.clone()),
+            (Type::Infer(v), Type::Infer(w)) => self.table.union(*v, *w),
+            (Type::Infer(v), _) => self.table.bind(*v, Term::Type(b.clone())),
+            (_, Type::Infer(v)) => self.table.bind(*v, Term::Type(a.clone())),
             (Type::Error, _) | (_, Type::Error) => {}
             (
                 Type::Value {
@@ -421,11 +453,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn unify_args(&mut self, a: &GenericArgs<'db>, b: &GenericArgs<'db>) {
         for (x, y) in a.0.iter().zip(b.0.iter()) {
             match (x, y) {
-                (GenericArg::Type(tx), GenericArg::Type(ty)) => self.unify(tx, ty),
-                (GenericArg::Const(cx), GenericArg::Const(cy)) => {
-                    self.unify_width(cx.clone(), cy.clone())
-                }
-                (GenericArg::Domain(dx), GenericArg::Domain(dy)) => self.unify_domain(*dx, *dy),
+                (Term::Type(tx), Term::Type(ty)) => self.unify(tx, ty),
+                (Term::Const(cx), Term::Const(cy)) => self.unify_width(cx.clone(), cy.clone()),
+                (Term::Domain(dx), Term::Domain(dy)) => self.unify_domain(*dx, *dy),
                 _ => self.diag(InferDiagnosticKind::TypeMismatch),
             }
         }
@@ -442,11 +472,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         let a = self.resolve_const(&a);
         let b = self.resolve_const(&b);
         if a == b {
-            return; // incl. the same unbound var on both sides — see `unify`
+            return;
         }
         match (&a, &b) {
-            (ConstArg::Infer(v), _) => self.const_vars[*v as usize] = Some(b.clone()),
-            (_, ConstArg::Infer(v)) => self.const_vars[*v as usize] = Some(a.clone()),
+            (ConstArg::Infer(v), ConstArg::Infer(w)) => self.table.union(*v, *w),
+            (ConstArg::Infer(v), _) => self.table.bind(*v, Term::Const(b.clone())),
+            (_, ConstArg::Infer(v)) => self.table.bind(*v, Term::Const(a.clone())),
             (ConstArg::Lit(x), ConstArg::Lit(y)) if x != y => {
                 self.diag(InferDiagnosticKind::WidthMismatch)
             }
@@ -464,11 +495,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         let a = self.resolve_domain(a);
         let b = self.resolve_domain(b);
         if a == b {
-            return; // incl. the same unbound var on both sides — see `unify`
+            return;
         }
         match (a, b) {
+            (Domain::Infer(v), Domain::Infer(w)) => self.table.union(v, w),
             (Domain::Infer(v), other) | (other, Domain::Infer(v)) => {
-                self.domain_vars[v as usize] = Some(other);
+                self.table.bind(v, Term::Domain(other));
             }
             // `@const` is a subtype of every domain — compatible with anything.
             (Domain::Const, _) | (_, Domain::Const) => {}
@@ -780,7 +812,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
 
     // ----- helpers -----
 
-    fn owner_of(&self, ty: &Type<'db>) -> Option<DefId<'db>> {
+    fn owner_of(&mut self, ty: &Type<'db>) -> Option<DefId<'db>> {
         match self.resolve_ty(ty) {
             Type::Value {
                 kind: ValueKind::Struct { def, .. },
@@ -816,93 +848,106 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     /// inference variable of the matching kind (Type/Domain), so a generic
     /// callee is instantiated at the call site. Const generics map to `Deferred`
     /// (widths are a Q4 concern).
-    fn fresh_subst(&mut self, params: &[crate::hir::types::GenericParam]) -> Vec<GenericArg<'db>> {
+    fn fresh_subst(&mut self, params: &[crate::hir::types::GenericParam]) -> Vec<Term<'db>> {
         params
             .iter()
             .map(|p| match p.kind {
-                GenericParamKind::Type => GenericArg::Type(self.fresh_type()),
-                GenericParamKind::Domain => GenericArg::Domain(self.fresh_domain()),
-                GenericParamKind::Const => GenericArg::Const(self.fresh_const()),
+                TermKind::Type => Term::Type(self.fresh_type()),
+                TermKind::Domain => Term::Domain(self.fresh_domain()),
+                TermKind::Const => Term::Const(self.fresh_const()),
             })
             .collect()
     }
 
-    fn substitute(&mut self, ty: &Type<'db>, subst: &[GenericArg<'db>]) -> Type<'db> {
-        match ty {
+    /// Instantiate a def's `Param(i)` references from `subst` (rustc's
+    /// `EarlyBinder::instantiate`). `Unspecified` domains become fresh
+    /// variables on the way through.
+    fn substitute(&mut self, ty: &Type<'db>, subst: &[Term<'db>]) -> Type<'db> {
+        Substituter {
+            table: &mut self.table,
+            subst,
+        }
+        .fold_type(ty)
+    }
+}
+
+// ----- folders -----------------------------------------------------------
+
+/// Substitution: map every `Param(i)` to `subst[i]` by kind; mint a fresh
+/// domain variable for every `Unspecified` domain encountered.
+struct Substituter<'a, 's, 'db> {
+    table: &'a mut InferenceTable<'db>,
+    subst: &'s [Term<'db>],
+}
+
+impl<'db> Folder<'db> for Substituter<'_, '_, 'db> {
+    fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
+        match t {
             Type::Value {
                 kind: ValueKind::Param(i),
                 domain,
-            } => match subst.get(*i as usize) {
+            } => match self.subst.get(*i as usize) {
                 // The type arg replaces the param; the annotation domain travels
-                // with the arg (a simplification — domain stamping is Q4/Q5).
-                Some(GenericArg::Type(t)) => t.clone(),
+                // with the arg (a simplification — domain stamping is Q7 C/D).
+                Some(Term::Type(t)) => t.clone(),
                 _ => Type::Value {
                     kind: ValueKind::Param(*i),
-                    domain: self.subst_domain(*domain, subst),
+                    domain: self.fold_domain(*domain),
                 },
             },
-            Type::Value { kind, domain } => Type::Value {
-                kind: self.subst_kind(kind, subst),
-                domain: self.subst_domain(*domain, subst),
-            },
-            Type::Port { def, args, domain } => Type::Port {
-                def: *def,
-                args: self.subst_args(args, subst),
-                domain: self.subst_domain(*domain, subst),
-            },
-            other => other.clone(),
+            other => super_fold_type(self, other),
         }
     }
 
-    fn subst_kind(&mut self, kind: &ValueKind<'db>, subst: &[GenericArg<'db>]) -> ValueKind<'db> {
-        match kind {
-            ValueKind::UInt { width } => ValueKind::UInt {
-                width: self.subst_const(width, subst),
-            },
-            // A parametric struct's args are themselves in terms of the
-            // enclosing def's generics — instantiate them too.
-            ValueKind::Struct { def, args } => ValueKind::Struct {
-                def: *def,
-                args: self.subst_args(args, subst),
-            },
-            other => other.clone(),
-        }
-    }
-
-    fn subst_args(
-        &mut self,
-        args: &GenericArgs<'db>,
-        subst: &[GenericArg<'db>],
-    ) -> GenericArgs<'db> {
-        GenericArgs(
-            args.0
-                .iter()
-                .map(|a| match a {
-                    GenericArg::Type(t) => GenericArg::Type(self.substitute(t, subst)),
-                    GenericArg::Const(c) => GenericArg::Const(self.subst_const(c, subst)),
-                    GenericArg::Domain(d) => GenericArg::Domain(self.subst_domain(*d, subst)),
-                })
-                .collect(),
-        )
-    }
-
-    fn subst_const(&self, width: &ConstArg, subst: &[GenericArg<'db>]) -> ConstArg {
-        match width {
-            ConstArg::Param(i) => match subst.get(*i as usize) {
-                Some(GenericArg::Const(c)) => c.clone(),
+    fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+        match c {
+            ConstArg::Param(i) => match self.subst.get(*i as usize) {
+                Some(Term::Const(c)) => c.clone(),
                 _ => ConstArg::Deferred,
             },
             other => other.clone(),
         }
     }
 
-    fn subst_domain(&mut self, d: Domain, subst: &[GenericArg<'db>]) -> Domain {
+    fn fold_domain(&mut self, d: Domain) -> Domain {
         match d {
-            Domain::Param(i) => match subst.get(i as usize) {
-                Some(GenericArg::Domain(dom)) => *dom,
+            Domain::Param(i) => match self.subst.get(i as usize) {
+                Some(Term::Domain(dom)) => *dom,
                 _ => Domain::Unspecified,
             },
-            Domain::Unspecified => self.fresh_domain(),
+            Domain::Unspecified => Domain::Infer(self.table.fresh(TermKind::Domain)),
+            other => other,
+        }
+    }
+}
+
+/// End-of-inference resolution: chase every variable, defaulting what is still
+/// unbound — types to `Error` (a hole), widths to `Deferred`, domains to
+/// `@const`.
+struct DeepResolver<'a, 'db> {
+    table: &'a mut InferenceTable<'db>,
+}
+
+impl<'db> Folder<'db> for DeepResolver<'_, 'db> {
+    fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
+        match self.table.resolve_type_shallow(t) {
+            Type::Infer(_) => Type::Error, // unconstrained — surfaces as a hole
+            other => super_fold_type(self, &other),
+        }
+    }
+
+    fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+        match self.table.resolve_const_shallow(c) {
+            // An unbound const var has no determined width yet → `Deferred`.
+            ConstArg::Infer(_) => ConstArg::Deferred,
+            other => other,
+        }
+    }
+
+    fn fold_domain(&mut self, d: Domain) -> Domain {
+        match self.table.resolve_domain_shallow(d) {
+            // Unconstrained domain var compacts to `@const` (MLsub top).
+            Domain::Infer(_) => Domain::Const,
             other => other,
         }
     }
