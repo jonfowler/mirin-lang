@@ -468,3 +468,55 @@ fn top() -> uint(8) {
             segment: (identifier))
           (field_access
             field: (identifier)))))))
+
+================================================================================
+const expressions in width position
+================================================================================
+
+fn top() -> uint(8) {
+    let x: uint(n + 5) = 0;
+    let y: uint(cfg.bits) = 0;
+    x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section)
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (let_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              (type_argument
+                (const_expression
+                  (const_binary
+                    left: (identifier)
+                    right: (number))))))
+          value: (expression
+            (number))))
+      (statement
+        (let_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              (type_argument
+                (const_expression
+                  (const_field
+                    base: (identifier)
+                    field: (identifier))))))
+          value: (expression
+            (number))))
+      tail: (expression
+        (path_expression
+          segment: (identifier))))))

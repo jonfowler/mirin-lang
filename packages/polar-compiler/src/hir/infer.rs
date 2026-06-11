@@ -30,7 +30,7 @@ use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{
     ConstArg, Domain, DomainSort, Folder, GenericArgs, GenericParam, InferVar, LocalId, Term,
-    TermKind, Type, ValueKind, super_fold_type,
+    TermKind, Type, ValueKind, super_fold_const, super_fold_type,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -378,7 +378,7 @@ fn width_locals(ty: &Type<'_>) -> Vec<LocalId> {
             if let ConstArg::Local(l) = c {
                 self.0.push(*l);
             }
-            c.clone()
+            super_fold_const(self, c)
         }
     }
     let mut c = Collect(Vec::new());
@@ -628,6 +628,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             | (ValueKind::Reset, ValueKind::Reset)
             | (ValueKind::Event, ValueKind::Event)
             | (ValueKind::Integer, ValueKind::Integer) => {}
+            // Literal polymorphism, approximated: a number literal infers as
+            // `uint` of a fresh width, but must also serve `integer` const
+            // positions (`pick(false, 8, 16)`). Until literals get their own
+            // inference type, `integer ~ uint` is accepted leniently.
+            (ValueKind::Integer, ValueKind::UInt { .. })
+            | (ValueKind::UInt { .. }, ValueKind::Integer) => {}
             (ValueKind::Struct { def: x, args: ax }, ValueKind::Struct { def: y, args: ay })
                 if x == y =>
             {
@@ -1400,7 +1406,7 @@ impl<'db> Folder<'db> for Substituter<'_, '_, 'db> {
                 Some(Term::Const(c)) => c.clone(),
                 _ => ConstArg::Deferred,
             },
-            other => other.clone(),
+            other => super_fold_const(self, other),
         }
     }
 
@@ -1438,7 +1444,7 @@ impl<'db> Folder<'db> for DeepResolver<'_, 'db> {
         match self.table.resolve_const_shallow(c) {
             // An unbound const var has no determined width yet → `Deferred`.
             ConstArg::Infer(_) => ConstArg::Deferred,
-            other => other,
+            other => super_fold_const(self, &other),
         }
     }
 

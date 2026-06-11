@@ -252,15 +252,52 @@ module.exports = grammar({
     type_named_args: ($) => seq("{", commaSep1($.type_argument), "}"),
 
     // Parenthesised list of type arguments after a type name:
-    //   uint(8)        — width literal (Number)
-    //   uint(N)        — width as a `param N: usize` identifier (TypeExpression)
-    //   Bus(uint(8))   — type argument (TypeExpression)
-    //   Bus(A)         — type-kinded parameter reference (TypeExpression)
-    // For now, args are bare type expressions or number literals; arithmetic
-    // widths (`uint(N+1)`) are not yet in scope.
+    //   uint(8)          — width literal (Number)
+    //   uint(N)          — width as a `param N: integer` identifier (TypeExpression)
+    //   uint(N + 1)      — width arithmetic (ConstExpression)
+    //   uint(cfg.bits)   — const field projection (ConstExpression)
+    //   Bus(uint(8))     — type argument (TypeExpression)
+    //   Bus(A)           — type-kinded parameter reference (TypeExpression)
     type_index: ($) => seq("(", commaSep1($.type_argument), ")"),
 
-    type_argument: ($) => choice($.type_expression, $.number),
+    type_argument: ($) => choice($.type_expression, $.number, $.const_expression),
+
+    // The restricted const grammar in type positions: arithmetic over
+    // literals, names, and field projections. Anything bigger (a call, an
+    // if/else) goes through a `let`: `let w = f(n); uint(w)`. A *bare* name
+    // stays a type_expression (the lowerer decides type vs const by kind).
+    const_expression: ($) => choice($.const_binary, $.const_field, $.const_paren),
+
+    const_field: ($) =>
+      seq(
+        field("base", $.identifier),
+        repeat1(seq(".", field("field", $.identifier))),
+      ),
+
+    const_binary: ($) =>
+      choice(
+        prec.left(
+          PREC.multiplicative,
+          seq(
+            field("left", $._const_operand),
+            field("operator", "*"),
+            field("right", $._const_operand),
+          ),
+        ),
+        prec.left(
+          PREC.additive,
+          seq(
+            field("left", $._const_operand),
+            field("operator", choice("+", "-")),
+            field("right", $._const_operand),
+          ),
+        ),
+      ),
+
+    const_paren: ($) => seq("(", $._const_operand, ")"),
+
+    _const_operand: ($) =>
+      choice($.number, $.identifier, $.const_field, $.const_binary, $.const_paren),
 
     expression: ($) =>
       choice(

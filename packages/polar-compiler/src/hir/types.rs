@@ -103,9 +103,20 @@ pub enum Domain {
     Infer(InferVar),
 }
 
-/// A compile-time constant in const position (a `uint(W)` width). Arithmetic
-/// widths (`uint(N+1)`) are deferred to `const_eval` (Q4); for now a width is a
-/// literal or a single generic-param reference.
+/// The arithmetic operators of the const-expression fragment.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, salsa::Update)]
+pub enum ConstOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+/// A compile-time constant in const position (a `uint(W)` width): the
+/// restricted const-expression tree (`planning/const_eval.md`). Leaves are
+/// literals, generic params, and body locals; `Op`/`Field` carry width
+/// arithmetic and config-field projection. Anything bigger (a call, an
+/// if/else) is reached *through a `Local` leaf* — the evaluator demands the
+/// local's defining expression in the body.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, salsa::Update)]
 pub enum ConstArg {
     Lit(i128),
@@ -117,10 +128,14 @@ pub enum ConstArg {
     Local(LocalId),
     /// A const inference variable.
     Infer(InferVar),
-    /// A width not yet representable here — arithmetic (`N+1`) or an anon-const
-    /// body (`uint(cfg.bits())`). Deferred to `NormalConst`/`const_eval` (Q4b/c).
-    /// Undecidable equalities involving it are **recorded as residual
-    /// obligations**, never silently dropped.
+    /// Width arithmetic: `uint(n + 1)`, `uint(2 * n)`.
+    Op(ConstOp, Box<ConstArg>, Box<ConstArg>),
+    /// Const field projection: `uint(cfg.bits)`.
+    Field(Box<ConstArg>, String),
+    /// A const expression outside the representable fragment (e.g. a call in
+    /// width position — write `let w = f(n); uint(w)` instead). Undecidable
+    /// equalities involving it are **recorded as residual obligations**,
+    /// never silently dropped.
     Deferred,
 }
 
@@ -192,7 +207,7 @@ pub trait Folder<'db>: Sized {
         super_fold_type(self, t)
     }
     fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
-        c.clone()
+        super_fold_const(self, c)
     }
     fn fold_domain(&mut self, d: Domain) -> Domain {
         d
@@ -205,6 +220,18 @@ pub trait Folder<'db>: Sized {
 /// The structural recursion for [`Type`]: rebuild the node, folding every
 /// component term. Atoms (`Clock`, `Infer`, `Error`, the `Param` kinds) pass
 /// through — hooks intercept them *before* delegating here.
+pub fn super_fold_const<'db, F: Folder<'db>>(f: &mut F, c: &ConstArg) -> ConstArg {
+    match c {
+        ConstArg::Op(op, a, b) => {
+            ConstArg::Op(*op, Box::new(f.fold_const(a)), Box::new(f.fold_const(b)))
+        }
+        ConstArg::Field(base, name) => {
+            ConstArg::Field(Box::new(f.fold_const(base)), name.clone())
+        }
+        other => other.clone(),
+    }
+}
+
 pub fn super_fold_type<'db, F: Folder<'db>>(f: &mut F, t: &Type<'db>) -> Type<'db> {
     match t {
         Type::Value { kind, domain } => Type::Value {

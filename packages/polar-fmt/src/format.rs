@@ -80,10 +80,31 @@ impl<'a> Formatter<'a> {
 
     fn doc(&self, n: Node) -> Doc {
         match n.kind() {
-            "expression" | "statement" | "type_argument" => match n.named_child(0) {
-                Some(inner) => self.doc(inner),
-                None => text(self.text(n)),
-            },
+            "expression" | "statement" | "type_argument" | "const_expression" => {
+                match n.named_child(0) {
+                    Some(inner) => self.doc(inner),
+                    None => text(self.text(n)),
+                }
+            }
+            "const_binary" => {
+                let l = self.doc(self.field(n, "left").unwrap());
+                let op = self.text(self.field(n, "operator").unwrap());
+                let r = self.doc(self.field(n, "right").unwrap());
+                concat([l, text(format!(" {op} ")), r])
+            }
+            "const_field" => {
+                let base = self.text(self.field(n, "base").unwrap());
+                let fields: Vec<&str> = self
+                    .fields(n, "field")
+                    .into_iter()
+                    .map(|c| self.text(c))
+                    .collect();
+                text(format!("{base}.{f}", f = fields.join(".")))
+            }
+            "const_paren" => {
+                let inner = n.named_child(0).unwrap();
+                concat([text("("), self.doc(inner), text(")")])
+            }
 
             "function_definition" => self.fn_def(n),
             "struct_definition" => self.struct_def(n),

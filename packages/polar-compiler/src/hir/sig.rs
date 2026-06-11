@@ -26,7 +26,7 @@ use crate::base::db::SourceRoot;
 use crate::base::diagnostics::Span;
 use crate::base::parser;
 use crate::hir::types::{
-    ConstArg, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam, LIFTED_DOM,
+    ConstArg, ConstOp, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam, LIFTED_DOM,
     LocalId, Term, TermKind, Type, ValueKind, super_fold_type,
 };
 use crate::nameres::def_map::{CrateDefMap, ModuleId, crate_def_map};
@@ -530,19 +530,66 @@ impl<'db> TypeLowerer<'_, 'db> {
         let Some(arg) = first_type_argument(node) else {
             return ConstArg::Deferred;
         };
-        if arg.kind() == "number" {
-            return node_text(&arg, source)
+        self.lower_const_expr(&arg, source)
+    }
+
+    /// Lower a const-expression tree in width/const position
+    /// (`planning/const_eval.md`): literals, names (a Const-kind generic →
+    /// `Param`, a body local → `Local`), `+`/`-`/`*` arithmetic, and field
+    /// projection. Anything outside the fragment is `Deferred`.
+    fn lower_const_expr(&self, node: &Node, source: &str) -> ConstArg {
+        match node.kind() {
+            "number" => node_text(node, source)
                 .parse::<i128>()
                 .map(ConstArg::Lit)
-                .unwrap_or(ConstArg::Deferred);
+                .unwrap_or(ConstArg::Deferred),
+            "const_expression" | "const_paren" => {
+                let mut cursor = node.walk();
+                match node.children(&mut cursor).find(|c| c.is_named()) {
+                    Some(inner) => self.lower_const_expr(&inner, source),
+                    None => ConstArg::Deferred,
+                }
+            }
+            "const_binary" => {
+                let op = match field_text(node, "operator", source).as_str() {
+                    "+" => ConstOp::Add,
+                    "-" => ConstOp::Sub,
+                    "*" => ConstOp::Mul,
+                    _ => return ConstArg::Deferred,
+                };
+                let lhs = match node.child_by_field_name("left") {
+                    Some(l) => self.lower_const_expr(&l, source),
+                    None => return ConstArg::Deferred,
+                };
+                let rhs = match node.child_by_field_name("right") {
+                    Some(r) => self.lower_const_expr(&r, source),
+                    None => return ConstArg::Deferred,
+                };
+                ConstArg::Op(op, Box::new(lhs), Box::new(rhs))
+            }
+            "const_field" => {
+                let base = match node.child_by_field_name("base") {
+                    Some(b) => self.lower_const_name(&node_text(&b, source)),
+                    None => return ConstArg::Deferred,
+                };
+                let mut cursor = node.walk();
+                node.children_by_field_name("field", &mut cursor)
+                    .fold(base, |acc, f| {
+                        ConstArg::Field(Box::new(acc), node_text(&f, source))
+                    })
+            }
+            "identifier" => self.lower_const_name(&node_text(node, source)),
+            // A bare name parses as a type_expression — resolve its name.
+            "type_expression" => self.lower_const_name(&field_text(node, "name", source)),
+            _ => ConstArg::Deferred,
         }
-        // A bare identifier naming a Const-kind generic param, or (in a body
-        // type ascription) a local in scope.
-        let name = field_text(&arg, "name", source);
-        if let Some(i) = self.generic_index(&name, TermKind::Const) {
+    }
+
+    fn lower_const_name(&self, name: &str) -> ConstArg {
+        if let Some(i) = self.generic_index(name, TermKind::Const) {
             return ConstArg::Param(i);
         }
-        if let Some(l) = self.locals.and_then(|f| f(&name)) {
+        if let Some(l) = self.locals.and_then(|f| f(name)) {
             return ConstArg::Local(l);
         }
         ConstArg::Deferred

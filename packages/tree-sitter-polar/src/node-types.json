@@ -115,6 +115,162 @@
     }
   },
   {
+    "type": "const_binary",
+    "named": true,
+    "fields": {
+      "left": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "const_binary",
+            "named": true
+          },
+          {
+            "type": "const_field",
+            "named": true
+          },
+          {
+            "type": "const_paren",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "*",
+            "named": false
+          },
+          {
+            "type": "+",
+            "named": false
+          },
+          {
+            "type": "-",
+            "named": false
+          }
+        ]
+      },
+      "right": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "const_binary",
+            "named": true
+          },
+          {
+            "type": "const_field",
+            "named": true
+          },
+          {
+            "type": "const_paren",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "const_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "const_binary",
+          "named": true
+        },
+        {
+          "type": "const_field",
+          "named": true
+        },
+        {
+          "type": "const_paren",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "const_field",
+    "named": true,
+    "fields": {
+      "base": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "field": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "const_paren",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "const_binary",
+          "named": true
+        },
+        {
+          "type": "const_field",
+          "named": true
+        },
+        {
+          "type": "const_paren",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "expression",
     "named": true,
     "fields": {},
@@ -1228,6 +1384,10 @@
       "multiple": false,
       "required": true,
       "types": [
+        {
+          "type": "const_expression",
+          "named": true
+        },
         {
           "type": "number",
           "named": true
