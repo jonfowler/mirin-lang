@@ -1037,7 +1037,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             return result;
         }
-        self.call_def(body, def, args, named, false)
+        self.call_def(body, def, args, named, None)
     }
 
     /// Match a call's args against the callee's (instantiated) signature and
@@ -1053,11 +1053,22 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         def: DefId<'db>,
         args: &[ConnArg],
         named: &[NamedArg],
-        skip_self: bool,
+        self_arg: Option<&Type<'db>>,
     ) -> Type<'db> {
+        let skip_self = self_arg.is_some();
         let call_span = self.current_span;
         let sig = sig_of(self.db, self.krate, def);
         let subst = self.fresh_subst(&sig.generic_params);
+
+        // A method call: the receiver coerces into the declared `self` type
+        // (its `@domain` annotation included — this is what pins the
+        // method's dom generics to the receiver's clock).
+        if let Some(recv) = self_arg
+            && let Some(sp) = sig.params.iter().find(|p| p.is_self)
+        {
+            let want = self.substitute(&sp.ty, &subst);
+            self.subsume(recv, &want);
+        }
 
         // Positional args bind the positional value params (in declared order),
         // skipping `self` for a method call.
@@ -1180,7 +1191,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             && let Some(method_def) = self.map.impl_method(owner, method)
         {
             self.method_resolutions.insert(expr, method_def);
-            return self.call_def(body, method_def, args, &[], true);
+            return self.call_def(body, method_def, args, &[], Some(&recv));
         }
         // Prelude methods not in the impl-method index yet (Q3a backfill pending).
         let args_inferred: Vec<Type<'db>> =

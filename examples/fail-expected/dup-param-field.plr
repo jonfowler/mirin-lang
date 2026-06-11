@@ -1,0 +1,14 @@
+// `downstream.valid` is driven twice — drive-path conflicts apply to params
+// just like vars (previously emitted `assign downstream__valid` twice).
+port Stream8 = stream8 {
+    out valid: bool,
+    in ready: bool,
+}
+
+impl Stream8 {dom clk: Clock} {
+    fn connect(self @clk, out downstream: Stream8 @clk) {
+        downstream.valid = self.valid;
+        downstream.valid = self.valid;
+        self.ready = downstream.ready;
+    }
+}

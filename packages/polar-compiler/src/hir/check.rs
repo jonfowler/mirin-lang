@@ -41,7 +41,7 @@ impl DriverDiagnostic {
                 format!("`var {name}` is never driven (needs an equation or out-connection)")
             }
             DriverDiagnosticKind::MultipleDrivers { name } => {
-                format!("`var {name}` is driven more than once")
+                format!("`{name}` is driven more than once")
             }
         }
     }
@@ -78,25 +78,27 @@ pub fn check_drivers<'db>(
 
     let mut out = Vec::new();
     for (i, local) in body.locals().iter().enumerate() {
-        if local.kind != LocalKind::Var {
-            continue;
-        }
         let span = body.local_span(LocalId(i as u32));
         let paths = drives.get(&LocalId(i as u32)).map(Vec::as_slice).unwrap_or(&[]);
         if paths.is_empty() {
-            out.push(DriverDiagnostic {
-                span,
-                kind: DriverDiagnosticKind::Undriven {
-                    name: local.name.clone(),
-                },
-            });
+            // Only a `var` must be driven; params are driven by the caller
+            // (or drive field equations themselves), lets by their binding.
+            if local.kind == LocalKind::Var {
+                out.push(DriverDiagnostic {
+                    span,
+                    kind: DriverDiagnosticKind::Undriven {
+                        name: local.name.clone(),
+                    },
+                });
+            }
             continue;
         }
         // Two drives conflict when one path is a prefix of the other
-        // (equality included): `x` + `x.a`, or `x.a` twice. Disjoint field
-        // paths are fine — that's per-field wiring. (Whether the field drives
-        // *cover* the struct needs type info; an uncovered leaf is the
-        // record-missing-field class, left to a typed completeness pass.)
+        // (equality included): `x` + `x.a`, or `x.a` twice — for every local
+        // kind (a param's fields are drivable too: `downstream.valid = …`).
+        // Disjoint field paths are fine — that's per-field wiring. (Whether
+        // the field drives *cover* the type needs type info — the typed
+        // completeness pass.)
         let overlap = paths.iter().enumerate().any(|(i, a)| {
             paths[i + 1..]
                 .iter()

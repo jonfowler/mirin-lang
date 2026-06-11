@@ -245,6 +245,25 @@ fn lower_fn_sig<'db>(
     // params vs value params, so type lowering can resolve `Param(i)` refs.
     let mut generic_params = Vec::new();
     let mut value_param_nodes: Vec<(Node, bool)> = Vec::new();
+    // Impl-level generics come first (`impl Stream8 {dom clk: Clock} { … }`
+    // — Rust's `impl<T>` shape): every method's signature sees the impl
+    // block's generic sections prepended to its own.
+    if let Some(impl_node) = enclosing_impl(node) {
+        for (field, child_kind, named) in [
+            ("named_parameters", "named_parameter", true),
+            ("parameters", "parameter", false),
+        ] {
+            for p in section_params(&impl_node, field, child_kind) {
+                if let ParamClass::Generic(kind) = classify(&p, source) {
+                    generic_params.push(GenericParam {
+                        name: param_name(&p, source),
+                        kind,
+                        from_named_section: named,
+                    });
+                }
+            }
+        }
+    }
     for (field, child_kind, named) in [
         ("named_parameters", "named_parameter", true),
         ("parameters", "parameter", false),
@@ -275,8 +294,10 @@ fn lower_fn_sig<'db>(
         let name = param_name(p, source);
         let is_self = name == "self";
         let ty = if is_self {
-            // The receiver's structural type is filled by method handling (Q3d).
-            Type::Error
+            // The receiver: the impl's owner type, carrying self's own
+            // `@domain` annotation (`self @clk`) so the receiver's domain
+            // connects to the method's generics at the call site.
+            self_owner_type(map, module, node, p, source, &lowerer)
         } else {
             p.child_by_field_name("type")
                 .map(|t| lowerer.lower_type(&t, source))
@@ -706,6 +727,58 @@ pub(crate) fn lower_type_expr<'db>(
         sink.append(&mut lowerer.unresolved.borrow_mut());
     }
     ty
+}
+
+/// The structural type of a method's `self`: the enclosing impl's owner
+/// struct/port, with `self`'s `@domain` annotation lowered against the
+/// method's generics. `Error` when the owner doesn't resolve (diagnosed by
+/// nameres) — generic owners' type args are future work (impl `Bus(A)`).
+fn self_owner_type<'db>(
+    map: &CrateDefMap<'db>,
+    module: ModuleId,
+    fn_node: &Node,
+    self_param: &Node,
+    source: &str,
+    lowerer: &TypeLowerer<'_, 'db>,
+) -> Type<'db> {
+    let Some(impl_node) = enclosing_impl(fn_node) else {
+        return Type::Error;
+    };
+    let Some(name_node) = impl_node.child_by_field_name("name") else {
+        return Type::Error;
+    };
+    let name = node_text(&name_node, source);
+    let domain = lowerer.lower_domain(self_param, source);
+    match map
+        .resolve_in_scope(module, &name, Namespace::Item)
+        .and_then(|d| map.def_data(d).map(|data| (d, data.kind)))
+    {
+        Some((def, DefKind::Struct)) => Type::Value {
+            kind: ValueKind::Struct {
+                def,
+                args: GenericArgs(Vec::new()),
+            },
+            domain,
+        },
+        Some((def, DefKind::Port)) => Type::Port {
+            def,
+            args: GenericArgs(Vec::new()),
+            domain,
+        },
+        _ => Type::Error,
+    }
+}
+
+/// The `impl_block` enclosing a method's fn node, if any.
+fn enclosing_impl<'t>(node: &Node<'t>) -> Option<Node<'t>> {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if n.kind() == "impl_block" {
+            return Some(n);
+        }
+        cur = n.parent();
+    }
+    None
 }
 
 // ----- CST helpers -----
