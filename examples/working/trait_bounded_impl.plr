@@ -1,0 +1,27 @@
+// A bounded impl recursing through the solver: `Pair(Pair(bool)): Big`
+// unfolds one obligation per layer (impl where-clauses at depth+1), and the
+// backend stamps one module per instantiation down the chain.
+trait Big {
+    fn big(self) -> bool;
+}
+
+struct Pair(A: Type) = pair {
+    a: A,
+    b: A,
+}
+
+impl Big for bool {
+    fn big(self) -> bool {
+        return self;
+    }
+}
+
+impl {param T: Big} Big for Pair(T) {
+    fn big(self) -> bool {
+        return self.a.big();
+    }
+}
+
+fn top {dom clk: Clock} (p: Pair(Pair(bool)) @clk) -> bool @clk {
+    p.big()
+}

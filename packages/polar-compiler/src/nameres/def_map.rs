@@ -211,6 +211,10 @@ impl<'db> ModuleData<'db> {
 /// (generic args) happens in the solver against the lowered impl header.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct TraitImplData<'db> {
+    /// The impl block's own def. `sig_of(impl_def)` is the lowered HEADER:
+    /// `generic_params` = the impl binder (with any auto-bound owner params),
+    /// `return_type` = Some(self type), `predicates` = the binder's bounds.
+    pub impl_def: DefId<'db>,
     pub self_def: DefId<'db>,
     pub self_has_args: bool,
     pub methods: Vec<(String, DefId<'db>)>,
@@ -1243,6 +1247,24 @@ impl<'db> Collector<'db> {
                 }
             }
             if let Some(t) = trait_def {
+                // The impl block's own def — its sig is the impl HEADER
+                // (binder generics + self type + binder bounds).
+                let impl_def = DefId::new(self.db, file, item.ast_id, DefRole::Item);
+                self.map.defs.insert(
+                    impl_def,
+                    DefData {
+                        kind: DefKind::Impl,
+                        name: format!(
+                            "impl_{}_{}",
+                            item.trait_.clone().unwrap_or_default(),
+                            item.owner
+                        ),
+                        module,
+                        visibility: Visibility::Restricted(module),
+                        owner: Some(owner),
+                    },
+                );
+                self.def_order.push(impl_def);
                 // Conformance, name level: every trait method implemented,
                 // nothing extra. (Signature-level conformance arrives with
                 // the solver slice — planning/traits.md T3.)
@@ -1305,6 +1327,7 @@ impl<'db> Collector<'db> {
                     .entry(t)
                     .or_default()
                     .push(TraitImplData {
+                        impl_def,
                         self_def: owner,
                         self_has_args: item.self_has_args,
                         methods: impl_methods,

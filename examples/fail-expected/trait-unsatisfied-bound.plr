@@ -1,0 +1,18 @@
+// bool does not implement Amp — the call's instantiated bound fails.
+trait Amp {
+    fn amp(self) -> Self;
+}
+
+impl {param n: integer} Amp for uint(n) {
+    fn amp(self) -> Self {
+        return self + self;
+    }
+}
+
+fn boost {param T: Amp} (x: T) -> T {
+    x.amp()
+}
+
+fn top {dom clk: Clock} (x: bool @clk) -> bool @clk {
+    boost(x)
+}

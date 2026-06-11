@@ -1,0 +1,8 @@
+// T carries no Amp bound, so x.amp() cannot resolve.
+trait Amp {
+    fn amp(self) -> Self;
+}
+
+fn boost {param T: Type} (x: T) -> T {
+    x.amp()
+}

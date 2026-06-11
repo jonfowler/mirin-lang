@@ -289,6 +289,11 @@ functions. **[D4]**
 ## Staging
 
 Each slice is independently committable with examples + fail-examples.
+Status (2026-06): T1, T2, T3 landed (commits 5e297a5, f77d67c, T3 follows).
+Still open from those slices: signature-level impl conformance (name-level
+shipped; type-level needs Self-substituted sig comparison), and
+declaration-level coherence for parameterised headers (two-sided header
+unification — solve-time AmbiguousImpls covers uses meanwhile).
 
 - **T1 — items.** Grammar: `trait` item (header + `fn` sigs +
   `const` items), `Self`, bound ascriptions (`param T: Add + Bits`),

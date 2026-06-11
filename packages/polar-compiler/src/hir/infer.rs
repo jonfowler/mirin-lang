@@ -30,7 +30,7 @@ use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{
     ConstArg, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam, InferVar, LocalId,
-    Term, TermKind, Type, ValueKind, super_fold_const, super_fold_type,
+    Predicate, Term, TermKind, Type, ValueKind, super_fold_const, super_fold_type, type_has_infer,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -67,6 +67,20 @@ pub enum InferDiagnosticKind {
     AmbiguousMethod {
         name: String,
         traits: Vec<String>,
+    },
+    UnsatisfiedBound {
+        ty_name: String,
+        trait_name: String,
+    },
+    AmbiguousImpls {
+        ty_name: String,
+        trait_name: String,
+    },
+    BoundOverflow {
+        trait_name: String,
+    },
+    CannotInferBound {
+        trait_name: String,
     },
     /// A uint width whose const evaluation came out negative.
     NegativeWidth {
@@ -117,6 +131,24 @@ impl InferDiagnostic {
             InferDiagnosticKind::RegForm => "`.reg` expects `(reset, init)` arguments".to_owned(),
             InferDiagnosticKind::ClockedWidth => {
                 "a width must be a compile-time constant, but this value is clocked".to_owned()
+            }
+            InferDiagnosticKind::UnsatisfiedBound {
+                ty_name,
+                trait_name,
+            } => {
+                format!("`{ty_name}` does not implement `{trait_name}`")
+            }
+            InferDiagnosticKind::AmbiguousImpls {
+                ty_name,
+                trait_name,
+            } => {
+                format!("multiple impls of `{trait_name}` match `{ty_name}`")
+            }
+            InferDiagnosticKind::BoundOverflow { trait_name } => {
+                format!("overflow checking `{trait_name}` bound (recursion limit)")
+            }
+            InferDiagnosticKind::CannotInferBound { trait_name } => {
+                format!("cannot infer the type for a `{trait_name}` bound — add an annotation")
             }
             InferDiagnosticKind::AmbiguousMethod { name, traits } => {
                 format!(
@@ -405,7 +437,7 @@ struct InferCtx<'a, 'db> {
     call_substs: HashMap<ExprId, Vec<Term<'db>>>,
     diagnostics: Vec<InferDiagnostic>,
     /// Undecided constraints, retried at end-of-body (`discharge_obligations`).
-    obligations: Vec<Obligation>,
+    obligations: Vec<Obligation<'db>>,
     /// Def-relative span of the expression currently under inference — attached
     /// to any diagnostic raised while unifying it.
     current_span: Span,
@@ -414,17 +446,24 @@ struct InferCtx<'a, 'db> {
 /// A constraint that could not be decided eagerly — queued with the span of
 /// the expression that raised it, retried at the end-of-body fixpoint, and
 /// surviving as a signature residual (the OutsideIn split).
-struct Obligation {
+struct Obligation<'db> {
     span: Span,
-    kind: ObligationKind,
+    kind: ObligationKind<'db>,
 }
 
-enum ObligationKind {
+enum ObligationKind<'db> {
     /// Two consts that must be equal (symbolic widths).
     ConstEq(ConstArg, ConstArg),
     /// The local appears in const position (a width): its domain must resolve
     /// to `@const` (an unbound domain defaults const, so unbound passes).
     ConstDomain(LocalId),
+    /// `self_ty: trait_def` — instantiated from a callee's predicates; solved
+    /// against the param env and the trait's impls (planning/traits.md).
+    Trait {
+        trait_def: DefId<'db>,
+        self_ty: Type<'db>,
+        depth: u32,
+    },
 }
 
 /// The body locals referenced in const (width) position anywhere in `ty`.
@@ -600,6 +639,26 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                             }
                         }
                     }
+                    ObligationKind::Trait {
+                        trait_def,
+                        self_ty,
+                        depth,
+                    } => {
+                        let t = self.resolve_ty(self_ty);
+                        if type_has_infer(&t) {
+                            self.obligations.push(Obligation {
+                                span: ob.span,
+                                kind: ObligationKind::Trait {
+                                    trait_def: *trait_def,
+                                    self_ty: t,
+                                    depth: *depth,
+                                },
+                            });
+                        } else {
+                            self.solve_trait(*trait_def, &t, *depth, ob.span);
+                            progress = true;
+                        }
+                    }
                     ObligationKind::ConstEq(a, b) => {
                         let a = self.resolve_const(a);
                         let b = self.resolve_const(b);
@@ -632,9 +691,134 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             match ob.kind {
                 ObligationKind::ConstEq(a, b) => residuals.push((a, b)),
                 ObligationKind::ConstDomain(_) => {}
+                ObligationKind::Trait { trait_def, .. } => {
+                    // Still here ⇒ the self type never resolved.
+                    self.current_span = ob.span;
+                    let trait_name = self.trait_name(trait_def);
+                    self.diag(InferDiagnosticKind::CannotInferBound { trait_name });
+                }
             }
         }
         residuals
+    }
+
+    /// Solve `ty: trait_def` for a fully-resolved `ty` (rustc's select+confirm,
+    /// minimal form): a `Param` receiver checks the inferring def's own
+    /// written bounds (the param env); a concrete head matches the trait's
+    /// impl headers, enqueueing a matched impl's own bounds at `depth + 1`.
+    /// Every failure mode is a diagnostic — this never returns pending.
+    fn solve_trait(&mut self, trait_def: DefId<'db>, ty: &Type<'db>, depth: u32, span: Span) {
+        self.current_span = span;
+        let trait_name = self.trait_name(trait_def);
+        if depth > 64 {
+            self.diag(InferDiagnosticKind::BoundOverflow { trait_name });
+            return;
+        }
+        match ty {
+            Type::Error => {}
+            Type::Value {
+                kind: ValueKind::Param(i),
+                ..
+            } => {
+                // Param env: the def's own written bounds.
+                let own = sig_of(self.db, self.krate, self.def);
+                let held = own.predicates.iter().any(|p| {
+                    let Predicate::Trait(tr) = p;
+                    tr.trait_def == trait_def
+                        && matches!(
+                            &tr.self_ty,
+                            Type::Value { kind: ValueKind::Param(j), .. } if j == i
+                        )
+                });
+                if !held {
+                    let ty_name = own
+                        .generic_params
+                        .get(*i as usize)
+                        .map(|g| g.name.clone())
+                        .unwrap_or_else(|| "_".to_owned());
+                    self.diag(InferDiagnosticKind::UnsatisfiedBound {
+                        ty_name,
+                        trait_name,
+                    });
+                }
+            }
+            _ => {
+                let Some(head) = self.owner_of(ty) else {
+                    self.diag(InferDiagnosticKind::UnsatisfiedBound {
+                        ty_name: "this type".to_owned(),
+                        trait_name,
+                    });
+                    return;
+                };
+                let candidates: Vec<DefId<'db>> = self
+                    .map
+                    .trait_impls(trait_def)
+                    .iter()
+                    .filter(|d| d.self_def == head)
+                    .map(|d| d.impl_def)
+                    .collect();
+                let mut matched: Vec<(DefId<'db>, Vec<Option<Term<'db>>>)> = Vec::new();
+                for impl_def in candidates {
+                    let hsig = sig_of(self.db, self.krate, impl_def);
+                    let Some(header) = &hsig.return_type else {
+                        continue;
+                    };
+                    let mut binding = vec![None; hsig.generic_params.len()];
+                    if crate::hir::types::match_header(ty, header, &mut binding) {
+                        matched.push((impl_def, binding));
+                    }
+                }
+                match matched.len() {
+                    0 => {
+                        let ty_name = self
+                            .map
+                            .def_data(head)
+                            .map(|d| d.name.clone())
+                            .unwrap_or_else(|| "this type".to_owned());
+                        self.diag(InferDiagnosticKind::UnsatisfiedBound {
+                            ty_name,
+                            trait_name,
+                        });
+                    }
+                    1 => {
+                        // Confirm: the impl's own bounds become nested
+                        // obligations, instantiated with the header binding.
+                        let (impl_def, binding) = matched.pop().unwrap();
+                        let hsig = sig_of(self.db, self.krate, impl_def);
+                        for pred in hsig.predicates.clone() {
+                            let Predicate::Trait(tr) = pred;
+                            let nested = crate::hir::types::subst_type_opt(&tr.self_ty, &binding);
+                            self.obligations.push(Obligation {
+                                span,
+                                kind: ObligationKind::Trait {
+                                    trait_def: tr.trait_def,
+                                    self_ty: nested,
+                                    depth: depth + 1,
+                                },
+                            });
+                        }
+                    }
+                    _ => {
+                        let ty_name = self
+                            .map
+                            .def_data(head)
+                            .map(|d| d.name.clone())
+                            .unwrap_or_else(|| "this type".to_owned());
+                        self.diag(InferDiagnosticKind::AmbiguousImpls {
+                            ty_name,
+                            trait_name,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fn trait_name(&self, trait_def: DefId<'db>) -> String {
+        self.map
+            .def_data(trait_def)
+            .map(|d| d.name.clone())
+            .unwrap_or_default()
     }
 
     // ----- inference variables -----
@@ -1130,6 +1314,20 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         let sig = sig_of(self.db, self.krate, def);
         let subst = self.fresh_subst(&sig.generic_params);
         self.call_substs.insert(at, subst.clone());
+        // The callee's where-clauses, instantiated at this call (rustc's
+        // add_required_obligations): one Trait obligation per predicate.
+        for pred in &sig.predicates {
+            let Predicate::Trait(tr) = pred;
+            let self_ty = self.substitute(&tr.self_ty, &subst);
+            self.obligations.push(Obligation {
+                span: call_span,
+                kind: ObligationKind::Trait {
+                    trait_def: tr.trait_def,
+                    self_ty,
+                    depth: 0,
+                },
+            });
+        }
 
         // A method call: the receiver coerces into the declared `self` type
         // (its `@domain` annotation included — this is what pins the
@@ -1273,6 +1471,47 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     let method_def = *method_def;
                     self.method_resolutions.insert(expr, method_def);
                     return self.call_def(body, expr, method_def, args, &[], Some(&recv));
+                }
+                many => {
+                    let traits = many
+                        .iter()
+                        .filter_map(|(t, _)| self.map.def_data(*t).map(|d| d.name.clone()))
+                        .collect();
+                    self.diag(InferDiagnosticKind::AmbiguousMethod {
+                        name: method.to_owned(),
+                        traits,
+                    });
+                    return Type::Error;
+                }
+            }
+        }
+        // A `T`-typed receiver (T a bounded type param): trait methods from
+        // the param env's bounds on T — the DECL is called; monomorphisation
+        // re-selects the impl (Instance::resolve).
+        let recv_r = self.resolve_ty(&recv);
+        if let Type::Value {
+            kind: ValueKind::Param(i),
+            ..
+        } = recv_r
+        {
+            let own = sig_of(self.db, self.krate, self.def);
+            let mut cands: Vec<(DefId<'db>, DefId<'db>)> = Vec::new();
+            for p in &own.predicates {
+                let Predicate::Trait(tr) = p;
+                let on_this = matches!(
+                    &tr.self_ty,
+                    Type::Value { kind: ValueKind::Param(j), .. } if *j == i
+                );
+                if on_this && let Some(m) = self.map.trait_method(tr.trait_def, method) {
+                    cands.push((tr.trait_def, m));
+                }
+            }
+            match cands.as_slice() {
+                [] => {}
+                [(_, m)] => {
+                    let m = *m;
+                    self.method_resolutions.insert(expr, m);
+                    return self.call_def(body, expr, m, args, &[], Some(&recv));
                 }
                 many => {
                     let traits = many

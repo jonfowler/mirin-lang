@@ -144,6 +144,167 @@ pub enum ConstArg {
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct GenericArgs<'db>(pub Vec<Term<'db>>);
 
+/// Match a fully-resolved `goal` type against an impl-header `self type`
+/// whose `Param(i)` slots (any kind) are holes, binding them into `binding`
+/// (rustc's `match_impl`). Domains are ignored — trait impls are domain-blind
+/// in v1; the goal's domain flows through the method's own signature instead.
+/// Returns false on any structural mismatch or inconsistent re-binding.
+pub fn match_header<'db>(
+    goal: &Type<'db>,
+    header: &Type<'db>,
+    binding: &mut [Option<Term<'db>>],
+) -> bool {
+    let bind = |binding: &mut [Option<Term<'db>>], i: u32, t: Term<'db>| -> bool {
+        match binding.get_mut(i as usize) {
+            Some(slot @ None) => {
+                *slot = Some(t);
+                true
+            }
+            Some(Some(prev)) => *prev == t,
+            None => false,
+        }
+    };
+    match (goal, header) {
+        (
+            _,
+            Type::Value {
+                kind: ValueKind::Param(i),
+                ..
+            },
+        ) => bind(binding, *i, Term::Type(goal.clone())),
+        (Type::Value { kind: gk, .. }, Type::Value { kind: hk, .. }) => match (gk, hk) {
+            (ValueKind::UInt { width: gw }, ValueKind::UInt { width: hw }) => match hw {
+                ConstArg::Param(i) => bind(binding, *i, Term::Const(gw.clone())),
+                _ => gw == hw,
+            },
+            (ValueKind::Bool, ValueKind::Bool)
+            | (ValueKind::Reset, ValueKind::Reset)
+            | (ValueKind::Event, ValueKind::Event)
+            | (ValueKind::Integer, ValueKind::Integer) => true,
+            (ValueKind::Struct { def: gd, args: ga }, ValueKind::Struct { def: hd, args: ha }) => {
+                gd == hd && match_header_args(ga, ha, binding)
+            }
+            _ => false,
+        },
+        (
+            Type::Port {
+                def: gd, args: ga, ..
+            },
+            Type::Port {
+                def: hd, args: ha, ..
+            },
+        ) => gd == hd && match_header_args(ga, ha, binding),
+        (Type::Clock, Type::Clock) => true,
+        _ => false,
+    }
+}
+
+fn match_header_args<'db>(
+    goal: &GenericArgs<'db>,
+    header: &GenericArgs<'db>,
+    binding: &mut [Option<Term<'db>>],
+) -> bool {
+    goal.0.len() == header.0.len()
+        && goal.0.iter().zip(&header.0).all(|(g, h)| match (g, h) {
+            (Term::Type(g), Term::Type(h)) => match_header(g, h, binding),
+            (Term::Const(g), Term::Const(h)) => match h {
+                ConstArg::Param(i) => {
+                    let i = *i;
+                    match binding.get_mut(i as usize) {
+                        Some(slot @ None) => {
+                            *slot = Some(Term::Const(g.clone()));
+                            true
+                        }
+                        Some(Some(prev)) => *prev == Term::Const(g.clone()),
+                        None => false,
+                    }
+                }
+                _ => g == h,
+            },
+            // Domains are not matched (domain-blind impls).
+            (Term::Domain(_), Term::Domain(_)) => true,
+            _ => false,
+        })
+}
+
+/// Does the type contain any STRUCTURAL inference variable (so an impl match
+/// must wait)? Domain vars are ignored — trait impls are domain-blind, and
+/// unconstrained domains stay unbound until finish defaults them.
+pub fn type_has_infer(ty: &Type<'_>) -> bool {
+    struct Scan(bool);
+    impl<'db> Folder<'db> for Scan {
+        fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
+            if matches!(t, Type::Infer(_)) {
+                self.0 = true;
+            }
+            super_fold_type(self, t)
+        }
+        fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+            if matches!(c, ConstArg::Infer(_)) {
+                self.0 = true;
+            }
+            super_fold_const(self, c)
+        }
+    }
+    let mut s = Scan(false);
+    s.fold_type(ty);
+    s.0
+}
+
+/// Structural substitution of `Param(i)` slots (all kinds) from an
+/// `Option<Term>` binding — the table-free counterpart of infer's
+/// `Substituter`, for use outside an inference context (solver headers,
+/// backend composition). Unbound slots pass through unchanged.
+pub fn subst_type_opt<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
+    struct S<'a, 'db>(&'a [Option<Term<'db>>]);
+    impl<'db> Folder<'db> for S<'_, 'db> {
+        fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
+            if let Type::Value {
+                kind: ValueKind::Param(i),
+                ..
+            } = t
+                && let Some(Some(Term::Type(bound))) = self.0.get(*i as usize)
+            {
+                return bound.clone();
+            }
+            super_fold_type(self, t)
+        }
+        fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+            if let ConstArg::Param(i) = c
+                && let Some(Some(Term::Const(bound))) = self.0.get(*i as usize)
+            {
+                return bound.clone();
+            }
+            super_fold_const(self, c)
+        }
+        fn fold_domain(&mut self, d: Domain) -> Domain {
+            if let Domain::Param(i) = d
+                && let Some(Some(Term::Domain(bound))) = self.0.get(i as usize)
+            {
+                return bound.clone();
+            }
+            d
+        }
+    }
+    S(subst).fold_type(ty)
+}
+
+/// `self_ty: trait_def` — a trait reference. Traits take no generic args of
+/// their own in v1, so a TraitRef is just the pair (planning/traits.md).
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
+pub struct TraitRef<'db> {
+    pub trait_def: DefId<'db>,
+    pub self_ty: Type<'db>,
+}
+
+/// A predicate on a signature: written bounds (`param T: Add`, `where T:
+/// Bits`) and, on trait method decls, the implicit `Self: Trait`. Instantiated
+/// into obligations at every call; assumed (the param env) inside the body.
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
+pub enum Predicate<'db> {
+    Trait(TraitRef<'db>),
+}
+
 /// The uniform term: what a generic argument is and what an inference variable
 /// binds to (chalk's `GenericArgData`). One of the three term kinds.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]

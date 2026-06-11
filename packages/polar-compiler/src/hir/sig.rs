@@ -27,7 +27,7 @@ use crate::base::diagnostics::Span;
 use crate::base::parser;
 use crate::hir::types::{
     ConstArg, ConstOp, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam,
-    LIFTED_DOM, LocalId, Term, TermKind, Type, ValueKind, super_fold_type,
+    LIFTED_DOM, LocalId, Predicate, Term, TermKind, TraitRef, Type, ValueKind, super_fold_type,
 };
 use crate::nameres::def_map::{CrateDefMap, ModuleId, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -42,6 +42,10 @@ pub struct Signature<'db> {
     pub params: Vec<Param<'db>>,
     pub return_type: Option<Type<'db>>,
     pub fields: Vec<Field<'db>>,
+    /// Written bounds (`param T: Add + Bits`, `where T: Bits`) plus, on a
+    /// trait method decl, the implicit `Self: Trait`. Instantiated into
+    /// obligations at call sites; assumed inside the body (the param env).
+    pub predicates: Vec<Predicate<'db>>,
     /// Signature-level diagnostics (def-relative spans, like body diagnostics).
     pub diagnostics: Vec<SigDiagnostic>,
 }
@@ -60,7 +64,15 @@ pub enum SigDiagnosticKind {
     /// (`domain_checking_redux.md`: explicit-mode annotation requirement).
     MissingDomainAnnotation,
     /// A type name that resolved to nothing (or to a non-type item).
-    UnresolvedType { name: String },
+    UnresolvedType {
+        name: String,
+    },
+    NotATrait {
+        name: String,
+    },
+    UnknownWhereParam {
+        name: String,
+    },
 }
 
 impl SigDiagnostic {
@@ -73,6 +85,12 @@ impl SigDiagnostic {
             }
             SigDiagnosticKind::UnresolvedType { name } => {
                 format!("cannot find type `{name}`")
+            }
+            SigDiagnosticKind::NotATrait { name } => {
+                format!("`{name}` is not a trait")
+            }
+            SigDiagnosticKind::UnknownWhereParam { name } => {
+                format!("`{name}` is not a type parameter of this signature")
             }
         }
     }
@@ -134,8 +152,128 @@ pub fn sig_of<'db>(
         DefKind::Fn | DefKind::Method => lower_fn_sig(db, krate, map, module, &node, source),
         DefKind::Struct => lower_adt_sig(map, module, &node, source, false),
         DefKind::Port => lower_adt_sig(map, module, &node, source, true),
-        // Ctor/BuiltinType/Impl/Mod have no signature lowered here.
+        // A trait impl's HEADER: binder generics, self type (in return_type),
+        // binder-bound predicates. The solver's impl-candidate shape.
+        DefKind::Impl => lower_impl_header(db, krate, map, module, &node, source),
+        // Ctor/BuiltinType/Mod have no signature lowered here.
         _ => Signature::default(),
+    }
+}
+
+/// Lower an `impl {binders} Trait for SelfType` HEADER. Mirrors the generic
+/// prefix `lower_fn_sig` builds for the impl's methods — the binding a header
+/// match produces indexes the same positions as each method's leading
+/// generics. `return_type` carries the self type.
+fn lower_impl_header<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    map: &CrateDefMap<'db>,
+    module: ModuleId,
+    node: &Node,
+    source: &str,
+) -> Signature<'db> {
+    let owner = {
+        let name_node = node
+            .child_by_field_name("self_type")
+            .and_then(|st| st.child_by_field_name("name"))
+            .or_else(|| node.child_by_field_name("name"));
+        name_node.and_then(|n| {
+            let name = node_text(&n, source);
+            let def = map.resolve_in_scope(module, &name, Namespace::Item)?;
+            let kind = map.def_data(def)?.kind;
+            matches!(kind, DefKind::Struct | DefKind::Port).then_some((def, kind))
+        })
+    };
+    let explicit_self_args = node.child_by_field_name("self_type").is_some_and(|st| {
+        let mut c = st.walk();
+        st.children(&mut c).any(|n| n.kind() == "type_index")
+    });
+    let mut generic_params = Vec::new();
+    if let Some((owner_def, _)) = owner
+        && !explicit_self_args
+    {
+        let owner_sig = sig_of(db, krate, owner_def);
+        generic_params.extend(owner_sig.generic_params.iter().cloned());
+    }
+    let owner_generic_count = generic_params.len();
+    let is_trait_name = |n: &str| {
+        map.resolve_in_scope(module, n, Namespace::Item)
+            .and_then(|d| map.def_data(d))
+            .is_some_and(|d| d.kind == DefKind::Trait)
+    };
+    let mut generic_param_nodes: Vec<(usize, Node)> = Vec::new();
+    for (field, child_kind) in [("named_parameters", "named_parameter")] {
+        for p in section_params(node, field, child_kind) {
+            if let ParamClass::Generic(kind) = classify(&p, source, &is_trait_name) {
+                generic_params.push(GenericParam {
+                    name: param_name(&p, source),
+                    kind,
+                    from_named_section: true,
+                });
+                generic_param_nodes.push((generic_params.len() - 1, p));
+            }
+        }
+    }
+    let lowerer = TypeLowerer {
+        map,
+        module,
+        generics: &generic_params,
+        locals: None,
+        unresolved: RefCell::new(Vec::new()),
+        self_ty: RefCell::new(None),
+    };
+    let self_ty = match node.child_by_field_name("self_type") {
+        Some(st) if explicit_self_args || owner.is_none() => lowerer.lower_type(&st, source),
+        _ => owner_base_type(owner, &generic_params[..owner_generic_count]),
+    };
+    // Binder bounds (`impl {param T: Bits} Bits for Pair(T)`) become the
+    // impl's predicates — the solver's NESTED obligations on selection.
+    let mut predicates = Vec::new();
+    let mut pred_diags = Vec::new();
+    let def_start = node.start_byte();
+    for (i, p) in &generic_param_nodes {
+        if generic_params[*i].kind != TermKind::Type {
+            continue;
+        }
+        let mut push = |bname: String, at: &Node| match map
+            .resolve_in_scope(module, &bname, Namespace::Item)
+            .and_then(|d| map.def_data(d).map(|data| (d, data.kind)))
+        {
+            Some((t, DefKind::Trait)) => predicates.push(Predicate::Trait(TraitRef {
+                trait_def: t,
+                self_ty: Type::Value {
+                    kind: ValueKind::Param(*i as u32),
+                    domain: Domain::Unspecified,
+                },
+            })),
+            _ => pred_diags.push(SigDiagnostic {
+                span: Span {
+                    start: (at.start_byte() - def_start) as u32,
+                    end: (at.end_byte() - def_start) as u32,
+                },
+                kind: SigDiagnosticKind::NotATrait { name: bname },
+            }),
+        };
+        if let Some(ty) = p.child_by_field_name("type") {
+            let tname = field_text(&ty, "name", source);
+            if tname != "Type" {
+                push(tname, &ty);
+            }
+        }
+        let mut c = p.walk();
+        for b in p.children_by_field_name("bound", &mut c) {
+            push(field_text(&b, "name", source), &b);
+        }
+    }
+    let mut diagnostics = drain_unresolved(&lowerer, node);
+    diagnostics.extend(pred_diags);
+    Signature {
+        generic_params,
+        params: Vec::new(),
+        return_type: Some(self_ty),
+        fields: Vec::new(),
+        predicates,
+        diagnostics,
     }
 }
 
@@ -158,10 +296,15 @@ fn lower_adt_sig<'db>(
     } else {
         &[("parameters", "parameter", false)]
     };
+    let is_trait_name = |n: &str| {
+        map.resolve_in_scope(module, n, Namespace::Item)
+            .and_then(|d| map.def_data(d))
+            .is_some_and(|d| d.kind == DefKind::Trait)
+    };
     let mut generic_params = Vec::new();
     for (field, child_kind, named) in sections {
         for p in section_params(node, field, child_kind) {
-            if let ParamClass::Generic(kind) = classify(&p, source) {
+            if let ParamClass::Generic(kind) = classify(&p, source, &is_trait_name) {
                 generic_params.push(GenericParam {
                     name: param_name(&p, source),
                     kind,
@@ -214,6 +357,7 @@ fn lower_adt_sig<'db>(
         params: Vec::new(),
         return_type: None,
         fields,
+        predicates: Vec::new(),
         diagnostics,
     }
 }
@@ -277,23 +421,43 @@ fn lower_fn_sig<'db>(
         let kind = map.def_data(def)?.kind;
         matches!(kind, DefKind::Struct | DefKind::Port).then_some((def, kind))
     });
-    if let Some((owner_def, _)) = owner {
+    // A trait impl whose self type carries explicit args (`impl {param n:
+    // integer} Add for uint(n)`) declares its own binder — auto-binding the
+    // owner's params on top would duplicate them.
+    let explicit_self_args = enclosing_impl(node)
+        .and_then(|i| i.child_by_field_name("self_type"))
+        .is_some_and(|st| {
+            let mut c = st.walk();
+            st.children(&mut c).any(|n| n.kind() == "type_index")
+        });
+    if let Some((owner_def, _)) = owner
+        && !explicit_self_args
+    {
         let owner_sig = sig_of(db, krate, owner_def);
         generic_params.extend(owner_sig.generic_params.iter().cloned());
     }
     let owner_generic_count = generic_params.len();
+    // CST node per written generic param (auto-bound owner params have none)
+    // — the source of its bounds.
+    let mut generic_param_nodes: Vec<(usize, Node)> = Vec::new();
+    let is_trait_name = |n: &str| {
+        map.resolve_in_scope(module, n, Namespace::Item)
+            .and_then(|d| map.def_data(d))
+            .is_some_and(|d| d.kind == DefKind::Trait)
+    };
     if let Some(impl_node) = enclosing_impl(node) {
         for (field, child_kind, named) in [
             ("named_parameters", "named_parameter", true),
             ("parameters", "parameter", false),
         ] {
             for p in section_params(&impl_node, field, child_kind) {
-                if let ParamClass::Generic(kind) = classify(&p, source) {
+                if let ParamClass::Generic(kind) = classify(&p, source, &is_trait_name) {
                     generic_params.push(GenericParam {
                         name: param_name(&p, source),
                         kind,
                         from_named_section: named,
                     });
+                    generic_param_nodes.push((generic_params.len() - 1, p));
                 }
             }
         }
@@ -303,13 +467,109 @@ fn lower_fn_sig<'db>(
         ("parameters", "parameter", false),
     ] {
         for p in section_params(node, field, child_kind) {
-            match classify(&p, source) {
-                ParamClass::Generic(kind) => generic_params.push(GenericParam {
-                    name: param_name(&p, source),
-                    kind,
-                    from_named_section: named,
-                }),
+            match classify(&p, source, &is_trait_name) {
+                ParamClass::Generic(kind) => {
+                    generic_params.push(GenericParam {
+                        name: param_name(&p, source),
+                        kind,
+                        from_named_section: named,
+                    });
+                    generic_param_nodes.push((generic_params.len() - 1, p));
+                }
                 ParamClass::Value => value_param_nodes.push((p, named)),
+            }
+        }
+    }
+
+    // ----- predicates: written bounds + the trait decl's implicit Self bound -----
+    let mut predicates: Vec<Predicate<'db>> = Vec::new();
+    let mut pred_diags: Vec<SigDiagnostic> = Vec::new();
+    let def_start = node.start_byte();
+    let push_bound = |i: u32,
+                      bname: &str,
+                      at: &Node,
+                      preds: &mut Vec<Predicate<'db>>,
+                      diags: &mut Vec<SigDiagnostic>| {
+        let resolved = map
+            .resolve_in_scope(module, bname, Namespace::Item)
+            .and_then(|d| map.def_data(d).map(|data| (d, data.kind)));
+        match resolved {
+            Some((t, DefKind::Trait)) => preds.push(Predicate::Trait(TraitRef {
+                trait_def: t,
+                self_ty: Type::Value {
+                    kind: ValueKind::Param(i),
+                    domain: Domain::Unspecified,
+                },
+            })),
+            _ => diags.push(SigDiagnostic {
+                span: Span {
+                    start: (at.start_byte() - def_start) as u32,
+                    end: (at.end_byte() - def_start) as u32,
+                },
+                kind: SigDiagnosticKind::NotATrait {
+                    name: bname.to_owned(),
+                },
+            }),
+        }
+    };
+    if in_trait
+        && let Some(t) = enclosing(node, "trait_definition")
+            .and_then(|t| t.child_by_field_name("name"))
+            .map(|n| node_text(&n, source))
+            .and_then(|n| map.resolve_in_scope(module, &n, Namespace::Item))
+    {
+        // Inside `trait Scale`, `Self: Scale` is assumed.
+        predicates.push(Predicate::Trait(TraitRef {
+            trait_def: t,
+            self_ty: Type::Value {
+                kind: ValueKind::Param(0),
+                domain: Domain::Unspecified,
+            },
+        }));
+    }
+    for (i, p) in &generic_param_nodes {
+        if generic_params[*i].kind != TermKind::Type {
+            continue;
+        }
+        // The ascription itself, when it names a trait (`param T: Add`).
+        if let Some(ty) = p.child_by_field_name("type") {
+            let tname = field_text(&ty, "name", source);
+            if tname != "Type" {
+                push_bound(*i as u32, &tname, &ty, &mut predicates, &mut pred_diags);
+            }
+        }
+        // `+ Bound` tails.
+        let mut c = p.walk();
+        for b in p.children_by_field_name("bound", &mut c) {
+            let bname = field_text(&b, "name", source);
+            push_bound(*i as u32, &bname, &b, &mut predicates, &mut pred_diags);
+        }
+    }
+    if let Some(w) = node.child_by_field_name("where") {
+        let mut c = w.walk();
+        for pred in w
+            .named_children(&mut c)
+            .filter(|n| n.kind() == "where_predicate")
+        {
+            let pname = field_text(&pred, "name", source);
+            let target = generic_params
+                .iter()
+                .position(|g| g.name == pname && g.kind == TermKind::Type);
+            match target {
+                Some(i) => {
+                    let mut bc = pred.walk();
+                    for b in pred.children_by_field_name("bound", &mut bc) {
+                        let bname = field_text(&b, "name", source);
+                        push_bound(i as u32, &bname, &b, &mut predicates, &mut pred_diags);
+                    }
+                }
+                None => pred_diags.push(SigDiagnostic {
+                    span: Span {
+                        start: (pred.start_byte() - def_start) as u32,
+                        end: (pred.end_byte() - def_start) as u32,
+                    },
+                    kind: SigDiagnosticKind::UnknownWhereParam { name: pname },
+                }),
             }
         }
     }
@@ -449,11 +709,13 @@ fn lower_fn_sig<'db>(
     }
 
     diagnostics.extend(unresolved_diags);
+    diagnostics.extend(pred_diags);
     Signature {
         generic_params,
         params,
         return_type,
         fields: Vec::new(),
+        predicates,
         diagnostics,
     }
 }
@@ -891,7 +1153,7 @@ enum ParamClass {
 
 /// Classify a parameter node as a generic param (by `dom`/`param` keyword or a
 /// `: Type` annotation) or a value param.
-fn classify(node: &Node, source: &str) -> ParamClass {
+fn classify(node: &Node, source: &str, is_trait: &dyn Fn(&str) -> bool) -> ParamClass {
     if param_name(node, source) == "self" {
         return ParamClass::Value;
     }
@@ -900,10 +1162,14 @@ fn classify(node: &Node, source: &str) -> ParamClass {
     }
     // A `: Type` annotation makes it a Type-kind generic — this wins over a
     // `param` keyword (`param A: Type` is type-generic, not const-generic).
-    if let Some(ty) = node.child_by_field_name("type")
-        && field_text(&ty, "name", source) == "Type"
-    {
-        return ParamClass::Generic(TermKind::Type);
+    // A trait name in the ascription is a *bounded* Type-kind generic
+    // (`param T: Add` — planning/traits.md [D1]); the bound itself is
+    // collected with the predicates.
+    if let Some(ty) = node.child_by_field_name("type") {
+        let n = field_text(&ty, "name", source);
+        if n == "Type" || is_trait(&n) {
+            return ParamClass::Generic(TermKind::Type);
+        }
     }
     // `param N: integer` (or bare `param`) — a Const-kind generic.
     if field_text(node, "kind", source) == "param" {

@@ -1,0 +1,21 @@
+// Bounds + the trait solver (planning/traits.md T3): `boost` is generic over
+// any `T: Amp`; the call on a uint(8) discharges the bound against the
+// width-generic impl, and monomorphisation re-selects the impl method
+// (Instance::resolve) — boost__uint8 instantiates uint__Amp__amp #(.n(8)).
+trait Amp {
+    fn amp(self) -> Self;
+}
+
+impl {param n: integer} Amp for uint(n) {
+    fn amp(self) -> Self {
+        return self + self;
+    }
+}
+
+fn boost {param T: Amp} (x: T) -> T {
+    x.amp()
+}
+
+fn top {dom clk: Clock} (x: uint(8) @clk) -> uint(8) @clk {
+    boost(x)
+}

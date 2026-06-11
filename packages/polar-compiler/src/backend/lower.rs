@@ -50,7 +50,7 @@ use crate::hir::types::{
     TermKind, Type, ValueKind,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
-use crate::nameres::ids::{DefId, DefKind};
+use crate::nameres::ids::{DefId, DefKind, Namespace};
 use crate::syntax::ast_id::ast_id_map;
 
 /// QUERY: lower one fn/method to a SystemVerilog module (combinational scalar
@@ -661,6 +661,53 @@ impl<'db> SvLower<'_, 'db> {
         })
     }
 
+    /// rustc's `Instance::resolve`, minimal form: a call recorded against a
+    /// trait method DECL is re-selected to the unique matching impl once the
+    /// self type is concrete (after applying this module's own mono subst).
+    /// Returns the impl method plus its substitution: the header binding for
+    /// the impl's binder prefix, then the decl's own generic args.
+    fn resolve_trait_instance(
+        &self,
+        expr: ExprId,
+        decl: DefId<'db>,
+    ) -> Option<(DefId<'db>, Vec<Option<Term<'db>>>)> {
+        if !self.map.is_trait_method_decl(decl) {
+            return None;
+        }
+        let trait_def = self.map.def_data(decl)?.owner?;
+        let decl_subst = self.inf.call_subst(expr)?;
+        let Some(Term::Type(self_ty)) = decl_subst.first() else {
+            return None;
+        };
+        let opts: Vec<Option<Term<'db>>> = self.self_subst.clone();
+        let self_ty = ground_widths(self.db, self.krate, self.def, &subst_type(self_ty, &opts));
+        let head = type_head_def(self.map, &self_ty)?;
+        let mname = self.map.def_data(decl)?.name.clone();
+        for data in self.map.trait_impls(trait_def) {
+            if data.self_def != head {
+                continue;
+            }
+            let hsig = sig_of(self.db, self.krate, data.impl_def);
+            let Some(header) = &hsig.return_type else {
+                continue;
+            };
+            let mut binding = vec![None; hsig.generic_params.len()];
+            if !crate::hir::types::match_header(&self_ty, header, &mut binding) {
+                continue;
+            }
+            let method = data.methods.iter().find(|(n, _)| *n == mname)?.1;
+            // Compose: binder prefix from the header match, then the decl's
+            // own generics (everything after its implicit Self), mapped into
+            // this module's value space.
+            let mut composed = binding;
+            for t in &decl_subst[1..] {
+                composed.push(Some(subst_term(t, &opts)));
+            }
+            return Some((method, composed));
+        }
+        None
+    }
+
     /// A statement-position call is const-only when the callee's every value
     /// param and return are `integer` — nothing of it is hardware; its outputs
     /// are reached by `const_eval` through the width trees.
@@ -1211,19 +1258,31 @@ impl<'db> SvLower<'_, 'db> {
                 Some(UserCall {
                     def,
                     expr,
+                    subst_override: None,
                     receiver: None,
                     args: args.clone(),
                     named: named.clone(),
                 })
             }
             ExprKind::MethodCall { receiver, args, .. } if self.as_reg(expr).is_none() => {
-                Some(UserCall {
-                    def: self.inf.method_resolution(expr)?,
-                    expr,
-                    receiver: Some(*receiver),
-                    args: args.clone(),
-                    named: Vec::new(),
-                })
+                {
+                    let decl = self.inf.method_resolution(expr)?;
+                    // A trait-method DECL (picked through a `T: Trait` bound)
+                    // re-selects to the matching impl with the now-concrete
+                    // self type — rustc's Instance::resolve at mono time.
+                    let (def, subst_override) = match self.resolve_trait_instance(expr, decl) {
+                        Some((m, ov)) => (m, Some(ov)),
+                        None => (decl, None),
+                    };
+                    Some(UserCall {
+                        def,
+                        expr,
+                        subst_override,
+                        receiver: Some(*receiver),
+                        args: args.clone(),
+                        named: Vec::new(),
+                    })
+                }
             }
             _ => None,
         }
@@ -1248,14 +1307,21 @@ impl<'db> SvLower<'_, 'db> {
         // call's recorded instantiation (`#(.n(8))`; a still-symbolic value
         // renders against the caller's own SV parameters; an evaluable local
         // grounds through const_eval).
-        let subst = self.inf.call_subst(uc.expr);
+        let node_subst: Vec<Option<Term<'db>>> = match &uc.subst_override {
+            Some(ov) => ov.clone(),
+            None => self
+                .inf
+                .call_subst(uc.expr)
+                .map(|ts| ts.iter().cloned().map(Some).collect())
+                .unwrap_or_default(),
+        };
         let parameters: Vec<(String, SvExpr)> = csig
             .generic_params
             .iter()
             .enumerate()
             .filter(|(_, g)| g.kind == TermKind::Const)
             .filter_map(|(i, g)| {
-                let term = subst.and_then(|ts| ts.get(i));
+                let term = node_subst.get(i).and_then(|o| o.as_ref());
                 let Some(Term::Const(c)) = term else {
                     return None;
                 };
@@ -1306,7 +1372,9 @@ impl<'db> SvLower<'_, 'db> {
 
         // A type-generic callee is monomorphised: bind its Type params from the
         // actual arg types, name the copy `Callee__Arg`, and request its emission.
-        let subst: Vec<Option<Term<'db>>> = if is_type_generic(csig) {
+        let subst: Vec<Option<Term<'db>>> = if let Some(ov) = &uc.subst_override {
+            ov.clone()
+        } else if is_type_generic(csig) {
             let mut subst = vec![None; csig.generic_params.len()];
             for (_, pty, caller_expr, _) in &slots {
                 if let Some(e) = caller_expr
@@ -1319,7 +1387,13 @@ impl<'db> SvLower<'_, 'db> {
         } else {
             Vec::new()
         };
-        let module = if subst.iter().any(Option::is_some) {
+        // Only TYPE-kind bindings force a specialised copy — Const-kind
+        // bindings ride the `#(...)` parameters of the one parametric module.
+        let needs_mono =
+            csig.generic_params.iter().enumerate().any(|(i, g)| {
+                g.kind == TermKind::Type && subst.get(i).is_some_and(Option::is_some)
+            });
+        let module = if needs_mono {
             let name = mono_name(self.map, uc.def, csig, &subst);
             self.mono_reqs.push(MonoReq {
                 callee: uc.def,
@@ -1400,12 +1474,15 @@ impl<'db> SvLower<'_, 'db> {
         // substitute the call's recorded instantiation before flattening
         // against the caller's generics (a parametric callee's `uint(n)`
         // otherwise renders against the wrong index space).
-        let rt = match self.inf.call_subst(uc.expr) {
-            Some(ts) => {
-                let opts: Vec<Option<Term<'db>>> = ts.iter().cloned().map(Some).collect();
-                ground_widths(self.db, self.krate, self.def, &subst_type(&rt, &opts))
-            }
-            None => rt,
+        let rt = match &uc.subst_override {
+            Some(ov) => ground_widths(self.db, self.krate, self.def, &subst_type(&rt, ov)),
+            None => match self.inf.call_subst(uc.expr) {
+                Some(ts) => {
+                    let opts: Vec<Option<Term<'db>>> = ts.iter().cloned().map(Some).collect();
+                    ground_widths(self.db, self.krate, self.def, &subst_type(&rt, &opts))
+                }
+                None => rt,
+            },
         };
         let base = self.fresh_call();
         let target: Vec<(String, SvExpr)> =
@@ -1468,6 +1545,12 @@ struct UserCall<'db> {
     def: DefId<'db>,
     /// The call expression itself — keys `Inference::call_subst`.
     expr: ExprId,
+    /// Present when `def` was re-selected from a trait-method DECL to an
+    /// impl method (Instance::resolve): the impl method's substitution
+    /// (header binding ++ the decl's own generic tail), already in the
+    /// CALLER's value space. Overrides both the mono subst and the
+    /// `#(...)` parameter source.
+    subst_override: Option<Vec<Option<Term<'db>>>>,
     receiver: Option<ExprId>,
     args: Vec<ConnArg>,
     named: Vec<NamedArg>,
@@ -1695,6 +1778,45 @@ fn is_integer(ty: &Type<'_>) -> bool {
             ..
         }
     )
+}
+
+/// The def heading a concrete type (infer's `owner_of`, map-only form).
+fn type_head_def<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> Option<DefId<'db>> {
+    let prelude = |name: &str| map.resolve_local(map.prelude(), name, Namespace::Item);
+    match ty {
+        Type::Value {
+            kind: ValueKind::Struct { def, .. },
+            ..
+        } => Some(*def),
+        Type::Value {
+            kind: ValueKind::UInt { .. },
+            ..
+        } => prelude("uint"),
+        Type::Value {
+            kind: ValueKind::Bool,
+            ..
+        } => prelude("bool"),
+        Type::Port { def, .. } => Some(*def),
+        Type::Clock => prelude("Clock"),
+        _ => None,
+    }
+}
+
+/// Apply a substitution to one Term (each kind through its own channel).
+fn subst_term<'db>(t: &Term<'db>, subst: &[Option<Term<'db>>]) -> Term<'db> {
+    match t {
+        Term::Type(ty) => Term::Type(subst_type(ty, subst)),
+        Term::Const(ConstArg::Param(i)) => match subst.get(*i as usize).and_then(|o| o.as_ref()) {
+            Some(Term::Const(c)) => Term::Const(c.clone()),
+            _ => t.clone(),
+        },
+        Term::Const(_) => t.clone(),
+        Term::Domain(Domain::Param(i)) => match subst.get(*i as usize).and_then(|o| o.as_ref()) {
+            Some(Term::Domain(d)) => Term::Domain(*d),
+            _ => t.clone(),
+        },
+        Term::Domain(_) => t.clone(),
+    }
 }
 
 fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
