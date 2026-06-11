@@ -82,6 +82,10 @@ pub struct ImplItem {
     pub owner: String,
     /// The trait's name, for a trait impl.
     pub trait_: Option<String>,
+    /// Whether a trait impl's self type carries explicit args
+    /// (`impl Scale for uint(8)` vs `impl Scale for Sample`). Coherence's
+    /// cheap first cut: two arg-less impls for one head always overlap.
+    pub self_has_args: bool,
     pub ast_id: FileAstId,
     pub methods: Vec<FnItem>,
     pub consts: Vec<AssocConstItem>,
@@ -222,16 +226,19 @@ fn impl_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> ImplItem {
     }
     // `impl Trait for SelfType`: the node's `name` is the trait; the
     // implementing type is the self type's head name.
-    let (owner, trait_) = match node.child_by_field_name("self_type") {
+    let (owner, trait_, self_has_args) = match node.child_by_field_name("self_type") {
         Some(st) => (
             field_text(&st, "name", source),
             Some(name_of(node, source)),
+            st.children(&mut st.walk())
+                .any(|c| c.kind() == "type_index"),
         ),
-        None => (name_of(node, source), None),
+        None => (name_of(node, source), None, false),
     };
     ImplItem {
         owner,
         trait_,
+        self_has_args,
         ast_id: ast_id(node, ast_ids),
         methods,
         consts,

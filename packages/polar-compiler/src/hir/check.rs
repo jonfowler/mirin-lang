@@ -71,6 +71,11 @@ pub fn check_drivers<'db>(
     krate: SourceRoot,
     def: DefId<'db>,
 ) -> Vec<DriverDiagnostic> {
+    // A trait method DECLARATION has no body to check.
+    if crate_def_map(db, krate).is_trait_method_decl(def) {
+        return Vec::new();
+    }
+
     let map = crate_def_map(db, krate);
     let Some(data) = map.def_data(def) else {
         return Vec::new();
@@ -157,6 +162,11 @@ pub fn completeness<'db>(
     krate: SourceRoot,
     def: DefId<'db>,
 ) -> Vec<DriverDiagnostic> {
+    // A trait method DECLARATION has no body to check.
+    if crate_def_map(db, krate).is_trait_method_decl(def) {
+        return Vec::new();
+    }
+
     let map = crate_def_map(db, krate);
     let Some(data) = map.def_data(def) else {
         return Vec::new();

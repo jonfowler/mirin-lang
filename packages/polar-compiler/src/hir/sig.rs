@@ -177,6 +177,7 @@ fn lower_adt_sig<'db>(
         generics: &generic_params,
         locals: None,
         unresolved: RefCell::new(Vec::new()),
+        self_ty: RefCell::new(None),
     };
 
     let field_kind = if is_port {
@@ -319,7 +320,32 @@ fn lower_fn_sig<'db>(
         generics: &generic_params,
         locals: None,
         unresolved: RefCell::new(Vec::new()),
+        self_ty: RefCell::new(None),
     };
+    // What `Self` (and the bare `self` receiver) mean in an impl method: the
+    // `for` self type when written with explicit args or naming a builtin
+    // (`impl Bits for uint(8)`), otherwise the owner ADT applied at its
+    // auto-bound params (`impl Scale for Bus` on `struct Bus(A: Type)`).
+    let impl_self_base: Option<Type> = enclosing_impl(node).and_then(|impl_node| {
+        match impl_node.child_by_field_name("self_type") {
+            Some(st) => {
+                let has_args = {
+                    let mut c = st.walk();
+                    st.children(&mut c).any(|n| n.kind() == "type_index")
+                };
+                if has_args || owner.is_none() {
+                    Some(lowerer.lower_type(&st, source))
+                } else {
+                    Some(owner_base_type(
+                        owner,
+                        &generic_params[..owner_generic_count],
+                    ))
+                }
+            }
+            None => owner.map(|_| owner_base_type(owner, &generic_params[..owner_generic_count])),
+        }
+    });
+    lowerer.self_ty.replace(impl_self_base);
 
     // Pass 2: lower each value parameter's type, assigning owner-relative ids.
     let mut params = Vec::new();
@@ -333,16 +359,16 @@ fn lower_fn_sig<'db>(
                 domain: lowerer.lower_domain(p, source),
             }
         } else if is_self {
-            // The receiver: the impl's owner type, carrying self's own
+            // The receiver: the impl's self type, carrying self's own
             // `@domain` annotation (`self @clk`) so the receiver's domain
             // connects to the method's generics at the call site.
-            self_owner_type(
-                owner,
-                &generic_params[..owner_generic_count],
-                p,
-                source,
-                &lowerer,
-            )
+            let base = lowerer.self_ty.borrow().clone().unwrap_or(Type::Error);
+            let domain = lowerer.lower_domain(p, source);
+            match base {
+                Type::Value { kind, .. } => Type::Value { kind, domain },
+                Type::Port { def, args, .. } => Type::Port { def, args, domain },
+                other => other,
+            }
         } else {
             p.child_by_field_name("type")
                 .map(|t| lowerer.lower_type(&t, source))
@@ -490,6 +516,10 @@ struct TypeLowerer<'a, 'db> {
     /// Type names that resolved to nothing — `(name, abs_start, abs_end)`,
     /// drained by the caller into its own diagnostic stream (sig or body).
     unresolved: RefCell<Vec<(String, usize, usize)>>,
+    /// What `Self` means here: the impl's self type (set while lowering an
+    /// impl method's signature). In a trait DECL `Self` is instead the
+    /// implicit Param(0) generic, reached through `generic_index`.
+    self_ty: RefCell<Option<Type<'db>>>,
 }
 
 impl<'db> TypeLowerer<'_, 'db> {
@@ -533,6 +563,26 @@ impl<'db> TypeLowerer<'_, 'db> {
             }
             "Clock" => return Type::Clock,
             _ => {}
+        }
+
+        // 1b. `Self` in an impl: the impl's self type, restamped with the
+        // use site's `@domain` if one is written.
+        if name == "Self"
+            && let Some(t) = self.self_ty.borrow().clone()
+        {
+            return match (&t, &domain) {
+                (_, Domain::Unspecified) => t,
+                (Type::Value { kind, .. }, d) => Type::Value {
+                    kind: kind.clone(),
+                    domain: d.clone(),
+                },
+                (Type::Port { def, args, .. }, d) => Type::Port {
+                    def: *def,
+                    args: args.clone(),
+                    domain: d.clone(),
+                },
+                _ => t,
+            };
         }
 
         // 2. A Type-kind generic parameter referenced by name (`data: A`).
@@ -763,6 +813,7 @@ pub(crate) fn lower_type_expr<'db>(
         module,
         generics,
         locals,
+        self_ty: RefCell::new(None),
         unresolved: RefCell::new(Vec::new()),
     };
     let ty = lowerer.lower_type(node, source);
@@ -776,19 +827,16 @@ pub(crate) fn lower_type_expr<'db>(
 /// struct/port, with `self`'s `@domain` annotation lowered against the
 /// method's generics. `Error` when the owner doesn't resolve (diagnosed by
 /// nameres) — generic owners' type args are future work (impl `Bus(A)`).
-fn self_owner_type<'db>(
+fn owner_base_type<'db>(
     owner: Option<(DefId<'db>, DefKind)>,
     owner_generics: &[GenericParam],
-    self_param: &Node,
-    source: &str,
-    lowerer: &TypeLowerer<'_, 'db>,
 ) -> Type<'db> {
     let Some((def, kind)) = owner else {
         return Type::Error;
     };
-    let domain = lowerer.lower_domain(self_param, source);
     // The owner applied at its own (auto-bound) params: positions 0..k of
-    // the method's generic list, kind-matched.
+    // the method's generic list, kind-matched. Domain `Unspecified`; the
+    // receiver's `@` annotation stamps it.
     let args = GenericArgs(
         owner_generics
             .iter()
@@ -806,9 +854,13 @@ fn self_owner_type<'db>(
     match kind {
         DefKind::Struct => Type::Value {
             kind: ValueKind::Struct { def, args },
-            domain,
+            domain: Domain::Unspecified,
         },
-        DefKind::Port => Type::Port { def, args, domain },
+        DefKind::Port => Type::Port {
+            def,
+            args,
+            domain: Domain::Unspecified,
+        },
         _ => Type::Error,
     }
 }

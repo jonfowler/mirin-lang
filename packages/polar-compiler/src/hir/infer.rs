@@ -61,12 +61,23 @@ pub enum InferDiagnosticKind {
     /// A clocked value used in const position (a `uint(n)` width).
     ClockedWidth,
     /// A `recv.method(…)` whose method did not resolve on the receiver's type.
-    UnresolvedMethod { name: String },
+    UnresolvedMethod {
+        name: String,
+    },
+    AmbiguousMethod {
+        name: String,
+        traits: Vec<String>,
+    },
     /// A uint width whose const evaluation came out negative.
-    NegativeWidth { value: i128 },
+    NegativeWidth {
+        value: i128,
+    },
     /// A record-constructor connector that disagrees with the field's
     /// declared direction (`=` for supplied fields, `=>` for `in` fields).
-    RecordConnector { name: String, needs_arrow: bool },
+    RecordConnector {
+        name: String,
+        needs_arrow: bool,
+    },
     /// A call whose positional argument count can't match the callee's
     /// positional params (`expected` is the count that failed: the total when
     /// over-supplied, the no-default minimum when under-supplied).
@@ -77,13 +88,21 @@ pub enum InferDiagnosticKind {
     },
     /// A record constructor wrote a field its struct/port doesn't declare, or
     /// a field access named no field of the receiver's type.
-    UnknownField { name: String },
+    UnknownField {
+        name: String,
+    },
     /// A record constructor omitted a declared field.
-    MissingField { name: String },
+    MissingField {
+        name: String,
+    },
     /// A record constructor wrote the same field twice.
-    DuplicateField { name: String },
+    DuplicateField {
+        name: String,
+    },
     /// Field access on a (resolved) type that has no fields.
-    FieldOnNonAggregate { name: String },
+    FieldOnNonAggregate {
+        name: String,
+    },
 }
 
 impl InferDiagnostic {
@@ -98,6 +117,12 @@ impl InferDiagnostic {
             InferDiagnosticKind::RegForm => "`.reg` expects `(reset, init)` arguments".to_owned(),
             InferDiagnosticKind::ClockedWidth => {
                 "a width must be a compile-time constant, but this value is clocked".to_owned()
+            }
+            InferDiagnosticKind::AmbiguousMethod { name, traits } => {
+                format!(
+                    "multiple applicable methods `{name}`: implemented by traits {}",
+                    traits.join(", ")
+                )
             }
             InferDiagnosticKind::UnresolvedMethod { name } => {
                 format!("no method `{name}` on this type")
@@ -1238,6 +1263,29 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         {
             self.method_resolutions.insert(expr, method_def);
             return self.call_def(body, expr, method_def, args, &[], Some(&recv));
+        }
+        // Trait-impl candidates for this receiver head (inherent wins above;
+        // two traits offering the method is an ambiguity error).
+        if let Some(owner) = owner {
+            match self.map.trait_dispatch(owner, method) {
+                [] => {}
+                [(_, method_def)] => {
+                    let method_def = *method_def;
+                    self.method_resolutions.insert(expr, method_def);
+                    return self.call_def(body, expr, method_def, args, &[], Some(&recv));
+                }
+                many => {
+                    let traits = many
+                        .iter()
+                        .filter_map(|(t, _)| self.map.def_data(*t).map(|d| d.name.clone()))
+                        .collect();
+                    self.diag(InferDiagnosticKind::AmbiguousMethod {
+                        name: method.to_owned(),
+                        traits,
+                    });
+                    return Type::Error;
+                }
+            }
         }
         // Prelude methods not in the impl-method index yet (Q3a backfill pending).
         let args_inferred: Vec<Type<'db>> =

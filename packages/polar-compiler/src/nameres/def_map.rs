@@ -108,17 +108,41 @@ pub struct DefDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq, salsa::Update)]
 pub enum DefDiagnosticKind {
     /// A `mod foo;` whose file was not found in the crate.
-    UnresolvedModule { name: String },
+    UnresolvedModule {
+        name: String,
+    },
     /// A `use` path that resolved to nothing.
-    UnresolvedImport { path: Vec<String> },
+    UnresolvedImport {
+        path: Vec<String>,
+    },
     /// A `use` that names a binding not accessible from the importing module.
-    PrivateImport { name: String },
+    PrivateImport {
+        name: String,
+    },
     /// Two defs collide on `(name, namespace)` in one module — e.g. a type and
     /// its constructor sharing a name (`struct S = S`).
-    DuplicateDef { name: String },
+    DuplicateDef {
+        name: String,
+    },
     /// An `impl T { … }` whose owner type `T` did not resolve.
-    UnresolvedImplOwner { name: String },
-    UnresolvedTrait { name: String },
+    UnresolvedImplOwner {
+        name: String,
+    },
+    UnresolvedTrait {
+        name: String,
+    },
+    MissingTraitItem {
+        trait_name: String,
+        name: String,
+    },
+    ExtraTraitItem {
+        trait_name: String,
+        name: String,
+    },
+    OverlappingImpls {
+        trait_name: String,
+        ty: String,
+    },
 }
 
 impl DefDiagnostic {
@@ -135,7 +159,16 @@ impl DefDiagnostic {
                 format!("the name `{name}` is defined more than once in this module")
             }
             DefDiagnosticKind::UnresolvedTrait { name } => {
-                format!("cannot find trait `{name}`")
+                format!("`{name}` is not a trait")
+            }
+            DefDiagnosticKind::MissingTraitItem { trait_name, name } => {
+                format!("missing `{name}` in implementation of `{trait_name}`")
+            }
+            DefDiagnosticKind::ExtraTraitItem { trait_name, name } => {
+                format!("`{name}` is not a member of trait `{trait_name}`")
+            }
+            DefDiagnosticKind::OverlappingImpls { trait_name, ty } => {
+                format!("conflicting implementations of `{trait_name}` for `{ty}`")
             }
             DefDiagnosticKind::UnresolvedImplOwner { name } => {
                 format!("cannot find type `{name}` for this `impl`")
@@ -179,6 +212,7 @@ impl<'db> ModuleData<'db> {
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct TraitImplData<'db> {
     pub self_def: DefId<'db>,
+    pub self_has_args: bool,
     pub methods: Vec<(String, DefId<'db>)>,
     pub file: SourceFile,
     pub ast_id: crate::syntax::ast_id::FileAstId,
@@ -219,6 +253,13 @@ pub struct CrateDefMap<'db> {
     /// Per-trait impls (`impl Trait for SelfType`), in source order. The
     /// solver's impl-candidate source (planning/traits.md).
     trait_impls: HashMap<DefId<'db>, Vec<TraitImplData<'db>>>,
+    /// `(self-type head def, method name) → [(trait, impl-method def)]` —
+    /// method dispatch's trait-candidate index (the self-type-fingerprint
+    /// lookup; rust-analyzer's TyFingerprint shape).
+    trait_dispatch: HashMap<(DefId<'db>, String), Vec<(DefId<'db>, DefId<'db>)>>,
+    /// trait-impl method → its trait (the backend qualifies module names
+    /// with it: `Owner__Trait__method`).
+    method_trait: HashMap<DefId<'db>, DefId<'db>>,
     /// Stable `DefId → DefPath`/`DefPathHash` identity, plus the reverse index.
     def_paths: HashMap<DefId<'db>, DefPath>,
     def_path_hashes: HashMap<DefId<'db>, DefPathHash>,
@@ -269,12 +310,40 @@ impl<'db> CrateDefMap<'db> {
 
     /// A trait's own method declaration, by name.
     pub fn trait_method(&self, trait_def: DefId<'db>, name: &str) -> Option<DefId<'db>> {
-        self.trait_methods.get(&(trait_def, name.to_owned())).copied()
+        self.trait_methods
+            .get(&(trait_def, name.to_owned()))
+            .copied()
     }
 
     /// The `impl Trait for …` blocks for a trait, in source order.
     pub fn trait_impls(&self, trait_def: DefId<'db>) -> &[TraitImplData<'db>] {
-        self.trait_impls.get(&trait_def).map(Vec::as_slice).unwrap_or(&[])
+        self.trait_impls
+            .get(&trait_def)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Trait-impl methods named `name` implemented for the type headed by
+    /// `owner`: `[(trait def, impl-method def)]`. Dispatch's trait candidates.
+    pub fn trait_dispatch(&self, owner: DefId<'db>, name: &str) -> &[(DefId<'db>, DefId<'db>)] {
+        self.trait_dispatch
+            .get(&(owner, name.to_owned()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// The trait a trait-impl method belongs to (`None` for inherent methods
+    /// and trait method DECLS).
+    pub fn trait_of_method(&self, method: DefId<'db>) -> Option<DefId<'db>> {
+        self.method_trait.get(&method).copied()
+    }
+
+    /// Is this def a trait's method DECLARATION (no body)?
+    pub fn is_trait_method_decl(&self, def: DefId<'db>) -> bool {
+        self.def_data(def)
+            .and_then(|d| d.owner)
+            .and_then(|o| self.def_data(o))
+            .is_some_and(|o| o.kind == DefKind::Trait)
     }
 
     /// A def's stable `DefPath`.
@@ -466,6 +535,8 @@ impl<'db> Collector<'db> {
                 impl_methods: HashMap::new(),
                 trait_methods: HashMap::new(),
                 trait_impls: HashMap::new(),
+                trait_dispatch: HashMap::new(),
+                method_trait: HashMap::new(),
                 def_paths: HashMap::new(),
                 def_path_hashes: HashMap::new(),
                 hash_to_def: HashMap::new(),
@@ -1106,7 +1177,9 @@ impl<'db> Collector<'db> {
         let impls = std::mem::take(&mut self.impls);
         for (module, file, item) in impls {
             let is_trait_impl = item.trait_.is_some();
-            let owner = self.map.resolve_local(module, &item.owner, Namespace::Item);
+            let owner = self
+                .map
+                .resolve_in_scope(module, &item.owner, Namespace::Item);
             let owner = match owner.and_then(|o| self.map.def_data(o).map(|d| (o, d.kind))) {
                 Some((o, DefKind::Struct | DefKind::Port)) => o,
                 // A trait impl may implement for a builtin (`impl Bits for bool`).
@@ -1125,7 +1198,7 @@ impl<'db> Collector<'db> {
             let trait_def = match &item.trait_ {
                 None => None,
                 Some(tname) => {
-                    let t = self.map.resolve_local(module, tname, Namespace::Item);
+                    let t = self.map.resolve_in_scope(module, tname, Namespace::Item);
                     match t.and_then(|t| self.map.def_data(t).map(|d| (t, d.kind))) {
                         Some((t, DefKind::Trait)) => Some(t),
                         _ => {
@@ -1170,12 +1243,74 @@ impl<'db> Collector<'db> {
                 }
             }
             if let Some(t) = trait_def {
-                self.map.trait_impls.entry(t).or_default().push(TraitImplData {
-                    self_def: owner,
-                    methods: impl_methods,
-                    file,
-                    ast_id: item.ast_id,
+                // Conformance, name level: every trait method implemented,
+                // nothing extra. (Signature-level conformance arrives with
+                // the solver slice — planning/traits.md T3.)
+                let declared: Vec<&String> = self
+                    .map
+                    .trait_methods
+                    .keys()
+                    .filter(|(td, _)| *td == t)
+                    .map(|(_, n)| n)
+                    .collect();
+                for d in &declared {
+                    if impl_methods.iter().all(|(n, _)| n != *d) {
+                        self.map.diagnostics.push(DefDiagnostic {
+                            anchor: Some((file, item.ast_id)),
+                            kind: DefDiagnosticKind::MissingTraitItem {
+                                trait_name: item.trait_.clone().unwrap_or_default(),
+                                name: (*d).clone(),
+                            },
+                        });
+                    }
+                }
+                for (n, _) in &impl_methods {
+                    if self.map.trait_methods.get(&(t, n.clone())).is_none() {
+                        self.map.diagnostics.push(DefDiagnostic {
+                            anchor: Some((file, item.ast_id)),
+                            kind: DefDiagnosticKind::ExtraTraitItem {
+                                trait_name: item.trait_.clone().unwrap_or_default(),
+                                name: n.clone(),
+                            },
+                        });
+                    }
+                }
+                // Coherence, cheap first cut: two impls of one trait for the
+                // same arg-less head always overlap. Header unification for
+                // parameterised self types lands with the solver (T3).
+                let dup = self.map.trait_impls.get(&t).is_some_and(|impls| {
+                    impls
+                        .iter()
+                        .any(|i| i.self_def == owner && !i.self_has_args)
                 });
+                if dup && !item.self_has_args {
+                    self.map.diagnostics.push(DefDiagnostic {
+                        anchor: Some((file, item.ast_id)),
+                        kind: DefDiagnosticKind::OverlappingImpls {
+                            trait_name: item.trait_.clone().unwrap_or_default(),
+                            ty: item.owner.clone(),
+                        },
+                    });
+                }
+                for (n, def) in &impl_methods {
+                    self.map.method_trait.insert(*def, t);
+                    self.map
+                        .trait_dispatch
+                        .entry((owner, n.clone()))
+                        .or_default()
+                        .push((t, *def));
+                }
+                self.map
+                    .trait_impls
+                    .entry(t)
+                    .or_default()
+                    .push(TraitImplData {
+                        self_def: owner,
+                        self_has_args: item.self_has_args,
+                        methods: impl_methods,
+                        file,
+                        ast_id: item.ast_id,
+                    });
             }
         }
     }

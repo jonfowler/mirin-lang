@@ -15,3 +15,19 @@ impl Scale for Sample {
 fn top {dom clk: Clock} (s: Sample @clk, k: uint(8) @clk) -> uint(8) @clk {
     s.scaled(k)
 }
+
+// A trait implemented for a builtin: `Self` in the signature resolves to
+// the impl's self type (`bool`).
+trait Invert {
+    fn invert(self) -> Self;
+}
+
+impl Invert for bool {
+    fn invert(self) -> Self {
+        return self;
+    }
+}
+
+fn top2 {dom clk: Clock} (x: bool @clk) -> bool @clk {
+    x.invert()
+}

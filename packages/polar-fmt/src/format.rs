@@ -126,7 +126,10 @@ impl<'a> Formatter<'a> {
 
             "trait_bound" => {
                 let name = self.text(self.field(n, "name").unwrap());
-                match n.named_children(&mut n.walk()).find(|c| c.kind() == "type_index") {
+                match n
+                    .named_children(&mut n.walk())
+                    .find(|c| c.kind() == "type_index")
+                {
                     Some(ix) => concat([text(name), self.doc(ix)]),
                     None => text(name),
                 }

@@ -331,6 +331,11 @@ fn module_name<'db>(map: &CrateDefMap<'db>, def: DefId<'db>) -> String {
     if data.kind == DefKind::Method
         && let Some(owner) = data.owner.and_then(|o| map.def_data(o))
     {
+        // A trait-impl method carries the trait in its module name so two
+        // traits' same-named methods on one owner can't collide.
+        if let Some(t) = map.trait_of_method(def).and_then(|t| map.def_data(t)) {
+            return format!("{}__{}__{}", owner.name, t.name, data.name);
+        }
         return format!("{}__{}", owner.name, data.name);
     }
     data.name.clone()
@@ -382,6 +387,8 @@ pub fn sv_file(db: &dyn salsa::Database, krate: SourceRoot) -> SvFile {
         .filter(|(_, data)| {
             matches!(data.kind, DefKind::Fn | DefKind::Method) && data.module != prelude
         })
+        // A trait's method DECLS have no bodies — only impls emit modules.
+        .filter(|(d, _)| !map.is_trait_method_decl(*d))
         .filter(|(d, _)| !is_type_generic(sig_of(db, krate, *d)))
         .map(|(d, _)| {
             let file = d.file(db);

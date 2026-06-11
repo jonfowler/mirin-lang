@@ -1,0 +1,20 @@
+// Two impls of one trait for the same type conflict (coherence).
+trait Wrap {
+    fn wrapped(self) -> uint(8);
+}
+
+struct Pair = pair {
+    a: uint(8),
+}
+
+impl Wrap for Pair {
+    fn wrapped(self) -> uint(8) {
+        return self.a;
+    }
+}
+
+impl Wrap for Pair {
+    fn wrapped(self) -> uint(8) {
+        return self.a;
+    }
+}
