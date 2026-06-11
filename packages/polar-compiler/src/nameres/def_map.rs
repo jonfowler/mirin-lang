@@ -482,6 +482,7 @@ impl<'db> Collector<'db> {
             ("reg", DefKind::Fn),
             ("posedge", DefKind::Fn),
             ("+", DefKind::Fn),
+            ("-", DefKind::Fn),
             ("*", DefKind::Fn),
         ];
         for (i, (name, kind)) in BUILTINS.iter().enumerate() {

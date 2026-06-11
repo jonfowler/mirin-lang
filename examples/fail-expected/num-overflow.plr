@@ -1,6 +1,6 @@
-// The literal exceeds u64 (NumberTooLarge). Previously body lowering did
-// `.parse::<u64>().unwrap_or(0)` and the value silently became 0.
+// The literal exceeds i128 (NumberTooLarge). Previously body lowering did
+// `.parse().unwrap_or(0)` and the value silently became 0.
 fn top() -> uint(8) {
-    let x: uint(8) = 99999999999999999999999;
+    let x: uint(8) = 99999999999999999999999999999999999999999999999999;
     x
 }

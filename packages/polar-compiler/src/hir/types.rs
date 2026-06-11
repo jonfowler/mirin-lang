@@ -75,7 +75,7 @@ pub enum ValueKind<'db> {
     Bool,
     Reset,
     Event,
-    Usize,
+    Integer,
     /// A user struct, with its generic args.
     Struct {
         def: DefId<'db>,
@@ -108,7 +108,7 @@ pub enum Domain {
 /// literal or a single generic-param reference.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, salsa::Update)]
 pub enum ConstArg {
-    Lit(u64),
+    Lit(i128),
     /// The enclosing def's i-th generic (Const-kind) parameter.
     Param(u32),
     /// A body local referenced in const position (`let y: uint(n) = …`). Legal

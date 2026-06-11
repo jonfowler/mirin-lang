@@ -334,7 +334,11 @@ module.exports = grammar({
         ),
         prec.left(
           PREC.additive,
-          seq(field("left", $.expression), field("operator", "+"), field("right", $.expression)),
+          seq(
+            field("left", $.expression),
+            field("operator", choice("+", "-")),
+            field("right", $.expression),
+          ),
         ),
       ),
 

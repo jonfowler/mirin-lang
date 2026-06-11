@@ -1068,6 +1068,7 @@ impl<'db> SvLower<'_, 'db> {
         }
         match data.name.as_str() {
             "+" => Some(SvBinOp::Add),
+            "-" => Some(SvBinOp::Sub),
             "*" => Some(SvBinOp::Mul),
             _ => None,
         }
@@ -1768,10 +1769,10 @@ endmodule
 
     #[test]
     fn const_generic_becomes_an_sv_parameter() {
-        // `param n: usize` → `#(parameter int n)`, and `uint(n)` → `[n-1:0]`.
+        // `param n: integer` → `#(parameter int n)`, and `uint(n)` → `[n-1:0]`.
         // Byte-parity with polar-compiler on the `add_n` shape.
         let sv = emit(
-            "fn add_n { dom clk: Clock } ( param n: usize, a: uint(n) @clk, b: uint(n) @clk ) -> uint(n) @clk {\n  return a + b;\n}",
+            "fn add_n { dom clk: Clock } ( param n: integer, a: uint(n) @clk, b: uint(n) @clk ) -> uint(n) @clk {\n  return a + b;\n}",
         );
         let expected = "\
 module add_n #(parameter int n) (
@@ -1807,7 +1808,7 @@ endmodule
         // `a: uint(n)`, `b: uint(m)`, `a + b` forces `n == m` — an undecidable
         // width equality discharged as an `initial assert`. Byte-parity.
         let sv = emit(
-            "fn pair_add { dom clk: Clock } ( param n: usize, param m: usize, a: uint(n) @clk, b: uint(m) @clk ) -> uint(n) @clk {\n  return a + b;\n}",
+            "fn pair_add { dom clk: Clock } ( param n: integer, param m: integer, a: uint(n) @clk, b: uint(m) @clk ) -> uint(n) @clk {\n  return a + b;\n}",
         );
         let expected = "\
 module pair_add #(parameter int n, parameter int m) (
@@ -1854,7 +1855,7 @@ endmodule
         // `Buf{clk}(8)` binds the port's `param N` to 8, so `data: uint(N)`
         // flattens to width [7:0] — no parameter on the using module.
         let sv = emit(
-            "port Buf { dom clk: Clock } ( param N: usize ) = buf { in ready: bool @clk, out data: uint(N) @clk }\n\
+            "port Buf { dom clk: Clock } ( param N: integer ) = buf { in ready: bool @clk, out data: uint(N) @clk }\n\
              fn pipe { dom clk: Clock } ( upstream: Buf{clk}(8), out downstream: Buf{clk}(8) ) {\n  downstream = upstream;\n}",
         );
         assert!(sv.contains("input  logic [7:0] upstream__data,"), "{sv}");

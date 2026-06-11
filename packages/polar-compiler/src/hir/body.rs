@@ -67,7 +67,7 @@ pub enum ExprKind<'db> {
     /// An unresolved / not-yet-lowered expression. Keeps lowering total.
     Missing,
     /// A numeric literal.
-    Number(u64),
+    Number(i128),
     /// A boolean literal (`true` / `false`).
     Bool(bool),
     /// A resolved local (param / let / var).
@@ -182,7 +182,7 @@ pub enum BodyDiagnosticKind {
     VarAfterLet { name: String },
     /// A type name in a `let`/`var` ascription that resolved to nothing.
     UnresolvedType { name: String },
-    /// A numeric literal that does not fit in 64 bits.
+    /// A numeric literal that does not fit in 128 bits.
     NumberTooLarge { text: String },
     /// An `in`/`out` prefix on a named argument that disagrees with its
     /// connector (`in` supplies a value with `=`; `out` receives with `=>`).
@@ -197,7 +197,7 @@ impl BodyDiagnostic {
             BodyDiagnosticKind::Unsupported { what } => format!("unsupported syntax: {what}"),
             BodyDiagnosticKind::UnresolvedType { name } => format!("cannot find type `{name}`"),
             BodyDiagnosticKind::NumberTooLarge { text } => {
-                format!("numeric literal `{text}` does not fit in 64 bits")
+                format!("numeric literal `{text}` does not fit in 128 bits")
             }
             BodyDiagnosticKind::DirectionPrefixMismatch { direction } => match direction.as_str() {
                 "out" => "`out` argument must be an out-connection: `out name => target`".to_owned(),
@@ -656,7 +656,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             },
             "number" => {
                 let text = node_text(node, source);
-                let v = match text.parse::<u64>() {
+                let v = match text.parse::<i128>() {
                     Ok(v) => v,
                     Err(_) => {
                         // The grammar only admits digit runs, so the only

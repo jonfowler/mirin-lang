@@ -141,6 +141,7 @@ pub enum SvExpr {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, salsa::Update)]
 pub enum SvBinOp {
     Add,
+    Sub,
     Mul,
     Eq,
 }
@@ -284,6 +285,7 @@ impl fmt::Display for SvExpr {
                 let op = match op {
                     SvBinOp::Add => "+",
                     SvBinOp::Mul => "*",
+                    SvBinOp::Sub => "-",
                     SvBinOp::Eq => "==",
                 };
                 write!(f, "({l} {op} {r})")

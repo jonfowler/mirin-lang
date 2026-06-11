@@ -459,9 +459,9 @@ impl<'db> TypeLowerer<'_, 'db> {
                     domain,
                 };
             }
-            "usize" => {
+            "integer" => {
                 return Type::Value {
-                    kind: ValueKind::Usize,
+                    kind: ValueKind::Integer,
                     domain,
                 };
             }
@@ -532,7 +532,7 @@ impl<'db> TypeLowerer<'_, 'db> {
         };
         if arg.kind() == "number" {
             return node_text(&arg, source)
-                .parse::<u64>()
+                .parse::<i128>()
                 .map(ConstArg::Lit)
                 .unwrap_or(ConstArg::Deferred);
         }
@@ -595,7 +595,7 @@ impl<'db> TypeLowerer<'_, 'db> {
     fn lower_generic_arg(&self, inner: &Node, source: &str) -> Term<'db> {
         if inner.kind() == "number" {
             let c = node_text(inner, source)
-                .parse::<u64>()
+                .parse::<i128>()
                 .map(ConstArg::Lit)
                 .unwrap_or(ConstArg::Deferred);
             return Term::Const(c);
@@ -684,7 +684,7 @@ fn classify(node: &Node, source: &str) -> ParamClass {
     {
         return ParamClass::Generic(TermKind::Type);
     }
-    // `param N: usize` (or bare `param`) — a Const-kind generic.
+    // `param N: integer` (or bare `param`) — a Const-kind generic.
     if field_text(node, "kind", source) == "param" {
         return ParamClass::Generic(TermKind::Const);
     }
@@ -812,7 +812,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "fn f { dom clk: Clock, param N: usize, A: Type } (x: uint(N) @clk) -> uint(N) @clk { return x; }",
+            "fn f { dom clk: Clock, param N: integer, A: Type } (x: uint(N) @clk) -> uint(N) @clk { return x; }",
         );
         let def = fn_def(&db, krate, "f");
         let sig = sig_of(&db, krate, def);

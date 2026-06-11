@@ -627,7 +627,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             (ValueKind::Bool, ValueKind::Bool)
             | (ValueKind::Reset, ValueKind::Reset)
             | (ValueKind::Event, ValueKind::Event)
-            | (ValueKind::Usize, ValueKind::Usize) => {}
+            | (ValueKind::Integer, ValueKind::Integer) => {}
             (ValueKind::Struct { def: x, args: ax }, ValueKind::Struct { def: y, args: ay })
                 if x == y =>
             {
@@ -1252,7 +1252,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn is_prelude_op(&self, def: DefId<'db>) -> bool {
         self.map
             .def_data(def)
-            .map(|d| d.module == self.map.prelude() && (d.name == "+" || d.name == "*"))
+            .map(|d| d.module == self.map.prelude() && (d.name == "+" || d.name == "-" || d.name == "*"))
             .unwrap_or(false)
     }
 
@@ -1487,7 +1487,7 @@ mod tests {
                 ValueKind::Bool => "bool",
                 ValueKind::Reset => "reset",
                 ValueKind::Event => "event",
-                ValueKind::Usize => "usize",
+                ValueKind::Integer => "integer",
                 ValueKind::Struct { .. } => "struct",
                 ValueKind::Param(_) => "param",
             },
@@ -1603,7 +1603,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "fn ok (a: uint(8), b: uint(8)) -> uint(8) { return a + b; }\nfn sym { param n: usize, param m: usize } (a: uint(n), b: uint(m)) -> uint(n) { return a + b; }",
+            "fn ok (a: uint(8), b: uint(8)) -> uint(8) { return a + b; }\nfn sym { param n: integer, param m: integer } (a: uint(n), b: uint(m)) -> uint(n) { return a + b; }",
         );
         assert!(
             infer(&db, krate, def_of(&db, krate, "ok"))

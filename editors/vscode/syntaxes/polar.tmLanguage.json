@@ -141,7 +141,7 @@
       "patterns": [
         {
           "name": "storage.type.polar",
-          "match": "\\b(Clock|Reset|bool|usize|uint|Self)\\b"
+          "match": "\\b(Clock|Reset|bool|integer|uint|Self)\\b"
         },
         {
           "name": "entity.name.type.polar",
@@ -176,7 +176,7 @@
       "patterns": [
         {
           "name": "keyword.operator.polar",
-          "match": "=>|->|::|\\+|\\*|=|:"
+          "match": "=>|->|::|\\+|-|\\*|=|:"
         }
       ]
     }
