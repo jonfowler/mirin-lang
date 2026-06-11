@@ -69,42 +69,71 @@ pub fn check_drivers<'db>(
     }
     let body = body(db, krate, def);
 
-    // Count driving equations per local.
-    let mut counts: HashMap<LocalId, usize> = HashMap::new();
-    count_block(body, body.block(), &mut counts);
+    // Collect drive *paths* per local: `x = …` drives the whole var (empty
+    // path), `x.f = …` drives the leaf `f`. Per-leaf accounting accepts a var
+    // wired field-by-field, and rejects overlapping drives (whole + field, or
+    // the same path twice).
+    let mut drives: HashMap<LocalId, Vec<Vec<String>>> = HashMap::new();
+    count_block(body, body.block(), &mut drives);
 
-    // Report each `var` that isn't driven exactly once, in declaration order.
     let mut out = Vec::new();
     for (i, local) in body.locals().iter().enumerate() {
         if local.kind != LocalKind::Var {
             continue;
         }
         let span = body.local_span(LocalId(i as u32));
-        match counts.get(&LocalId(i as u32)).copied().unwrap_or(0) {
-            1 => {}
-            0 => out.push(DriverDiagnostic {
+        let paths = drives.get(&LocalId(i as u32)).map(Vec::as_slice).unwrap_or(&[]);
+        if paths.is_empty() {
+            out.push(DriverDiagnostic {
                 span,
                 kind: DriverDiagnosticKind::Undriven {
                     name: local.name.clone(),
                 },
-            }),
-            _ => out.push(DriverDiagnostic {
+            });
+            continue;
+        }
+        // Two drives conflict when one path is a prefix of the other
+        // (equality included): `x` + `x.a`, or `x.a` twice. Disjoint field
+        // paths are fine — that's per-field wiring. (Whether the field drives
+        // *cover* the struct needs type info; an uncovered leaf is the
+        // record-missing-field class, left to a typed completeness pass.)
+        let overlap = paths.iter().enumerate().any(|(i, a)| {
+            paths[i + 1..]
+                .iter()
+                .any(|b| a.starts_with(&b[..]) || b.starts_with(&a[..]))
+        });
+        if overlap {
+            out.push(DriverDiagnostic {
                 span,
                 kind: DriverDiagnosticKind::MultipleDrivers {
                     name: local.name.clone(),
                 },
-            }),
+            });
         }
     }
     out
 }
 
-fn count_block(body: &Body, block: &Block, counts: &mut HashMap<LocalId, usize>) {
+/// Resolve an equation LHS to its base local and field path (`x.a.b` →
+/// `(x, ["a", "b"])`). `None` for non-place LHS shapes.
+fn place_of(body: &Body, expr: ExprId) -> Option<(LocalId, Vec<String>)> {
+    match &body.expr(expr).kind {
+        ExprKind::Local(l) => Some((*l, Vec::new())),
+        ExprKind::Field { receiver, field } => {
+            let (l, mut path) = place_of(body, *receiver)?;
+            path.push(field.clone());
+            Some((l, path))
+        }
+        _ => None,
+    }
+}
+
+fn count_block(body: &Body, block: &Block, counts: &mut HashMap<LocalId, Vec<Vec<String>>>) {
     for stmt in &block.stmts {
         match stmt {
             Stmt::Equation { lhs, rhs } => {
-                if let ExprKind::Local(l) = body.expr(*lhs).kind {
-                    *counts.entry(l).or_default() += 1;
+                if let Some((l, path)) = place_of(body, *lhs) {
+                    counts.entry(l).or_default().push(path);
                 }
                 count_expr(body, *lhs, counts);
                 count_expr(body, *rhs, counts);
@@ -123,7 +152,7 @@ fn count_block(body: &Body, block: &Block, counts: &mut HashMap<LocalId, usize>)
 /// Recurse into the blocks nested in an expression (`if`/`when`/`block`), and
 /// count out-connection (`=>`) targets as drivers — an `out` arg wires the
 /// callee's output *into* its target local, which is a driver of that local.
-fn count_expr(body: &Body, expr: ExprId, counts: &mut HashMap<LocalId, usize>) {
+fn count_expr(body: &Body, expr: ExprId, counts: &mut HashMap<LocalId, Vec<Vec<String>>>) {
     match &body.expr(expr).kind {
         ExprKind::If {
             then_branch,
@@ -138,17 +167,17 @@ fn count_expr(body: &Body, expr: ExprId, counts: &mut HashMap<LocalId, usize>) {
         ExprKind::Call { args, named, .. } => {
             for a in args {
                 if a.out
-                    && let ExprKind::Local(l) = body.expr(a.expr).kind
+                    && let Some((l, path)) = place_of(body, a.expr)
                 {
-                    *counts.entry(l).or_default() += 1;
+                    counts.entry(l).or_default().push(path);
                 }
                 count_expr(body, a.expr, counts);
             }
             for n in named {
                 if n.out
-                    && let ExprKind::Local(l) = body.expr(n.expr).kind
+                    && let Some((l, path)) = place_of(body, n.expr)
                 {
-                    *counts.entry(l).or_default() += 1;
+                    counts.entry(l).or_default().push(path);
                 }
                 count_expr(body, n.expr, counts);
             }

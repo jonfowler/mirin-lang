@@ -11,22 +11,16 @@ The original Q7 phase-C worklist has fully flipped (`two-doms-fn`,
 `fail-expected/` now; `no-dom-reg` became `working/inferred_dom_reg.plr` when
 the elision rules settled bare body types as domain-inferred).
 
-The current entries come from the post-Q7 compiler review (2026-06), grouped
-by the checker that needs to land:
+The post-Q7 review worklist (2026-06) has also fully flipped:
 
-**Call/record shape checking (infer):** all flipped to `fail-expected/`
-(`extra-args`, `missing-args`, `record-bad-field`, `record-missing-field`,
-`dup-record-field`, `field-on-scalar`) — infer now checks positional arity
-and record/field shape.
+- **Call/record shape checking (infer):** `extra-args`, `missing-args`,
+  `record-bad-field`, `record-missing-field`, `dup-record-field`,
+  `field-on-scalar` — infer checks positional arity and record/field shape.
+- **Lowering diagnostics (sig/body):** `unresolved-type` (UnresolvedType),
+  `num-overflow` (NumberTooLarge), `named-dom-cross` (named type args lower
+  to real Domain args; the CDC is a DomainMismatch).
+- **Driver checking:** `double-drive-field` (per-leaf drive paths; overlap =
+  MultipleDrivers). Its passing twin `working/field_drivers.plr` wires a
+  struct field-by-field.
 
-**Lowering diagnostics (sig/body):** `unresolved-type`, `num-overflow` and
-`named-dom-cross` all flipped to `fail-expected/` (UnresolvedType /
-NumberTooLarge diagnostics; named type args now lower to real Domain args,
-so the CDC is a DomainMismatch).
-
-**Driver checking (check_drivers):**
-
-- `double-drive-field.plr` — field-LHS equations aren't counted as drivers,
-  so a whole-var drive plus a field drive emits a multi-driven net.
-  Reject-side twin of `examples/todo/field-drivers.plr` (per-field driving
-  falsely rejected).
+Currently empty.
