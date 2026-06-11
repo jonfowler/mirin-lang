@@ -2,3 +2,6 @@ target/
 Cargo.lock
 result/
 sv/
+tests/rtl/.venv/
+tests/rtl/build/
+__pycache__/

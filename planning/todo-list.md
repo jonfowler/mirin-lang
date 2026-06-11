@@ -13,6 +13,7 @@
 - different kinds of numeric literals
 - story about testing
    - v1 is probably using open source verilator with driver such as cocotb
+     - DONE (2026-06): `tests/rtl/` — cocotb 2.0 + verilator behavioural suite over the working examples (`tests/rtl/run.sh`)
    - LONGER TERM: note there should be a longer term aspiration to push towards E2E testing within the language itself
 - deriving "pack instances" for structs, to allow for easy packing and unpacking of structs into bitvectors.
 - wider support for numeric literals

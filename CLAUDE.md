@@ -15,6 +15,9 @@ cargo run -p polar-compiler -- examples/working/mult_add.plr          # compile 
 cargo run -p polar-compiler -- --emit cst examples/working/mult_add.plr   # print the CST instead
 cargo fmt --all                                                       # format Rust workspace
 
+tests/rtl/run.sh                 # RTL behavioural tests (cocotb + verilator); bootstraps a venv on first run
+tests/rtl/run.sh -k counter      # a single RTL test
+
 cd packages/tree-sitter-polar && tree-sitter generate  # regenerate parser sources
 cd packages/tree-sitter-polar && tree-sitter test      # run grammar corpus tests
 ```
