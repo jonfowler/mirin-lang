@@ -271,7 +271,7 @@ implementation:
 
 ## 6. Explicitly out of scope for Q7
 
-- `const_eval` of `Unevaluated` bodies (Q4c) — they sit as residuals.
+- ~~`const_eval` (Q4c)~~ — **landed** (`planning/const_eval.md`): demand-driven evaluator over body HIR; `ConstArg` grew the `Op`/`Field` tree instead of a separate `Unevaluated` body ref; `Deferred` remains only for calls in width position.
 - Struct-valued consts / valtrees — the representation is ready
   (`Const.ty` can name a struct; `ConstKind::Lit` grows a `Value` payload).
 - `Retag` / CDC primitives, `WithReset` / `Delayed` — additive constructors.
