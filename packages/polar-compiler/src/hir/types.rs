@@ -70,7 +70,7 @@ pub enum Type<'db> {
 pub enum ValueKind<'db> {
     /// `uint(W)` — the width is a const arg (literal or generic-param ref).
     UInt {
-        width: ConstArg,
+        width: ConstArg<'db>,
     },
     Bool,
     Reset,
@@ -117,8 +117,10 @@ pub enum ConstOp {
 /// arithmetic and config-field projection. Anything bigger (a call, an
 /// if/else) is reached *through a `Local` leaf* — the evaluator demands the
 /// local's defining expression in the body.
-#[derive(Clone, PartialEq, Eq, Hash, Debug, salsa::Update)]
-pub enum ConstArg {
+// Manual `Hash` (Box<Type> has none; Assoc hashes its item — equal Assocs
+// share it) and `Debug` (DefId has none).
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
+pub enum ConstArg<'db> {
     Lit(i128),
     /// The enclosing def's i-th generic (Const-kind) parameter.
     Param(u32),
@@ -129,9 +131,18 @@ pub enum ConstArg {
     /// A const inference variable.
     Infer(InferVar),
     /// Width arithmetic: `uint(n + 1)`, `uint(2 * n)`.
-    Op(ConstOp, Box<ConstArg>, Box<ConstArg>),
+    Op(ConstOp, Box<ConstArg<'db>>, Box<ConstArg<'db>>),
     /// Const field projection: `uint(cfg.bits)`.
-    Field(Box<ConstArg>, String),
+    Field(Box<ConstArg<'db>>, String),
+    /// An UNEVALUATED associated const (rustc's `ConstKind::Unevaluated`):
+    /// `item` is a trait's const DECL (resolved through an impl once
+    /// `self_ty` is concrete) or an impl's own const. Equality while generic
+    /// is structural; anything else rides the ConstEq obligations and
+    /// discharges at monomorphisation (planning/traits.md T4).
+    Assoc {
+        item: DefId<'db>,
+        self_ty: Box<Type<'db>>,
+    },
     /// A const expression outside the representable fragment (e.g. a call in
     /// width position — write `let w = f(n); uint(w)` instead). Undecidable
     /// equalities involving it are **recorded as residual obligations**,
@@ -239,7 +250,7 @@ pub fn type_has_infer(ty: &Type<'_>) -> bool {
             }
             super_fold_type(self, t)
         }
-        fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+        fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
             if matches!(c, ConstArg::Infer(_)) {
                 self.0 = true;
             }
@@ -269,7 +280,7 @@ pub fn subst_type_opt<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<
             }
             super_fold_type(self, t)
         }
-        fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+        fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
             if let ConstArg::Param(i) = c
                 && let Some(Some(Term::Const(bound))) = self.0.get(*i as usize)
             {
@@ -289,6 +300,33 @@ pub fn subst_type_opt<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<
     S(subst).fold_type(ty)
 }
 
+/// `subst_type_opt`'s ConstArg counterpart.
+pub fn subst_const_opt<'db>(c: &ConstArg<'db>, subst: &[Option<Term<'db>>]) -> ConstArg<'db> {
+    struct S<'a, 'db>(&'a [Option<Term<'db>>]);
+    impl<'db> Folder<'db> for S<'_, 'db> {
+        fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
+            if let ConstArg::Param(i) = c
+                && let Some(Some(Term::Const(bound))) = self.0.get(*i as usize)
+            {
+                return bound.clone();
+            }
+            super_fold_const(self, c)
+        }
+        fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
+            if let Type::Value {
+                kind: ValueKind::Param(i),
+                ..
+            } = t
+                && let Some(Some(Term::Type(bound))) = self.0.get(*i as usize)
+            {
+                return bound.clone();
+            }
+            super_fold_type(self, t)
+        }
+    }
+    S(subst).fold_const(c)
+}
+
 /// `self_ty: trait_def` — a trait reference. Traits take no generic args of
 /// their own in v1, so a TraitRef is just the pair (planning/traits.md).
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
@@ -305,12 +343,50 @@ pub enum Predicate<'db> {
     Trait(TraitRef<'db>),
 }
 
+impl std::hash::Hash for ConstArg<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            ConstArg::Lit(v) => v.hash(state),
+            ConstArg::Param(i) => i.hash(state),
+            ConstArg::Local(l) => l.hash(state),
+            ConstArg::Infer(v) => v.hash(state),
+            ConstArg::Op(op, a, b) => {
+                op.hash(state);
+                a.hash(state);
+                b.hash(state);
+            }
+            ConstArg::Field(b, f) => {
+                b.hash(state);
+                f.hash(state);
+            }
+            ConstArg::Assoc { item, .. } => item.hash(state),
+            ConstArg::Deferred => {}
+        }
+    }
+}
+
+impl std::fmt::Debug for ConstArg<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConstArg::Lit(v) => write!(f, "Lit({v})"),
+            ConstArg::Param(i) => write!(f, "Param({i})"),
+            ConstArg::Local(l) => write!(f, "Local({l:?})"),
+            ConstArg::Infer(v) => write!(f, "Infer({v:?})"),
+            ConstArg::Op(op, a, b) => write!(f, "Op({op:?}, {a:?}, {b:?})"),
+            ConstArg::Field(b, name) => write!(f, "Field({b:?}, {name})"),
+            ConstArg::Assoc { .. } => write!(f, "Assoc(..)"),
+            ConstArg::Deferred => write!(f, "Deferred"),
+        }
+    }
+}
+
 /// The uniform term: what a generic argument is and what an inference variable
 /// binds to (chalk's `GenericArgData`). One of the three term kinds.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub enum Term<'db> {
     Type(Type<'db>),
-    Const(ConstArg),
+    Const(ConstArg<'db>),
     Domain(Domain),
 }
 
@@ -367,7 +443,7 @@ pub trait Folder<'db>: Sized {
     fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
         super_fold_type(self, t)
     }
-    fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+    fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
         super_fold_const(self, c)
     }
     fn fold_domain(&mut self, d: Domain) -> Domain {
@@ -381,12 +457,18 @@ pub trait Folder<'db>: Sized {
 /// The structural recursion for [`Type`]: rebuild the node, folding every
 /// component term. Atoms (`Clock`, `Infer`, `Error`, the `Param` kinds) pass
 /// through — hooks intercept them *before* delegating here.
-pub fn super_fold_const<'db, F: Folder<'db>>(f: &mut F, c: &ConstArg) -> ConstArg {
+pub fn super_fold_const<'db, F: Folder<'db>>(f: &mut F, c: &ConstArg<'db>) -> ConstArg<'db> {
     match c {
         ConstArg::Op(op, a, b) => {
             ConstArg::Op(*op, Box::new(f.fold_const(a)), Box::new(f.fold_const(b)))
         }
         ConstArg::Field(base, name) => ConstArg::Field(Box::new(f.fold_const(base)), name.clone()),
+        // The projection's self type folds like any type — substitution and
+        // resolution reach through it for free.
+        ConstArg::Assoc { item, self_ty } => ConstArg::Assoc {
+            item: *item,
+            self_ty: Box::new(f.fold_type(self_ty)),
+        },
         other => other.clone(),
     }
 }

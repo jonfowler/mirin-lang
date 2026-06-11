@@ -46,6 +46,9 @@ pub struct Signature<'db> {
     /// trait method decl, the implicit `Self: Trait`. Instantiated into
     /// obligations at call sites; assumed inside the body (the param env).
     pub predicates: Vec<Predicate<'db>>,
+    /// An impl's associated-const VALUE (`const width: integer = 2 * T::width;`),
+    /// lowered in the impl's generic-prefix space. Only on `AssocConst` defs.
+    pub const_value: Option<ConstArg<'db>>,
     /// Signature-level diagnostics (def-relative spans, like body diagnostics).
     pub diagnostics: Vec<SigDiagnostic>,
 }
@@ -155,6 +158,9 @@ pub fn sig_of<'db>(
         // A trait impl's HEADER: binder generics, self type (in return_type),
         // binder-bound predicates. The solver's impl-candidate shape.
         DefKind::Impl => lower_impl_header(db, krate, map, module, &node, source),
+        // An impl's associated const: its VALUE, lowered in the impl's
+        // generic-prefix space (a trait's const DECL carries no value).
+        DefKind::AssocConst => lower_assoc_const(db, krate, map, module, &node, source),
         // Ctor/BuiltinType/Mod have no signature lowered here.
         _ => Signature::default(),
     }
@@ -221,6 +227,8 @@ fn lower_impl_header<'db>(
         locals: None,
         unresolved: RefCell::new(Vec::new()),
         self_ty: RefCell::new(None),
+        assoc_self: RefCell::new(None),
+        bounds: RefCell::new(Vec::new()),
     };
     let self_ty = match node.child_by_field_name("self_type") {
         Some(st) if explicit_self_args || owner.is_none() => lowerer.lower_type(&st, source),
@@ -273,6 +281,7 @@ fn lower_impl_header<'db>(
         return_type: Some(self_ty),
         fields: Vec::new(),
         predicates,
+        const_value: None,
         diagnostics,
     }
 }
@@ -321,6 +330,8 @@ fn lower_adt_sig<'db>(
         locals: None,
         unresolved: RefCell::new(Vec::new()),
         self_ty: RefCell::new(None),
+        assoc_self: RefCell::new(None),
+        bounds: RefCell::new(Vec::new()),
     };
 
     let field_kind = if is_port {
@@ -358,7 +369,122 @@ fn lower_adt_sig<'db>(
         return_type: None,
         fields,
         predicates: Vec::new(),
+        const_value: None,
         diagnostics,
+    }
+}
+
+/// Lower an associated const's def: for an IMPL const, the value expression
+/// in the impl's generic-prefix space (`const width: integer = 2 * T::width;`);
+/// a trait DECL const carries no value. The value is restricted to the const
+/// fragment (literals, generic params, `+ - *`, assoc projections) — anything
+/// else lowers `Deferred`.
+fn lower_assoc_const<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    map: &CrateDefMap<'db>,
+    module: ModuleId,
+    node: &Node,
+    source: &str,
+) -> Signature<'db> {
+    let Some(impl_node) = enclosing_impl(node) else {
+        // A trait's const DECL: generics = [Self].
+        return Signature {
+            generic_params: vec![GenericParam {
+                name: "Self".to_owned(),
+                kind: TermKind::Type,
+                from_named_section: true,
+            }],
+            ..Signature::default()
+        };
+    };
+    // The impl's generic prefix — same positions as the impl header's.
+    let header = lower_impl_header(db, krate, map, module, &impl_node, source);
+    let generic_params = header.generic_params.clone();
+    let lowerer = TypeLowerer {
+        map,
+        module,
+        generics: &generic_params,
+        locals: None,
+        unresolved: RefCell::new(Vec::new()),
+        self_ty: RefCell::new(header.return_type.clone()),
+        assoc_self: RefCell::new(None),
+        bounds: RefCell::new(
+            header
+                .predicates
+                .iter()
+                .filter_map(|Predicate::Trait(tr)| match &tr.self_ty {
+                    Type::Value {
+                        kind: ValueKind::Param(i),
+                        ..
+                    } => Some((*i, tr.trait_def)),
+                    _ => None,
+                })
+                .collect(),
+        ),
+    };
+    let const_value = node
+        .child_by_field_name("value")
+        .map(|v| lower_const_value(&lowerer, &v, source));
+    Signature {
+        generic_params,
+        const_value,
+        ..Signature::default()
+    }
+}
+
+/// Lower an ordinary EXPRESSION node into the const fragment (impl const
+/// values parse as expressions, not const_expressions).
+fn lower_const_value<'db>(
+    lowerer: &TypeLowerer<'_, 'db>,
+    node: &Node,
+    source: &str,
+) -> ConstArg<'db> {
+    match node.kind() {
+        "expression" | "parenthesized_expression" => {
+            let mut cursor = node.walk();
+            match node.children(&mut cursor).find(|c| c.is_named()) {
+                Some(inner) => lower_const_value(lowerer, &inner, source),
+                None => ConstArg::Deferred,
+            }
+        }
+        "number" => node_text(node, source)
+            .parse::<i128>()
+            .map(ConstArg::Lit)
+            .unwrap_or(ConstArg::Deferred),
+        "binary_expression" => {
+            let op = match field_text(node, "operator", source).as_str() {
+                "+" => ConstOp::Add,
+                "-" => ConstOp::Sub,
+                "*" => ConstOp::Mul,
+                _ => return ConstArg::Deferred,
+            };
+            let (Some(l), Some(r)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) else {
+                return ConstArg::Deferred;
+            };
+            ConstArg::Op(
+                op,
+                Box::new(lower_const_value(lowerer, &l, source)),
+                Box::new(lower_const_value(lowerer, &r, source)),
+            )
+        }
+        "path_expression" => {
+            let mut cursor = node.walk();
+            let segs: Vec<String> = node
+                .children_by_field_name("segment", &mut cursor)
+                .map(|n| node_text(&n, source))
+                .collect();
+            match segs.as_slice() {
+                [one] => lowerer.lower_const_name(one),
+                [base, item] => lowerer.lower_const_path(base, item),
+                _ => ConstArg::Deferred,
+            }
+        }
+        "identifier" => lowerer.lower_const_name(&node_text(node, source)),
+        _ => ConstArg::Deferred,
     }
 }
 
@@ -581,6 +707,8 @@ fn lower_fn_sig<'db>(
         locals: None,
         unresolved: RefCell::new(Vec::new()),
         self_ty: RefCell::new(None),
+        assoc_self: RefCell::new(None),
+        bounds: RefCell::new(Vec::new()),
     };
     // What `Self` (and the bare `self` receiver) mean in an impl method: the
     // `for` self type when written with explicit args or naming a builtin
@@ -605,7 +733,46 @@ fn lower_fn_sig<'db>(
             None => owner.map(|_| owner_base_type(owner, &generic_params[..owner_generic_count])),
         }
     });
-    lowerer.self_ty.replace(impl_self_base);
+    lowerer.self_ty.replace(impl_self_base.clone());
+    // Associated-const context: bare const names (`uint(width)`) resolve
+    // against the enclosing trait (decl scope: Self = Param(0)) or the
+    // enclosing trait impl (its self type); `T::width` projects through the
+    // signature's own bounds.
+    lowerer.bounds.replace(
+        predicates
+            .iter()
+            .filter_map(|Predicate::Trait(tr)| match &tr.self_ty {
+                Type::Value {
+                    kind: ValueKind::Param(i),
+                    ..
+                } => Some((*i, tr.trait_def)),
+                _ => None,
+            })
+            .collect(),
+    );
+    let assoc_self = if in_trait {
+        enclosing(node, "trait_definition")
+            .and_then(|t| t.child_by_field_name("name"))
+            .map(|n| node_text(&n, source))
+            .and_then(|n| map.resolve_in_scope(module, &n, Namespace::Item))
+            .map(|t| {
+                (
+                    t,
+                    Type::Value {
+                        kind: ValueKind::Param(0),
+                        domain: Domain::Unspecified,
+                    },
+                )
+            })
+    } else {
+        enclosing_impl(node)
+            .filter(|i| i.child_by_field_name("self_type").is_some())
+            .and_then(|i| i.child_by_field_name("name"))
+            .map(|n| node_text(&n, source))
+            .and_then(|n| map.resolve_in_scope(module, &n, Namespace::Item))
+            .zip(impl_self_base)
+    };
+    lowerer.assoc_self.replace(assoc_self);
 
     // Pass 2: lower each value parameter's type, assigning owner-relative ids.
     let mut params = Vec::new();
@@ -716,6 +883,7 @@ fn lower_fn_sig<'db>(
         return_type,
         fields: Vec::new(),
         predicates,
+        const_value: None,
         diagnostics,
     }
 }
@@ -782,6 +950,13 @@ struct TypeLowerer<'a, 'db> {
     /// impl method's signature). In a trait DECL `Self` is instead the
     /// implicit Param(0) generic, reached through `generic_index`.
     self_ty: RefCell<Option<Type<'db>>>,
+    /// Bare associated-const names resolve against this trait at this self
+    /// type: `(trait def, Self)`. Set inside trait decls (`Self` = Param(0))
+    /// and trait impls (the impl's self type).
+    assoc_self: RefCell<Option<(DefId<'db>, Type<'db>)>>,
+    /// The signature's trait bounds, for `T::width` projections: which trait
+    /// a Type-kind `Param(i)` may project consts through.
+    bounds: RefCell<Vec<(u32, DefId<'db>)>>,
 }
 
 impl<'db> TypeLowerer<'_, 'db> {
@@ -902,7 +1077,7 @@ impl<'db> TypeLowerer<'_, 'db> {
     /// The width inside `uint(W)`: a literal, a Const-kind generic ref, a body
     /// local (in body-lowered ascriptions), or deferred (anything else —
     /// arithmetic widths land in `const_eval`, Q4).
-    fn lower_width(&self, node: &Node, source: &str) -> ConstArg {
+    fn lower_width(&self, node: &Node, source: &str) -> ConstArg<'db> {
         let Some(arg) = first_type_argument(node) else {
             return ConstArg::Deferred;
         };
@@ -913,7 +1088,7 @@ impl<'db> TypeLowerer<'_, 'db> {
     /// (`planning/const_eval.md`): literals, names (a Const-kind generic →
     /// `Param`, a body local → `Local`), `+`/`-`/`*` arithmetic, and field
     /// projection. Anything outside the fragment is `Deferred`.
-    fn lower_const_expr(&self, node: &Node, source: &str) -> ConstArg {
+    fn lower_const_expr(&self, node: &Node, source: &str) -> ConstArg<'db> {
         match node.kind() {
             "number" => node_text(node, source)
                 .parse::<i128>()
@@ -954,6 +1129,10 @@ impl<'db> TypeLowerer<'_, 'db> {
                         ConstArg::Field(Box::new(acc), node_text(&f, source))
                     })
             }
+            "const_path" => self.lower_const_path(
+                &field_text(node, "base", source),
+                &field_text(node, "item", source),
+            ),
             "identifier" => self.lower_const_name(&node_text(node, source)),
             // A bare name parses as a type_expression — resolve its name.
             "type_expression" => self.lower_const_name(&field_text(node, "name", source)),
@@ -961,12 +1140,42 @@ impl<'db> TypeLowerer<'_, 'db> {
         }
     }
 
-    fn lower_const_name(&self, name: &str) -> ConstArg {
+    fn lower_const_name(&self, name: &str) -> ConstArg<'db> {
         if let Some(i) = self.generic_index(name, TermKind::Const) {
             return ConstArg::Param(i);
         }
         if let Some(l) = self.locals.and_then(|f| f(name)) {
             return ConstArg::Local(l);
+        }
+        // A bare associated-const name in trait/impl scope (`uint(width)`).
+        if let Some((trait_def, self_ty)) = self.assoc_self.borrow().clone()
+            && let Some(item) = self.map.trait_const(trait_def, name)
+        {
+            return ConstArg::Assoc {
+                item,
+                self_ty: Box::new(self_ty),
+            };
+        }
+        ConstArg::Deferred
+    }
+
+    /// `T::width` — project an associated const through a bounded type param.
+    fn lower_const_path(&self, base: &str, item: &str) -> ConstArg<'db> {
+        let Some(i) = self.generic_index(base, TermKind::Type) else {
+            return ConstArg::Deferred;
+        };
+        for (j, trait_def) in self.bounds.borrow().iter() {
+            if *j == i
+                && let Some(c) = self.map.trait_const(*trait_def, item)
+            {
+                return ConstArg::Assoc {
+                    item: c,
+                    self_ty: Box::new(Type::Value {
+                        kind: ValueKind::Param(i),
+                        domain: Domain::Unspecified,
+                    }),
+                };
+            }
         }
         ConstArg::Deferred
     }
@@ -1076,6 +1285,8 @@ pub(crate) fn lower_type_expr<'db>(
         generics,
         locals,
         self_ty: RefCell::new(None),
+        assoc_self: RefCell::new(None),
+        bounds: RefCell::new(Vec::new()),
         unresolved: RefCell::new(Vec::new()),
     };
     let ty = lowerer.lower_type(node, source);

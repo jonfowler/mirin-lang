@@ -155,3 +155,39 @@ impl Bits for bool {
             (type_argument
               (number))))
         body: (block)))))
+
+========================================
+associated const projection in width position
+========================================
+
+fn packer {param T: Bits} (x: T) -> uint(T::width) {
+  x
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    named_parameters: (named_parameter_section
+      (named_parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (const_expression
+            (const_path
+              base: (identifier)
+              item: (identifier))))))
+    body: (block
+      tail: (expression
+        (path_expression
+          segment: (identifier))))))

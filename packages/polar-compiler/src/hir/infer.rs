@@ -213,7 +213,7 @@ pub struct Inference<'db> {
     /// Not errors: obligations that survived the end-of-body fixpoint. The
     /// back end discharges Param-Param pairs as `initial assert (n == m)`;
     /// `const_eval` (Q4c) takes the rest.
-    const_residuals: Vec<(ConstArg, ConstArg)>,
+    const_residuals: Vec<(ConstArg<'db>, ConstArg<'db>)>,
 }
 
 impl<'db> Inference<'db> {
@@ -239,7 +239,7 @@ impl<'db> Inference<'db> {
 
     /// Unresolved const equalities (residual obligations), for the back end's
     /// `initial assert` and, later, `const_eval`.
-    pub fn const_residuals(&self) -> &[(ConstArg, ConstArg)] {
+    pub fn const_residuals(&self) -> &[(ConstArg<'db>, ConstArg<'db>)] {
         &self.const_residuals
     }
 }
@@ -394,7 +394,7 @@ impl<'db> InferenceTable<'db> {
         cur
     }
 
-    fn resolve_const_shallow(&mut self, c: &ConstArg) -> ConstArg {
+    fn resolve_const_shallow(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
         let mut cur = c.clone();
         while let ConstArg::Infer(v) = cur {
             match self.probe(v) {
@@ -453,7 +453,7 @@ struct Obligation<'db> {
 
 enum ObligationKind<'db> {
     /// Two consts that must be equal (symbolic widths).
-    ConstEq(ConstArg, ConstArg),
+    ConstEq(ConstArg<'db>, ConstArg<'db>),
     /// The local appears in const position (a width): its domain must resolve
     /// to `@const` (an unbound domain defaults const, so unbound passes).
     ConstDomain(LocalId),
@@ -470,7 +470,7 @@ enum ObligationKind<'db> {
 fn width_locals(ty: &Type<'_>) -> Vec<LocalId> {
     struct Collect(Vec<LocalId>);
     impl<'db> Folder<'db> for Collect {
-        fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+        fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
             if let ConstArg::Local(l) = c {
                 self.0.push(*l);
             }
@@ -483,9 +483,9 @@ fn width_locals(ty: &Type<'_>) -> Vec<LocalId> {
 }
 
 /// Every width `ConstArg` appearing in a type (UInt slots), tree included.
-fn collect_widths<'db>(ty: &Type<'db>) -> Vec<ConstArg> {
-    struct Collect(Vec<ConstArg>);
-    impl<'db> Folder<'db> for Collect {
+fn collect_widths<'db>(ty: &Type<'db>) -> Vec<ConstArg<'db>> {
+    struct Collect<'db>(Vec<ConstArg<'db>>);
+    impl<'db> Folder<'db> for Collect<'db> {
         fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
             // Only top-level width slots: a *sub*tree of a width may be
             // negative while the whole is fine (`uint(n - 3 + 10)`).
@@ -532,7 +532,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     }
 
     /// Try to const-evaluate a width tree in this def's body (soft failure).
-    fn try_eval(&self, c: &ConstArg) -> Option<i128> {
+    fn try_eval(&self, c: &ConstArg<'db>) -> Option<i128> {
         crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c)
     }
 
@@ -612,7 +612,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     /// bindings until none makes progress. Ground-and-unequal pairs become
     /// diagnostics (at the span that raised them); still-symbolic survivors
     /// are returned as the def's residuals.
-    fn discharge_obligations(&mut self) -> Vec<(ConstArg, ConstArg)> {
+    fn discharge_obligations(&mut self) -> Vec<(ConstArg<'db>, ConstArg<'db>)> {
         let mut residuals = Vec::new();
         loop {
             let mut progress = false;
@@ -835,11 +835,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         Domain::Infer(self.table.fresh(TermKind::Domain(sort)))
     }
 
-    fn fresh_const(&mut self) -> ConstArg {
+    fn fresh_const(&mut self) -> ConstArg<'db> {
         ConstArg::Infer(self.table.fresh(TermKind::Const))
     }
 
-    fn resolve_const(&mut self, w: &ConstArg) -> ConstArg {
+    fn resolve_const(&mut self, w: &ConstArg<'db>) -> ConstArg<'db> {
         self.table.resolve_const_shallow(w)
     }
 
@@ -985,7 +985,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     /// residual + `const_eval` machinery (Q4b/c), so it is accepted here rather
     /// than producing a false mismatch. (`pair_add{n,m}` unifying `n ~ m` is a
     /// residual, not an error.)
-    fn unify_width(&mut self, a: ConstArg, b: ConstArg) {
+    fn unify_width(&mut self, a: ConstArg<'db>, b: ConstArg<'db>) {
         let a = self.resolve_const(&a);
         let b = self.resolve_const(&b);
         if a == b {
@@ -1843,7 +1843,7 @@ impl<'db> Folder<'db> for Substituter<'_, '_, 'db> {
         }
     }
 
-    fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+    fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
         match c {
             ConstArg::Param(i) => match self.subst.get(*i as usize) {
                 Some(Term::Const(c)) => c.clone(),
@@ -1883,7 +1883,7 @@ impl<'db> Folder<'db> for DeepResolver<'_, 'db> {
         }
     }
 
-    fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+    fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
         match self.table.resolve_const_shallow(c) {
             // An unbound const var has no determined width yet → `Deferred`.
             ConstArg::Infer(_) => ConstArg::Deferred,

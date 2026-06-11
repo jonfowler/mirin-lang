@@ -86,6 +86,11 @@ pub enum DefKind {
     /// A `trait Name { … }` declaration. Item namespace; its method decls are
     /// `Method` defs owned by the trait.
     Trait,
+    /// An associated const: a trait's declaration (`const width: integer;`,
+    /// owned by the trait) or an impl's value (`const width: integer = 1;`,
+    /// owned by the implementing type). Reached through the assoc-const
+    /// indexes, never a module name table.
+    AssocConst,
     /// An `impl T { … }` block. Introduces no name of its own.
     Impl,
     /// A primitive type baked into the language (`uint`, `bool`, `Clock`, …),
@@ -109,6 +114,7 @@ impl DefKind {
             | DefKind::Method
             | DefKind::Impl
             | DefKind::Trait
+            | DefKind::AssocConst
             | DefKind::BuiltinType => Namespace::Item,
         }
     }

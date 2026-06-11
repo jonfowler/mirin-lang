@@ -23,7 +23,10 @@ use std::collections::HashMap;
 use crate::base::db::SourceRoot;
 use crate::hir::body::{Block, Body, ConnArg, ExprId, ExprKind, Stmt, body};
 use crate::hir::sig::{Param, sig_of};
-use crate::hir::types::{ConstArg, ConstOp, Direction, LocalId};
+use crate::hir::types::{
+    ConstArg, ConstOp, Direction, LocalId, Type, ValueKind, match_header, subst_const_opt,
+    type_has_infer,
+};
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::DefId;
 
@@ -46,7 +49,7 @@ pub fn eval_const<'db>(
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
     def: DefId<'db>,
-    c: &ConstArg,
+    c: &ConstArg<'db>,
 ) -> Option<i128> {
     let mut ev = Evaluator {
         db,
@@ -101,7 +104,7 @@ impl<'db> Evaluator<'db> {
     fn eval_const_arg(
         &mut self,
         frame: &Frame<'db>,
-        c: &ConstArg,
+        c: &ConstArg<'db>,
         depth: u32,
     ) -> Option<Value<'db>> {
         self.tick()?;
@@ -117,10 +120,83 @@ impl<'db> Evaluator<'db> {
                 let base = self.eval_const_arg(frame, base, depth)?;
                 project(&base, name)
             }
+            // An associated const: resolve the impl for the (concrete) self
+            // type, substitute the header binding into the impl's value, and
+            // recurse (rustc: Instance::resolve + CTFE on the impl's const).
+            ConstArg::Assoc { item, self_ty } => self.eval_assoc(frame, *item, self_ty, depth),
             // Params stay symbolic at the root; Infer/Deferred/Error are
             // not evaluable.
             _ => None,
         }
+    }
+
+    fn eval_assoc(
+        &mut self,
+        frame: &Frame<'db>,
+        item: DefId<'db>,
+        self_ty: &Type<'db>,
+        depth: u32,
+    ) -> Option<Value<'db>> {
+        if type_has_infer(self_ty)
+            || matches!(
+                self_ty,
+                Type::Value {
+                    kind: ValueKind::Param(_),
+                    ..
+                }
+            )
+        {
+            return None; // still symbolic
+        }
+        let owner = self.map.def_data(item)?.owner?;
+        let (binding, value) = match self.map.def_data(owner)?.kind {
+            // A trait's const DECL: select the impl by header match.
+            crate::nameres::ids::DefKind::Trait => {
+                let name = self.map.def_data(item)?.name.clone();
+                let mut found = None;
+                for data in self.map.trait_impls(owner) {
+                    let hsig = sig_of(self.db, self.krate, data.impl_def);
+                    let Some(header) = &hsig.return_type else {
+                        continue;
+                    };
+                    let mut binding = vec![None; hsig.generic_params.len()];
+                    if match_header(self_ty, header, &mut binding) {
+                        let cdef = data.consts.iter().find(|(n, _)| *n == name)?.1;
+                        found = Some((
+                            binding,
+                            sig_of(self.db, self.krate, cdef).const_value.clone()?,
+                        ));
+                        break;
+                    }
+                }
+                found?
+            }
+            // Already an impl's const: bind its prefix from the self type.
+            _ => {
+                let value = sig_of(self.db, self.krate, item).const_value.clone()?;
+                // Re-derive the binding by matching the impl header. The
+                // impl def is found through the owner's trait impls.
+                let mut found = None;
+                'outer: for (_, impls) in self.map.all_trait_impls() {
+                    for data in impls {
+                        if data.consts.iter().any(|(_, d)| *d == item) {
+                            let hsig = sig_of(self.db, self.krate, data.impl_def);
+                            let Some(header) = &hsig.return_type else {
+                                continue;
+                            };
+                            let mut binding = vec![None; hsig.generic_params.len()];
+                            if match_header(self_ty, header, &mut binding) {
+                                found = Some(binding);
+                            }
+                            break 'outer;
+                        }
+                    }
+                }
+                (found?, value)
+            }
+        };
+        let grounded = subst_const_opt(&value, &binding);
+        self.eval_const_arg(frame, &grounded, depth + 1)
     }
 
     /// The thunk: a local's value by finding its defining site — `let`,

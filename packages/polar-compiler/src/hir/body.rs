@@ -142,12 +142,12 @@ pub struct RecordField {
 /// An inline-verilog fn body (`= verilog { … }`): raw text split at `${…}`
 /// splices, resolved against the signature (`planning/inline_verilog.md`).
 #[derive(Clone, PartialEq, Eq, Debug, Default, salsa::Update)]
-pub struct VerilogTemplate {
-    pub segments: Vec<VerilogSegment>,
+pub struct VerilogTemplate<'db> {
+    pub segments: Vec<VerilogSegment<'db>>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
-pub enum VerilogSegment {
+pub enum VerilogSegment<'db> {
     /// Raw verilog text, emitted verbatim (bare `$` included).
     Text(String),
     /// `${p}` — a scalar value param; renders as its port's SV name.
@@ -158,7 +158,7 @@ pub enum VerilogSegment {
     ResultPort,
     /// `${n + 1}` — a const expression over literals and Const-kind
     /// generics; renders as an SV constant expression.
-    Const(ConstArg),
+    Const(ConstArg<'db>),
 }
 
 /// A block: a sequence of statements and an optional tail expression (its value).
@@ -254,7 +254,7 @@ pub struct Body<'db> {
     param_count: u32,
     block: Block,
     /// `Some` for an inline-verilog fn (`= verilog { … }`); the block is empty.
-    verilog: Option<VerilogTemplate>,
+    verilog: Option<VerilogTemplate<'db>>,
     diagnostics: Vec<BodyDiagnostic>,
 }
 
@@ -264,7 +264,7 @@ impl<'db> Body<'db> {
     }
 
     /// The inline-verilog template, for a `= verilog { … }` fn.
-    pub fn verilog(&self) -> Option<&VerilogTemplate> {
+    pub fn verilog(&self) -> Option<&VerilogTemplate<'db>> {
         self.verilog.as_ref()
     }
 
@@ -452,7 +452,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     /// against the signature: a scalar value param, a dom generic, `result`,
     /// or a const expression over literals + Const-kind generics. Bare `$`
     /// (system tasks) passes through as text.
-    fn lower_verilog_template(&mut self, content: &Node, source: &str) -> VerilogTemplate {
+    fn lower_verilog_template(&mut self, content: &Node, source: &str) -> VerilogTemplate<'db> {
         let text = node_text(content, source);
         let base = content.start_byte();
         let mut segments = Vec::new();
@@ -485,7 +485,12 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     /// A `${…}` splice: single names resolve against the signature; anything
     /// else is the const micro-grammar (`lit | name | (e) | e+e | e-e | e*e`,
     /// names being Const-kind generics).
-    fn resolve_splice(&mut self, inner: &str, base: usize, span: (usize, usize)) -> VerilogSegment {
+    fn resolve_splice(
+        &mut self,
+        inner: &str,
+        base: usize,
+        span: (usize, usize),
+    ) -> VerilogSegment<'db> {
         let is_ident = inner
             .chars()
             .next()
@@ -1161,10 +1166,10 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
 /// `expr := term (('+'|'-') term)* ; term := factor ('*' factor)* ;
 /// factor := integer | name | '(' expr ')'` — names resolved by `lookup`
 /// (Const-kind generics). Returns a rendered-later `ConstArg` tree.
-fn parse_const_splice(
+fn parse_const_splice<'db>(
     src: &str,
-    lookup: &dyn Fn(&str) -> Option<ConstArg>,
-) -> Result<ConstArg, String> {
+    lookup: &dyn Fn(&str) -> Option<ConstArg<'db>>,
+) -> Result<ConstArg<'db>, String> {
     struct P<'a> {
         s: &'a [u8],
         i: usize,
@@ -1180,7 +1185,10 @@ fn parse_const_splice(
             self.s.get(self.i).copied()
         }
     }
-    fn factor(p: &mut P, lookup: &dyn Fn(&str) -> Option<ConstArg>) -> Result<ConstArg, String> {
+    fn factor<'db>(
+        p: &mut P,
+        lookup: &dyn Fn(&str) -> Option<ConstArg<'db>>,
+    ) -> Result<ConstArg<'db>, String> {
         match p.peek() {
             Some(b'(') => {
                 p.i += 1;
@@ -1215,7 +1223,10 @@ fn parse_const_splice(
             _ => Err("expected an integer, name, or `(`".to_owned()),
         }
     }
-    fn term(p: &mut P, lookup: &dyn Fn(&str) -> Option<ConstArg>) -> Result<ConstArg, String> {
+    fn term<'db>(
+        p: &mut P,
+        lookup: &dyn Fn(&str) -> Option<ConstArg<'db>>,
+    ) -> Result<ConstArg<'db>, String> {
         let mut a = factor(p, lookup)?;
         while p.peek() == Some(b'*') {
             p.i += 1;
@@ -1224,7 +1235,10 @@ fn parse_const_splice(
         }
         Ok(a)
     }
-    fn expr(p: &mut P, lookup: &dyn Fn(&str) -> Option<ConstArg>) -> Result<ConstArg, String> {
+    fn expr<'db>(
+        p: &mut P,
+        lookup: &dyn Fn(&str) -> Option<ConstArg<'db>>,
+    ) -> Result<ConstArg<'db>, String> {
         let mut a = term(p, lookup)?;
         loop {
             match p.peek() {

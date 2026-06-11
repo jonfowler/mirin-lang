@@ -1685,9 +1685,12 @@ fn ground_widths<'db>(
         def: DefId<'db>,
     }
     impl<'db> Folder<'db> for G<'db> {
-        fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+        fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
             match c {
-                ConstArg::Local(_) | ConstArg::Op(..) | ConstArg::Field(..) => {
+                ConstArg::Local(_)
+                | ConstArg::Op(..)
+                | ConstArg::Field(..)
+                | ConstArg::Assoc { .. } => {
                     match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c) {
                         Some(v) => ConstArg::Lit(v),
                         None => c.clone(),
@@ -1734,7 +1737,7 @@ fn render_verilog(template: &crate::hir::body::VerilogTemplate, sig: &Signature<
 
 /// A const tree as an SV constant expression (symbolic Params render as the
 /// module's SV parameter names — legal in any constant context).
-fn render_const_sv(c: &ConstArg, sig: &Signature<'_>) -> String {
+fn render_const_sv(c: &ConstArg<'_>, sig: &Signature<'_>) -> String {
     match c {
         ConstArg::Lit(v) => v.to_string(),
         ConstArg::Param(i) => sig

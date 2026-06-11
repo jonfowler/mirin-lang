@@ -218,6 +218,9 @@ pub struct TraitImplData<'db> {
     pub self_def: DefId<'db>,
     pub self_has_args: bool,
     pub methods: Vec<(String, DefId<'db>)>,
+    /// The impl's associated consts: `(name, def)` — `sig_of(def)` lowers
+    /// the value into `const_value`.
+    pub consts: Vec<(String, DefId<'db>)>,
     pub file: SourceFile,
     pub ast_id: crate::syntax::ast_id::FileAstId,
 }
@@ -261,6 +264,8 @@ pub struct CrateDefMap<'db> {
     /// method dispatch's trait-candidate index (the self-type-fingerprint
     /// lookup; rust-analyzer's TyFingerprint shape).
     trait_dispatch: HashMap<(DefId<'db>, String), Vec<(DefId<'db>, DefId<'db>)>>,
+    /// `(trait def, const name) → const-DECL def`.
+    trait_consts: HashMap<(DefId<'db>, String), DefId<'db>>,
     /// trait-impl method → its trait (the backend qualifies module names
     /// with it: `Owner__Trait__method`).
     method_trait: HashMap<DefId<'db>, DefId<'db>>,
@@ -317,6 +322,19 @@ impl<'db> CrateDefMap<'db> {
         self.trait_methods
             .get(&(trait_def, name.to_owned()))
             .copied()
+    }
+
+    /// A trait's associated-const declaration, by name.
+    pub fn trait_const(&self, trait_def: DefId<'db>, name: &str) -> Option<DefId<'db>> {
+        self.trait_consts
+            .get(&(trait_def, name.to_owned()))
+            .copied()
+    }
+
+    /// Every trait's impl list (the assoc-const evaluator scans for the
+    /// impl owning a const def).
+    pub fn all_trait_impls(&self) -> impl Iterator<Item = (&DefId<'db>, &Vec<TraitImplData<'db>>)> {
+        self.trait_impls.iter()
     }
 
     /// The `impl Trait for …` blocks for a trait, in source order.
@@ -539,6 +557,7 @@ impl<'db> Collector<'db> {
                 impl_methods: HashMap::new(),
                 trait_methods: HashMap::new(),
                 trait_impls: HashMap::new(),
+                trait_consts: HashMap::new(),
                 trait_dispatch: HashMap::new(),
                 method_trait: HashMap::new(),
                 def_paths: HashMap::new(),
@@ -685,6 +704,23 @@ impl<'db> Collector<'db> {
             self.map
                 .trait_methods
                 .insert((trait_def, method.name.clone()), def);
+        }
+        for c in &item.consts {
+            let def = DefId::new(self.db, file, c.ast_id, DefRole::Item);
+            self.map.defs.insert(
+                def,
+                DefData {
+                    kind: DefKind::AssocConst,
+                    name: c.name.clone(),
+                    module,
+                    visibility: Visibility::Public,
+                    owner: Some(trait_def),
+                },
+            );
+            self.def_order.push(def);
+            self.map
+                .trait_consts
+                .insert((trait_def, c.name.clone()), def);
         }
     }
 
@@ -1217,6 +1253,25 @@ impl<'db> Collector<'db> {
                     }
                 }
             };
+            let mut impl_consts: Vec<(String, DefId<'db>)> = Vec::new();
+            if let Some(t) = trait_def {
+                for c in &item.consts {
+                    let def = DefId::new(self.db, file, c.ast_id, DefRole::Item);
+                    self.map.defs.insert(
+                        def,
+                        DefData {
+                            kind: DefKind::AssocConst,
+                            name: c.name.clone(),
+                            module,
+                            visibility: Visibility::Public,
+                            owner: Some(owner),
+                        },
+                    );
+                    self.def_order.push(def);
+                    let _ = t;
+                    impl_consts.push((c.name.clone(), def));
+                }
+            }
             let mut impl_methods: Vec<(String, DefId<'db>)> = Vec::new();
             for method in &item.methods {
                 let def = DefId::new(self.db, file, method.ast_id, DefRole::Item);
@@ -1268,6 +1323,35 @@ impl<'db> Collector<'db> {
                 // Conformance, name level: every trait method implemented,
                 // nothing extra. (Signature-level conformance arrives with
                 // the solver slice — planning/traits.md T3.)
+                let declared_consts: Vec<&String> = self
+                    .map
+                    .trait_consts
+                    .keys()
+                    .filter(|(td, _)| *td == t)
+                    .map(|(_, n)| n)
+                    .collect();
+                for d in &declared_consts {
+                    if impl_consts.iter().all(|(n, _)| n != *d) {
+                        self.map.diagnostics.push(DefDiagnostic {
+                            anchor: Some((file, item.ast_id)),
+                            kind: DefDiagnosticKind::MissingTraitItem {
+                                trait_name: item.trait_.clone().unwrap_or_default(),
+                                name: (*d).clone(),
+                            },
+                        });
+                    }
+                }
+                for (n, _) in &impl_consts {
+                    if self.map.trait_consts.get(&(t, n.clone())).is_none() {
+                        self.map.diagnostics.push(DefDiagnostic {
+                            anchor: Some((file, item.ast_id)),
+                            kind: DefDiagnosticKind::ExtraTraitItem {
+                                trait_name: item.trait_.clone().unwrap_or_default(),
+                                name: n.clone(),
+                            },
+                        });
+                    }
+                }
                 let declared: Vec<&String> = self
                     .map
                     .trait_methods
@@ -1331,6 +1415,7 @@ impl<'db> Collector<'db> {
                         self_def: owner,
                         self_has_args: item.self_has_args,
                         methods: impl_methods,
+                        consts: impl_consts,
                         file,
                         ast_id: item.ast_id,
                     });

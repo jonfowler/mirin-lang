@@ -1,0 +1,23 @@
+// Associated consts (planning/traits.md T4): the trait declares
+// `const width: integer`, sigs use it bare (`uint(width)`) and projected
+// (`uint(T::width)`); evaluation resolves the impl for the concrete self
+// type and evaluates its value (rustc's Unevaluated + Instance::resolve).
+trait Bits {
+    const width: integer;
+    fn pack(self) -> uint(width);
+}
+
+impl Bits for bool {
+    const width: integer = 1;
+    fn pack(self) -> uint(width) {
+        if self { 1 } else { 0 }
+    }
+}
+
+fn packer {param T: Bits} (x: T) -> uint(T::width) {
+    x.pack()
+}
+
+fn top {dom clk: Clock} (b: bool @clk) -> uint(1) @clk {
+    packer(b)
+}

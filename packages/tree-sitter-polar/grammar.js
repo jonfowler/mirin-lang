@@ -360,7 +360,13 @@ module.exports = grammar({
     // literals, names, and field projections. Anything bigger (a call, an
     // if/else) goes through a `let`: `let w = f(n); uint(w)`. A *bare* name
     // stays a type_expression (the lowerer decides type vs const by kind).
-    const_expression: ($) => choice($.const_binary, $.const_field, $.const_paren),
+    const_expression: ($) =>
+      choice($.const_binary, $.const_field, $.const_path, $.const_paren),
+
+    // `T::width` — an associated const projected from a bounded type param
+    // (planning/traits.md T4).
+    const_path: ($) =>
+      seq(field("base", $.identifier), "::", field("item", $.identifier)),
 
     const_field: ($) =>
       seq(

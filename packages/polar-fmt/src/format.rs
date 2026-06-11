@@ -124,6 +124,11 @@ impl<'a> Formatter<'a> {
             "module_definition" => self.module_def(n),
             "use_declaration" => self.use_decl(n),
 
+            "const_path" => {
+                let base = self.text(self.field(n, "base").unwrap());
+                let item = self.text(self.field(n, "item").unwrap());
+                text(format!("{base}::{item}"))
+            }
             "trait_bound" => {
                 let name = self.text(self.field(n, "name").unwrap());
                 match n
