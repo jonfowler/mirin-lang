@@ -1226,6 +1226,7 @@ impl<'db> SvLower<'_, 'db> {
                 }
                 Some(UserCall {
                     def,
+                    expr,
                     receiver: None,
                     args: args.clone(),
                     named: named.clone(),
@@ -1234,6 +1235,7 @@ impl<'db> SvLower<'_, 'db> {
             ExprKind::MethodCall { receiver, args, .. } if self.as_reg(expr).is_none() => {
                 Some(UserCall {
                     def: self.inf.method_resolution(expr)?,
+                    expr,
                     receiver: Some(*receiver),
                     args: args.clone(),
                     named: Vec::new(),
@@ -1257,6 +1259,46 @@ impl<'db> SvLower<'_, 'db> {
             .map(|g| g.name.clone())
             .collect();
         let return_type = csig.return_type.clone();
+
+        // The callee's Const-kind generics bind as SV parameters, from the
+        // call's recorded instantiation (`#(.n(8))`; a still-symbolic value
+        // renders against the caller's own SV parameters; an evaluable local
+        // grounds through const_eval).
+        let subst = self.inf.call_subst(uc.expr);
+        let parameters: Vec<(String, SvExpr)> = csig
+            .generic_params
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.kind == TermKind::Const)
+            .filter_map(|(i, g)| {
+                let term = subst.and_then(|ts| ts.get(i));
+                let Some(Term::Const(c)) = term else {
+                    return None;
+                };
+                let c = match c {
+                    ConstArg::Local(_) | ConstArg::Field(..) | ConstArg::Op(..) => {
+                        match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c)
+                        {
+                            Some(v) => ConstArg::Lit(v),
+                            None => c.clone(),
+                        }
+                    }
+                    other => other.clone(),
+                };
+                let rendered = match &c {
+                    ConstArg::Lit(v) => SvExpr::Lit(v.to_string()),
+                    ConstArg::Param(j) => SvExpr::Ident(
+                        self.sig
+                            .generic_params
+                            .get(*j as usize)
+                            .map(|g| g.name.clone())?,
+                    ),
+                    ConstArg::Op(..) => SvExpr::Lit(render_const_sv(&c, self.sig)),
+                    _ => return None, // unresolved — leave to the default
+                };
+                Some((g.name.clone(), rendered))
+            })
+            .collect();
 
         // Resolve each value param to its caller expression (positional zip with
         // `[receiver?] ++ args`; named by name) — `(pname, pty, caller_expr)`.
@@ -1353,6 +1395,7 @@ impl<'db> SvLower<'_, 'db> {
         self.items.push(SvItem::Instance(SvInstance {
             module,
             name,
+            parameters,
             connections,
         }));
     }
@@ -1373,6 +1416,17 @@ impl<'db> SvLower<'_, 'db> {
         let Some(rt) = sig_of(self.db, self.krate, uc.def).return_type.clone() else {
             self.emit_instance(uc, Vec::new());
             return vec![(String::new(), SvExpr::Lit("0".to_owned()))];
+        };
+        // The return type is written in the CALLEE's generic-param space —
+        // substitute the call's recorded instantiation before flattening
+        // against the caller's generics (a parametric callee's `uint(n)`
+        // otherwise renders against the wrong index space).
+        let rt = match self.inf.call_subst(uc.expr) {
+            Some(ts) => {
+                let opts: Vec<Option<Term<'db>>> = ts.iter().cloned().map(Some).collect();
+                ground_widths(self.db, self.krate, self.def, &subst_type(&rt, &opts))
+            }
+            None => rt,
         };
         let base = self.fresh_call();
         let target: Vec<(String, SvExpr)> =
@@ -1433,6 +1487,8 @@ impl<'db> SvLower<'_, 'db> {
 /// A user `fn`/method call decomposed for instantiation.
 struct UserCall<'db> {
     def: DefId<'db>,
+    /// The call expression itself — keys `Inference::call_subst`.
+    expr: ExprId,
     receiver: Option<ExprId>,
     args: Vec<ConnArg>,
     named: Vec<NamedArg>,

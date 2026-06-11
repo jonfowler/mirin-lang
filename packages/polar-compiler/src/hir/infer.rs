@@ -144,6 +144,10 @@ pub struct Inference<'db> {
     expr_types: HashMap<ExprId, Type<'db>>,
     local_types: HashMap<LocalId, Type<'db>>,
     method_resolutions: HashMap<ExprId, DefId<'db>>,
+    /// Per call-site instantiation of the callee's generic params (rustc's
+    /// node substs): deep-resolved Terms in declared-param order. The backend
+    /// renders Const-kind entries as SV parameter bindings (`#(.n(8))`).
+    call_substs: HashMap<ExprId, Vec<Term<'db>>>,
     diagnostics: Vec<InferDiagnostic>,
     /// Const equalities that could not be decided here — symbolic widths
     /// (`uint(n)` vs `uint(m)`, deferred arithmetic, locals in const position).
@@ -156,6 +160,10 @@ pub struct Inference<'db> {
 impl<'db> Inference<'db> {
     pub fn expr_type(&self, e: ExprId) -> Option<&Type<'db>> {
         self.expr_types.get(&e)
+    }
+
+    pub fn call_subst(&self, e: ExprId) -> Option<&[Term<'db>]> {
+        self.call_substs.get(&e).map(Vec::as_slice)
     }
 
     pub fn local_type(&self, l: LocalId) -> Option<&Type<'db>> {
@@ -364,6 +372,10 @@ struct InferCtx<'a, 'db> {
     expr_types: HashMap<ExprId, Type<'db>>,
     local_types: HashMap<LocalId, Type<'db>>,
     method_resolutions: HashMap<ExprId, DefId<'db>>,
+    /// Per call-site instantiation of the callee's generic params (rustc's
+    /// node substs): deep-resolved Terms in declared-param order. The backend
+    /// renders Const-kind entries as SV parameter bindings (`#(.n(8))`).
+    call_substs: HashMap<ExprId, Vec<Term<'db>>>,
     diagnostics: Vec<InferDiagnostic>,
     /// Undecided constraints, retried at end-of-body (`discharge_obligations`).
     obligations: Vec<Obligation>,
@@ -446,6 +458,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             expr_types: HashMap::new(),
             local_types: HashMap::new(),
             method_resolutions: HashMap::new(),
+            call_substs: HashMap::new(),
             diagnostics: Vec::new(),
             obligations: Vec::new(),
             current_span: Span::default(),
@@ -475,10 +488,28 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             self.local_types.insert(l, t);
         }
         self.check_widths();
+        let substs: Vec<(ExprId, Vec<Term<'db>>)> = self
+            .call_substs
+            .iter()
+            .map(|(e, ts)| (*e, ts.clone()))
+            .collect();
+        for (e, ts) in substs {
+            let resolved = ts
+                .iter()
+                .map(|t| {
+                    let mut r = DeepResolver {
+                        table: &mut self.table,
+                    };
+                    crate::hir::types::super_fold_term(&mut r, t)
+                })
+                .collect();
+            self.call_substs.insert(e, resolved);
+        }
         Inference {
             expr_types: self.expr_types,
             local_types: self.local_types,
             method_resolutions: self.method_resolutions,
+            call_substs: self.call_substs,
             diagnostics: self.diagnostics,
             const_residuals,
         }
@@ -974,7 +1005,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 callee,
                 args,
                 named,
-            } => self.infer_call(body, *callee, args, named),
+            } => self.infer_call(body, expr, *callee, args, named),
             ExprKind::Field { receiver, field } => self.infer_field(body, *receiver, field),
             ExprKind::MethodCall {
                 receiver,
@@ -1022,6 +1053,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn infer_call(
         &mut self,
         body: &Body<'db>,
+        at: ExprId,
         callee: ExprId,
         args: &[ConnArg],
         named: &[NamedArg],
@@ -1047,7 +1079,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             return result;
         }
-        self.call_def(body, def, args, named, None)
+        self.call_def(body, at, def, args, named, None)
     }
 
     /// Match a call's args against the callee's (instantiated) signature and
@@ -1060,6 +1092,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn call_def(
         &mut self,
         body: &Body<'db>,
+        at: ExprId,
         def: DefId<'db>,
         args: &[ConnArg],
         named: &[NamedArg],
@@ -1069,6 +1102,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         let call_span = self.current_span;
         let sig = sig_of(self.db, self.krate, def);
         let subst = self.fresh_subst(&sig.generic_params);
+        self.call_substs.insert(at, subst.clone());
 
         // A method call: the receiver coerces into the declared `self` type
         // (its `@domain` annotation included — this is what pins the
@@ -1201,7 +1235,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             && let Some(method_def) = self.map.impl_method(owner, method)
         {
             self.method_resolutions.insert(expr, method_def);
-            return self.call_def(body, method_def, args, &[], Some(&recv));
+            return self.call_def(body, expr, method_def, args, &[], Some(&recv));
         }
         // Prelude methods not in the impl-method index yet (Q3a backfill pending).
         let args_inferred: Vec<Type<'db>> =

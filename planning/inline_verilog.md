@@ -74,7 +74,7 @@ splits the raw text during body lowering, which keeps the scanner trivial.
   scalar value params, then the const fragment.
 - Const splices render *symbolically* (`${n + 1}` → `(n + 1)` against the
   module's SV parameter) — no evaluation needed.
-- Known gap (pre-existing, not verilog-specific): `SvInstance` carries no
-  parameter bindings, so instantiating any const-generic fn — verilog or
-  ordinary — relies on parameter defaults / `-G`. Parameter-passing
-  instantiation is its own backend slice.
+- ~~Known gap: `SvInstance` carried no parameter bindings.~~ Closed:
+  instances bind Const-kind generics from the call's recorded
+  instantiation (`#(.n(8))`; symbolic values pass through against the
+  caller's own SV parameters).

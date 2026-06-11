@@ -88,6 +88,9 @@ pub struct SvInstance {
     pub module: String,
     /// The instance name within the surrounding module.
     pub name: String,
+    /// SV parameter bindings (`#(.n(8))`) — the callee's Const-kind generics
+    /// at this call site, in declared order.
+    pub parameters: Vec<(String, SvExpr)>,
     /// Port connections in declaration order: `(port_name, expression)`.
     pub connections: Vec<(String, SvExpr)>,
 }
@@ -216,7 +219,16 @@ impl fmt::Display for SvItem {
                 writeln!(f, "    end")
             }
             Self::Instance(inst) => {
-                writeln!(f, "    {} {} (", inst.module, inst.name)?;
+                if inst.parameters.is_empty() {
+                    writeln!(f, "    {} {} (", inst.module, inst.name)?;
+                } else {
+                    writeln!(f, "    {} #(", inst.module)?;
+                    for (i, (p, v)) in inst.parameters.iter().enumerate() {
+                        let sep = if i + 1 < inst.parameters.len() { "," } else { "" };
+                        writeln!(f, "        .{p}({v}){sep}")?;
+                    }
+                    writeln!(f, "    ) {} (", inst.name)?;
+                }
                 for (i, (port, expr)) in inst.connections.iter().enumerate() {
                     let sep = if i + 1 < inst.connections.len() {
                         ","
