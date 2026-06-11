@@ -184,6 +184,9 @@ pub enum BodyDiagnosticKind {
     UnresolvedType { name: String },
     /// A numeric literal that does not fit in 64 bits.
     NumberTooLarge { text: String },
+    /// An `in`/`out` prefix on a named argument that disagrees with its
+    /// connector (`in` supplies a value with `=`; `out` receives with `=>`).
+    DirectionPrefixMismatch { direction: String },
 }
 
 impl BodyDiagnostic {
@@ -196,6 +199,10 @@ impl BodyDiagnostic {
             BodyDiagnosticKind::NumberTooLarge { text } => {
                 format!("numeric literal `{text}` does not fit in 64 bits")
             }
+            BodyDiagnosticKind::DirectionPrefixMismatch { direction } => match direction.as_str() {
+                "out" => "`out` argument must be an out-connection: `out name => target`".to_owned(),
+                _ => "`in` argument supplies a value: `in name = value`, not `=>`".to_owned(),
+            },
             BodyDiagnosticKind::DuplicateVar { name } => {
                 format!("`{name}` is declared more than once as `var` in this block")
             }
@@ -872,8 +879,21 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             .filter(|c| c.kind() == "named_or_shorthand_argument")
         {
             let name = field_text(&a, "name", source);
+            // The optional `in`/`out` prefix is redundant with the connector
+            // (`=` supplies, `=>` receives) — it must agree when written.
+            let direction = a
+                .child_by_field_name("direction")
+                .map(|d| node_text(&d, source));
             if let Some(value) = a.child_by_field_name("value") {
                 // `name = value`
+                if direction.as_deref() == Some("out") {
+                    self.diag_at(
+                        &a,
+                        BodyDiagnosticKind::DirectionPrefixMismatch {
+                            direction: "out".to_owned(),
+                        },
+                    );
+                }
                 out.push(NamedArg {
                     name,
                     out: false,
@@ -881,6 +901,14 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 });
             } else if let Some(target) = a.child_by_field_name("target") {
                 // `name => target` — an out-connection.
+                if direction.as_deref() == Some("in") {
+                    self.diag_at(
+                        &a,
+                        BodyDiagnosticKind::DirectionPrefixMismatch {
+                            direction: "in".to_owned(),
+                        },
+                    );
+                }
                 let tname = node_text(&target, source);
                 out.push(NamedArg {
                     name,

@@ -136,8 +136,6 @@ pub enum SvExpr {
     Lit(String),
     /// `(lhs OP rhs)`.
     BinOp(SvBinOp, Box<SvExpr>, Box<SvExpr>),
-    /// `expr - 1`, for width expressions like `[N-1:0]`.
-    Sub1(Box<SvExpr>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, salsa::Update)]
@@ -290,7 +288,6 @@ impl fmt::Display for SvExpr {
                 };
                 write!(f, "({l} {op} {r})")
             }
-            Self::Sub1(e) => write!(f, "{e}-1"),
         }
     }
 }

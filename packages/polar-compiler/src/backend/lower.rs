@@ -887,7 +887,10 @@ impl<'db> SvLower<'_, 'db> {
                 .next()
                 .map(|(_, e)| e)
                 .unwrap_or_else(|| SvExpr::Lit("0".to_owned())),
-            // User method calls → Q5d-2.
+            // Defensive only: every shape that lands here (user method calls
+            // pending Q5d-2, malformed exprs) is diagnosed by `infer`, and the
+            // CLI refuses to emit SV when any diagnostic exists — so this
+            // placeholder never reaches written output.
             _ => SvExpr::Lit("0".to_owned()),
         }
     }

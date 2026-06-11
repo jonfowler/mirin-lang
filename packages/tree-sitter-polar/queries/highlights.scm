@@ -9,6 +9,9 @@
   "let"
   "var"
   "return"
+  "if"
+  "else"
+  "when"
 ] @keyword
 
 [
