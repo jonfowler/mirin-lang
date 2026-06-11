@@ -18,6 +18,8 @@
 //! arithmetic widths and const/domain generic *args* passed by name are refined
 //! in Q3d/Q4.
 
+use std::cell::RefCell;
+
 use tree_sitter::Node;
 
 use crate::base::db::SourceRoot;
@@ -57,6 +59,8 @@ pub enum SigDiagnosticKind {
     /// parameter and the return type must carry a domain annotation
     /// (`domain_checking_redux.md`: explicit-mode annotation requirement).
     MissingDomainAnnotation,
+    /// A type name that resolved to nothing (or to a non-type item).
+    UnresolvedType { name: String },
 }
 
 impl SigDiagnostic {
@@ -66,6 +70,9 @@ impl SigDiagnostic {
                 "missing `@domain` annotation: this signature declares domains explicitly, \
                  so every parameter and the return type must be annotated (or `@const`)"
                     .to_owned()
+            }
+            SigDiagnosticKind::UnresolvedType { name } => {
+                format!("cannot find type `{name}`")
             }
         }
     }
@@ -169,6 +176,7 @@ fn lower_adt_sig<'db>(
         module,
         generics: &generic_params,
         locals: None,
+        unresolved: RefCell::new(Vec::new()),
     };
 
     let field_kind = if is_port {
@@ -199,13 +207,31 @@ fn lower_adt_sig<'db>(
         }
     }
 
+    let diagnostics = drain_unresolved(&lowerer, node);
     Signature {
         generic_params,
         params: Vec::new(),
         return_type: None,
         fields,
-        diagnostics: Vec::new(),
+        diagnostics,
     }
+}
+
+/// Convert a lowerer's unresolved-type records to def-relative diagnostics.
+fn drain_unresolved(lowerer: &TypeLowerer<'_, '_>, def_node: &Node) -> Vec<SigDiagnostic> {
+    let def_start = def_node.start_byte();
+    lowerer
+        .unresolved
+        .borrow_mut()
+        .drain(..)
+        .map(|(name, start, end)| SigDiagnostic {
+            span: Span {
+                start: start.saturating_sub(def_start) as u32,
+                end: end.saturating_sub(def_start) as u32,
+            },
+            kind: SigDiagnosticKind::UnresolvedType { name },
+        })
+        .collect()
 }
 
 /// Lower a `function_definition` node's signature.
@@ -240,6 +266,7 @@ fn lower_fn_sig<'db>(
         module,
         generics: &generic_params,
         locals: None,
+        unresolved: RefCell::new(Vec::new()),
     };
 
     // Pass 2: lower each value parameter's type, assigning owner-relative ids.
@@ -271,6 +298,9 @@ fn lower_fn_sig<'db>(
     let return_type = node
         .child_by_field_name("return_type")
         .map(|t| lowerer.lower_type(&t, source));
+    // Drain now: `lowerer` borrows `generic_params`, which the lifting branch
+    // below moves.
+    let unresolved_diags = drain_unresolved(&lowerer, node);
 
     // Domain mode (`domain_checking_redux.md`): a signature that introduces a
     // `dom` generic or writes any `@` is EXPLICIT — every value param and the
@@ -326,6 +356,7 @@ fn lower_fn_sig<'db>(
         return_type = return_type.map(|t| lift.fold_type(&t));
     }
 
+    diagnostics.extend(unresolved_diags);
     Signature {
         generic_params,
         params,
@@ -390,6 +421,9 @@ struct TypeLowerer<'a, 'db> {
     /// Body-local resolver for widths in `let`/`var` ascriptions; `None` when
     /// lowering signatures (no locals in scope).
     locals: Option<&'a dyn Fn(&str) -> Option<LocalId>>,
+    /// Type names that resolved to nothing — `(name, abs_start, abs_end)`,
+    /// drained by the caller into its own diagnostic stream (sig or body).
+    unresolved: RefCell<Vec<(String, usize, usize)>>,
 }
 
 impl<'db> TypeLowerer<'_, 'db> {
@@ -461,7 +495,15 @@ impl<'db> TypeLowerer<'_, 'db> {
                 args: self.lower_args(node, source),
                 domain,
             },
-            _ => Type::Error,
+            _ => {
+                let at = node.child_by_field_name("name").unwrap_or(*node);
+                self.unresolved.borrow_mut().push((
+                    name.clone(),
+                    at.start_byte(),
+                    at.end_byte(),
+                ));
+                Type::Error
+            }
         }
     }
 
@@ -554,14 +596,20 @@ pub(crate) fn lower_type_expr<'db>(
     locals: Option<&dyn Fn(&str) -> Option<LocalId>>,
     node: &Node,
     source: &str,
+    unresolved_sink: Option<&mut Vec<(String, usize, usize)>>,
 ) -> Type<'db> {
-    TypeLowerer {
+    let lowerer = TypeLowerer {
         map,
         module,
         generics,
         locals,
+        unresolved: RefCell::new(Vec::new()),
+    };
+    let ty = lowerer.lower_type(node, source);
+    if let Some(sink) = unresolved_sink {
+        sink.append(&mut lowerer.unresolved.borrow_mut());
     }
-    .lower_type(node, source)
+    ty
 }
 
 // ----- CST helpers -----

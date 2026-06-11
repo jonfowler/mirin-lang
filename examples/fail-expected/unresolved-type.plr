@@ -1,0 +1,6 @@
+// `Undefined` names no type: sig lowering now records it as an
+// UnresolvedType diagnostic (previously a silent `Type::Error` emitted as a
+// 1-bit port with `result` driven to 0).
+fn f(x: Undefined) -> uint(8) {
+    0
+}

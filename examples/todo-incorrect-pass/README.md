@@ -19,11 +19,9 @@ by the checker that needs to land:
 `dup-record-field`, `field-on-scalar`) — infer now checks positional arity
 and record/field shape.
 
-**Lowering diagnostics (sig/body):**
+**Lowering diagnostics (sig/body):** `unresolved-type` and `num-overflow`
+flipped to `fail-expected/` (UnresolvedType / NumberTooLarge diagnostics).
 
-- `unresolved-type.plr` — unknown type name lowers to `Type::Error` with no
-  diagnostic; emitted as a 1-bit port.
-- `num-overflow.plr` — literal beyond u64 parses to 0 (`unwrap_or(0)`).
 - `named-dom-cross.plr` — named type args (`DF{c1}(...)`) are never lowered,
   so a clock-domain crossing type-checks. The domain-checking hole with the
   highest stakes here.

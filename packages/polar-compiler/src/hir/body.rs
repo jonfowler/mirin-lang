@@ -180,6 +180,10 @@ pub enum BodyDiagnosticKind {
     DuplicateVar { name: String },
     /// A `var x` declared after a `let x` binding in the same block.
     VarAfterLet { name: String },
+    /// A type name in a `let`/`var` ascription that resolved to nothing.
+    UnresolvedType { name: String },
+    /// A numeric literal that does not fit in 64 bits.
+    NumberTooLarge { text: String },
 }
 
 impl BodyDiagnostic {
@@ -188,6 +192,10 @@ impl BodyDiagnostic {
         match &self.kind {
             BodyDiagnosticKind::UnresolvedName { name } => format!("undefined name `{name}`"),
             BodyDiagnosticKind::Unsupported { what } => format!("unsupported syntax: {what}"),
+            BodyDiagnosticKind::UnresolvedType { name } => format!("cannot find type `{name}`"),
+            BodyDiagnosticKind::NumberTooLarge { text } => {
+                format!("numeric literal `{text}` does not fit in 64 bits")
+            }
             BodyDiagnosticKind::DuplicateVar { name } => {
                 format!("`{name}` is declared more than once as `var` in this block")
             }
@@ -426,6 +434,19 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         id
     }
 
+    /// Surface a `TypeLowerer`'s unresolved-type records as body diagnostics.
+    fn diag_unresolved_types(&mut self, unres: Vec<(String, usize, usize)>) {
+        for (name, start, end) in unres {
+            self.diagnostics.push(BodyDiagnostic {
+                span: Span::new(
+                    start.saturating_sub(self.def_start),
+                    end.saturating_sub(self.def_start),
+                ),
+                kind: BodyDiagnosticKind::UnresolvedType { name },
+            });
+        }
+    }
+
     /// A node's span, relative to the owning def's start.
     fn rel_span(&self, node: &Node) -> Span {
         Span::new(
@@ -524,6 +545,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
 
     fn prescan_vars(&mut self, node: &Node, source: &str) {
         let lookup = |n: &str| self.lookup_local(n);
+        let mut unres = Vec::new();
         let declared_ty = node.child_by_field_name("type").map(|t| {
             lower_type_expr(
                 self.map,
@@ -532,8 +554,10 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 Some(&lookup),
                 &t,
                 source,
+                Some(&mut unres),
             )
         });
+        self.diag_unresolved_types(unres);
         // Span each var at its own name identifier, not the whole statement.
         let mut cursor = node.walk();
         for name_node in node.children_by_field_name("name", &mut cursor) {
@@ -552,6 +576,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 let value = self.lower_field_expr(node, "value", source);
                 let name = field_text(node, "name", source);
                 let lookup = |n: &str| self.lookup_local(n);
+                let mut unres = Vec::new();
                 let declared_ty = node.child_by_field_name("type").map(|t| {
                     lower_type_expr(
                         self.map,
@@ -560,8 +585,10 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                         Some(&lookup),
                         &t,
                         source,
+                        Some(&mut unres),
                     )
                 });
+                self.diag_unresolved_types(unres);
                 // Span the local at its name identifier, not the whole statement.
                 let span = node
                     .child_by_field_name("name")
@@ -621,7 +648,17 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 None => self.alloc(ExprKind::Missing),
             },
             "number" => {
-                let v = node_text(node, source).parse::<u64>().unwrap_or(0);
+                let text = node_text(node, source);
+                let v = match text.parse::<u64>() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        // The grammar only admits digit runs, so the only
+                        // failure is overflow — diagnose rather than silently
+                        // compiling the literal to 0.
+                        self.diag_at(node, BodyDiagnosticKind::NumberTooLarge { text });
+                        0
+                    }
+                };
                 self.alloc(ExprKind::Number(v))
             }
             "path_expression" => {
