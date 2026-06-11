@@ -1,0 +1,12 @@
+// MUST REJECT: the constructor omits `b`. infer accepts the partial record,
+// and the backend's `record_leaves` skips absent fields, so the emitted
+// module's `result__b` output is simply undriven:
+//     output logic [7:0] result__b   // no assign
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn top() -> Pair {
+    pair { a: 1 }
+}

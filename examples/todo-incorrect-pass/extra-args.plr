@@ -1,0 +1,11 @@
+// MUST REJECT: `f` takes one argument; the call supplies three. infer's
+// `call_def` zips args against positional params and silently drops the
+// surplus (hir/infer.rs, positional.get(i) guard) — no arity diagnostic
+// exists. The backend then wires only `x` and discards `2` and `3`.
+fn f(x: uint(8)) -> uint(8) {
+    x
+}
+
+fn top() -> uint(8) {
+    f(1, 2, 3)
+}

@@ -1,0 +1,7 @@
+// MUST REJECT (or at least diagnose): the literal exceeds u64. body
+// lowering does `.parse::<u64>().unwrap_or(0)` (hir/body.rs), so the value
+// silently becomes 0 in the emitted SV: `assign x = 0;`.
+fn top() -> uint(8) {
+    let x: uint(8) = 99999999999999999999999;
+    x
+}

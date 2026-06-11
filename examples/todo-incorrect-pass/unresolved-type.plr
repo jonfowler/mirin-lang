@@ -1,0 +1,7 @@
+// MUST REJECT: `Undefined` names no type. sig lowering maps unresolved
+// type names to `Type::Error` with no diagnostic (hir/sig.rs), and the
+// backend emits the param as a 1-bit `input logic x` with `result` driven
+// to 0.
+fn f(x: Undefined) -> uint(8) {
+    0
+}

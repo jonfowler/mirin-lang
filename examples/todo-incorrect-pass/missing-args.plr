@@ -1,0 +1,12 @@
+// MUST REJECT: `f` takes two arguments; the call supplies one and `y` has
+// no default. infer never checks that every param got an actual, and the
+// backend emits the instance with the `y` port simply unconnected — a
+// floating input in the generated SV:
+//     f f (.x(1), .result(result));   // .y missing
+fn f(x: uint(8), y: uint(8)) -> uint(8) {
+    x + y
+}
+
+fn top() -> uint(8) {
+    f(1)
+}

@@ -1,0 +1,10 @@
+// MUST REJECT: `a` is written twice. The first write wins and the second
+// is silently discarded (emitted SV has `assign result__a = 1`).
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn top() -> Pair {
+    pair { a: 1, a: 2, b: 3 }
+}
