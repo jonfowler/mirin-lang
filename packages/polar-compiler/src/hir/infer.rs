@@ -62,6 +62,8 @@ pub enum InferDiagnosticKind {
     ClockedWidth,
     /// A `recv.method(…)` whose method did not resolve on the receiver's type.
     UnresolvedMethod { name: String },
+    /// A uint width whose const evaluation came out negative.
+    NegativeWidth { value: i128 },
     /// A call whose positional argument count can't match the callee's
     /// positional params (`expected` is the count that failed: the total when
     /// over-supplied, the no-default minimum when under-supplied).
@@ -96,6 +98,9 @@ impl InferDiagnostic {
             }
             InferDiagnosticKind::UnresolvedMethod { name } => {
                 format!("no method `{name}` on this type")
+            }
+            InferDiagnosticKind::NegativeWidth { value } => {
+                format!("uint width evaluates to {value}, but a width must be non-negative")
             }
             InferDiagnosticKind::PositionalArity {
                 callee,
@@ -179,7 +184,7 @@ pub fn infer<'db>(
     let sig = sig_of(db, krate, def);
     let body = body(db, krate, def);
 
-    let mut cx = InferCtx::new(db, krate, map, &sig.generic_params);
+    let mut cx = InferCtx::new(db, krate, def, body, map, &sig.generic_params);
 
     // Seed locals: params get their signature type (own generic `Param`s stay
     // rigid; only unspecified domains become fresh vars). Other locals start as
@@ -338,6 +343,9 @@ impl<'db> InferenceTable<'db> {
 struct InferCtx<'a, 'db> {
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
+    /// The def under inference — the root frame for `const_eval`.
+    def: DefId<'db>,
+    body: &'a Body<'db>,
     map: &'a CrateDefMap<'db>,
     /// The inferred def's own generic params (to map a clock local back to its
     /// `dom` generic index for `when`).
@@ -386,16 +394,42 @@ fn width_locals(ty: &Type<'_>) -> Vec<LocalId> {
     c.0
 }
 
+/// Every width `ConstArg` appearing in a type (UInt slots), tree included.
+fn collect_widths<'db>(ty: &Type<'db>) -> Vec<ConstArg> {
+    struct Collect(Vec<ConstArg>);
+    impl<'db> Folder<'db> for Collect {
+        fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
+            // Only top-level width slots: a *sub*tree of a width may be
+            // negative while the whole is fine (`uint(n - 3 + 10)`).
+            if let Type::Value {
+                kind: ValueKind::UInt { width },
+                ..
+            } = t
+            {
+                self.0.push(width.clone());
+            }
+            super_fold_type(self, t)
+        }
+    }
+    let mut c = Collect(Vec::new());
+    let _ = c.fold_type(ty);
+    c.0
+}
+
 impl<'a, 'db> InferCtx<'a, 'db> {
     fn new(
         db: &'db dyn salsa::Database,
         krate: SourceRoot,
+        def: DefId<'db>,
+        body: &'a Body<'db>,
         map: &'a CrateDefMap<'db>,
         own_generics: &'a [GenericParam],
     ) -> Self {
         Self {
             db,
             krate,
+            def,
+            body,
             map,
             own_generics,
             table: InferenceTable::new(),
@@ -406,6 +440,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             obligations: Vec::new(),
             current_span: Span::default(),
         }
+    }
+
+    /// Try to const-evaluate a width tree in this def's body (soft failure).
+    fn try_eval(&self, c: &ConstArg) -> Option<i128> {
+        crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c)
     }
 
     fn finish(mut self) -> Inference<'db> {
@@ -425,12 +464,40 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             let t = self.deep_resolve(&t);
             self.local_types.insert(l, t);
         }
+        self.check_widths();
         Inference {
             expr_types: self.expr_types,
             local_types: self.local_types,
             method_resolutions: self.method_resolutions,
             diagnostics: self.diagnostics,
             const_residuals,
+        }
+    }
+
+    /// Evaluate every ground width in the final types; a negative result is a
+    /// hard error (`integer` maths may go negative in intermediates, a uint
+    /// width may not come out negative). One diagnostic per distinct tree.
+    fn check_widths(&mut self) {
+        let mut seen: std::collections::HashSet<ConstArg> = Default::default();
+        let mut bad: Vec<(Span, i128)> = Vec::new();
+        let locals: Vec<(LocalId, Type<'db>)> = self
+            .local_types
+            .iter()
+            .map(|(l, t)| (*l, t.clone()))
+            .collect();
+        for (l, t) in locals {
+            for w in collect_widths(&t) {
+                if seen.insert(w.clone())
+                    && let Some(v) = self.try_eval(&w)
+                    && v < 0
+                {
+                    bad.push((self.body.local_span(l), v));
+                }
+            }
+        }
+        for (span, value) in bad {
+            self.current_span = span;
+            self.diag(InferDiagnosticKind::NegativeWidth { value });
         }
     }
 
@@ -472,8 +539,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                             progress = true;
                             continue;
                         }
-                        match (&a, &b) {
-                            (ConstArg::Lit(_), ConstArg::Lit(_)) => {
+                        // Ground both sides through the evaluator if possible
+                        // (a symbolic side — free Param — stays None).
+                        match (self.try_eval(&a), self.try_eval(&b)) {
+                            (Some(x), Some(y)) if x == y => progress = true,
+                            (Some(_), Some(_)) => {
                                 self.current_span = ob.span;
                                 self.diag(InferDiagnosticKind::WidthMismatch);
                                 progress = true;
@@ -1635,16 +1705,27 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "fn ok (x: uint(8)) -> uint(8) { let n = 4; let y: uint(n) = x; return y; }\n\
+            "fn ok (x: uint(8)) -> uint(8) { let n = 8; let y: uint(n) = x; return y; }\n\
+             fn wrong (x: uint(8)) -> uint(8) { let n = 4; let y: uint(n) = x; return y; }\n\
              fn bad {dom clk: Clock} (x: uint(8) @clk, n: uint(4) @clk) -> uint(8) @clk { let y: uint(n) @clk = x; return y; }",
         );
+        // const_eval grounds the local: uint(n)=uint(8) discharges with no
+        // residual; n=4 against uint(8) is a hard WidthMismatch (both were
+        // undecidable Local residuals before Q4c).
         let inf = infer(&db, krate, def_of(&db, krate, "ok"));
         assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
         assert!(
+            inf.const_residuals().is_empty(),
+            "an evaluable local width should discharge, got {:?}",
             inf.const_residuals()
+        );
+        let inf = infer(&db, krate, def_of(&db, krate, "wrong"));
+        assert!(
+            inf.diagnostics()
                 .iter()
-                .any(|(a, b)| matches!((a, b), (ConstArg::Local(_), _) | (_, ConstArg::Local(_)))),
-            "uint(n) ~ uint(8) with a const n should survive as a Local residual"
+                .any(|d| matches!(&d.kind, InferDiagnosticKind::WidthMismatch)),
+            "n=4 against uint(8) must mismatch, got {:?}",
+            inf.diagnostics()
         );
         let inf = infer(&db, krate, def_of(&db, krate, "bad"));
         assert!(

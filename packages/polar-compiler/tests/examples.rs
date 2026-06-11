@@ -47,6 +47,10 @@ fn examples() -> Vec<(String, String)> {
 /// direction checks). The entire working corpus is now clean — a fully
 /// functional type checker over it.
 const CLEAN: &[&str] = &[
+    "const_arith.plr",
+    "const_fn_if.plr",
+    "const_out_params.plr",
+    "const_record_config.plr",
     "accumulator.plr",
     "add_constant.plr",
     "const_then_clocked.plr",
@@ -151,6 +155,10 @@ fn dump_verilog() {
 /// a `// verilator: -G…=N` directive (a parameter value for elaboration), which
 /// this harness reads and forwards.
 const VERILATOR_CLEAN: &[&str] = &[
+    "const_arith.plr",
+    "const_fn_if.plr",
+    "const_out_params.plr",
+    "const_record_config.plr",
     "accumulator.plr",
     "add_constant.plr",
     "const_then_clocked.plr",

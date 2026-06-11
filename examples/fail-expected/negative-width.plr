@@ -1,0 +1,7 @@
+// `n - 3` with `n = 1` evaluates to -2 (NegativeWidth, plus the width
+// mismatch against uint(4)).
+fn top() -> uint(4) {
+    let n: integer = 1;
+    let x: uint(n - 3) = 0;
+    x
+}

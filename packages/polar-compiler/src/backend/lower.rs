@@ -45,6 +45,7 @@ use crate::hir::body::{
 };
 use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::{Signature, sig_of};
+use crate::hir::types::Folder;
 use crate::hir::types::{
     ConstArg, Direction, Domain, GenericArgs, GenericParam, LocalId, Term, TermKind, Type,
     ValueKind,
@@ -94,6 +95,12 @@ fn build_module<'db>(
         return (SvModule::default(), Vec::new());
     }
     let sig = sig_of(db, krate, def);
+    if is_const_only_fn(sig) {
+        // A const fn (integer-returning, or all-integer params/outs) is
+        // compile-time only — its results reach hardware through evaluated
+        // widths, never as a module.
+        return (SvModule::default(), Vec::new());
+    }
     let body = body(db, krate, def);
 
     // Ports: `dom` generics → clock inputs; value params and the return type are
@@ -118,7 +125,10 @@ fn build_module<'db>(
         } else {
             p.ty.clone()
         };
-        let ty = subst_type(&ty0, self_subst);
+        let ty = ground_widths(db, krate, def, &subst_type(&ty0, self_subst));
+        if is_integer(&ty) {
+            continue; // compile-time only — no port
+        }
         let drives = p.direction == Some(Direction::Out);
         for leaf in flatten_leaves(db, krate, &ty, drives, &sig.generic_params) {
             ports.push(SvPort {
@@ -132,8 +142,10 @@ fn build_module<'db>(
             });
         }
     }
-    if let Some(rt) = &sig.return_type {
-        let rt = subst_type(rt, self_subst);
+    if let Some(rt) = &sig.return_type
+        && !is_integer(&ground_widths(db, krate, def, &subst_type(rt, self_subst)))
+    {
+        let rt = ground_widths(db, krate, def, &subst_type(rt, self_subst));
         for leaf in flatten_leaves(db, krate, &rt, true, &sig.generic_params) {
             ports.push(SvPort {
                 direction: SvPortDirection::Output,
@@ -403,6 +415,10 @@ pub fn sv_file(db: &dyn salsa::Database, krate: SourceRoot) -> SvFile {
 
     let mut modules = Vec::new();
     let mut reqs: Vec<MonoReq> = Vec::new();
+    let fns: Vec<_> = fns
+        .into_iter()
+        .filter(|(_, _, d)| !is_const_only_fn(sig_of(db, krate, *d)))
+        .collect();
     for (_, _, def) in &fns {
         let (m, r) = build_module(db, krate, *def, &[], module_name(map, *def));
         modules.push(m);
@@ -469,12 +485,22 @@ impl<'db> SvLower<'_, 'db> {
             match stmt {
                 Stmt::Let { local, value } => self.lower_let(*local, *value),
                 Stmt::VarDecl { local } => self.declare_local(*local),
-                Stmt::Equation { lhs, rhs } => self.lower_equation(*lhs, *rhs),
+                Stmt::Equation { lhs, rhs } => {
+                    if let ExprKind::Local(l) = self.body.expr(*lhs).kind
+                        && self.is_integer_local(l)
+                    {
+                        continue;
+                    }
+                    self.lower_equation(*lhs, *rhs)
+                }
                 Stmt::Return { value } => self.drive_result(*value),
                 // A bare call statement: a (void) submodule instantiation whose
                 // out-arg connections bind callee `out` params to caller places.
                 Stmt::Expr(e) => {
                     if let Some(uc) = self.as_user_call(*e) {
+                        if self.is_const_only_call(&uc) {
+                            continue; // results reached via const_eval
+                        }
                         self.declare_out_targets(&uc);
                         self.emit_instance(uc, Vec::new());
                     }
@@ -487,6 +513,9 @@ impl<'db> SvLower<'_, 'db> {
     /// (per field); otherwise the local's leaves are declared and each driven by
     /// the corresponding leaf of the value.
     fn lower_let(&mut self, local: LocalId, value: ExprId) {
+        if self.is_integer_local(local) {
+            return;
+        }
         if let Some(reg) = self.as_reg(value) {
             // A register is typed by its D-input (also covers a target whose own
             // type inference left unknown).
@@ -569,7 +598,7 @@ impl<'db> SvLower<'_, 'db> {
 
     /// Declare a `logic` for each of a local's leaves, once per local.
     fn declare_local(&mut self, local: LocalId) {
-        if !self.declared.insert(local) {
+        if self.is_integer_local(local) || !self.declared.insert(local) {
             return;
         }
         let base = self.local_name(local);
@@ -605,7 +634,45 @@ impl<'db> SvLower<'_, 'db> {
             .local_type(local)
             .cloned()
             .or_else(|| self.body.local(local).declared_ty.clone())
-            .map(|t| subst_type(&t, &self.self_subst))
+            .map(|t| {
+                let t = subst_type(&t, &self.self_subst);
+                ground_widths(self.db, self.krate, self.def, &t)
+            })
+    }
+
+    /// A statement-position call is const-only when the callee's every value
+    /// param and return are `integer` — nothing of it is hardware; its outputs
+    /// are reached by `const_eval` through the width trees.
+    fn is_const_only_call(&self, uc: &UserCall<'db>) -> bool {
+        is_const_only_fn(sig_of(self.db, self.krate, uc.def))
+    }
+
+    /// `integer` values are compile-time only — they never become hardware.
+    /// Locals of integer type get no `logic`, no assigns, and a call whose
+    /// connections are all integers gets no instance (its results are reached
+    /// by `const_eval` through the width trees instead).
+    fn is_integer_local(&self, local: LocalId) -> bool {
+        self.local_ty(local)
+            .is_some_and(|t| self.is_const_only_ty(&t))
+    }
+
+    /// `integer`, or a struct whose every field is const-only (a config
+    /// record) — values with no hardware representation.
+    fn is_const_only_ty(&self, ty: &Type<'db>) -> bool {
+        match ty {
+            Type::Value {
+                kind: ValueKind::Integer,
+                ..
+            } => true,
+            Type::Value {
+                kind: ValueKind::Struct { def, .. },
+                ..
+            } => {
+                let sig = sig_of(self.db, self.krate, *def);
+                !sig.fields.is_empty() && sig.fields.iter().all(|f| self.is_const_only_ty(&f.ty))
+            }
+            _ => false,
+        }
     }
 
     /// The scalar leaves (suffix + type) of an expression's type. Mirrors
@@ -733,7 +800,10 @@ impl<'db> SvLower<'_, 'db> {
     fn expr_type(&self, expr: ExprId) -> SvType {
         self.inf
             .expr_type(expr)
-            .map(|t| sv_type(t, &self.sig.generic_params))
+            .map(|t| {
+                let t = ground_widths(self.db, self.krate, self.def, t);
+                sv_type(&t, &self.sig.generic_params)
+            })
             .unwrap_or_else(SvType::bit)
     }
 
@@ -1422,6 +1492,57 @@ fn build_subst<'db>(
 /// Substitute a def's generic args into a (field) type: a `Param(i)` type → the
 /// i-th type arg, a `uint(Param(i))` width → the i-th const arg; nested
 /// struct/port args are substituted recursively. Anything unbound is unchanged.
+/// Ground every evaluable width in a type through `const_eval` — `uint(n+5)`
+/// flattens to `uint(8)` before SV type rendering. Symbolic widths (free
+/// generic params) survive unchanged and render as SV parameters.
+fn ground_widths<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+    ty: &Type<'db>,
+) -> Type<'db> {
+    struct G<'db> {
+        db: &'db dyn salsa::Database,
+        krate: SourceRoot,
+        def: DefId<'db>,
+    }
+    impl<'db> Folder<'db> for G<'db> {
+        fn fold_const(&mut self, c: &ConstArg) -> ConstArg {
+            match c {
+                ConstArg::Local(_) | ConstArg::Op(..) | ConstArg::Field(..) => {
+                    match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c) {
+                        Some(v) => ConstArg::Lit(v),
+                        None => c.clone(),
+                    }
+                }
+                other => other.clone(),
+            }
+        }
+    }
+    G { db, krate, def }.fold_type(ty)
+}
+
+/// A fn that exists only for compile-time evaluation: it returns `integer`,
+/// or every value param (of one or more) is `integer` (an out-param const
+/// helper like `widths(n, => narrow, => wide)`).
+fn is_const_only_fn(sig: &Signature<'_>) -> bool {
+    if sig.return_type.as_ref().is_some_and(is_integer) {
+        return true;
+    }
+    !sig.params.is_empty() && sig.params.iter().all(|p| is_integer(&p.ty))
+}
+
+/// Is this (resolved) type the compile-time-only `integer` scalar?
+fn is_integer(ty: &Type<'_>) -> bool {
+    matches!(
+        ty,
+        Type::Value {
+            kind: ValueKind::Integer,
+            ..
+        }
+    )
+}
+
 fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
     let arg = |i: u32| subst.get(i as usize).and_then(|o| o.as_ref());
     match ty {

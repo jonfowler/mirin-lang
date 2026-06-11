@@ -1,8 +1,0 @@
-// MUST REJECT once const eval lands: `n - 3` with `n = 1` evaluates to -2.
-// integer maths may go negative in intermediates, but a uint width must
-// come out non-negative — a NegativeWidth error at discharge.
-fn top() -> uint(4) {
-    let n = 1;
-    let x: uint(n - 3) = 0;
-    x
-}
