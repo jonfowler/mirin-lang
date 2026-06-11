@@ -548,33 +548,82 @@ impl<'db> TypeLowerer<'_, 'db> {
         ConstArg::Deferred
     }
 
-    /// Generic args at a struct/port reference (`Bus(uint(8))`). For Q3b a
-    /// numeric arg is a `Const`, anything else a `Type`; const/domain args passed
-    /// by name (and named-section `{clk}` args) are refined in Q3d.
+    /// Generic args at a struct/port reference (`Bus(uint(8))`,
+    /// `DF{clk}(uint(8))`). Named-section args lower first, then positional,
+    /// matching the declared param order, so args align with
+    /// `generic_params` by index when fully supplied.
     fn lower_args(&self, node: &Node, source: &str) -> GenericArgs<'db> {
         let mut args = Vec::new();
+        // Named-section args (`DF{clk}`) come first: a def's generic_params
+        // list the named section before the positional one, and args align
+        // with params by index.
+        let mut cursor = node.walk();
+        let named: Vec<Node> = node
+            .children(&mut cursor)
+            .filter(|c| c.kind() == "type_named_args")
+            .collect();
+        for sec in named {
+            self.lower_arg_section(&sec, source, &mut args);
+        }
         if let Some(index) = type_index(node) {
-            let mut cursor = index.walk();
-            for ta in index
-                .children(&mut cursor)
-                .filter(|c| c.kind() == "type_argument")
-            {
-                let mut tc = ta.walk();
-                let Some(inner) = ta.children(&mut tc).find(|n| n.is_named()) else {
-                    continue;
-                };
-                if inner.kind() == "number" {
-                    let c = node_text(&inner, source)
-                        .parse::<u64>()
-                        .map(ConstArg::Lit)
-                        .unwrap_or(ConstArg::Deferred);
-                    args.push(Term::Const(c));
-                } else {
-                    args.push(Term::Type(self.lower_type(&inner, source)));
-                }
-            }
+            self.lower_arg_section(&index, source, &mut args);
         }
         GenericArgs(args)
+    }
+
+    fn lower_arg_section(&self, section: &Node, source: &str, args: &mut Vec<Term<'db>>) {
+        let mut cursor = section.walk();
+        for ta in section
+            .children(&mut cursor)
+            .filter(|c| c.kind() == "type_argument")
+        {
+            let mut tc = ta.walk();
+            let Some(inner) = ta.children(&mut tc).find(|n| n.is_named()) else {
+                continue;
+            };
+            args.push(self.lower_generic_arg(&inner, source));
+        }
+    }
+
+    /// Lower one generic argument, kind-directed by what the name means in
+    /// the *enclosing* def's environment: a number is a const; a bare name
+    /// that names a `dom` generic is a domain argument (`DF{clk}` →
+    /// `Domain::Param(i)`), a `param` generic a const argument; anything else
+    /// lowers as a type. (The target def's own param kinds can't be consulted
+    /// here — `sig_of(target)` from inside `sig_of(self)` would cycle on
+    /// mutually-referencing types.)
+    fn lower_generic_arg(&self, inner: &Node, source: &str) -> Term<'db> {
+        if inner.kind() == "number" {
+            let c = node_text(inner, source)
+                .parse::<u64>()
+                .map(ConstArg::Lit)
+                .unwrap_or(ConstArg::Deferred);
+            return Term::Const(c);
+        }
+        let mut cursor = inner.walk();
+        let plain_name = inner.kind() == "type_expression"
+            && inner.child_by_field_name("domain").is_none()
+            && !inner
+                .children(&mut cursor)
+                .any(|c| matches!(c.kind(), "type_index" | "type_named_args"));
+        if plain_name {
+            let name = field_text(inner, "name", source);
+            if let Some(i) = self
+                .generics
+                .iter()
+                .position(|g| g.name == name && matches!(g.kind, TermKind::Domain(_)))
+            {
+                return Term::Domain(Domain::Param(i as u32));
+            }
+            if let Some(i) = self
+                .generics
+                .iter()
+                .position(|g| g.name == name && matches!(g.kind, TermKind::Const))
+            {
+                return Term::Const(ConstArg::Param(i as u32));
+            }
+        }
+        Term::Type(self.lower_type(inner, source))
     }
 
     fn generic_index(&self, name: &str, kind: TermKind) -> Option<u32> {

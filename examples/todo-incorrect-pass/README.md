@@ -19,12 +19,10 @@ by the checker that needs to land:
 `dup-record-field`, `field-on-scalar`) — infer now checks positional arity
 and record/field shape.
 
-**Lowering diagnostics (sig/body):** `unresolved-type` and `num-overflow`
-flipped to `fail-expected/` (UnresolvedType / NumberTooLarge diagnostics).
-
-- `named-dom-cross.plr` — named type args (`DF{c1}(...)`) are never lowered,
-  so a clock-domain crossing type-checks. The domain-checking hole with the
-  highest stakes here.
+**Lowering diagnostics (sig/body):** `unresolved-type`, `num-overflow` and
+`named-dom-cross` all flipped to `fail-expected/` (UnresolvedType /
+NumberTooLarge diagnostics; named type args now lower to real Domain args,
+so the CDC is a DomainMismatch).
 
 **Driver checking (check_drivers):**
 

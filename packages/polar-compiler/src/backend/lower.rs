@@ -1387,22 +1387,29 @@ fn flatten_leaves(
     }
 }
 
-/// Build a substitution from a def's generic params to a use-site's args:
-/// positional args bind to positional params in order (the named section —
-/// `dom`/by-name — is matched elsewhere and does not affect SV structure).
-/// Indexed by full generic-param position; named params stay `None`.
+/// Build a substitution from a def's generic params to a use-site's args.
+/// Args appear in declared-param order (named section first, then
+/// positional — `sig.rs::lower_args`), but a use site may omit the named
+/// section entirely (`Buf(8)` for `Buf{dom clk}(param N)`), so each arg binds
+/// the next unfilled param *of its own kind*. Indexed by full generic-param
+/// position; unsupplied params stay `None`.
 fn build_subst<'db>(
     generic_params: &[GenericParam],
     args: &GenericArgs<'db>,
 ) -> Vec<Option<Term<'db>>> {
-    let mut subst = vec![None; generic_params.len()];
-    let mut ai = 0;
-    for (i, g) in generic_params.iter().enumerate() {
-        if !g.from_named_section {
-            if let Some(a) = args.0.get(ai) {
-                subst[i] = Some(a.clone());
-            }
-            ai += 1;
+    let mut subst: Vec<Option<Term<'db>>> = vec![None; generic_params.len()];
+    let mut start = 0;
+    for a in &args.0 {
+        let matches_kind = |g: &GenericParam| match a {
+            Term::Type(_) => g.kind == TermKind::Type,
+            Term::Const(_) => g.kind == TermKind::Const,
+            Term::Domain(_) => matches!(g.kind, TermKind::Domain(_)),
+        };
+        if let Some(i) = (start..generic_params.len())
+            .find(|&i| subst[i].is_none() && matches_kind(&generic_params[i]))
+        {
+            subst[i] = Some(a.clone());
+            start = i + 1;
         }
     }
     subst
