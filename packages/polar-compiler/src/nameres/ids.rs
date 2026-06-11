@@ -83,6 +83,9 @@ pub enum DefKind {
     /// A function in an `impl` block. Reached through the impl-method index, not
     /// a module name table.
     Method,
+    /// A `trait Name { … }` declaration. Item namespace; its method decls are
+    /// `Method` defs owned by the trait.
+    Trait,
     /// An `impl T { … }` block. Introduces no name of its own.
     Impl,
     /// A primitive type baked into the language (`uint`, `bool`, `Clock`, …),
@@ -105,6 +108,7 @@ impl DefKind {
             | DefKind::Ctor
             | DefKind::Method
             | DefKind::Impl
+            | DefKind::Trait
             | DefKind::BuiltinType => Namespace::Item,
         }
     }

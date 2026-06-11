@@ -1,0 +1,157 @@
+========================================
+trait declaration with method and const
+========================================
+
+trait Bits {
+  const width: integer;
+  fn pack(self) -> uint(width);
+  fn unpack(b: uint(width)) -> Self;
+}
+
+---
+
+(source_file
+  (trait_definition
+    name: (identifier)
+    body: (trait_body
+      (trait_const
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)))
+      (trait_method
+        name: (identifier)
+        parameters: (parameter_section
+          (parameter))
+        return_type: (return_type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (type_expression
+                name: (identifier))))))
+      (trait_method
+        name: (identifier)
+        parameters: (parameter_section
+          (parameter
+            name: (identifier)
+            type: (type_expression
+              name: (identifier)
+              (type_index
+                (type_argument
+                  (type_expression
+                    name: (identifier)))))))
+        return_type: (return_type_expression
+          name: (identifier))))))
+
+========================================
+trait impl with binder and for
+========================================
+
+impl {param n: integer} Add for uint(n) {
+  fn add(self, other: Self) -> Self {
+  }
+}
+
+---
+
+(source_file
+  (impl_block
+    named_parameters: (named_parameter_section
+      (named_parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    name: (identifier)
+    self_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (type_expression
+            name: (identifier)))))
+    body: (impl_body
+      (function_definition
+        name: (identifier)
+        parameters: (parameter_section
+          (parameter)
+          (parameter
+            name: (identifier)
+            type: (type_expression
+              name: (identifier))))
+        return_type: (return_type_expression
+          name: (identifier))
+        body: (block)))))
+
+========================================
+bounded type param and where clause
+========================================
+
+fn sum {param T: Add + Bits} (a: T, b: T) -> T where T: Bits {
+  a
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    named_parameters: (named_parameter_section
+      (named_parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))
+        bound: (trait_bound
+          name: (identifier))))
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    return_type: (return_type_expression
+      name: (identifier))
+    where: (where_clause
+      (where_predicate
+        name: (identifier)
+        bound: (trait_bound
+          name: (identifier))))
+    body: (block
+      tail: (expression
+        (path_expression
+          segment: (identifier))))))
+
+========================================
+impl with associated const value
+========================================
+
+impl Bits for bool {
+  const width: integer = 1;
+  fn pack(self) -> uint(1) {
+  }
+}
+
+---
+
+(source_file
+  (impl_block
+    name: (identifier)
+    self_type: (return_type_expression
+      name: (identifier))
+    body: (impl_body
+      (impl_const
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))
+        value: (expression
+          (number)))
+      (function_definition
+        name: (identifier)
+        parameters: (parameter_section
+          (parameter))
+        return_type: (return_type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))
+        body: (block)))))

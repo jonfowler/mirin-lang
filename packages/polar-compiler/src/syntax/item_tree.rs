@@ -28,6 +28,7 @@ pub enum Item {
     Fn(FnItem),
     Struct(NamedItem),
     Port(NamedItem),
+    Trait(TraitItem),
     Impl(ImplItem),
     Mod(ModItem),
     Use(UseItem),
@@ -53,13 +54,37 @@ pub struct NamedItem {
     pub ast_id: FileAstId,
 }
 
-/// An `impl Owner { … }` block. `owner` is the type name as written (resolved in
-/// Q2); `methods` is the impl-method index name resolution needs.
+/// A `trait Name { … }` declaration: method signatures and associated-const
+/// declarations (no bodies).
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct TraitItem {
+    pub name: String,
+    pub visibility: Visibility,
+    pub ast_id: FileAstId,
+    pub methods: Vec<FnItem>,
+    pub consts: Vec<AssocConstItem>,
+}
+
+/// An associated const: declared in a trait (`const width: integer;`) or
+/// valued in an impl (`const width: integer = 1;`).
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct AssocConstItem {
+    pub name: String,
+    pub ast_id: FileAstId,
+}
+
+/// An `impl Owner { … }` or `impl Trait for SelfType { … }` block. `owner` is
+/// the implementing type's name as written — the `name` field for an inherent
+/// impl, the head of the `for` self type for a trait impl (resolved in Q2);
+/// `methods` is the impl-method index name resolution needs.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub struct ImplItem {
     pub owner: String,
+    /// The trait's name, for a trait impl.
+    pub trait_: Option<String>,
     pub ast_id: FileAstId,
     pub methods: Vec<FnItem>,
+    pub consts: Vec<AssocConstItem>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -141,6 +166,7 @@ fn lower_items(node: Node, source: &str, ast_ids: &AstIdMap) -> Vec<Item> {
             "function_definition" => Item::Fn(fn_item(&child, source, ast_ids)),
             "struct_definition" => Item::Struct(named_item(&child, source, ast_ids)),
             "port_definition" => Item::Port(named_item(&child, source, ast_ids)),
+            "trait_definition" => Item::Trait(trait_item(&child, source, ast_ids)),
             "impl_block" => Item::Impl(impl_item(&child, source, ast_ids)),
             "module_definition" => Item::Mod(mod_item(&child, source, ast_ids)),
             "use_declaration" => Item::Use(UseItem {
@@ -179,20 +205,61 @@ fn named_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> NamedItem {
 }
 
 fn impl_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> ImplItem {
-    let methods = node
-        .child_by_field_name("body")
-        .map(|body| {
-            let mut cursor = body.walk();
-            body.children(&mut cursor)
-                .filter(|c| c.kind() == "function_definition")
-                .map(|c| fn_item(&c, source, ast_ids))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut methods = Vec::new();
+    let mut consts = Vec::new();
+    if let Some(body) = node.child_by_field_name("body") {
+        let mut cursor = body.walk();
+        for c in body.children(&mut cursor) {
+            match c.kind() {
+                "function_definition" => methods.push(fn_item(&c, source, ast_ids)),
+                "impl_const" => consts.push(AssocConstItem {
+                    name: name_of(&c, source),
+                    ast_id: ast_id(&c, ast_ids),
+                }),
+                _ => {}
+            }
+        }
+    }
+    // `impl Trait for SelfType`: the node's `name` is the trait; the
+    // implementing type is the self type's head name.
+    let (owner, trait_) = match node.child_by_field_name("self_type") {
+        Some(st) => (
+            field_text(&st, "name", source),
+            Some(name_of(node, source)),
+        ),
+        None => (name_of(node, source), None),
+    };
     ImplItem {
-        owner: name_of(node, source),
+        owner,
+        trait_,
         ast_id: ast_id(node, ast_ids),
         methods,
+        consts,
+    }
+}
+
+fn trait_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> TraitItem {
+    let mut methods = Vec::new();
+    let mut consts = Vec::new();
+    if let Some(body) = node.child_by_field_name("body") {
+        let mut cursor = body.walk();
+        for c in body.children(&mut cursor) {
+            match c.kind() {
+                "trait_method" => methods.push(fn_item(&c, source, ast_ids)),
+                "trait_const" => consts.push(AssocConstItem {
+                    name: name_of(&c, source),
+                    ast_id: ast_id(&c, ast_ids),
+                }),
+                _ => {}
+            }
+        }
+    }
+    TraitItem {
+        name: name_of(node, source),
+        visibility: visibility(node, source),
+        ast_id: ast_id(node, ast_ids),
+        methods,
+        consts,
     }
 }
 

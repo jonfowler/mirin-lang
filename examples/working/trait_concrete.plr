@@ -1,0 +1,17 @@
+trait Scale {
+    fn scaled(self, k: uint(8)) -> uint(8);
+}
+
+struct Sample = sample {
+    value: uint(8),
+}
+
+impl Scale for Sample {
+    fn scaled(self, k: uint(8)) -> uint(8) {
+        return self.value * k;
+    }
+}
+
+fn top {dom clk: Clock} (s: Sample @clk, k: uint(8) @clk) -> uint(8) @clk {
+    s.scaled(k)
+}

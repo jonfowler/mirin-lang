@@ -47,8 +47,10 @@ skeleton don't invalidate name resolution.
 ### Def map — `nameres/def_map.rs`
 Crate-wide name resolution over the per-file item trees: the module tree
 (crate root, synthetic prelude, inline `mod`s), `(name, Namespace)` tables,
-`use`-import fixpoint with visibility, `impl_methods` index, and stable
-`DefId ↔ DefPath` identity. See `planning/modules.md`.
+`use`-import fixpoint with visibility, the `impl_methods` (inherent),
+`trait_methods` (decls), and `trait_impls` (per-trait impl list) indexes, and
+stable `DefId ↔ DefPath` identity. See `planning/modules.md`,
+`planning/traits.md`.
 
 ### Typed-HIR vocabulary — `hir/types.rs`
 One term language (Q7, `planning/q7_terms_and_domains.md`): `Type`, `ConstArg`

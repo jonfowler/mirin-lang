@@ -117,9 +117,21 @@ impl<'a> Formatter<'a> {
             }
             "struct_definition" => self.struct_def(n),
             "port_definition" => self.port_def(n),
+            "trait_definition" => self.trait_def(n),
+            "trait_method" => self.trait_method(n),
+            "trait_const" | "impl_const" => self.assoc_const(n),
             "impl_block" => self.impl_block(n),
             "module_definition" => self.module_def(n),
             "use_declaration" => self.use_decl(n),
+
+            "trait_bound" => {
+                let name = self.text(self.field(n, "name").unwrap());
+                match n.named_children(&mut n.walk()).find(|c| c.kind() == "type_index") {
+                    Some(ix) => concat([text(name), self.doc(ix)]),
+                    None => text(name),
+                }
+            }
+            "where_clause" => self.where_clause(n),
 
             "let_statement" => self.let_stmt(n),
             "return_statement" => self.return_stmt(n),
@@ -316,8 +328,13 @@ impl<'a> Formatter<'a> {
             concat(parts)
         };
 
+        let where_doc = match self.field(n, "where") {
+            Some(w) => concat([text(" "), self.where_clause(w)]),
+            None => NIL,
+        };
         concat([
             sig,
+            where_doc,
             text(" "),
             self.block_doc(self.field(n, "body").unwrap()),
         ])
@@ -374,22 +391,107 @@ impl<'a> Formatter<'a> {
 
     fn impl_block(&self, n: Node) -> Doc {
         let name = self.text(self.field(n, "name").unwrap());
-        // Binder-first: `impl {dom clk: Clock} Stream8 { … }`.
-        let header = match self.field(n, "named_parameters") {
-            Some(named) => concat([
-                text("impl "),
-                self.named_section(named),
-                text(" "),
-                text(name),
-            ]),
-            None => concat([text("impl "), text(name)]),
-        };
+        // Binder-first: `impl {dom clk: Clock} Stream8 { … }`; a trait impl
+        // adds `for SelfType`.
+        let mut parts = vec![text("impl ")];
+        if let Some(named) = self.field(n, "named_parameters") {
+            parts.push(self.named_section(named));
+            parts.push(text(" "));
+        }
+        parts.push(text(name));
+        if let Some(st) = self.field(n, "self_type") {
+            parts.push(text(" for "));
+            parts.push(self.doc(st));
+        }
+        if let Some(w) = self.field(n, "where") {
+            parts.push(text(" "));
+            parts.push(self.where_clause(w));
+        }
+        parts.push(text(" "));
+        parts.push(self.braced_items(self.field(n, "body").unwrap()));
+        concat(parts)
+    }
 
+    fn trait_def(&self, n: Node) -> Doc {
+        let vis = self.vis_prefix(n);
+        let name = self.text(self.field(n, "name").unwrap());
         concat([
-            header,
+            vis,
+            text("trait "),
+            text(name),
             text(" "),
             self.braced_items(self.field(n, "body").unwrap()),
         ])
+    }
+
+    /// A trait's method signature: fn-shaped, no body, trailing `;`.
+    fn trait_method(&self, n: Node) -> Doc {
+        let name = self.text(self.field(n, "name").unwrap());
+        let mut parts = vec![text("fn "), text(name)];
+        if let Some(named) = self.field(n, "named_parameters") {
+            parts.push(self.named_section(named));
+        }
+        parts.push(self.params_section(self.field(n, "parameters").unwrap()));
+        if let Some(r) = self.field(n, "return_type") {
+            parts.push(text(" -> "));
+            parts.push(self.doc(r));
+        }
+        parts.push(text(";"));
+        concat(parts)
+    }
+
+    /// `const width: integer;` (trait) / `const width: integer = 1;` (impl).
+    fn assoc_const(&self, n: Node) -> Doc {
+        let name = self.text(self.field(n, "name").unwrap());
+        let mut parts = vec![
+            text("const "),
+            text(name),
+            text(": "),
+            self.doc(self.field(n, "type").unwrap()),
+        ];
+        if let Some(v) = self.field(n, "value") {
+            parts.push(text(" = "));
+            parts.push(self.doc(v));
+        }
+        parts.push(text(";"));
+        concat(parts)
+    }
+
+    fn where_clause(&self, n: Node) -> Doc {
+        let mut cursor = n.walk();
+        let preds: Vec<Doc> = n
+            .named_children(&mut cursor)
+            .filter(|c| c.kind() == "where_predicate")
+            .map(|c| {
+                let name = self.text(self.field(c, "name").unwrap());
+                concat([text(name), text(": "), self.bounds(c)])
+            })
+            .collect();
+        let mut parts = vec![text("where ")];
+        for (i, p) in preds.into_iter().enumerate() {
+            if i > 0 {
+                parts.push(text(", "));
+            }
+            parts.push(p);
+        }
+        concat(parts)
+    }
+
+    /// The `+`-joined `bound` fields of a node (`Add + Bits`).
+    fn bounds(&self, n: Node) -> Doc {
+        let mut cursor = n.walk();
+        let bounds: Vec<Doc> = n
+            .children_by_field_name("bound", &mut cursor)
+            .map(|b| self.doc(b))
+            .collect();
+        let mut parts = Vec::new();
+        for (i, b) in bounds.into_iter().enumerate() {
+            if i > 0 {
+                parts.push(text(" + "));
+            }
+            parts.push(b);
+        }
+        concat(parts)
     }
 
     fn module_def(&self, n: Node) -> Doc {
@@ -740,6 +842,9 @@ impl<'a> Formatter<'a> {
         parts.push(text(self.text(self.field(n, "name").unwrap())));
         if let Some(ty) = self.field(n, "type") {
             parts.push(concat([text(": "), self.doc(ty)]));
+            if self.field(n, "bound").is_some() {
+                parts.push(concat([text(" + "), self.bounds(n)]));
+            }
         }
         if let Some(def) = self.field(n, "default") {
             parts.push(concat([text(" = "), self.doc(def)]));
@@ -766,6 +871,9 @@ impl<'a> Formatter<'a> {
         parts.push(text(self.text(self.field(n, "name").unwrap())));
         if let Some(ty) = self.field(n, "type") {
             parts.push(concat([text(": "), self.doc(ty)]));
+            if self.field(n, "bound").is_some() {
+                parts.push(concat([text(" + "), self.bounds(n)]));
+            }
         }
         if let Some(def) = self.field(n, "default") {
             parts.push(concat([text(" = "), self.doc(def)]));

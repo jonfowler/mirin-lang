@@ -118,6 +118,7 @@ pub enum DefDiagnosticKind {
     DuplicateDef { name: String },
     /// An `impl T { … }` whose owner type `T` did not resolve.
     UnresolvedImplOwner { name: String },
+    UnresolvedTrait { name: String },
 }
 
 impl DefDiagnostic {
@@ -132,6 +133,9 @@ impl DefDiagnostic {
             DefDiagnosticKind::PrivateImport { name } => format!("`{name}` is private"),
             DefDiagnosticKind::DuplicateDef { name } => {
                 format!("the name `{name}` is defined more than once in this module")
+            }
+            DefDiagnosticKind::UnresolvedTrait { name } => {
+                format!("cannot find trait `{name}`")
             }
             DefDiagnosticKind::UnresolvedImplOwner { name } => {
                 format!("cannot find type `{name}` for this `impl`")
@@ -169,6 +173,17 @@ impl<'db> ModuleData<'db> {
     }
 }
 
+/// One `impl Trait for SelfType { … }` block, as the def map records it.
+/// `self_def` is the implementing type's head def; full self-type matching
+/// (generic args) happens in the solver against the lowered impl header.
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
+pub struct TraitImplData<'db> {
+    pub self_def: DefId<'db>,
+    pub methods: Vec<(String, DefId<'db>)>,
+    pub file: SourceFile,
+    pub ast_id: crate::syntax::ast_id::FileAstId,
+}
+
 /// Per-def metadata, recoverable from a `DefId` alone (the way rustc exposes
 /// `tcx.def_kind`).
 //
@@ -198,6 +213,12 @@ pub struct CrateDefMap<'db> {
     /// The impl-method index: `(owner type, method name) → method def`. Built
     /// from `impl T { … }` blocks; type-directed dispatch (Q3 `infer`) reads it.
     impl_methods: HashMap<(DefId<'db>, String), DefId<'db>>,
+    /// `(trait def, method name) → method-DECL def` — the trait's own method
+    /// signatures.
+    trait_methods: HashMap<(DefId<'db>, String), DefId<'db>>,
+    /// Per-trait impls (`impl Trait for SelfType`), in source order. The
+    /// solver's impl-candidate source (planning/traits.md).
+    trait_impls: HashMap<DefId<'db>, Vec<TraitImplData<'db>>>,
     /// Stable `DefId → DefPath`/`DefPathHash` identity, plus the reverse index.
     def_paths: HashMap<DefId<'db>, DefPath>,
     def_path_hashes: HashMap<DefId<'db>, DefPathHash>,
@@ -244,6 +265,16 @@ impl<'db> CrateDefMap<'db> {
     /// The method `name` on owner type `owner`, via the impl-method index.
     pub fn impl_method(&self, owner: DefId<'db>, name: &str) -> Option<DefId<'db>> {
         self.impl_methods.get(&(owner, name.to_owned())).copied()
+    }
+
+    /// A trait's own method declaration, by name.
+    pub fn trait_method(&self, trait_def: DefId<'db>, name: &str) -> Option<DefId<'db>> {
+        self.trait_methods.get(&(trait_def, name.to_owned())).copied()
+    }
+
+    /// The `impl Trait for …` blocks for a trait, in source order.
+    pub fn trait_impls(&self, trait_def: DefId<'db>) -> &[TraitImplData<'db>] {
+        self.trait_impls.get(&trait_def).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// A def's stable `DefPath`.
@@ -433,6 +464,8 @@ impl<'db> Collector<'db> {
                 defs: HashMap::new(),
                 def_to_module: HashMap::new(),
                 impl_methods: HashMap::new(),
+                trait_methods: HashMap::new(),
+                trait_impls: HashMap::new(),
                 def_paths: HashMap::new(),
                 def_path_hashes: HashMap::new(),
                 hash_to_def: HashMap::new(),
@@ -534,8 +567,49 @@ impl<'db> Collector<'db> {
                     self.uses
                         .push((module, file, u.ast_id, u.visibility.clone(), u.tree.clone()))
                 }
+                Item::Trait(t) => self.declare_trait(file, t, module),
                 Item::Impl(i) => self.impls.push((module, file, i.clone())),
             }
+        }
+    }
+
+    /// Declare a trait: the trait def (Item namespace) plus a `Method` def per
+    /// method declaration, owned by the trait and indexed in `trait_methods`.
+    /// Associated-const declarations get their defs with the assoc-const work
+    /// (planning/traits.md T4).
+    fn declare_trait(
+        &mut self,
+        file: SourceFile,
+        item: &crate::syntax::item_tree::TraitItem,
+        module: ModuleId,
+    ) {
+        let trait_def = self.declare(
+            file,
+            item.ast_id,
+            DefRole::Item,
+            &item.name,
+            DefKind::Trait,
+            module,
+            &item.visibility,
+            None,
+        );
+        for method in &item.methods {
+            let def = DefId::new(self.db, file, method.ast_id, DefRole::Item);
+            let vis = self.resolve_visibility(&method.visibility, module);
+            self.map.defs.insert(
+                def,
+                DefData {
+                    kind: DefKind::Method,
+                    name: method.name.clone(),
+                    module,
+                    visibility: vis,
+                    owner: Some(trait_def),
+                },
+            );
+            self.def_order.push(def);
+            self.map
+                .trait_methods
+                .insert((trait_def, method.name.clone()), def);
         }
     }
 
@@ -1031,9 +1105,12 @@ impl<'db> Collector<'db> {
     fn resolve_impls(&mut self) {
         let impls = std::mem::take(&mut self.impls);
         for (module, file, item) in impls {
+            let is_trait_impl = item.trait_.is_some();
             let owner = self.map.resolve_local(module, &item.owner, Namespace::Item);
             let owner = match owner.and_then(|o| self.map.def_data(o).map(|d| (o, d.kind))) {
                 Some((o, DefKind::Struct | DefKind::Port)) => o,
+                // A trait impl may implement for a builtin (`impl Bits for bool`).
+                Some((o, DefKind::BuiltinType)) if is_trait_impl => o,
                 _ => {
                     self.map.diagnostics.push(DefDiagnostic {
                         anchor: Some((file, item.ast_id)),
@@ -1044,6 +1121,26 @@ impl<'db> Collector<'db> {
                     continue;
                 }
             };
+            // A trait impl's trait must resolve to a trait def.
+            let trait_def = match &item.trait_ {
+                None => None,
+                Some(tname) => {
+                    let t = self.map.resolve_local(module, tname, Namespace::Item);
+                    match t.and_then(|t| self.map.def_data(t).map(|d| (t, d.kind))) {
+                        Some((t, DefKind::Trait)) => Some(t),
+                        _ => {
+                            self.map.diagnostics.push(DefDiagnostic {
+                                anchor: Some((file, item.ast_id)),
+                                kind: DefDiagnosticKind::UnresolvedTrait {
+                                    name: tname.clone(),
+                                },
+                            });
+                            continue;
+                        }
+                    }
+                }
+            };
+            let mut impl_methods: Vec<(String, DefId<'db>)> = Vec::new();
             for method in &item.methods {
                 let def = DefId::new(self.db, file, method.ast_id, DefRole::Item);
                 let vis = self.resolve_visibility(&method.visibility, module);
@@ -1058,11 +1155,27 @@ impl<'db> Collector<'db> {
                     },
                 );
                 self.def_order.push(def);
-                // Last writer wins on a duplicate method name (lenient; the
-                // duplicate-method diagnostic lands with the error surface, Q6).
-                self.map
-                    .impl_methods
-                    .insert((owner, method.name.clone()), def);
+                match trait_def {
+                    // Trait-impl methods are reached through trait selection,
+                    // never the inherent index (an inherent method and a trait
+                    // method may share a name; inherent wins at dispatch).
+                    Some(_) => impl_methods.push((method.name.clone(), def)),
+                    // Last writer wins on a duplicate method name (lenient; the
+                    // duplicate-method diagnostic lands with the error surface, Q6).
+                    None => {
+                        self.map
+                            .impl_methods
+                            .insert((owner, method.name.clone()), def);
+                    }
+                }
+            }
+            if let Some(t) = trait_def {
+                self.map.trait_impls.entry(t).or_default().push(TraitImplData {
+                    self_def: owner,
+                    methods: impl_methods,
+                    file,
+                    ast_id: item.ast_id,
+                });
             }
         }
     }

@@ -28,7 +28,7 @@ impl FileAstId {
 
     /// A synthetic id for a def with no source location (the prelude's builtins).
     /// Uses a reserved kind byte (`0xFF`) so it can never collide with an id
-    /// minted from a real CST node (whose kinds are `0..=5`).
+    /// minted from a real CST node (whose kinds are `0..=7`).
     pub fn synthetic(index: u16) -> FileAstId {
         FileAstId((0xFF << 24) | index as u32)
     }
@@ -45,15 +45,22 @@ pub enum AstIdKind {
     Impl = 3,
     Mod = 4,
     Use = 5,
+    Trait = 6,
+    /// An associated const (`trait_const` / `impl_const`).
+    Const = 7,
 }
 
 impl AstIdKind {
     fn from_node_kind(kind: &str) -> Option<Self> {
         Some(match kind {
             "function_definition" => AstIdKind::Fn,
+            // A trait's method decl is fn-shaped; it shares the Fn kind.
+            "trait_method" => AstIdKind::Fn,
             "struct_definition" => AstIdKind::Struct,
             "port_definition" => AstIdKind::Port,
             "impl_block" => AstIdKind::Impl,
+            "trait_definition" => AstIdKind::Trait,
+            "trait_const" | "impl_const" => AstIdKind::Const,
             "module_definition" => AstIdKind::Mod,
             "use_declaration" => AstIdKind::Use,
             _ => return None,
@@ -68,14 +75,16 @@ impl AstIdKind {
             3 => AstIdKind::Impl,
             4 => AstIdKind::Mod,
             5 => AstIdKind::Use,
+            6 => AstIdKind::Trait,
+            7 => AstIdKind::Const,
             other => panic!("invalid AstIdKind discriminant {other}"),
         }
     }
 
     /// Does this item nest further items (so the walk recurses into it)? Only
-    /// modules and impls do; fn/struct/port bodies hold no items.
+    /// modules, impls, and traits do; fn/struct/port bodies hold no items.
     fn is_container(self) -> bool {
-        matches!(self, AstIdKind::Mod | AstIdKind::Impl)
+        matches!(self, AstIdKind::Mod | AstIdKind::Impl | AstIdKind::Trait)
     }
 }
 

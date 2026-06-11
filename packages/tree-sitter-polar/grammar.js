@@ -35,6 +35,7 @@ module.exports = grammar({
         $.function_definition,
         $.struct_definition,
         $.port_definition,
+        $.trait_definition,
         $.impl_block,
         $.module_definition,
         $.use_declaration,
@@ -113,18 +114,90 @@ module.exports = grammar({
         field("body", $.port_body),
       ),
 
+    // A trait declaration: method signatures (no bodies) and associated
+    // const declarations. `Self` is an ordinary identifier, resolved during
+    // lowering. See planning/traits.md.
+    trait_definition: ($) =>
+      seq(
+        optional(field("visibility", $.visibility_modifier)),
+        "trait",
+        field("name", $.identifier),
+        field("body", $.trait_body),
+      ),
+
+    trait_body: ($) =>
+      seq("{", repeat(choice($.trait_method, $.trait_const)), "}"),
+
+    trait_method: ($) =>
+      seq(
+        "fn",
+        field("name", $.identifier),
+        optional(field("named_parameters", $.named_parameter_section)),
+        field("parameters", $.parameter_section),
+        optional(seq("->", field("return_type", $.return_type_expression))),
+        ";",
+      ),
+
+    trait_const: ($) =>
+      seq(
+        "const",
+        field("name", $.identifier),
+        ":",
+        field("type", $.type_expression),
+        ";",
+      ),
+
     // Binder-first: `impl {dom clk: Clock} Stream8 { … }` — the braces after
     // `impl` DECLARE generics; the owner is applied implicitly (via `self @clk`
-    // etc.), never with application braces of its own.
+    // etc.), never with application braces of its own. A trait impl names the
+    // trait and the implementing type: `impl {param n: integer} Add for
+    // uint(n) { … }`. The self type uses the restricted (no named-args) type
+    // form for the same reason as return types: a trailing `{` opens the body.
     impl_block: ($) =>
       seq(
         "impl",
         optional(field("named_parameters", $.named_parameter_section)),
         field("name", $.identifier),
+        optional(seq("for", field("self_type", $.return_type_expression))),
+        optional(field("where", $.where_clause)),
         field("body", $.impl_body),
       ),
 
-    impl_body: ($) => seq("{", repeat($.function_definition), "}"),
+    impl_body: ($) =>
+      seq("{", repeat(choice($.function_definition, $.impl_const)), "}"),
+
+    // An associated const's value in an impl. The value is a const
+    // expression; semantics land with associated consts (planning/traits.md
+    // T4) — the grammar carries them from the start.
+    impl_const: ($) =>
+      seq(
+        "const",
+        field("name", $.identifier),
+        ":",
+        field("type", $.type_expression),
+        "=",
+        field("value", $.expression),
+        ";",
+      ),
+
+    // `where T: Add + Bits, U: Bits` — trait-bound predicates on generic
+    // params. Bounds use the restricted form (name + optional positional
+    // args): a brace after a bound would open the item's body. Domain
+    // predicates (`T @ clk`) join when planning/domain_checking_redux.md
+    // lands.
+    where_clause: ($) =>
+      seq("where", commaSep1($.where_predicate), optional(",")),
+
+    where_predicate: ($) =>
+      seq(
+        field("name", $.identifier),
+        ":",
+        field("bound", $.trait_bound),
+        repeat(seq("+", field("bound", $.trait_bound))),
+      ),
+
+    trait_bound: ($) =>
+      prec.right(seq(field("name", $.identifier), optional($.type_index))),
 
     function_definition: ($) =>
       seq(
@@ -134,6 +207,7 @@ module.exports = grammar({
         optional(field("named_parameters", $.named_parameter_section)),
         field("parameters", $.parameter_section),
         optional(seq("->", field("return_type", $.return_type_expression))),
+        optional(field("where", $.where_clause)),
         choice(
           field("body", $.block),
           seq("=", "verilog", field("verilog_body", $.verilog_block)),
@@ -168,7 +242,13 @@ module.exports = grammar({
           optional(field("direction", choice("in", "out"))),
           optional(field("kind", choice("param", "dom"))),
           field("name", $.identifier),
-          optional(seq(":", field("type", $.type_expression))),
+          optional(
+            seq(
+              ":",
+              field("type", $.type_expression),
+              repeat(seq("+", field("bound", $.trait_bound))),
+            ),
+          ),
           optional(seq("=", field("default", $.expression))),
         ),
       ),
@@ -185,6 +265,7 @@ module.exports = grammar({
           field("name", $.identifier),
           ":",
           field("type", $.type_expression),
+          repeat(seq("+", field("bound", $.trait_bound))),
           optional(seq("=", field("default", $.expression))),
         ),
       ),

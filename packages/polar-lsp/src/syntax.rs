@@ -41,6 +41,7 @@ fn symbol(node: Node, rope: &Rope, src: &str, enc: Encoding) -> Option<DocumentS
         ),
         "module_definition" => (SymbolKind::MODULE, module_children(node, rope, src, enc)),
         "impl_block" => (SymbolKind::NAMESPACE, impl_methods(node, rope, src, enc)),
+        "trait_definition" => (SymbolKind::INTERFACE, trait_members(node, rope, src, enc)),
         _ => return None,
     };
     let name_node = node.child_by_field_name("name").unwrap_or(node);
@@ -108,6 +109,21 @@ fn impl_methods(node: Node, rope: &Rope, src: &str, enc: Encoding) -> Vec<Docume
     body.named_children(&mut cursor)
         .filter(|c| c.kind() == "function_definition")
         .filter_map(|c| symbol(c, rope, src, enc))
+        .collect()
+}
+
+/// A trait's members: method decls as METHOD symbols, assoc consts as CONSTANT.
+fn trait_members(node: Node, rope: &Rope, src: &str, enc: Encoding) -> Vec<DocumentSymbol> {
+    let Some(body) = node.child_by_field_name("body") else {
+        return Vec::new();
+    };
+    let mut cursor = body.walk();
+    body.named_children(&mut cursor)
+        .filter_map(|c| match c.kind() {
+            "trait_method" => leaf(c, SymbolKind::METHOD, rope, src, enc),
+            "trait_const" => leaf(c, SymbolKind::CONSTANT, rope, src, enc),
+            _ => None,
+        })
         .collect()
 }
 

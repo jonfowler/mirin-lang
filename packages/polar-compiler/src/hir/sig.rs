@@ -252,8 +252,25 @@ fn lower_fn_sig<'db>(
     // behaves as if the binder declared `A` too), then the impl block's
     // declared generics (`impl {dom clk: Clock} Stream8 { … }` — Rust's
     // `impl<T>` shape), then the fn's own.
+    // A trait METHOD DECL (`fn add(self, other: Self) -> Self;` inside a
+    // `trait`) gets an implicit leading Type-kind generic named `Self` —
+    // rustc's Self-as-param-0. `Self` in type positions and the bare `self`
+    // receiver both resolve to it.
+    let in_trait = enclosing(node, "trait_definition").is_some();
+    if in_trait {
+        generic_params.push(GenericParam {
+            name: "Self".to_owned(),
+            kind: TermKind::Type,
+            from_named_section: true,
+        });
+    }
+    // The implementing type: the impl's `name` for an inherent block, the
+    // `for` self type's head for a trait impl.
     let owner = enclosing_impl(node).and_then(|impl_node| {
-        let name_node = impl_node.child_by_field_name("name")?;
+        let name_node = impl_node
+            .child_by_field_name("self_type")
+            .and_then(|st| st.child_by_field_name("name"))
+            .or_else(|| impl_node.child_by_field_name("name"))?;
         let name = node_text(&name_node, source);
         let def = map.resolve_in_scope(module, &name, Namespace::Item)?;
         let kind = map.def_data(def)?.kind;
@@ -309,7 +326,13 @@ fn lower_fn_sig<'db>(
     for (i, (p, named)) in value_param_nodes.iter().enumerate() {
         let name = param_name(p, source);
         let is_self = name == "self";
-        let ty = if is_self {
+        let ty = if is_self && in_trait {
+            // A trait decl's receiver is `Self` — the implicit Param(0).
+            Type::Value {
+                kind: ValueKind::Param(0),
+                domain: lowerer.lower_domain(p, source),
+            }
+        } else if is_self {
             // The receiver: the impl's owner type, carrying self's own
             // `@domain` annotation (`self @clk`) so the receiver's domain
             // connects to the method's generics at the call site.
@@ -792,9 +815,14 @@ fn self_owner_type<'db>(
 
 /// The `impl_block` enclosing a method's fn node, if any.
 fn enclosing_impl<'t>(node: &Node<'t>) -> Option<Node<'t>> {
+    enclosing(node, "impl_block")
+}
+
+/// The nearest ancestor of `kind`, if any.
+fn enclosing<'t>(node: &Node<'t>, kind: &str) -> Option<Node<'t>> {
     let mut cur = node.parent();
     while let Some(n) = cur {
-        if n.kind() == "impl_block" {
+        if n.kind() == kind {
             return Some(n);
         }
         cur = n.parent();
