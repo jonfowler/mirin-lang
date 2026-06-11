@@ -29,8 +29,8 @@ use crate::base::diagnostics::Span;
 use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{
-    ConstArg, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam, InferVar, LocalId, Term,
-    TermKind, Type, ValueKind, super_fold_const, super_fold_type,
+    ConstArg, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam, InferVar, LocalId,
+    Term, TermKind, Type, ValueKind, super_fold_const, super_fold_type,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -109,7 +109,9 @@ impl InferDiagnostic {
                 if *needs_arrow {
                     format!("`{name}` is an `in` field — bind it with `{name} => target`")
                 } else {
-                    format!("`{name}` is supplied by this constructor — use `{name} = value`, not `=>`")
+                    format!(
+                        "`{name}` is supplied by this constructor — use `{name} = value`, not `=>`"
+                    )
                 }
             }
             InferDiagnosticKind::PositionalArity {
@@ -1410,7 +1412,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn is_prelude_op(&self, def: DefId<'db>) -> bool {
         self.map
             .def_data(def)
-            .map(|d| d.module == self.map.prelude() && (d.name == "+" || d.name == "-" || d.name == "*"))
+            .map(|d| {
+                d.module == self.map.prelude() && (d.name == "+" || d.name == "-" || d.name == "*")
+            })
             .unwrap_or(false)
     }
 

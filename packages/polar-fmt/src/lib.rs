@@ -206,7 +206,10 @@ fn add3(x: uint(8)) -> uint(8) {
             narrow.contains("packet {\n"),
             "should break when narrow:\n{narrow}"
         );
-        assert!(narrow.contains("        valid = false,\n"), "got:\n{narrow}");
+        assert!(
+            narrow.contains("        valid = false,\n"),
+            "got:\n{narrow}"
+        );
     }
 
     #[test]

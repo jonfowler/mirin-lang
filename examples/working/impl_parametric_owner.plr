@@ -1,0 +1,20 @@
+// An impl on a type-parametric owner: the owner's params auto-bind into the
+// method's generics (as if the binder declared them), the receiver's type
+// argument is inferred at the call site, and the method monomorphises per
+// instantiation (`Bus__first__uint8`, `Bus__first__bool`).
+struct Bus(A: Type) = bus {
+    valid: bool,
+    data: A,
+}
+
+impl {dom clk: Clock} Bus {
+    fn first(self @clk) -> bool @clk {
+        return self.valid;
+    }
+}
+
+fn top {dom clk: Clock} (b: Bus(uint(8)) @clk, c: Bus(bool) @clk) -> bool @clk {
+    let x = b.first();
+    let y = c.first();
+    return x;
+}

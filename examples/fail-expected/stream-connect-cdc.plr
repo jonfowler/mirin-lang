@@ -7,7 +7,7 @@ port Stream8 = stream8 {
     in ready: bool,
 }
 
-impl Stream8 {dom clk: Clock} {
+impl {dom clk: Clock} Stream8 {
     fn connect(self @clk, out downstream: Stream8 @clk) {
         downstream.valid = self.valid;
         downstream.data = self.data;

@@ -1518,9 +1518,13 @@ mod inner {
             map.diagnostics().is_empty(),
             "accessible Item-namespace binding must satisfy the import: {:?}",
             map.diagnostics()
+                .iter()
+                .map(|d| &d.kind)
+                .collect::<Vec<_>>()
         );
         assert!(
-            map.resolve_local(map.root(), "offset", Namespace::Item).is_some(),
+            map.resolve_local(map.root(), "offset", Namespace::Item)
+                .is_some(),
             "the fn must be imported"
         );
     }

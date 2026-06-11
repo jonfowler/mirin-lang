@@ -113,12 +113,14 @@ module.exports = grammar({
         field("body", $.port_body),
       ),
 
+    // Binder-first: `impl {dom clk: Clock} Stream8 { … }` — the braces after
+    // `impl` DECLARE generics; the owner is applied implicitly (via `self @clk`
+    // etc.), never with application braces of its own.
     impl_block: ($) =>
       seq(
         "impl",
-        field("name", $.identifier),
         optional(field("named_parameters", $.named_parameter_section)),
-        optional(field("parameters", $.parameter_section)),
+        field("name", $.identifier),
         field("body", $.impl_body),
       ),
 

@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::{env, fs, process};
 
 use polar_compiler::{
-    DefKind, RootDatabase, SourceRoot, Span, Vfs, ast_id_map, body, check_drivers, crate_def_map,
-    completeness, directions, infer, load_crate, parse_text, render, reserved_words, sig_of,
+    DefKind, RootDatabase, SourceRoot, Span, Vfs, ast_id_map, body, check_drivers, completeness,
+    crate_def_map, directions, infer, load_crate, parse_text, render, reserved_words, sig_of,
     syntax_errors, verilog,
 };
 

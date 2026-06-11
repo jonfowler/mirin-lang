@@ -90,7 +90,10 @@ pub fn check_drivers<'db>(
     let mut out = Vec::new();
     for (i, local) in body.locals().iter().enumerate() {
         let span = body.local_span(LocalId(i as u32));
-        let paths = drives.get(&LocalId(i as u32)).map(Vec::as_slice).unwrap_or(&[]);
+        let paths = drives
+            .get(&LocalId(i as u32))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         if paths.is_empty() {
             // Only a `var` must be driven; params are driven by the caller
             // (or drive field equations themselves), lets by their binding.

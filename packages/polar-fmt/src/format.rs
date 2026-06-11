@@ -374,23 +374,15 @@ impl<'a> Formatter<'a> {
 
     fn impl_block(&self, n: Node) -> Doc {
         let name = self.text(self.field(n, "name").unwrap());
-        let named = self.field(n, "named_parameters");
-        let params = self.field(n, "parameters");
-
-        let header = if let Some(named) = named {
-            let mut sections = vec![Line, self.named_section(named)];
-            if let Some(p) = params {
-                sections.push(Line);
-                sections.push(self.params_section(p));
-            }
-            group(concat([
+        // Binder-first: `impl {dom clk: Clock} Stream8 { … }`.
+        let header = match self.field(n, "named_parameters") {
+            Some(named) => concat([
                 text("impl "),
+                self.named_section(named),
+                text(" "),
                 text(name),
-                indent(concat(sections)),
-            ]))
-        } else {
-            let params_doc = params.map(|p| self.params_section(p)).unwrap_or(NIL);
-            concat([text("impl "), text(name), params_doc])
+            ]),
+            None => concat([text("impl "), text(name)]),
         };
 
         concat([

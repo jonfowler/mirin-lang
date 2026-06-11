@@ -1,3 +1,4 @@
+// verilator: -Gn=8
 // Instance parameter bindings: `scale`'s width generic is inferred from the
 // argument (uint(8) → n = 8) and bound at the instance as `#(.n(8))`;
 // `wrap` passes its OWN parameter through symbolically (`#(.n(n))`).

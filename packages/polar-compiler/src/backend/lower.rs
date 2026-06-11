@@ -45,10 +45,9 @@ use crate::hir::body::{
 };
 use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::{Signature, sig_of};
-use crate::hir::types::Folder;
 use crate::hir::types::{
-    ConstArg, ConstOp, Direction, Domain, GenericArgs, GenericParam, LocalId, Term, TermKind, Type,
-    ValueKind,
+    ConstArg, ConstOp, Direction, Domain, Folder, GenericArgs, GenericParam, LocalId, Term,
+    TermKind, Type, ValueKind,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind};
@@ -120,12 +119,7 @@ fn build_module<'db>(
         }
     }
     for p in &sig.params {
-        let ty0 = if p.is_self {
-            self_param_type(map, def).unwrap_or_else(|| p.ty.clone())
-        } else {
-            p.ty.clone()
-        };
-        let ty = ground_widths(db, krate, def, &subst_type(&ty0, self_subst));
+        let ty = ground_widths(db, krate, def, &subst_type(&p.ty, self_subst));
         if is_integer(&ty) {
             continue; // compile-time only — no port
         }
@@ -346,25 +340,6 @@ fn module_name<'db>(map: &CrateDefMap<'db>, def: DefId<'db>) -> String {
 /// structural type is left `Error` in the signature (it is method-dispatch's job
 /// in `infer`), but flatten only needs the aggregate shape, so the domain is
 /// irrelevant here.
-fn self_param_type<'db>(map: &CrateDefMap<'db>, method: DefId<'db>) -> Option<Type<'db>> {
-    let owner = map.def_data(method)?.owner?;
-    match map.def_data(owner)?.kind {
-        DefKind::Struct => Some(Type::Value {
-            kind: ValueKind::Struct {
-                def: owner,
-                args: GenericArgs(Vec::new()),
-            },
-            domain: Domain::Unspecified,
-        }),
-        DefKind::Port => Some(Type::Port {
-            def: owner,
-            args: GenericArgs(Vec::new()),
-            domain: Domain::Unspecified,
-        }),
-        _ => None,
-    }
-}
-
 /// One SV name per local, uniquified so shadowing `let`s don't collide: the
 /// first use of a name keeps it, later uses get `_1`, `_2`, … (matching the
 /// reference compiler's `data` / `data_1` / `data_2`).
@@ -657,24 +632,26 @@ impl<'db> SvLower<'_, 'db> {
     }
 
     /// A local's type: inferred, falling back to declared. A `self` param's
-    /// structural type is the `impl`'s owner (it is `Error` in the signature).
+    /// type comes from the signature (the impl's owner applied at the
+    /// method's auto-bound generics).
     fn local_ty(&self, local: LocalId) -> Option<Type<'db>> {
-        if self
+        let base = if let Some(p) = self
             .sig
             .params
             .iter()
-            .any(|p| p.local == local && p.is_self)
+            .find(|p| p.local == local && p.is_self)
         {
-            return self_param_type(self.map, self.def);
-        }
-        self.inf
-            .local_type(local)
-            .cloned()
-            .or_else(|| self.body.local(local).declared_ty.clone())
-            .map(|t| {
-                let t = subst_type(&t, &self.self_subst);
-                ground_widths(self.db, self.krate, self.def, &t)
-            })
+            Some(p.ty.clone())
+        } else {
+            self.inf
+                .local_type(local)
+                .cloned()
+                .or_else(|| self.body.local(local).declared_ty.clone())
+        };
+        base.map(|t| {
+            let t = subst_type(&t, &self.self_subst);
+            ground_widths(self.db, self.krate, self.def, &t)
+        })
     }
 
     /// A statement-position call is const-only when the callee's every value
@@ -1277,8 +1254,7 @@ impl<'db> SvLower<'_, 'db> {
                 };
                 let c = match c {
                     ConstArg::Local(_) | ConstArg::Field(..) | ConstArg::Op(..) => {
-                        match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c)
-                        {
+                        match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c) {
                             Some(v) => ConstArg::Lit(v),
                             None => c.clone(),
                         }
@@ -1309,11 +1285,7 @@ impl<'db> SvLower<'_, 'db> {
             .params
             .iter()
             .map(|p| {
-                let ty = if p.is_self {
-                    self_param_type(self.map, uc.def).unwrap_or_else(|| p.ty.clone())
-                } else {
-                    p.ty.clone()
-                };
+                let ty = p.ty.clone();
                 let caller_expr = if p.from_named_section {
                     uc.named.iter().find(|n| n.name == p.name).map(|n| n.expr)
                 } else {

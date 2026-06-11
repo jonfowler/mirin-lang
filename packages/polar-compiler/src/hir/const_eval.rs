@@ -139,7 +139,10 @@ impl<'db> Evaluator<'db> {
         }
         frame.slots.borrow_mut().insert(local, Slot::Evaluating);
         let v = self.demand_uncached(frame, local, depth);
-        frame.slots.borrow_mut().insert(local, Slot::Done(v.clone()));
+        frame
+            .slots
+            .borrow_mut()
+            .insert(local, Slot::Done(v.clone()));
         v
     }
 
@@ -256,8 +259,11 @@ impl<'db> Evaluator<'db> {
         }
         let callee = self.enter_call(caller, def, args, depth)?;
         let sig = sig_of(self.db, self.krate, def);
-        let positional: Vec<&Param<'db>> =
-            sig.params.iter().filter(|p| !p.from_named_section).collect();
+        let positional: Vec<&Param<'db>> = sig
+            .params
+            .iter()
+            .filter(|p| !p.from_named_section)
+            .collect();
         let param = positional.get(pos)?;
         if param.direction != Some(Direction::Out) {
             return None;
@@ -275,8 +281,11 @@ impl<'db> Evaluator<'db> {
         depth: u32,
     ) -> Option<Frame<'db>> {
         let sig = sig_of(self.db, self.krate, def);
-        let positional: Vec<&Param<'db>> =
-            sig.params.iter().filter(|p| !p.from_named_section).collect();
+        let positional: Vec<&Param<'db>> = sig
+            .params
+            .iter()
+            .filter(|p| !p.from_named_section)
+            .collect();
         let mut bindings = HashMap::new();
         for (i, a) in args.iter().enumerate() {
             if a.out {

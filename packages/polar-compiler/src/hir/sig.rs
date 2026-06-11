@@ -26,8 +26,8 @@ use crate::base::db::SourceRoot;
 use crate::base::diagnostics::Span;
 use crate::base::parser;
 use crate::hir::types::{
-    ConstArg, ConstOp, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam, LIFTED_DOM,
-    LocalId, Term, TermKind, Type, ValueKind, super_fold_type,
+    ConstArg, ConstOp, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam,
+    LIFTED_DOM, LocalId, Term, TermKind, Type, ValueKind, super_fold_type,
 };
 use crate::nameres::def_map::{CrateDefMap, ModuleId, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -131,7 +131,7 @@ pub fn sig_of<'db>(
     };
 
     match kind {
-        DefKind::Fn | DefKind::Method => lower_fn_sig(map, module, &node, source),
+        DefKind::Fn | DefKind::Method => lower_fn_sig(db, krate, map, module, &node, source),
         DefKind::Struct => lower_adt_sig(map, module, &node, source, false),
         DefKind::Port => lower_adt_sig(map, module, &node, source, true),
         // Ctor/BuiltinType/Impl/Mod have no signature lowered here.
@@ -236,6 +236,8 @@ fn drain_unresolved(lowerer: &TypeLowerer<'_, '_>, def_node: &Node) -> Vec<SigDi
 
 /// Lower a `function_definition` node's signature.
 fn lower_fn_sig<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
     map: &CrateDefMap<'db>,
     module: ModuleId,
     node: &Node,
@@ -245,9 +247,23 @@ fn lower_fn_sig<'db>(
     // params vs value params, so type lowering can resolve `Param(i)` refs.
     let mut generic_params = Vec::new();
     let mut value_param_nodes: Vec<(Node, bool)> = Vec::new();
-    // Impl-level generics come first (`impl Stream8 {dom clk: Clock} { … }`
-    // — Rust's `impl<T>` shape): every method's signature sees the impl
-    // block's generic sections prepended to its own.
+    // A method's generics lead with the impl OWNER's own generic params
+    // (auto-bound: `impl {dom clk: Clock} Bus` on `struct Bus(A: Type)`
+    // behaves as if the binder declared `A` too), then the impl block's
+    // declared generics (`impl {dom clk: Clock} Stream8 { … }` — Rust's
+    // `impl<T>` shape), then the fn's own.
+    let owner = enclosing_impl(node).and_then(|impl_node| {
+        let name_node = impl_node.child_by_field_name("name")?;
+        let name = node_text(&name_node, source);
+        let def = map.resolve_in_scope(module, &name, Namespace::Item)?;
+        let kind = map.def_data(def)?.kind;
+        matches!(kind, DefKind::Struct | DefKind::Port).then_some((def, kind))
+    });
+    if let Some((owner_def, _)) = owner {
+        let owner_sig = sig_of(db, krate, owner_def);
+        generic_params.extend(owner_sig.generic_params.iter().cloned());
+    }
+    let owner_generic_count = generic_params.len();
     if let Some(impl_node) = enclosing_impl(node) {
         for (field, child_kind, named) in [
             ("named_parameters", "named_parameter", true),
@@ -297,7 +313,13 @@ fn lower_fn_sig<'db>(
             // The receiver: the impl's owner type, carrying self's own
             // `@domain` annotation (`self @clk`) so the receiver's domain
             // connects to the method's generics at the call site.
-            self_owner_type(map, module, node, p, source, &lowerer)
+            self_owner_type(
+                owner,
+                &generic_params[..owner_generic_count],
+                p,
+                source,
+                &lowerer,
+            )
         } else {
             p.child_by_field_name("type")
                 .map(|t| lowerer.lower_type(&t, source))
@@ -518,11 +540,9 @@ impl<'db> TypeLowerer<'_, 'db> {
             },
             _ => {
                 let at = node.child_by_field_name("name").unwrap_or(*node);
-                self.unresolved.borrow_mut().push((
-                    name.clone(),
-                    at.start_byte(),
-                    at.end_byte(),
-                ));
+                self.unresolved
+                    .borrow_mut()
+                    .push((name.clone(), at.start_byte(), at.end_byte()));
                 Type::Error
             }
         }
@@ -734,37 +754,38 @@ pub(crate) fn lower_type_expr<'db>(
 /// method's generics. `Error` when the owner doesn't resolve (diagnosed by
 /// nameres) — generic owners' type args are future work (impl `Bus(A)`).
 fn self_owner_type<'db>(
-    map: &CrateDefMap<'db>,
-    module: ModuleId,
-    fn_node: &Node,
+    owner: Option<(DefId<'db>, DefKind)>,
+    owner_generics: &[GenericParam],
     self_param: &Node,
     source: &str,
     lowerer: &TypeLowerer<'_, 'db>,
 ) -> Type<'db> {
-    let Some(impl_node) = enclosing_impl(fn_node) else {
+    let Some((def, kind)) = owner else {
         return Type::Error;
     };
-    let Some(name_node) = impl_node.child_by_field_name("name") else {
-        return Type::Error;
-    };
-    let name = node_text(&name_node, source);
     let domain = lowerer.lower_domain(self_param, source);
-    match map
-        .resolve_in_scope(module, &name, Namespace::Item)
-        .and_then(|d| map.def_data(d).map(|data| (d, data.kind)))
-    {
-        Some((def, DefKind::Struct)) => Type::Value {
-            kind: ValueKind::Struct {
-                def,
-                args: GenericArgs(Vec::new()),
-            },
+    // The owner applied at its own (auto-bound) params: positions 0..k of
+    // the method's generic list, kind-matched.
+    let args = GenericArgs(
+        owner_generics
+            .iter()
+            .enumerate()
+            .map(|(i, g)| match g.kind {
+                TermKind::Type => Term::Type(Type::Value {
+                    kind: ValueKind::Param(i as u32),
+                    domain: Domain::Unspecified,
+                }),
+                TermKind::Const => Term::Const(ConstArg::Param(i as u32)),
+                TermKind::Domain(_) => Term::Domain(Domain::Param(i as u32)),
+            })
+            .collect(),
+    );
+    match kind {
+        DefKind::Struct => Type::Value {
+            kind: ValueKind::Struct { def, args },
             domain,
         },
-        Some((def, DefKind::Port)) => Type::Port {
-            def,
-            args: GenericArgs(Vec::new()),
-            domain,
-        },
+        DefKind::Port => Type::Port { def, args, domain },
         _ => Type::Error,
     }
 }

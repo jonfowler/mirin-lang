@@ -18,8 +18,7 @@ use std::path::{Path, PathBuf};
 
 use polar_compiler::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, completeness, crate_def_map,
-    directions, infer, load_crate,
-    reserved_words, sig_of, syntax_errors, verilog,
+    directions, infer, load_crate, reserved_words, sig_of, syntax_errors, verilog,
 };
 
 fn working_dir() -> PathBuf {
@@ -48,6 +47,8 @@ fn examples() -> Vec<(String, String)> {
 /// direction checks). The entire working corpus is now clean — a fully
 /// functional type checker over it.
 const CLEAN: &[&str] = &[
+    "impl_parametric_owner.plr",
+    "impl_multi_method.plr",
     "param_instance.plr",
     "inline_verilog.plr",
     "record_out_conn.plr",
@@ -169,6 +170,8 @@ fn dump_verilog() {
 /// a `// verilator: -G…=N` directive (a parameter value for elaboration), which
 /// this harness reads and forwards.
 const VERILATOR_CLEAN: &[&str] = &[
+    "impl_multi_method.plr",
+    "impl_parametric_owner.plr",
     "param_instance.plr",
     "inline_verilog.plr",
     "record_out_conn.plr",

@@ -197,9 +197,24 @@ lower to hardware — import the item with `use` to call it. Type-position paths
 
 ## `impl` blocks
 
-Methods are introduced via `impl TypeName { ... }` blocks. Resolver populates
-`impl_methods: (owner_def, method_name) → method_def`; calls dispatch through
-that table. See the resolver and `planning/ir_pipeline.md` for the wiring.
+Methods are introduced via `impl` blocks. Generics are **binder-first** — the
+braces after the `impl` keyword *declare* generic params (Rust's `impl<T>`):
+
+```rust
+impl Option { … }                       // no generics
+impl {dom clk: Clock} Stream8 { … }     // binder declares clk; self @clk applies it
+```
+
+The owner is never written with application braces of its own: domains attach
+through `self @clk`, and a type-parametric owner's params **auto-bind** — on
+`struct Bus(A: Type)`, `impl {dom clk: Clock} Bus` behaves as if the binder
+also declared `A`, and each method monomorphises per instantiation of `A` at
+its call sites. (Trait impls — `impl {binders} Trait for SelfType` — share the
+binder-first shape; see `planning/traits.md`.)
+
+Resolver populates `impl_methods: (owner_def, method_name) → method_def`;
+calls dispatch through that table. See the resolver and
+`planning/ir_pipeline.md` for the wiring.
 
 ## Open questions kept out of the first parser slice
 

@@ -13,9 +13,8 @@
 use std::path::{Path, PathBuf};
 
 use polar_compiler::{
-    DefKind, RootDatabase, Span, Vfs, ast_id_map, body, check_drivers, completeness,
-    crate_def_map, directions,
-    infer, sig_of,
+    DefKind, RootDatabase, Span, Vfs, ast_id_map, body, check_drivers, completeness, crate_def_map,
+    directions, infer, sig_of,
 };
 use ropey::Rope;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Range, Uri};

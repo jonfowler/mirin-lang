@@ -222,7 +222,9 @@ impl BodyDiagnostic {
                 format!("numeric literal `{text}` does not fit in 128 bits")
             }
             BodyDiagnosticKind::DirectionPrefixMismatch { direction } => match direction.as_str() {
-                "out" => "`out` argument must be an out-connection: `out name => target`".to_owned(),
+                "out" => {
+                    "`out` argument must be an out-connection: `out name => target`".to_owned()
+                }
                 _ => "`in` argument supplies a value: `in name = value`, not `=>`".to_owned(),
             },
             BodyDiagnosticKind::DuplicateVar { name } => {
@@ -483,19 +485,12 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     /// A `${…}` splice: single names resolve against the signature; anything
     /// else is the const micro-grammar (`lit | name | (e) | e+e | e-e | e*e`,
     /// names being Const-kind generics).
-    fn resolve_splice(
-        &mut self,
-        inner: &str,
-        base: usize,
-        span: (usize, usize),
-    ) -> VerilogSegment {
+    fn resolve_splice(&mut self, inner: &str, base: usize, span: (usize, usize)) -> VerilogSegment {
         let is_ident = inner
             .chars()
             .next()
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && inner
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+            && inner.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         if is_ident {
             if inner == "result" {
                 return VerilogSegment::ResultPort;
@@ -1209,9 +1204,7 @@ fn parse_const_splice(
             }
             Some(c) if c.is_ascii_alphabetic() || c == b'_' => {
                 let start = p.i;
-                while p.i < p.s.len()
-                    && (p.s[p.i].is_ascii_alphanumeric() || p.s[p.i] == b'_')
-                {
+                while p.i < p.s.len() && (p.s[p.i].is_ascii_alphanumeric() || p.s[p.i] == b'_') {
                     p.i += 1;
                 }
                 let name = std::str::from_utf8(&p.s[start..p.i]).unwrap_or("");

@@ -225,9 +225,7 @@ pub fn super_fold_const<'db, F: Folder<'db>>(f: &mut F, c: &ConstArg) -> ConstAr
         ConstArg::Op(op, a, b) => {
             ConstArg::Op(*op, Box::new(f.fold_const(a)), Box::new(f.fold_const(b)))
         }
-        ConstArg::Field(base, name) => {
-            ConstArg::Field(Box::new(f.fold_const(base)), name.clone())
-        }
+        ConstArg::Field(base, name) => ConstArg::Field(Box::new(f.fold_const(base)), name.clone()),
         other => other.clone(),
     }
 }

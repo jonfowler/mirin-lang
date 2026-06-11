@@ -224,7 +224,11 @@ impl fmt::Display for SvItem {
                 } else {
                     writeln!(f, "    {} #(", inst.module)?;
                     for (i, (p, v)) in inst.parameters.iter().enumerate() {
-                        let sep = if i + 1 < inst.parameters.len() { "," } else { "" };
+                        let sep = if i + 1 < inst.parameters.len() {
+                            ","
+                        } else {
+                            ""
+                        };
                         writeln!(f, "        .{p}({v}){sep}")?;
                     }
                     writeln!(f, "    ) {} (", inst.name)?;
@@ -247,10 +251,7 @@ impl fmt::Display for SvItem {
             Self::Verbatim(text) => {
                 // Dedent to the common leading whitespace, re-indent to the
                 // module body, drop surrounding blank lines.
-                let lines: Vec<&str> = text
-                    .lines()
-                    .skip_while(|l| l.trim().is_empty())
-                    .collect();
+                let lines: Vec<&str> = text.lines().skip_while(|l| l.trim().is_empty()).collect();
                 let lines: Vec<&str> = lines
                     .iter()
                     .rev()
