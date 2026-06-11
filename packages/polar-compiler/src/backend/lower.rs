@@ -535,8 +535,16 @@ impl<'db> SvLower<'_, 'db> {
         self.declare_local(local);
         let target = self.local_leaves(local);
         let value_leaves = self.expr_leaves(value);
-        for ((_, place), (_, v)) in target.into_iter().zip(value_leaves) {
-            self.push_assign(place, v);
+        // Match leaves by suffix, not position: a record's `=>` fields are
+        // absent from its forward leaves, which would shift a positional zip.
+        for (suf, place) in target {
+            if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == suf) {
+                self.push_assign(place, v.clone());
+            }
+        }
+        let base = self.local_name(local);
+        for (suf, target) in self.record_out_conns(value) {
+            self.push_assign(target, SvExpr::Ident(join(&base, &suf)));
         }
     }
 
@@ -559,6 +567,24 @@ impl<'db> SvLower<'_, 'db> {
             let target = self.local_leaves(l);
             self.emit_instance(uc, target);
             return;
+        }
+        if let ExprKind::Local(l) = self.body.expr(lhs).kind {
+            let base = self.local_name(l);
+            for (suf, target) in self.record_out_conns(rhs) {
+                self.push_assign(target, SvExpr::Ident(join(&base, &suf)));
+            }
+            // A record RHS assigns suffix-matched (its `=>` fields are absent
+            // from the forward leaves — a positional zip would shift).
+            if matches!(self.body.expr(rhs).kind, ExprKind::Record { .. }) {
+                let target = self.local_leaves(l);
+                let value_leaves = self.expr_leaves(rhs);
+                for (suf, place) in target {
+                    if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == suf) {
+                        self.push_assign(place, v.clone());
+                    }
+                }
+                return;
+            }
         }
         let lhs_leaves = self.place_leaves_dir(lhs);
         let rhs_leaves = self.value_leaves_dir(rhs);
@@ -591,8 +617,13 @@ impl<'db> SvLower<'_, 'db> {
             return;
         }
         let value_leaves = self.expr_leaves(value);
-        for (rl, (_, v)) in result_leaves.into_iter().zip(value_leaves) {
-            self.push_assign(SvExpr::Ident(join("result", &rl.suffix)), v);
+        for rl in result_leaves {
+            if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == rl.suffix) {
+                self.push_assign(SvExpr::Ident(join("result", &rl.suffix)), v.clone());
+            }
+        }
+        for (suf, target) in self.record_out_conns(value) {
+            self.push_assign(target, SvExpr::Ident(join("result", &suf)));
         }
     }
 
@@ -1013,9 +1044,32 @@ impl<'db> SvLower<'_, 'db> {
         let mut out = Vec::new();
         for fname in &order {
             if let Some(rf) = fields.iter().find(|rf| &rf.name == fname) {
+                if rf.out {
+                    continue; // `field => target` flows the other way
+                }
                 for (suf, e) in self.expr_leaves(rf.value) {
                     out.push((join(fname, &suf), e));
                 }
+            }
+        }
+        out
+    }
+
+    /// A record constructor's `field => target` connections as
+    /// `(field_suffix, target_place)` pairs — the constructed value's field
+    /// drives the target (`assign target = <base>__field`).
+    fn record_out_conns(&mut self, expr: ExprId) -> Vec<(String, SvExpr)> {
+        let ExprKind::Record { fields, .. } = &self.body.expr(expr).kind else {
+            return Vec::new();
+        };
+        let fields = fields.clone();
+        let mut out = Vec::new();
+        for rf in &fields {
+            if !rf.out {
+                continue;
+            }
+            for (tsuf, target) in self.expr_leaves(rf.value) {
+                out.push((join(&rf.name, &tsuf), target));
             }
         }
         out

@@ -976,17 +976,9 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 .filter(|c| c.kind() == "record_field_value")
             {
                 if let Some(target) = f.child_by_field_name("target") {
-                    // `name => target` — an out-connection field. Lowered as a
-                    // place (like NamedArg's `=>`), but the semantic pipeline
-                    // (infer direction flip, driver accounting, backend
-                    // reversed assign) hasn't landed — reject rather than
-                    // silently mis-drive.
-                    self.diag_at(
-                        &f,
-                        BodyDiagnosticKind::Unsupported {
-                            what: "record out-connection (`=>`)".into(),
-                        },
-                    );
+                    // `name => target` — an out-connection field: the
+                    // constructed port's field drives the target place
+                    // (NamedArg's `=>`, record-literal flavour).
                     let tname = node_text(&target, source);
                     fields.push(RecordField {
                         name: field_text(&f, "name", source),

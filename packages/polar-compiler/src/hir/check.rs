@@ -166,6 +166,16 @@ fn count_expr(body: &Body, expr: ExprId, counts: &mut HashMap<LocalId, Vec<Vec<S
         }
         ExprKind::When { body: b, .. } => count_block(body, b, counts),
         ExprKind::Block(b) => count_block(body, b, counts),
+        ExprKind::Record { fields, .. } => {
+            for f in fields {
+                if f.out
+                    && let Some((l, path)) = place_of(body, f.value)
+                {
+                    counts.entry(l).or_default().push(path);
+                }
+                count_expr(body, f.value, counts);
+            }
+        }
         ExprKind::Call { args, named, .. } => {
             for a in args {
                 if a.out

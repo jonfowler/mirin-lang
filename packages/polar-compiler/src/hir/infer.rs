@@ -29,7 +29,7 @@ use crate::base::diagnostics::Span;
 use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{
-    ConstArg, Domain, DomainSort, Folder, GenericArgs, GenericParam, InferVar, LocalId, Term,
+    ConstArg, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam, InferVar, LocalId, Term,
     TermKind, Type, ValueKind, super_fold_const, super_fold_type,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
@@ -64,6 +64,9 @@ pub enum InferDiagnosticKind {
     UnresolvedMethod { name: String },
     /// A uint width whose const evaluation came out negative.
     NegativeWidth { value: i128 },
+    /// A record-constructor connector that disagrees with the field's
+    /// declared direction (`=` for supplied fields, `=>` for `in` fields).
+    RecordConnector { name: String, needs_arrow: bool },
     /// A call whose positional argument count can't match the callee's
     /// positional params (`expected` is the count that failed: the total when
     /// over-supplied, the no-default minimum when under-supplied).
@@ -101,6 +104,13 @@ impl InferDiagnostic {
             }
             InferDiagnosticKind::NegativeWidth { value } => {
                 format!("uint width evaluates to {value}, but a width must be non-negative")
+            }
+            InferDiagnosticKind::RecordConnector { name, needs_arrow } => {
+                if *needs_arrow {
+                    format!("`{name}` is an `in` field — bind it with `{name} => target`")
+                } else {
+                    format!("`{name}` is supplied by this constructor — use `{name} = value`, not `=>`")
+                }
             }
             InferDiagnosticKind::PositionalArity {
                 callee,
@@ -1276,8 +1286,24 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             if let Some(sig) = field_sig {
                 match sig.fields.iter().find(|d| d.name == f.name) {
                     Some(decl) => {
+                        // Connector must match the field's declared direction:
+                        // `=` supplies a field the constructed value drives
+                        // (`out`, or any struct field); `=> target` binds an
+                        // `in` field flowing back into the constructor's scope.
+                        let needs_arrow = decl.direction == Some(Direction::In);
+                        if f.out != needs_arrow {
+                            self.diag(InferDiagnosticKind::RecordConnector {
+                                name: f.name.clone(),
+                                needs_arrow,
+                            });
+                        }
                         let dt = self.substitute_stamped(&decl.ty, &args, rd);
-                        self.subsume(&vt, &dt);
+                        if f.out {
+                            // The field flows into the target place.
+                            self.subsume(&dt, &vt);
+                        } else {
+                            self.subsume(&vt, &dt);
+                        }
                     }
                     None => self.diag(InferDiagnosticKind::UnknownField {
                         name: f.name.clone(),
@@ -1298,13 +1324,24 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
         }
         match owner {
-            Some(def) => Type::Value {
-                kind: ValueKind::Struct {
-                    def,
-                    args: GenericArgs(args),
-                },
-                domain: rd,
-            },
+            Some(def) => {
+                // A port constructor yields a port value; a struct ctor a struct.
+                if self.map.def_data(def).map(|d| d.kind) == Some(DefKind::Port) {
+                    Type::Port {
+                        def,
+                        args: GenericArgs(args),
+                        domain: rd,
+                    }
+                } else {
+                    Type::Value {
+                        kind: ValueKind::Struct {
+                            def,
+                            args: GenericArgs(args),
+                        },
+                        domain: rd,
+                    }
+                }
+            }
             None => Type::Error,
         }
     }
