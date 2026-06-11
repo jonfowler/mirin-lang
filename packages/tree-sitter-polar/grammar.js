@@ -401,8 +401,16 @@ module.exports = grammar({
 
     record_literal: ($) => seq("{", commaSep($.record_field_value), optional(","), "}"),
 
+    // `name = value` supplies a field; `name => target` binds an
+    // opposite-direction field of a constructed *port* to a local (the
+    // record-literal analogue of a named-arg out-connection). `=` matches
+    // named parameters/arguments — `:` always means "type", `=`/`=>`
+    // always mean "value/connection".
     record_field_value: ($) =>
-      seq(field("name", $.identifier), ":", field("value", $.expression)),
+      choice(
+        seq(field("name", $.identifier), "=", field("value", $.expression)),
+        seq(field("name", $.identifier), "=>", field("target", $.identifier)),
+      ),
 
     // A name reference: `a`, `a::b::c`, `crate::m::f`, `super::x`. 1+ segments
     // — a bare name is a single-segment path (there is no separate identifier

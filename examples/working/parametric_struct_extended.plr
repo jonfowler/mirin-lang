@@ -19,7 +19,7 @@ fn pipeline
     {dom clk: Clock, rstn: Reset @clk, param N: usize}
     (b: Bus(uint(N)) @clk)
     -> Bus(uint(N)) @clk {
-    let held = b.reg(rstn, bus { valid: false, data: 0 });
+    let held = b.reg(rstn, bus { valid = false, data = 0 });
     return held;
 }
 

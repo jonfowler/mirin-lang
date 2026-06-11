@@ -4,7 +4,7 @@ struct Packet = packet {
 }
 
 fn registerPacket {dom clk: Clock, rstn: Reset @clk = high} (inp: Packet @clk) -> Packet @clk {
-    let held = inp.reg(rstn, packet { valid: false, payload: 0 });
+    let held = inp.reg(rstn, packet { valid = false, payload = 0 });
 
     return held;
 }

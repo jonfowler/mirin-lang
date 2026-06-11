@@ -8,5 +8,5 @@ struct Pair = pair {
 }
 
 fn top() -> Pair {
-    pair { a: 1 }
+    pair { a = 1 }
 }

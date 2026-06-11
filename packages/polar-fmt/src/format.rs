@@ -701,8 +701,11 @@ impl<'a> Formatter<'a> {
 
     fn record_field_value(&self, n: Node) -> Doc {
         let name = self.text(self.field(n, "name").unwrap());
+        if let Some(target) = self.field(n, "target") {
+            return concat([text(name), text(" => "), text(self.text(target))]);
+        }
         let value = self.doc(self.field(n, "value").unwrap());
-        concat([text(name), text(": "), value])
+        concat([text(name), text(" = "), value])
     }
 
     fn named_parameter(&self, n: Node) -> Doc {

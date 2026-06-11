@@ -94,7 +94,7 @@ pub enum ExprKind<'db> {
         method: String,
         args: Vec<ConnArg>,
     },
-    /// `Ctor { field: value, … }`. `ctor` is `None` if the name did not resolve.
+    /// `Ctor { field = value, field => target, … }`. `ctor` is `None` if the name did not resolve.
     Record {
         ctor: Option<DefId<'db>>,
         fields: Vec<RecordField>,
@@ -129,9 +129,13 @@ pub struct NamedArg {
     pub expr: ExprId,
 }
 
+/// One field of a record constructor (`name = value` supplies the field;
+/// `name => target` is an out-connection binding an opposite-direction port
+/// field to a place, mirroring `NamedArg`'s `=>` form).
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub struct RecordField {
     pub name: String,
+    pub out: bool,
     pub value: ExprId,
 }
 
@@ -906,11 +910,32 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 .children(&mut cursor)
                 .filter(|c| c.kind() == "record_field_value")
             {
-                let value = self.lower_field_expr(&f, "value", source);
-                fields.push(RecordField {
-                    name: field_text(&f, "name", source),
-                    value,
-                });
+                if let Some(target) = f.child_by_field_name("target") {
+                    // `name => target` — an out-connection field. Lowered as a
+                    // place (like NamedArg's `=>`), but the semantic pipeline
+                    // (infer direction flip, driver accounting, backend
+                    // reversed assign) hasn't landed — reject rather than
+                    // silently mis-drive.
+                    self.diag_at(
+                        &f,
+                        BodyDiagnosticKind::Unsupported {
+                            what: "record out-connection (`=>`)".into(),
+                        },
+                    );
+                    let tname = node_text(&target, source);
+                    fields.push(RecordField {
+                        name: field_text(&f, "name", source),
+                        out: true,
+                        value: self.lower_place(&tname, &target),
+                    });
+                } else {
+                    let value = self.lower_field_expr(&f, "value", source);
+                    fields.push(RecordField {
+                        name: field_text(&f, "name", source),
+                        out: false,
+                        value,
+                    });
+                }
             }
         }
         self.alloc(ExprKind::Record { ctor, fields })
@@ -1179,7 +1204,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "struct Packet = packet { valid: bool }\nfn mk () -> uint(8) { let p = packet { valid: 1 }; return 0; }",
+            "struct Packet = packet { valid: bool }\nfn mk () -> uint(8) { let p = packet { valid = 1 }; return 0; }",
         );
         let b = body_of(&db, krate, "mk");
         let Stmt::Let { value, .. } = b.block().stmts[0] else {

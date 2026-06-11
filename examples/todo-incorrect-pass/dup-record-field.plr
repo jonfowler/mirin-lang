@@ -6,5 +6,5 @@ struct Pair = pair {
 }
 
 fn top() -> Pair {
-    pair { a: 1, a: 2, b: 3 }
+    pair { a = 1, a = 2, b = 3 }
 }

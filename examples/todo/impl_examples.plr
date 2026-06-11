@@ -1,41 +1,35 @@
 struct Packet = packet {
-  valid: bool,
-  payload: uint(8),
+    valid: bool,
+    payload: uint(8),
 }
 
 impl Packet {
-  fn idle() -> Packet {
-    return packet {
-      valid: false,
-      payload: 0,
-    };
-  }
+    fn idle() -> Packet {
+        return packet { valid = false, payload = 0 };
+    }
 
-  // can elide Packet type as self automatically has this type
-  fn clear_valid(self) -> Packet {
-    return packet {
-      valid: false,
-      payload: self.payload,
-    };
-  }
+    // can elide Packet type as self automatically has this type
+    fn clear_valid(self) -> Packet {
+        return packet { valid = false, payload = self.payload };
+    }
 
-  fn register {dom clk: Clock} (self @clk, rstn: Reset @clk) -> Packet @clk {
-    return self.reg(rstn, Packet::idle());
-  }
+    fn register {dom clk: Clock} (self @clk, rstn: Reset @clk) -> Packet @clk {
+        return self.reg(rstn, Packet::idle());
+    }
 }
 
 port Stream8 {dom clk: Clock} = stream8 {
-  out valid: bool @clk,
-  out data: uint(8) @clk,
-  in ready: bool @clk,
+    out valid: bool @clk,
+    out data: uint(8) @clk,
+    in ready: bool @clk,
 }
 
 // Generic impl: the block abstracts over the port's domain parameter.
 // (Exact impl-generics syntax TBD — cf. Rust's `impl<T> Foo<T>`.)
 impl Stream8 {dom clk: Clock} {
-  fn connect(self @clk, out downstream: Stream8 @clk) {
-    downstream.valid = self.valid;
-    downstream.data = self.data;
-    self.ready = downstream.ready;
-  }
+    fn connect(self @clk, out downstream: Stream8 @clk) {
+        downstream.valid = self.valid;
+        downstream.data = self.data;
+        self.ready = downstream.ready;
+    }
 }

@@ -12,5 +12,5 @@ struct Pair = pair {
 }
 
 fn mix {dom c1: Clock, dom c2: Clock} (x: uint(8) @c1, y: uint(8) @c2) -> Pair @c1 {
-    pair { a: x, b: y }
+    pair { a = x, b = y }
 }

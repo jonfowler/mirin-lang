@@ -19,6 +19,11 @@ This document defines the small Polar surface syntax subset that current example
 ## Conventions
 
 - Use Rust-like spacing for bindings and fields: `name: Type`
+- `:` always introduces a *type*; `=` and `=>` always bind *values/connections*.
+  Record constructors therefore use `=` (`packet { valid = false, payload = 0 }`),
+  matching named arguments — NOT Rust's `field: value`. A port constructor may
+  bind an opposite-direction field with `=>` (`df { data = d, ready => r }`),
+  the record-literal analogue of a named-arg out-connection.
 - Use trailing commas inside braced lists and record literals
 - Keep named interface arguments in braces and ordinary value arguments in parentheses
 - Use the `param` keyword for compile-time parameters and `dom` for clock-domain bindings; both place the name into the type environment as well as the value environment

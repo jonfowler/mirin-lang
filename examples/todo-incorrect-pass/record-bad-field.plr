@@ -8,6 +8,6 @@ struct Pair = pair {
 }
 
 fn top() -> uint(8) {
-    let p = pair { a: 1, c: 2 };
+    let p = pair { a = 1, c = 2 };
     p.a
 }

@@ -5,7 +5,7 @@ struct Option = option {
 
 fn reg2 {dom clk: Clock} (a: Option @clk, rstn: Reset @clk) -> Option @clk {
     let payloadd = a.payload.reg(rstn, 0);
-    return option { valid: a.valid, payload: payloadd };
+    return option { valid = a.valid, payload = payloadd };
 }
 
 fn double_delay_named

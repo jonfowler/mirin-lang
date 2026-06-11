@@ -12,7 +12,7 @@ struct Pair = pair {
 
 fn top(x: uint(8)) -> uint(8) {
     var p: Pair;
-    p = pair { a: x, b: x };
+    p = pair { a = x, b = x };
     p.a = x;
     p.a + p.b
 }

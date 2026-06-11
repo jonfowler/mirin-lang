@@ -426,3 +426,45 @@ fn f {dom clk: Clock} (x: uint(8) @clk) {
           value: (expression
             (path_expression
               segment: (identifier))))))))
+
+================================================================================
+record constructor with = fields and => binding
+================================================================================
+
+fn top() -> uint(8) {
+    let p = pair { a = 1, ready => r };
+    p.a
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section)
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (let_statement
+          name: (identifier)
+          value: (expression
+            (record_constructor_expression
+              constructor: (identifier)
+              body: (record_literal
+                (record_field_value
+                  name: (identifier)
+                  value: (expression
+                    (number)))
+                (record_field_value
+                  name: (identifier)
+                  target: (identifier)))))))
+      tail: (expression
+        (postfix_expression
+          receiver: (path_expression
+            segment: (identifier))
+          (field_access
+            field: (identifier)))))))

@@ -195,10 +195,10 @@ fn add3(x: uint(8)) -> uint(8) {
     fn narrow_width_breaks_record_literal_one_per_line() {
         // Record *literals* (unlike definitions) collapse when they fit and
         // break by width — exercise the width-based delimited path.
-        let src = "fn f() -> Packet { packet { valid: false, payload: 0 } }\n";
+        let src = "fn f() -> Packet { packet { valid = false, payload = 0 } }\n";
         let wide = format_str_width(src, 100).unwrap();
         assert!(
-            wide.contains("packet { valid: false, payload: 0 }"),
+            wide.contains("packet { valid = false, payload = 0 }"),
             "should collapse when it fits:\n{wide}"
         );
         let narrow = format_str_width(src, 24).unwrap();
@@ -206,7 +206,7 @@ fn add3(x: uint(8)) -> uint(8) {
             narrow.contains("packet {\n"),
             "should break when narrow:\n{narrow}"
         );
-        assert!(narrow.contains("        valid: false,\n"), "got:\n{narrow}");
+        assert!(narrow.contains("        valid = false,\n"), "got:\n{narrow}");
     }
 
     #[test]

@@ -15,7 +15,7 @@ struct Write = write {
 }
 
 fn pipeline {dom clk: Clock, rstn: Reset @clk = high} (b: Bus(uint(8)) @clk) -> Bus(uint(8)) @clk {
-    let held = b.reg(rstn, bus { valid: false, data: 0 });
+    let held = b.reg(rstn, bus { valid = false, data = 0 });
     return held;
 }
 
@@ -23,6 +23,6 @@ fn pipeline_write
     {dom clk: Clock, rstn: Reset @clk = high}
     (w: Bus(Write) @clk)
     -> Bus(Write) @clk {
-    let held = w.reg(rstn, bus { valid: false, data: write { addr: 0, data: 0 } });
+    let held = w.reg(rstn, bus { valid = false, data = write { addr = 0, data = 0 } });
     held
 }

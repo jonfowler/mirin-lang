@@ -6,7 +6,7 @@ struct Option = option {
 impl Option {
     fn reg {dom clk: Clock} (self @clk, rstn: Reset @clk) -> Option @clk {
         let payloadd = self.payload.reg(rstn, 0);
-        return option { valid: self.valid, payload: payloadd };
+        return option { valid = self.valid, payload = payloadd };
     }
 }
 

@@ -1609,7 +1609,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "struct Bus(A: Type) = bus { valid: bool, data: A }\nfn f () -> Bus(uint(8)) { return bus { valid: true, data: 0 }; }",
+            "struct Bus(A: Type) = bus { valid: bool, data: A }\nfn f () -> Bus(uint(8)) { return bus { valid = true, data = 0 }; }",
         );
         assert!(
             infer(&db, krate, def_of(&db, krate, "f"))

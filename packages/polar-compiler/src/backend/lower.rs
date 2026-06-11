@@ -1606,7 +1606,7 @@ endmodule
         let sv = emit(
             "struct Packet = packet { valid: bool, payload: uint(8) }\n\
              fn registerPacket { dom clk: Clock, rstn: Reset @clk = high } ( inp: Packet @clk ) -> Packet @clk {\n\
-               let held = inp.reg(rstn, packet { valid: false, payload: 0 });\n\
+               let held = inp.reg(rstn, packet { valid = false, payload = 0 });\n\
                return held;\n\
              }",
         );
@@ -1680,7 +1680,7 @@ endmodule
             "struct Option = option { valid: bool, payload: uint(8) }\n\
              fn reg2 { dom clk: Clock } ( a: Option @clk, rstn: Reset @clk ) -> Option @clk {\n\
                let payloadd = a.payload.reg(rstn, 0);\n\
-               return option { valid: a.valid, payload: payloadd };\n\
+               return option { valid = a.valid, payload = payloadd };\n\
              }",
         );
         assert!(sv.contains("    logic [7:0] payloadd;"), "{sv}");
