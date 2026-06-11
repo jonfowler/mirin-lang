@@ -1,0 +1,13 @@
+// A pipeline stage in its own file, two directories below the crate root.
+// The interface port comes from `crate::stream`; the arithmetic helper is
+// imported with an alias — and re-exported (`pub use`), which the sibling
+// stage reaches through a `super::` path.
+use crate::stream::Stream8;
+
+pub use crate::util::double as twice;
+
+pub fn gain {dom clk: Clock} (upstream: Stream8 @clk, out downstream: Stream8 @clk) {
+    downstream.valid = upstream.valid;
+    downstream.data = twice(upstream.data);
+    upstream.ready = downstream.ready;
+}

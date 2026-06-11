@@ -71,7 +71,6 @@ struct Evaluator<'db> {
 /// One activation: a def's body plus the call-site bindings for its value
 /// params and the per-local memo slots.
 struct Frame<'db> {
-    def: DefId<'db>,
     body: &'db Body<'db>,
     bindings: HashMap<LocalId, Value<'db>>,
     slots: std::cell::RefCell<HashMap<LocalId, Slot<'db>>>,
@@ -86,7 +85,6 @@ enum Slot<'db> {
 impl<'db> Frame<'db> {
     fn root(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db>) -> Self {
         Frame {
-            def,
             body: body(db, krate, def),
             bindings: HashMap::new(),
             slots: Default::default(),
@@ -289,7 +287,6 @@ impl<'db> Evaluator<'db> {
             bindings.insert(p.local, v);
         }
         Some(Frame {
-            def,
             body: body(self.db, self.krate, def),
             bindings,
             slots: Default::default(),

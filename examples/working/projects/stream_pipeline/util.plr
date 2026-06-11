@@ -1,0 +1,19 @@
+// Crate-internal helpers. `double` is fully public (used via glob and via
+// `as`-alias); `add_one` is `pub(crate)` — fine for the stages, but not
+// visible outside this crate. `Config`/`width` exercise const eval across
+// a module boundary: `main` evaluates `width(config { extra = 1 })` to 9.
+pub fn double(x: uint(8)) -> uint(8) {
+    x + x
+}
+
+pub(crate) fn add_one(x: uint(8)) -> uint(8) {
+    x + 1
+}
+
+pub struct Config = config {
+    extra: integer,
+}
+
+pub fn width(cfg: Config) -> integer {
+    8 + cfg.extra
+}

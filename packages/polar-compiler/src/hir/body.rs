@@ -551,20 +551,10 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     }
 
     fn prescan_vars(&mut self, node: &Node, source: &str) {
-        let lookup = |n: &str| self.lookup_local(n);
-        let mut unres = Vec::new();
-        let declared_ty = node.child_by_field_name("type").map(|t| {
-            lower_type_expr(
-                self.map,
-                self.module,
-                self.generics,
-                Some(&lookup),
-                &t,
-                source,
-                Some(&mut unres),
-            )
-        });
-        self.diag_unresolved_types(unres);
+        // Names only: the declared type is lowered when `lower_stmt` reaches
+        // the statement, so a width naming an earlier `let` resolves
+        // (`let w = …; var count: uint(w);` — at prescan no lets exist yet).
+        let declared_ty = None;
         // Span each var at its own name identifier, not the whole statement.
         let mut cursor = node.walk();
         for name_node in node.children_by_field_name("name", &mut cursor) {
@@ -604,10 +594,27 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 block.stmts.push(Stmt::Let { local, value });
             }
             "var_statement" => {
-                // Locals were pre-scanned; emit the decls and any init equation.
+                // Locals were pre-scanned (names only); lower the declared
+                // type here, where every preceding `let` is in scope, and
+                // patch it onto the pre-scanned locals.
+                let lookup = |n: &str| self.lookup_local(n);
+                let mut unres = Vec::new();
+                let declared_ty = node.child_by_field_name("type").map(|t| {
+                    lower_type_expr(
+                        self.map,
+                        self.module,
+                        self.generics,
+                        Some(&lookup),
+                        &t,
+                        source,
+                        Some(&mut unres),
+                    )
+                });
+                self.diag_unresolved_types(unres);
                 let names = field_texts(node, "name", source);
                 for name in &names {
                     if let Some(local) = self.lookup_local(name) {
+                        self.locals[local.0 as usize].declared_ty = declared_ty.clone();
                         block.stmts.push(Stmt::VarDecl { local });
                     }
                 }

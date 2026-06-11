@@ -28,6 +28,7 @@ pub use backend::lower::{sv_file, sv_module, verilog};
 pub use backend::reserved::reserved_words;
 pub use base::db::{RootDatabase, SourceFile, SourceRoot};
 pub use base::diagnostics::{Span, render};
+pub use base::loader::load_crate;
 pub use base::parser::{language, parse_text};
 pub use base::vfs::Vfs;
 pub use hir::body::{

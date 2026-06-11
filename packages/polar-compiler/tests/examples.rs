@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use polar_compiler::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, completeness, crate_def_map,
-    directions, infer,
+    directions, infer, load_crate,
     reserved_words, sig_of, syntax_errors, verilog,
 };
 
@@ -91,21 +91,29 @@ fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize, usize, usize) {
     let mut vfs = Vfs::new();
     vfs.set_file_text(&mut db, "t.plr", src.to_owned());
     let krate: SourceRoot = vfs.source_root(&mut db, "t.plr");
-    let map = crate_def_map(&db, krate);
+    crate_diagnostic_counts(&db, krate)
+}
+
+/// The same counts over an already-loaded (possibly multi-file) crate.
+fn crate_diagnostic_counts(
+    db: &RootDatabase,
+    krate: SourceRoot,
+) -> (usize, usize, usize, usize, usize, usize) {
+    let map = crate_def_map(db, krate);
 
     let (mut sig_d, mut body_d, mut infer_d, mut driver_d, mut dir_d) = (0, 0, 0, 0, 0);
     for def in map.defs().collect::<Vec<_>>() {
         match map.def_data(def).map(|d| d.kind) {
             Some(DefKind::Fn | DefKind::Method) => {
-                sig_d += sig_of(&db, krate, def).diagnostics.len();
-                body_d += body(&db, krate, def).diagnostics().len();
-                infer_d += infer(&db, krate, def).diagnostics().len();
-                driver_d += check_drivers(&db, krate, def).len();
-                driver_d += completeness(&db, krate, def).len();
-                dir_d += directions(&db, krate, def).len();
+                sig_d += sig_of(db, krate, def).diagnostics.len();
+                body_d += body(db, krate, def).diagnostics().len();
+                infer_d += infer(db, krate, def).diagnostics().len();
+                driver_d += check_drivers(db, krate, def).len();
+                driver_d += completeness(db, krate, def).len();
+                dir_d += directions(db, krate, def).len();
             }
             Some(DefKind::Struct | DefKind::Port) => {
-                sig_d += sig_of(&db, krate, def).diagnostics.len();
+                sig_d += sig_of(db, krate, def).diagnostics.len();
             }
             _ => {}
         }
@@ -212,6 +220,49 @@ fn verilator_directive(src: &str) -> Vec<String> {
 /// Emit SystemVerilog for the corpus and lint it with verilator. Skips (passes)
 /// when verilator is not installed, so CI without it stays green — the
 /// verification the project settled on (verilator lint over the new output).
+/// Multi-file projects: each `examples/working/projects/<name>/main.plr`
+/// is a crate root loaded with the real file-module loader.
+fn projects() -> Vec<(String, PathBuf)> {
+    let dir = working_dir().join("projects");
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for entry in entries {
+        let path = entry.unwrap().path();
+        let main = path.join("main.plr");
+        if main.exists() {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            out.push((name, main));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Every project loads, resolves, and type-checks clean across all its
+/// files, and emits non-empty SystemVerilog.
+#[test]
+fn projects_typecheck_clean() {
+    let projects = projects();
+    assert!(!projects.is_empty(), "no projects found");
+    for (name, main) in projects {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load_crate(&mut db, &mut vfs, &main)
+            .unwrap_or_else(|e| panic!("{name}: load failed: {e}"));
+        let counts = crate_diagnostic_counts(&db, krate);
+        assert_eq!(
+            counts,
+            (0, 0, 0, 0, 0, 0),
+            "project {name} produced diagnostics \
+             (nameres, sig, body, infer, drivers, directions) = {counts:?}"
+        );
+        let sv = verilog(&db, krate);
+        assert!(!sv.is_empty(), "project {name} emitted no SV");
+    }
+}
+
 #[test]
 fn corpus_is_verilator_clean() {
     if std::process::Command::new("verilator")
@@ -233,31 +284,44 @@ fn corpus_is_verilator_clean() {
         vfs.set_file_text(&mut db, "t.plr", src.clone());
         let krate = vfs.source_root(&mut db, "t.plr");
         let sv = verilog(&db, krate);
-        let path = dir.join(name.replace(".plr", ".sv"));
-        std::fs::write(&path, sv).unwrap();
-        // `-Wall` minus the cosmetic/expected lints: filename≠module name,
-        // intentionally-unused port-field signals, and multiple uninstantiated
-        // top modules (test harnesses with several roots). Parameter values come
-        // from the example's `// verilator: -G…` directive.
-        let out = std::process::Command::new("verilator")
-            .args([
-                "--lint-only",
-                "-Wall",
-                "-Wno-DECLFILENAME",
-                "-Wno-UNUSEDSIGNAL",
-                "-Wno-MULTITOP",
-            ])
-            .args(verilator_directive(&src))
-            .arg(&path)
-            .output()
-            .expect("run verilator");
-        assert!(
-            out.status.success(),
-            "verilator rejected {name}:\n{}\n--- sv ---\n{}",
-            String::from_utf8_lossy(&out.stderr),
-            std::fs::read_to_string(&path).unwrap_or_default(),
-        );
+        lint_sv(&dir, &name, &src, sv);
     }
+    // Multi-file projects lint too.
+    for (name, main) in projects() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load_crate(&mut db, &mut vfs, &main).unwrap();
+        let src = std::fs::read_to_string(&main).unwrap();
+        let sv = verilog(&db, krate);
+        lint_sv(&dir, &name, &src, sv);
+    }
+}
+
+/// Write one emitted SV file and lint it: `-Wall` minus the cosmetic lints
+/// (filename≠module name, intentionally-unused port-field signals, multiple
+/// uninstantiated top modules). Parameter values come from the example's
+/// `// verilator: -G…` directive.
+fn lint_sv(dir: &Path, name: &str, src: &str, sv: &str) {
+    let path = dir.join(format!("{}.sv", name.trim_end_matches(".plr")));
+    std::fs::write(&path, sv).unwrap();
+    let out = std::process::Command::new("verilator")
+        .args([
+            "--lint-only",
+            "-Wall",
+            "-Wno-DECLFILENAME",
+            "-Wno-UNUSEDSIGNAL",
+            "-Wno-MULTITOP",
+        ])
+        .args(verilator_directive(src))
+        .arg(&path)
+        .output()
+        .expect("run verilator");
+    assert!(
+        out.status.success(),
+        "verilator rejected {name}:\n{}\n--- sv ---\n{}",
+        String::from_utf8_lossy(&out.stderr),
+        std::fs::read_to_string(&path).unwrap_or_default(),
+    );
 }
 
 /// Every `fail-expected/` example must produce at least one failure signal:

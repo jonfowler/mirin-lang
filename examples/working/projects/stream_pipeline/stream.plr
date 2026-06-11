@@ -1,0 +1,7 @@
+// The shared interface type. `pub` makes it visible crate-wide; the
+// stages and `main` all name it through `crate::stream::Stream8`.
+pub port Stream8 = stream8 {
+    out valid: bool,
+    out data: uint(8),
+    in ready: bool,
+}

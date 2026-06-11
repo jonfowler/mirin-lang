@@ -982,15 +982,27 @@ impl<'db> Collector<'db> {
             module = next;
             i += 1;
         }
-        // Final segment — in whichever namespace it resolves.
+        // Final segment — a name may exist in several namespaces (a `mod x`
+        // and an item `x`); the import takes whichever are accessible, and
+        // privacy is an error only when NO namespace yields an accessible
+        // binding (Rust's per-namespace rule).
         let own_scope = i == start && start == 0;
+        let mut private_def = None;
+        let mut found = false;
         for ns in [Namespace::Module, Namespace::Item] {
             if let Some(binding) = self.map.binding_local(module, segments[i], ns) {
-                if !own_scope && !self.vis_accessible(binding.vis, from) {
-                    self.push_private(binding.def, anchor);
+                found = true;
+                if own_scope || self.vis_accessible(binding.vis, from) {
+                    return; // at least one namespace is accessible
                 }
-                return;
+                private_def.get_or_insert(binding.def);
             }
+        }
+        if found {
+            if let Some(def) = private_def {
+                self.push_private(def, anchor);
+            }
+            return;
         }
         self.map.diagnostics.push(DefDiagnostic {
             anchor: Some(anchor),
@@ -1482,6 +1494,34 @@ mod inner {
             binding.source,
             BindingSource::Def,
             "the local `f` must win over the import"
+        );
+    }
+
+    #[test]
+    fn dual_namespace_import_takes_the_accessible_one() {
+        // `offset` exists as a PRIVATE module and (via `pub use`) a public
+        // fn. Rust's per-namespace rule: the import takes the accessible
+        // binding; privacy errors only when no namespace is accessible.
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = single(
+            &mut db,
+            &mut vfs,
+            "t.plr",
+            "mod s { mod offset { pub fn offset (x: uint(8)) -> uint(8) { return x; } }\n\
+             pub use crate::s::offset::offset; }\n\
+             use crate::s::offset;\n\
+             fn top (x: uint(8)) -> uint(8) { return offset(x); }",
+        );
+        let map = crate_def_map(&db, krate);
+        assert!(
+            map.diagnostics().is_empty(),
+            "accessible Item-namespace binding must satisfy the import: {:?}",
+            map.diagnostics()
+        );
+        assert!(
+            map.resolve_local(map.root(), "offset", Namespace::Item).is_some(),
+            "the fn must be imported"
         );
     }
 
