@@ -1,10 +1,19 @@
 # Traits
 
-Status: design. Decision points for Jon are marked **[D1]**–**[D6]** and
-collected at the end. Companion reading: `planning/domain_checking_redux.md`
-(domain bounds share the `where`/obligation infrastructure designed here),
+Status: in implementation (decisions [D1]–[D6] settled 2026-06, recorded at
+the end; staging below). Companion reading:
+`planning/domain_checking_redux.md` (domain bounds share the
+`where`/obligation infrastructure designed here),
 `proposals/Whos_who_in_the_type_zoo.md` (the built-in type classes that
 eventually become marker traits).
+
+Prerequisite landed first: **binder-first impls** (`impl {dom clk: Clock}
+Stream8 { … }`) for inherent blocks too, so trait and inherent impls share
+one shape, plus auto-binding of a parametric owner's params into method
+signatures. General syntax rule adopted (also resolves the
+application-braces-vs-body-braces ambiguity): **positional argument sections
+always come after named sections**; records are the one exception and never
+appear in the two problematic positions (fn return type, impl header).
 
 ## Why traits, and why now
 
@@ -311,19 +320,39 @@ Each slice is independently committable with examples + fail-examples.
   zoo (`Pos`, linearity); trait-in-scope visibility; associated types if
   a customer appears.
 
-## Decision points
+## rust-analyzer lessons (researched separately; the salsa side)
 
-- **[D1] Bound syntax**: `param T: Add + Bits` (ascription = kind + bound,
-  recommended) vs a separate `type T: Add` keyword.
-- **[D2] Trait-impl binder placement**: `impl {param n} Add for uint(n)`
-  binder-first (recommended) vs trailing braces as in inherent impls.
-- **[D3] Method candidates from all crate traits** in v1 (recommended) vs
-  requiring the trait in scope from day one.
-- **[D4] Operator migration timing**: T5 as planned, or pull earlier if
-  sint/fixed-point primitives arrive sooner.
-- **[D5] Default methods / supertraits**: both deferred past v1
-  (recommended) or folded into T2/T3.
-- **[D6] Does `.reg` become a trait method** (`trait Reg`, structural
-  builtin impls) in T5, or stay builtin until the type zoo work? Staying
-  builtin is recommended until marker traits exist — `reg` wants a
-  "registerable" structural bound, which is zoo territory.
+What transfers from r-a's trait stack to ours, beyond the rustc shape:
+
+- **Inference vars never cross a query boundary.** `infer(def)` stays
+  self-contained (we already obey this); if a solve ever needs to be its
+  own query, canonicalize the goal first.
+- **Do NOT memoize per-goal solves in salsa.** r-a hit this twice: salsa
+  bookkeeping per canonical goal is a memory pathology. Their mature
+  position: solver-internal provisional cache + (if ever needed) a
+  revision-scoped side cache. For Polar's goal volume, no cache at all is
+  the right v1.
+- **Impl maps are a per-crate query keyed by trait, with a self-type
+  fingerprint (head constructor) index** — candidate assembly is a
+  fingerprint lookup, never a whole-crate impl scan.
+- **Impl-header edits invalidate crate-wide inference; body edits must
+  not.** Headers live in the item tree/def map; bodies behind the body
+  query — our existing firewall, keep it as trait items land.
+- **Obligations carry provenance from day one** (origin span, the
+  instantiated bound, derivation parent). r-a couldn't report
+  unsatisfied-bound errors for *years* because "no solution for canonical
+  goal" has no story attached. Our Obligation already carries a span;
+  trait obligations also get a cause chain.
+- **Don't fork solver semantics from the reference implementation** —
+  chalk's translation layer rotted. (For us: one solver, used by both
+  infer and the backend's Instance::resolve, never two.)
+
+## Decisions (settled 2026-06)
+
+- **[D1]** Bound syntax: `param T: Add + Bits` — ascription = kind + bound.
+- **[D2]** Binder-first impls, for trait AND inherent blocks (landed).
+- **[D3]** v1 method dispatch considers all crate traits; no
+  trait-in-scope rule yet.
+- **[D4]** Operators migrate in T5.
+- **[D5]** Default methods / supertraits deferred past v1.
+- **[D6]** `.reg` stays builtin until type-zoo marker traits exist.
