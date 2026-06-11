@@ -1,0 +1,20 @@
+// Inline verilog (planning/inline_verilog.md): the signature is the
+// contract — types, directions, domains — and the body is raw SV with
+// `${…}` splices. Bare `$` passes through (no escaping for system
+// functions); `${8 * 2}` shows a const-expression splice rendered as an
+// SV constant expression.
+fn ff_en {dom clk: Clock} (en: bool @clk, d: uint(8) @clk, out q: uint(8) @clk) = verilog {
+    // A plain enabled flop, written by hand.
+    always_ff @(posedge ${clk}) begin
+        if (${en}) ${q} <= $unsigned(${d});
+    end
+    initial begin
+        assert (${8 * 2} == 16);
+    end
+}
+
+fn top {dom clk: Clock} (en: bool @clk, d: uint(8) @clk) -> uint(8) @clk {
+    var q: uint(8) @clk;
+    ff_en(en, d, => q);
+    q
+}

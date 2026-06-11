@@ -15,6 +15,7 @@ This document defines the small Polar surface syntax subset that current example
 - `let` bindings (sequential, forward-only) and `var` signal declarations (block-scoped, supports cyclic equations)
 - component connection blocks: `=` for sinks (inputs), `=>` for sources (outputs, introduces a `var`-scoped name)
 - method-style calls such as `value.reg{...}()`
+- inline verilog as a fn body: `fn f(…) = verilog { raw SV with ${name} / ${const expr} splices }`; bare `$` passes through (`planning/inline_verilog.md`)
 
 ## Conventions
 

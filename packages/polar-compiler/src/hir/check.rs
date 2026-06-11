@@ -162,6 +162,11 @@ pub fn completeness<'db>(
         return Vec::new();
     }
     let body = body(db, krate, def);
+    if body.verilog().is_some() {
+        // An inline-verilog body is trusted to drive what its signature
+        // declares (planning/inline_verilog.md; verilator is the backstop).
+        return Vec::new();
+    }
     let inf = crate::hir::infer::infer(db, krate, def);
     let sig = sig_of(db, krate, def);
 

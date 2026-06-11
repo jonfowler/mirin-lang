@@ -10,6 +10,10 @@ module.exports = grammar({
 
   extras: ($) => [/\s/, $.comment],
 
+  // The raw body of `= verilog { … }` — one token from src/scanner.c
+  // (brace-counting, string/comment aware). See planning/inline_verilog.md.
+  externals: ($) => [$.verilog_content],
+
   word: ($) => $.identifier,
 
   conflicts: ($) => [
@@ -128,8 +132,15 @@ module.exports = grammar({
         optional(field("named_parameters", $.named_parameter_section)),
         field("parameters", $.parameter_section),
         optional(seq("->", field("return_type", $.return_type_expression))),
-        field("body", $.block),
+        choice(
+          field("body", $.block),
+          seq("=", "verilog", field("verilog_body", $.verilog_block)),
+        ),
       ),
+
+    // An inline-verilog fn body: the signature is the contract, the raw
+    // text is spliced into the emitted module (`planning/inline_verilog.md`).
+    verilog_block: ($) => seq("{", field("content", $.verilog_content), "}"),
 
     // Return-position type. Excludes `type_named_args` because a trailing
     // `{` in return position opens the fn body, not a named-arg-application.

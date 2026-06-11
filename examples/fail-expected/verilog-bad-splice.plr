@@ -1,0 +1,5 @@
+// `${nope}` names nothing in the signature, and `${d.x}` is outside the
+// splice fragment — both diagnose with spans inside the raw block.
+fn bad {dom clk: Clock} (d: uint(8) @clk, out q: uint(8) @clk) = verilog {
+    always_ff @(posedge ${clk}) ${q} <= ${nope} + ${d.x};
+}

@@ -106,7 +106,15 @@ impl<'a> Formatter<'a> {
                 concat([text("("), self.doc(inner), text(")")])
             }
 
-            "function_definition" => self.fn_def(n),
+            "function_definition" => {
+                // An inline-verilog fn passes through verbatim — raw SV is
+                // not ours to reformat.
+                if n.child_by_field_name("verilog_body").is_some() {
+                    self.verbatim(n)
+                } else {
+                    self.fn_def(n)
+                }
+            }
             "struct_definition" => self.struct_def(n),
             "port_definition" => self.port_def(n),
             "impl_block" => self.impl_block(n),

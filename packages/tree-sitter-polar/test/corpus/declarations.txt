@@ -520,3 +520,41 @@ fn top() -> uint(8) {
       tail: (expression
         (path_expression
           segment: (identifier))))))
+
+================================================================================
+inline verilog fn body
+================================================================================
+
+fn ff {dom clk: Clock} (d: uint(8) @clk, out q: uint(8) @clk) = verilog {
+    always_ff @(posedge ${clk}) ${q} <= $unsigned(${d}); // braces ok: }{
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    named_parameters: (named_parameter_section
+      (named_parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number)))
+          domain: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number)))
+          domain: (identifier))))
+    verilog_body: (verilog_block
+      content: (verilog_content))))

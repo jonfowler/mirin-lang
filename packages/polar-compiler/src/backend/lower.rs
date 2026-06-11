@@ -47,7 +47,7 @@ use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::{Signature, sig_of};
 use crate::hir::types::Folder;
 use crate::hir::types::{
-    ConstArg, Direction, Domain, GenericArgs, GenericParam, LocalId, Term, TermKind, Type,
+    ConstArg, ConstOp, Direction, Domain, GenericArgs, GenericParam, LocalId, Term, TermKind, Type,
     ValueKind,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
@@ -172,7 +172,13 @@ fn build_module<'db>(
         declared: HashSet::new(),
         mono_reqs: Vec::new(),
     };
-    lower.lower_top_block(body.block());
+    if let Some(template) = body.verilog() {
+        lower
+            .items
+            .push(SvItem::Verbatim(render_verilog(template, sig)));
+    } else {
+        lower.lower_top_block(body.block());
+    }
 
     // Discharge symbolic width obligations (`uint(n)` vs `uint(m)`) as
     // `initial assert (n == m)`, rendering each param index via its name.
@@ -1574,6 +1580,65 @@ fn ground_widths<'db>(
         }
     }
     G { db, krate, def }.fold_type(ty)
+}
+
+/// Render an inline-verilog template: splices become the emitted port /
+/// parameter names; const trees render as SV constant expressions.
+fn render_verilog(template: &crate::hir::body::VerilogTemplate, sig: &Signature<'_>) -> String {
+    use crate::hir::body::VerilogSegment;
+    let mut out = String::new();
+    for seg in &template.segments {
+        match seg {
+            VerilogSegment::Text(t) => out.push_str(t),
+            VerilogSegment::Param(l) => {
+                let name = sig
+                    .params
+                    .iter()
+                    .find(|p| p.local == *l)
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("/*unknown*/");
+                out.push_str(name);
+            }
+            VerilogSegment::Dom(i) => {
+                let name = sig
+                    .generic_params
+                    .get(*i as usize)
+                    .map(|g| g.name.as_str())
+                    .unwrap_or("/*unknown*/");
+                out.push_str(name);
+            }
+            VerilogSegment::ResultPort => out.push_str("result"),
+            VerilogSegment::Const(c) => out.push_str(&render_const_sv(c, sig)),
+        }
+    }
+    out
+}
+
+/// A const tree as an SV constant expression (symbolic Params render as the
+/// module's SV parameter names — legal in any constant context).
+fn render_const_sv(c: &ConstArg, sig: &Signature<'_>) -> String {
+    match c {
+        ConstArg::Lit(v) => v.to_string(),
+        ConstArg::Param(i) => sig
+            .generic_params
+            .get(*i as usize)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "/*unknown*/".to_owned()),
+        ConstArg::Op(op, a, b) => {
+            let op = match op {
+                ConstOp::Add => "+",
+                ConstOp::Sub => "-",
+                ConstOp::Mul => "*",
+            };
+            format!(
+                "({} {} {})",
+                render_const_sv(a, sig),
+                op,
+                render_const_sv(b, sig)
+            )
+        }
+        _ => "/*unknown*/".to_owned(),
+    }
 }
 
 /// A fn that exists only for compile-time evaluation: it returns `integer`,

@@ -26,7 +26,7 @@ use crate::base::db::SourceRoot;
 use crate::base::diagnostics::Span;
 use crate::base::parser;
 use crate::hir::sig::{lower_type_expr, sig_of};
-use crate::hir::types::{GenericParam, LocalId, Type};
+use crate::hir::types::{ConstArg, ConstOp, GenericParam, LocalId, TermKind, Type};
 use crate::nameres::def_map::{CrateDefMap, ModuleId, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
 use crate::syntax::ast_id;
@@ -139,6 +139,28 @@ pub struct RecordField {
     pub value: ExprId,
 }
 
+/// An inline-verilog fn body (`= verilog { … }`): raw text split at `${…}`
+/// splices, resolved against the signature (`planning/inline_verilog.md`).
+#[derive(Clone, PartialEq, Eq, Debug, Default, salsa::Update)]
+pub struct VerilogTemplate {
+    pub segments: Vec<VerilogSegment>,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub enum VerilogSegment {
+    /// Raw verilog text, emitted verbatim (bare `$` included).
+    Text(String),
+    /// `${p}` — a scalar value param; renders as its port's SV name.
+    Param(LocalId),
+    /// `${clk}` — a dom generic; renders as the clock port's name.
+    Dom(u32),
+    /// `${result}` — the return port's name.
+    ResultPort,
+    /// `${n + 1}` — a const expression over literals and Const-kind
+    /// generics; renders as an SV constant expression.
+    Const(ConstArg),
+}
+
 /// A block: a sequence of statements and an optional tail expression (its value).
 #[derive(Clone, PartialEq, Eq, Debug, Default, salsa::Update)]
 pub struct Block {
@@ -229,12 +251,19 @@ pub struct Body<'db> {
     /// The first `param_count` locals are the value params (ids match `sig_of`).
     param_count: u32,
     block: Block,
+    /// `Some` for an inline-verilog fn (`= verilog { … }`); the block is empty.
+    verilog: Option<VerilogTemplate>,
     diagnostics: Vec<BodyDiagnostic>,
 }
 
 impl<'db> Body<'db> {
     pub fn expr(&self, id: ExprId) -> &Expr<'db> {
         &self.exprs[id.0 as usize]
+    }
+
+    /// The inline-verilog template, for a `= verilog { … }` fn.
+    pub fn verilog(&self) -> Option<&VerilogTemplate> {
+        self.verilog.as_ref()
     }
 
     /// The def-relative span of an expression (the renderer adds the def start).
@@ -313,12 +342,24 @@ pub fn body<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db
     let Some(node) = tree.root_node().descendant_for_byte_range(start, end) else {
         return Body::default();
     };
+    let mut lowerer = BodyLowerer::new(map, module, start, &sig.generic_params, &sig.params);
+    lowerer.record_param_spans(&node, source);
+
+    // `= verilog { … }`: no HIR block — the raw text becomes a template,
+    // splices resolved against the signature.
+    if let Some(vb) = node.child_by_field_name("verilog_body") {
+        let template = vb
+            .child_by_field_name("content")
+            .map(|c| lowerer.lower_verilog_template(&c, source))
+            .unwrap_or_default();
+        let mut body = lowerer.finish(Block::default());
+        body.verilog = Some(template);
+        return body;
+    }
+
     let Some(block_node) = node.child_by_field_name("body") else {
         return Body::default();
     };
-
-    let mut lowerer = BodyLowerer::new(map, module, start, &sig.generic_params, &sig.params);
-    lowerer.record_param_spans(&node, source);
     let block = lowerer.lower_block(&block_node, source);
     lowerer.finish(block)
 }
@@ -400,8 +441,123 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             local_spans: self.local_spans,
             param_count: self.param_count,
             block,
+            verilog: None,
             diagnostics: self.diagnostics,
         }
+    }
+
+    /// Split a verilog block's raw text at `${…}` splices and resolve each
+    /// against the signature: a scalar value param, a dom generic, `result`,
+    /// or a const expression over literals + Const-kind generics. Bare `$`
+    /// (system tasks) passes through as text.
+    fn lower_verilog_template(&mut self, content: &Node, source: &str) -> VerilogTemplate {
+        let text = node_text(content, source);
+        let base = content.start_byte();
+        let mut segments = Vec::new();
+        let mut rest = text.as_str();
+        let mut offset = 0usize; // byte offset of `rest` within `text`
+        while let Some(i) = rest.find("${") {
+            if i > 0 {
+                segments.push(VerilogSegment::Text(rest[..i].to_owned()));
+            }
+            let after = &rest[i + 2..];
+            let Some(end) = after.find('}') else {
+                self.diag_verilog(base, offset + i, offset + i + 2, "unterminated `${`");
+                segments.push(VerilogSegment::Text(rest[i..].to_owned()));
+                rest = "";
+                break;
+            };
+            let inner = &after[..end];
+            let span = (offset + i, offset + i + 2 + end + 1);
+            let seg = self.resolve_splice(inner.trim(), base, span);
+            segments.push(seg);
+            offset += i + 2 + end + 1;
+            rest = &rest[i + 2 + end + 1..];
+        }
+        if rest.is_empty() == false {
+            segments.push(VerilogSegment::Text(rest.to_owned()));
+        }
+        VerilogTemplate { segments }
+    }
+
+    /// A `${…}` splice: single names resolve against the signature; anything
+    /// else is the const micro-grammar (`lit | name | (e) | e+e | e-e | e*e`,
+    /// names being Const-kind generics).
+    fn resolve_splice(
+        &mut self,
+        inner: &str,
+        base: usize,
+        span: (usize, usize),
+    ) -> VerilogSegment {
+        let is_ident = inner
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && inner
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if is_ident {
+            if inner == "result" {
+                return VerilogSegment::ResultPort;
+            }
+            // Dom generics first: they are also seeded as body locals (for
+            // `posedge`), but here they mean the clock port.
+            if let Some(i) = self
+                .generics
+                .iter()
+                .position(|g| g.name == inner && matches!(g.kind, TermKind::Domain(_)))
+            {
+                return VerilogSegment::Dom(i as u32);
+            }
+            if let Some(local) = self.lookup_local(inner) {
+                // Aggregate params flatten to per-field ports — a bare splice
+                // has no single name to stand for.
+                let aggregate = matches!(
+                    self.locals[local.0 as usize].declared_ty,
+                    Some(Type::Port { .. })
+                        | Some(Type::Value {
+                            kind: crate::hir::types::ValueKind::Struct { .. },
+                            ..
+                        })
+                );
+                if aggregate {
+                    self.diag_verilog(
+                        base,
+                        span.0,
+                        span.1,
+                        "aggregate params flatten per-field and cannot be spliced",
+                    );
+                    return VerilogSegment::Text(inner.to_owned());
+                }
+                return VerilogSegment::Param(local);
+            }
+            // fall through: a Const-kind generic parses below
+        }
+        match parse_const_splice(inner, &|n| {
+            self.generics
+                .iter()
+                .position(|g| g.name == n && g.kind == TermKind::Const)
+                .map(|i| ConstArg::Param(i as u32))
+        }) {
+            Ok(c) => VerilogSegment::Const(c),
+            Err(msg) => {
+                self.diag_verilog(base, span.0, span.1, &msg);
+                VerilogSegment::Text(inner.to_owned())
+            }
+        }
+    }
+
+    /// A diagnostic inside the raw verilog text, span def-relative.
+    fn diag_verilog(&mut self, base: usize, start: usize, end: usize, msg: &str) {
+        self.diagnostics.push(BodyDiagnostic {
+            span: Span::new(
+                (base + start).saturating_sub(self.def_start),
+                (base + end).saturating_sub(self.def_start),
+            ),
+            kind: BodyDiagnosticKind::Unsupported {
+                what: format!("verilog splice: {msg}"),
+            },
+        });
     }
 
     /// Point the param locals' spans at their name identifiers in the signature
@@ -1004,6 +1160,105 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         }
         self.alloc(ExprKind::Record { ctor, fields })
     }
+}
+
+/// Recursive-descent parser for the `${…}` const fragment:
+/// `expr := term (('+'|'-') term)* ; term := factor ('*' factor)* ;
+/// factor := integer | name | '(' expr ')'` — names resolved by `lookup`
+/// (Const-kind generics). Returns a rendered-later `ConstArg` tree.
+fn parse_const_splice(
+    src: &str,
+    lookup: &dyn Fn(&str) -> Option<ConstArg>,
+) -> Result<ConstArg, String> {
+    struct P<'a> {
+        s: &'a [u8],
+        i: usize,
+    }
+    impl P<'_> {
+        fn ws(&mut self) {
+            while self.i < self.s.len() && self.s[self.i].is_ascii_whitespace() {
+                self.i += 1;
+            }
+        }
+        fn peek(&mut self) -> Option<u8> {
+            self.ws();
+            self.s.get(self.i).copied()
+        }
+    }
+    fn factor(p: &mut P, lookup: &dyn Fn(&str) -> Option<ConstArg>) -> Result<ConstArg, String> {
+        match p.peek() {
+            Some(b'(') => {
+                p.i += 1;
+                let e = expr(p, lookup)?;
+                if p.peek() != Some(b')') {
+                    return Err("expected `)`".to_owned());
+                }
+                p.i += 1;
+                Ok(e)
+            }
+            Some(c) if c.is_ascii_digit() => {
+                let start = p.i;
+                while p.i < p.s.len() && p.s[p.i].is_ascii_digit() {
+                    p.i += 1;
+                }
+                std::str::from_utf8(&p.s[start..p.i])
+                    .ok()
+                    .and_then(|t| t.parse::<i128>().ok())
+                    .map(ConstArg::Lit)
+                    .ok_or_else(|| "bad integer".to_owned())
+            }
+            Some(c) if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = p.i;
+                while p.i < p.s.len()
+                    && (p.s[p.i].is_ascii_alphanumeric() || p.s[p.i] == b'_')
+                {
+                    p.i += 1;
+                }
+                let name = std::str::from_utf8(&p.s[start..p.i]).unwrap_or("");
+                lookup(name).ok_or_else(|| {
+                    format!("`{name}` is not a param, dom generic, or const generic")
+                })
+            }
+            _ => Err("expected an integer, name, or `(`".to_owned()),
+        }
+    }
+    fn term(p: &mut P, lookup: &dyn Fn(&str) -> Option<ConstArg>) -> Result<ConstArg, String> {
+        let mut a = factor(p, lookup)?;
+        while p.peek() == Some(b'*') {
+            p.i += 1;
+            let b = factor(p, lookup)?;
+            a = ConstArg::Op(ConstOp::Mul, Box::new(a), Box::new(b));
+        }
+        Ok(a)
+    }
+    fn expr(p: &mut P, lookup: &dyn Fn(&str) -> Option<ConstArg>) -> Result<ConstArg, String> {
+        let mut a = term(p, lookup)?;
+        loop {
+            match p.peek() {
+                Some(b'+') => {
+                    p.i += 1;
+                    let b = term(p, lookup)?;
+                    a = ConstArg::Op(ConstOp::Add, Box::new(a), Box::new(b));
+                }
+                Some(b'-') => {
+                    p.i += 1;
+                    let b = term(p, lookup)?;
+                    a = ConstArg::Op(ConstOp::Sub, Box::new(a), Box::new(b));
+                }
+                _ => break,
+            }
+        }
+        Ok(a)
+    }
+    let mut p = P {
+        s: src.as_bytes(),
+        i: 0,
+    };
+    let e = expr(&mut p, lookup)?;
+    if p.peek().is_some() {
+        return Err("trailing characters in splice".to_owned());
+    }
+    Ok(e)
 }
 
 // ----- CST helpers -----

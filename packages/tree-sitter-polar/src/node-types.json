@@ -354,7 +354,7 @@
     "fields": {
       "body": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "block",
@@ -398,6 +398,16 @@
         "types": [
           {
             "type": "return_type_expression",
+            "named": true
+          }
+        ]
+      },
+      "verilog_body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "verilog_block",
             "named": true
           }
         ]
@@ -1608,6 +1618,22 @@
     }
   },
   {
+    "type": "verilog_block",
+    "named": true,
+    "fields": {
+      "content": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "verilog_content",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "visibility_modifier",
     "named": true,
     "fields": {},
@@ -1804,6 +1830,14 @@
   {
     "type": "var",
     "named": false
+  },
+  {
+    "type": "verilog",
+    "named": false
+  },
+  {
+    "type": "verilog_content",
+    "named": true
   },
   {
     "type": "when",

@@ -65,6 +65,9 @@ impl SvType {
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub enum SvItem {
+    /// Raw verilog text from an inline-verilog fn body, emitted as-is
+    /// (dedented to the module body's indentation).
+    Verbatim(String),
     /// `logic [W-1:0] name;`
     Logic(SvLogicDecl),
     /// `assign lhs = rhs;`
@@ -228,6 +231,37 @@ impl fmt::Display for SvItem {
                 writeln!(f, "    initial begin")?;
                 writeln!(f, "        assert ({cond});")?;
                 writeln!(f, "    end")
+            }
+            Self::Verbatim(text) => {
+                // Dedent to the common leading whitespace, re-indent to the
+                // module body, drop surrounding blank lines.
+                let lines: Vec<&str> = text
+                    .lines()
+                    .skip_while(|l| l.trim().is_empty())
+                    .collect();
+                let lines: Vec<&str> = lines
+                    .iter()
+                    .rev()
+                    .skip_while(|l| l.trim().is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let dedent = lines
+                    .iter()
+                    .filter(|l| !l.trim().is_empty())
+                    .map(|l| l.len() - l.trim_start().len())
+                    .min()
+                    .unwrap_or(0);
+                for l in lines {
+                    if l.trim().is_empty() {
+                        writeln!(f)?;
+                    } else {
+                        writeln!(f, "    {}", &l[dedent.min(l.len())..].trim_end())?;
+                    }
+                }
+                Ok(())
             }
         }
     }

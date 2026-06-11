@@ -720,12 +720,59 @@
           ]
         },
         {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "body",
+              "content": {
+                "type": "SYMBOL",
+                "name": "block"
+              }
+            },
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "="
+                },
+                {
+                  "type": "STRING",
+                  "value": "verilog"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "verilog_body",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "verilog_block"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "verilog_block": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "{"
+        },
+        {
           "type": "FIELD",
-          "name": "body",
+          "name": "content",
           "content": {
             "type": "SYMBOL",
-            "name": "block"
+            "name": "verilog_content"
           }
+        },
+        {
+          "type": "STRING",
+          "value": "}"
         }
       ]
     },
@@ -2737,7 +2784,12 @@
     ]
   ],
   "precedences": [],
-  "externals": [],
+  "externals": [
+    {
+      "type": "SYMBOL",
+      "name": "verilog_content"
+    }
+  ],
   "inline": [],
   "supertypes": [],
   "reserved": {}
