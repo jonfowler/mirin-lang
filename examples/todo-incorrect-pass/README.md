@@ -14,15 +14,10 @@ the elision rules settled bare body types as domain-inferred).
 The current entries come from the post-Q7 compiler review (2026-06), grouped
 by the checker that needs to land:
 
-**Call/record shape checking (infer):**
-
-- `extra-args.plr` — surplus positional args silently dropped.
-- `missing-args.plr` — missing required args; instance port left floating.
-- `record-bad-field.plr` — unknown field name in a record constructor.
-- `record-missing-field.plr` — omitted field; output leaf left undriven.
-- `dup-record-field.plr` — duplicate field; first write silently wins.
-- `field-on-scalar.plr` — field access on a scalar; silent `Type::Error`,
-  undriven output.
+**Call/record shape checking (infer):** all flipped to `fail-expected/`
+(`extra-args`, `missing-args`, `record-bad-field`, `record-missing-field`,
+`dup-record-field`, `field-on-scalar`) — infer now checks positional arity
+and record/field shape.
 
 **Lowering diagnostics (sig/body):**
 

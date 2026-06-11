@@ -1,7 +1,0 @@
-// MUST REJECT: `uint(8)` has no fields. infer's `infer_field` returns
-// `Type::Error` for non-struct/port receivers without emitting a
-// diagnostic, and the backend then drops the expression entirely — the
-// emitted module has an undriven `result` output and zero errors.
-fn top(x: uint(8)) -> uint(8) {
-    x.bogus
-}

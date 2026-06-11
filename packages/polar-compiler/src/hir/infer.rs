@@ -62,6 +62,23 @@ pub enum InferDiagnosticKind {
     ClockedWidth,
     /// A `recv.method(…)` whose method did not resolve on the receiver's type.
     UnresolvedMethod { name: String },
+    /// A call whose positional argument count can't match the callee's
+    /// positional params (`expected` is the count that failed: the total when
+    /// over-supplied, the no-default minimum when under-supplied).
+    PositionalArity {
+        callee: String,
+        expected: usize,
+        found: usize,
+    },
+    /// A record constructor wrote a field its struct/port doesn't declare, or
+    /// a field access named no field of the receiver's type.
+    UnknownField { name: String },
+    /// A record constructor omitted a declared field.
+    MissingField { name: String },
+    /// A record constructor wrote the same field twice.
+    DuplicateField { name: String },
+    /// Field access on a (resolved) type that has no fields.
+    FieldOnNonAggregate { name: String },
 }
 
 impl InferDiagnostic {
@@ -79,6 +96,27 @@ impl InferDiagnostic {
             }
             InferDiagnosticKind::UnresolvedMethod { name } => {
                 format!("no method `{name}` on this type")
+            }
+            InferDiagnosticKind::PositionalArity {
+                callee,
+                expected,
+                found,
+            } => format!(
+                "`{callee}` takes {expected} positional argument{}, but {found} {} supplied",
+                if *expected == 1 { "" } else { "s" },
+                if *found == 1 { "was" } else { "were" },
+            ),
+            InferDiagnosticKind::UnknownField { name } => {
+                format!("no field `{name}` on this type")
+            }
+            InferDiagnosticKind::MissingField { name } => {
+                format!("missing field `{name}` in record constructor")
+            }
+            InferDiagnosticKind::DuplicateField { name } => {
+                format!("field `{name}` supplied more than once")
+            }
+            InferDiagnosticKind::FieldOnNonAggregate { name } => {
+                format!("no field `{name}`: this type has no fields")
             }
         }
     }
@@ -941,6 +979,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         named: &[NamedArg],
         skip_self: bool,
     ) -> Type<'db> {
+        let call_span = self.current_span;
         let sig = sig_of(self.db, self.krate, def);
         let subst = self.fresh_subst(&sig.generic_params);
 
@@ -951,6 +990,28 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             .iter()
             .filter(|p| !p.from_named_section && (!skip_self || !p.is_self))
             .collect();
+        // Arity: surplus args bind nothing; missing args are allowed only for
+        // params with a default (the backend wires the default at the
+        // instance). Named-arg name checking is `directions(def)`'s job.
+        let required = positional.iter().filter(|p| p.default.is_none()).count();
+        if args.len() > positional.len() || args.len() < required {
+            let callee = self
+                .map
+                .def_data(def)
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| "this function".to_owned());
+            let expected = if args.len() > positional.len() {
+                positional.len()
+            } else {
+                required
+            };
+            self.current_span = call_span;
+            self.diag(InferDiagnosticKind::PositionalArity {
+                callee,
+                expected,
+                found: args.len(),
+            });
+        }
         for (i, a) in args.iter().enumerate() {
             let at = self.infer_expr(body, a.expr);
             if let Some(p) = positional.get(i) {
@@ -996,7 +1057,17 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 ..
             } => (def, args),
             Type::Port { def, args, .. } => (def, args),
-            _ => return Type::Error,
+            // An Error receiver is already diagnosed; an unbound var receiver
+            // is legal mid-equation-system (cyclic `var` wiring) — projecting
+            // through it would need a deferred field obligation, not a hard
+            // error here.
+            Type::Error | Type::Infer(_) => return Type::Error,
+            _ => {
+                self.diag(InferDiagnosticKind::FieldOnNonAggregate {
+                    name: field.to_owned(),
+                });
+                return Type::Error;
+            }
         };
         let sig = sig_of(self.db, self.krate, def);
         match sig.fields.iter().find(|f| f.name == field) {
@@ -1009,7 +1080,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     None => self.substitute(&f.ty, &args.0),
                 }
             }
-            None => Type::Error,
+            None => {
+                self.diag(InferDiagnosticKind::UnknownField {
+                    name: field.to_owned(),
+                });
+                Type::Error
+            }
         }
     }
 
@@ -1099,13 +1175,39 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         // discharge of `Ty @ D`. Mixing two clocks in one record then fails
         // at the second field's subsume.
         let rd = self.fresh_domain();
+        let rec_span = self.current_span;
+        let mut written: Vec<&str> = Vec::new();
         for f in fields {
             let vt = self.infer_expr(body, f.value);
-            if let Some(sig) = field_sig
-                && let Some(decl) = sig.fields.iter().find(|d| d.name == f.name)
-            {
-                let dt = self.substitute_stamped(&decl.ty, &args, rd);
-                self.subsume(&vt, &dt);
+            self.current_span = body.expr_span(f.value);
+            if written.contains(&f.name.as_str()) {
+                self.diag(InferDiagnosticKind::DuplicateField {
+                    name: f.name.clone(),
+                });
+            }
+            written.push(&f.name);
+            if let Some(sig) = field_sig {
+                match sig.fields.iter().find(|d| d.name == f.name) {
+                    Some(decl) => {
+                        let dt = self.substitute_stamped(&decl.ty, &args, rd);
+                        self.subsume(&vt, &dt);
+                    }
+                    None => self.diag(InferDiagnosticKind::UnknownField {
+                        name: f.name.clone(),
+                    }),
+                }
+            }
+        }
+        // Every declared field must be written (an unwritten field would emit
+        // as an undriven leaf).
+        self.current_span = rec_span;
+        if let Some(sig) = field_sig {
+            for decl in &sig.fields {
+                if !written.contains(&decl.name.as_str()) {
+                    self.diag(InferDiagnosticKind::MissingField {
+                        name: decl.name.clone(),
+                    });
+                }
             }
         }
         match owner {
