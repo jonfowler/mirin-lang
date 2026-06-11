@@ -32,6 +32,11 @@ pub enum DriverDiagnosticKind {
     Undriven { name: String },
     /// A `var` with two or more driving equations.
     MultipleDrivers { name: String },
+    /// A field-driven local whose field equations don't cover the type
+    /// (typed completeness — `completeness(def)`).
+    UndrivenField { name: String, field: String },
+    /// An `out` param the body never drives.
+    UndrivenOut { name: String },
 }
 
 impl DriverDiagnostic {
@@ -42,6 +47,12 @@ impl DriverDiagnostic {
             }
             DriverDiagnosticKind::MultipleDrivers { name } => {
                 format!("`{name}` is driven more than once")
+            }
+            DriverDiagnosticKind::UndrivenField { name, field } => {
+                format!("field `{field}` of `{name}` is never driven")
+            }
+            DriverDiagnosticKind::UndrivenOut { name } => {
+                format!("`out {name}` is never driven")
             }
         }
     }
@@ -130,6 +141,129 @@ fn place_of(body: &Body, expr: ExprId) -> Option<(LocalId, Vec<String>)> {
     }
 }
 
+/// QUERY: typed drive **completeness** (post-infer — single-assignment
+/// conflicts are syntactic and live in [`check_drivers`], but which fields a
+/// type *has* is only known once it has a type). A struct-typed local driven
+/// through field equations must cover every leaf; an `out` param must be
+/// driven at all. Port-typed locals that are *partially* field-driven are
+/// skipped for now — which of their leaves this def must drive depends on
+/// direction folding (the flatten-time pairing, with Q5d).
+#[salsa::tracked(returns(ref))]
+pub fn completeness<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+) -> Vec<DriverDiagnostic> {
+    let map = crate_def_map(db, krate);
+    let Some(data) = map.def_data(def) else {
+        return Vec::new();
+    };
+    if !matches!(data.kind, DefKind::Fn | DefKind::Method) {
+        return Vec::new();
+    }
+    let body = body(db, krate, def);
+    let inf = crate::hir::infer::infer(db, krate, def);
+    let sig = sig_of(db, krate, def);
+
+    let mut drives: HashMap<LocalId, Vec<Vec<String>>> = HashMap::new();
+    count_block(body, body.block(), &mut drives);
+
+    let mut out = Vec::new();
+    for (i, local) in body.locals().iter().enumerate() {
+        let id = LocalId(i as u32);
+        let span = body.local_span(id);
+        let paths = drives.get(&id).map(Vec::as_slice).unwrap_or(&[]);
+        let ty = inf.local_type(id);
+        let is_out_param = sig
+            .params
+            .iter()
+            .any(|p| p.local == id && p.direction == Some(Direction::Out));
+
+        if paths.is_empty() {
+            // An undriven out param (vars are check_drivers' job; integer
+            // values are compile-time only and need no driver).
+            if is_out_param && !ty.is_some_and(is_integer_ty) {
+                out.push(DriverDiagnostic {
+                    span,
+                    kind: DriverDiagnosticKind::UndrivenOut {
+                        name: local.name.clone(),
+                    },
+                });
+            }
+            continue;
+        }
+        if paths.iter().any(|p| p.is_empty()) {
+            continue; // a whole-local drive is complete by definition
+        }
+        // Field-driven: every leaf of the type must be covered. Structs only
+        // — see the port note above. Only vars and out params owe a complete
+        // drive (an in param's fields may be partially rewired).
+        if local.kind != LocalKind::Var && !is_out_param {
+            continue;
+        }
+        let Some(ty) = ty else { continue };
+        for leaf in struct_leaf_paths(db, krate, ty, 0) {
+            let covered = paths.iter().any(|p| leaf.starts_with(&p[..]));
+            if !covered {
+                out.push(DriverDiagnostic {
+                    span,
+                    kind: DriverDiagnosticKind::UndrivenField {
+                        name: local.name.clone(),
+                        field: leaf.join("."),
+                    },
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The field paths of a struct type down to non-struct leaves; empty for
+/// non-structs (ports deferred — direction folding decides their owed set).
+fn struct_leaf_paths<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    ty: &crate::hir::types::Type<'db>,
+    depth: u32,
+) -> Vec<Vec<String>> {
+    use crate::hir::types::{Type, ValueKind};
+    if depth > 16 {
+        return Vec::new();
+    }
+    let Type::Value {
+        kind: ValueKind::Struct { def, .. },
+        ..
+    } = ty
+    else {
+        return Vec::new();
+    };
+    let sig = sig_of(db, krate, *def);
+    let mut out = Vec::new();
+    for f in &sig.fields {
+        let subs = struct_leaf_paths(db, krate, &f.ty, depth + 1);
+        if subs.is_empty() {
+            out.push(vec![f.name.clone()]);
+        } else {
+            for mut sub in subs {
+                sub.insert(0, f.name.clone());
+                out.push(sub);
+            }
+        }
+    }
+    out
+}
+
+fn is_integer_ty(ty: &crate::hir::types::Type<'_>) -> bool {
+    use crate::hir::types::{Type, ValueKind};
+    matches!(
+        ty,
+        Type::Value {
+            kind: ValueKind::Integer,
+            ..
+        }
+    )
+}
+
 fn count_block(body: &Body, block: &Block, counts: &mut HashMap<LocalId, Vec<Vec<String>>>) {
     for stmt in &block.stmts {
         match stmt {
@@ -174,6 +308,17 @@ fn count_expr(body: &Body, expr: ExprId, counts: &mut HashMap<LocalId, Vec<Vec<S
                     counts.entry(l).or_default().push(path);
                 }
                 count_expr(body, f.value, counts);
+            }
+        }
+        ExprKind::MethodCall { receiver, args, .. } => {
+            count_expr(body, *receiver, counts);
+            for a in args {
+                if a.out
+                    && let Some((l, path)) = place_of(body, a.expr)
+                {
+                    counts.entry(l).or_default().push(path);
+                }
+                count_expr(body, a.expr, counts);
             }
         }
         ExprKind::Call { args, named, .. } => {

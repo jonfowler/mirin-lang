@@ -17,7 +17,8 @@
 use std::path::{Path, PathBuf};
 
 use polar_compiler::{
-    DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, crate_def_map, directions, infer,
+    DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, completeness, crate_def_map,
+    directions, infer,
     reserved_words, sig_of, syntax_errors, verilog,
 };
 
@@ -100,6 +101,7 @@ fn diagnostic_counts(src: &str) -> (usize, usize, usize, usize, usize, usize) {
                 body_d += body(&db, krate, def).diagnostics().len();
                 infer_d += infer(&db, krate, def).diagnostics().len();
                 driver_d += check_drivers(&db, krate, def).len();
+                driver_d += completeness(&db, krate, def).len();
                 dir_d += directions(&db, krate, def).len();
             }
             Some(DefKind::Struct | DefKind::Port) => {

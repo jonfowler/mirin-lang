@@ -13,7 +13,8 @@
 use std::path::{Path, PathBuf};
 
 use polar_compiler::{
-    DefKind, RootDatabase, Span, Vfs, ast_id_map, body, check_drivers, crate_def_map, directions,
+    DefKind, RootDatabase, Span, Vfs, ast_id_map, body, check_drivers, completeness,
+    crate_def_map, directions,
     infer, sig_of,
 };
 use ropey::Rope;
@@ -103,6 +104,9 @@ pub fn diagnostics(
             out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
         }
         for d in infer(db, krate, def).diagnostics() {
+            out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
+        }
+        for d in completeness(db, krate, def) {
             out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
         }
         for d in check_drivers(db, krate, def) {

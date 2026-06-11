@@ -12,7 +12,8 @@ use std::{env, fs, process};
 
 use polar_compiler::{
     DefKind, RootDatabase, SourceRoot, Span, Vfs, ast_id_map, body, check_drivers, crate_def_map,
-    directions, infer, parse_text, render, reserved_words, sig_of, syntax_errors, verilog,
+    completeness, directions, infer, parse_text, render, reserved_words, sig_of, syntax_errors,
+    verilog,
 };
 
 struct CliArgs {
@@ -269,6 +270,9 @@ fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
                     out.push(render(&path, source, abs(d.span), &d.message()));
                 }
                 for d in body(db, krate, def).diagnostics() {
+                    out.push(render(&path, source, abs(d.span), &d.message()));
+                }
+                for d in completeness(db, krate, def) {
                     out.push(render(&path, source, abs(d.span), &d.message()));
                 }
                 for d in check_drivers(db, krate, def) {
