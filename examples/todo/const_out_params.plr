@@ -1,0 +1,16 @@
+// Const eval through `out` params: `widths` has no return value — its
+// outputs are equations, evaluated as independent thunks when demanded
+// (narrow = 4, wide = 5, so x is uint(9)). This is the non-sequential
+// evaluation case that distinguishes Polar's const eval from Rust's.
+fn widths(n: integer, out narrow: integer, out wide: integer) {
+    narrow = n + 1;
+    wide = 2 * n - 1;
+}
+
+fn top() -> uint(9) {
+    var narrow: integer;
+    var wide: integer;
+    widths(3, => narrow, => wide);
+    let x: uint(narrow + wide) = 0;
+    x
+}
