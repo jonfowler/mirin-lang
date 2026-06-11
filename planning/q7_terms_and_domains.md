@@ -232,6 +232,10 @@ implementation:
   revisit if a const context ever needs such a binding.
 - **`when` arity:** the event's clock is recovered by mapping the `posedge`
   receiver local back to its `dom` generic (`event_clock`).
+- **`ConstArg::Deferred` survives** (arithmetic / anon-const widths in
+  signatures still lower to it pending Q4c's `Unevaluated`), but the silent
+  lenient-unify hole is closed: any symbolic width pair now queues a `ConstEq`
+  obligation instead of being accepted.
 - The `ConstDomain` obligation (width locals must be `@const`) currently
   carries a default span (def start) — span it at the ascription when sig/body
   lowering grows type spans.
@@ -258,9 +262,12 @@ implementation:
   `mixed-struct-clocks` fail; lifting keeps `two-doms-fn` failing at the call
   site. (Files in `examples/todo-incorrect-pass/` — move each to
   `fail-expected/` as it starts failing for the documented reason.)
-- **Phase D — backend alignment** (§4.5), then delete the dead code:
-  `freshen_domains` family, `subst_domain`'s fresh-var minting,
-  `ConstArg`, the stamping paths.
+- **Phase D — backend alignment** (§4.5), then delete the dead code.
+  *As built:* less was deletable than sketched — `ConstArg` stays until the
+  `Const { ty }` payload lands (Q4c), `Domain::Unspecified` + the backend
+  stamping path stay until the backend rework (§4.6), and `freshen_domains`
+  stays in top-level-only form. What did die: `freshen_kind_domains`,
+  `subst_domain`'s fresh-var minting, and the three per-kind variable pools.
 
 ## 6. Explicitly out of scope for Q7
 
@@ -272,8 +279,7 @@ implementation:
   channel.
 - `where`-clause surface syntax for `T @ D` — inline `A @clk` covers the
   current corpus; grammar work decides the rest.
-- **Grammar gap found while writing examples**: `let_statement` has no type
-  ascription at all (`let y: uint(8) @clk = x` is a parse error; only `var`
-  takes a type). The elision/lint design centres on exactly that form — the
-  grammar needs `let <name> (: <type>)? = <expr>` before the C4 elision rules
-  mean anything at `let` bindings.
+- ~~**Grammar gap found while writing examples**: `let_statement` has no type
+  ascription.~~ **Fixed before Phase A**: the grammar now accepts
+  `let <name> (: <type>)? = <expr>` (tree-sitter, polar-fmt, body lowering all
+  updated); `clocked-width.plr` and `reg_const_input.plr` exercise it.
