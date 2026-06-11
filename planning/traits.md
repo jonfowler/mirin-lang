@@ -289,7 +289,11 @@ functions. **[D4]**
 ## Staging
 
 Each slice is independently committable with examples + fail-examples.
-Status (2026-06): T1, T2, T3 landed (commits 5e297a5, f77d67c, T3 follows).
+Status (2026-06): T1-T4 landed (5e297a5, f77d67c, 4324871, 2276fa7).
+T5 (operators) is open on one architectural decision: where the builtin
+operator impls LIVE — synthetic defs with programmatic signatures, or a real
+prelude source file compiled into every crate (rustc's `core` route; pays
+off again for numeric literals and Bits derives).
 Still open from those slices: signature-level impl conformance (name-level
 shipped; type-level needs Self-substituted sig comparison), and
 declaration-level coherence for parameterised headers (two-sided header
