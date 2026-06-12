@@ -8,8 +8,10 @@ replacement since it landed). Foundation: the trait system
 
 ## Where we are
 
-A numeric literal types as `integer @const` eagerly, and a lenient
-unification arm lets `integer` flow into any `uint(n)` (either direction).
+A numeric literal types as `uint(?w) @const` — a fresh const-var width —
+and the lenient `integer ~ uint` unification arm bridges the cases where
+literals meet `integer` contexts (and lets genuine `integer` values flow
+into uints, which is the part that's wrong).
 It works for the corpus but is wrong in principle:
 
 - it is *direction-blind* — genuine `integer` VALUES (not literals) also

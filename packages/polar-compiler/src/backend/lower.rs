@@ -661,6 +661,28 @@ impl<'db> SvLower<'_, 'db> {
         })
     }
 
+    /// A literal expr's GROUND uint width, if its inferred type has one —
+    /// drives sized SV literal forms (`8'hFF`).
+    fn expr_type_width(&mut self, expr: ExprId) -> Option<u32> {
+        let t = self.inf.expr_type(expr)?.clone();
+        let t = ground_widths(
+            self.db,
+            self.krate,
+            self.def,
+            &subst_type(&t, &self.self_subst),
+        );
+        match t {
+            Type::Value {
+                kind:
+                    ValueKind::UInt {
+                        width: ConstArg::Lit(w),
+                    },
+                ..
+            } if (1..=4096).contains(&w) => Some(w as u32),
+            _ => None,
+        }
+    }
+
     /// rustc's `Instance::resolve`, minimal form: a call recorded against a
     /// trait method DECL is re-selected to the unique matching impl once the
     /// self type is concrete (after applying this module's own mono subst).
@@ -970,7 +992,11 @@ impl<'db> SvLower<'_, 'db> {
                 .unwrap_or_else(|| SvExpr::Lit("0".to_owned()));
         }
         match &self.body.expr(expr).kind {
-            ExprKind::Number(n) => SvExpr::Lit(n.to_string()),
+            // A literal emits in its source base; when its type carries a
+            // ground width, sized SV form (`8'hFF`) — planning/numeric_literals.md L6.
+            ExprKind::Number(n, base) => {
+                SvExpr::Lit(render_literal(*n, *base, self.expr_type_width(expr)))
+            }
             ExprKind::Bool(b) => SvExpr::Lit(if *b { "1'b1" } else { "1'b0" }.to_owned()),
             ExprKind::Local(l) => SvExpr::Ident(self.local_name(*l)),
             ExprKind::Call { .. } => {
@@ -1789,6 +1815,18 @@ fn is_integer(ty: &Type<'_>) -> bool {
             ..
         }
     )
+}
+
+/// Render a literal in its source base: sized SV when the width is known
+/// (`8'hFF`, `3'b101`), bare otherwise (hex keeps `'h` only with a width —
+/// unsized SV hex needs one, so unknown-width hex falls back to decimal).
+fn render_literal(v: i128, base: crate::hir::body::NumBase, width: Option<u32>) -> String {
+    use crate::hir::body::NumBase;
+    match (base, width) {
+        (NumBase::Hex, Some(w)) => format!("{w}'h{v:X}"),
+        (NumBase::Bin, Some(w)) => format!("{w}'b{v:b}"),
+        (NumBase::Dec, Some(_)) | (_, None) => v.to_string(),
+    }
 }
 
 /// The def heading a concrete type (infer's `owner_of`, map-only form).

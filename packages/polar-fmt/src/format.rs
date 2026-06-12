@@ -124,6 +124,7 @@ impl<'a> Formatter<'a> {
             "module_definition" => self.module_def(n),
             "use_declaration" => self.use_decl(n),
 
+            "unary_expression" => concat([text("-"), self.doc(self.field(n, "operand").unwrap())]),
             "const_path" => {
                 let base = self.text(self.field(n, "base").unwrap());
                 let item = self.text(self.field(n, "item").unwrap());

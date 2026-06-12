@@ -1199,7 +1199,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             ExprKind::Missing => Type::Error,
             // A literal is `uint @const` of an inferred width — a fresh const var
             // that unifies to the width its context demands.
-            ExprKind::Number(_) => {
+            ExprKind::Number(..) => {
                 let width = self.fresh_const();
                 Type::Value {
                     kind: ValueKind::UInt { width },

@@ -381,7 +381,7 @@ impl<'db> Evaluator<'db> {
     fn eval_expr(&mut self, frame: &Frame<'db>, expr: ExprId, depth: u32) -> Option<Value<'db>> {
         self.tick()?;
         match &frame.body.expr(expr).kind {
-            ExprKind::Number(n) => Some(Value::Int(*n)),
+            ExprKind::Number(n, _) => Some(Value::Int(*n)),
             ExprKind::Bool(b) => Some(Value::Bool(*b)),
             ExprKind::Local(l) => self.demand(frame, *l, depth),
             ExprKind::Field { receiver, field } => {
@@ -422,6 +422,14 @@ impl<'db> Evaluator<'db> {
                 method,
                 args,
             } => {
+                if args.is_empty() {
+                    // Unary: `-x` → `x.neg()`.
+                    let a = self.eval_expr(frame, *receiver, depth)?;
+                    return match (method.as_str(), a) {
+                        ("neg", Value::Int(v)) => Some(Value::Int(-v)),
+                        _ => None,
+                    };
+                }
                 let [b] = args.as_slice() else { return None };
                 if b.out {
                     return None;

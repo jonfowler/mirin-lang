@@ -3,7 +3,8 @@ const PREC = {
   comparison: 2,
   additive: 3,
   multiplicative: 4,
-  postfix: 5,
+  unary: 5,
+  postfix: 6,
 };
 
 module.exports = grammar({
@@ -403,6 +404,7 @@ module.exports = grammar({
     expression: ($) =>
       choice(
         $.binary_expression,
+        $.unary_expression,
         $.postfix_expression,
         $.record_constructor_expression,
         $.path_expression,
@@ -462,6 +464,14 @@ module.exports = grammar({
         $.path_expression,
         $.postfix_expression,
         $.parenthesized_expression,
+      ),
+
+    // Prefix minus — `-x` is `Neg::neg(x)`, never a negative literal
+    // (planning/numeric_literals.md L5). Binds tighter than any binary op.
+    unary_expression: ($) =>
+      prec(
+        PREC.unary,
+        seq(field("operator", "-"), field("operand", $.expression)),
       ),
 
     binary_expression: ($) =>
@@ -576,7 +586,9 @@ module.exports = grammar({
     parenthesized_expression: ($) => seq("(", $.expression, ")"),
 
     identifier: () => /[A-Za-z_][A-Za-z0-9_]*/,
-    number: () => /[0-9]+/,
+    // Decimal / 0x hex / 0b binary, `_` separators after the first char
+    // (planning/numeric_literals.md L1). Width never rides the literal.
+    number: () => /0[xX][0-9a-fA-F][0-9a-fA-F_]*|0[bB][01][01_]*|[0-9][0-9_]*/,
   },
 });
 

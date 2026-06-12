@@ -62,12 +62,21 @@ pub struct Expr<'db> {
     pub kind: ExprKind<'db>,
 }
 
+/// A literal's written base — carried so emitted SV preserves it
+/// (`0xFF` → `8'hFF`; planning/numeric_literals.md L6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, salsa::Update)]
+pub enum NumBase {
+    Dec,
+    Hex,
+    Bin,
+}
+
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub enum ExprKind<'db> {
     /// An unresolved / not-yet-lowered expression. Keeps lowering total.
     Missing,
     /// A numeric literal.
-    Number(i128),
+    Number(i128, NumBase),
     /// A boolean literal (`true` / `false`).
     Bool(bool),
     /// A resolved local (param / let / var).
@@ -819,17 +828,27 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             },
             "number" => {
                 let text = node_text(node, source);
-                let v = match text.parse::<i128>() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        // The grammar only admits digit runs, so the only
-                        // failure is overflow — diagnose rather than silently
-                        // compiling the literal to 0.
+                let (v, base) = match parse_number(&text) {
+                    Some(vb) => vb,
+                    None => {
+                        // The grammar admits only well-formed digit runs, so
+                        // the only failure is overflow — diagnose rather than
+                        // silently compiling the literal to 0.
                         self.diag_at(node, BodyDiagnosticKind::NumberTooLarge { text });
-                        0
+                        (0, NumBase::Dec)
                     }
                 };
-                self.alloc(ExprKind::Number(v))
+                self.alloc(ExprKind::Number(v, base))
+            }
+            "unary_expression" => {
+                // `-x` desugars to the prelude `Neg` trait's method
+                // (planning/numeric_literals.md L5).
+                let operand = self.lower_field_expr(node, "operand", source);
+                self.alloc(ExprKind::MethodCall {
+                    receiver: operand,
+                    method: "neg".to_owned(),
+                    args: Vec::new(),
+                })
             }
             "path_expression" => {
                 let kind = self.lower_path(node, source);
@@ -1581,4 +1600,21 @@ mod tests {
         let b = body(&db, krate, s);
         assert!(b.block().stmts.is_empty() && b.locals().is_empty());
     }
+}
+
+/// Parse a numeric literal in any base, `_` separators stripped.
+pub(crate) fn parse_number(text: &str) -> Option<(i128, NumBase)> {
+    let (digits, radix, base) = match text.as_bytes() {
+        [b'0', b'x' | b'X', rest @ ..] => (rest, 16, NumBase::Hex),
+        [b'0', b'b' | b'B', rest @ ..] => (rest, 2, NumBase::Bin),
+        _ => (text.as_bytes(), 10, NumBase::Dec),
+    };
+    let cleaned: String = digits
+        .iter()
+        .map(|b| *b as char)
+        .filter(|c| *c != '_')
+        .collect();
+    i128::from_str_radix(&cleaned, radix)
+        .ok()
+        .map(|v| (v, base))
 }
