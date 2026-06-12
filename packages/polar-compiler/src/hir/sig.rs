@@ -982,6 +982,14 @@ impl<'db> TypeLowerer<'_, 'db> {
                     domain,
                 };
             }
+            "bits" => {
+                return Type::Value {
+                    kind: ValueKind::Bits {
+                        width: self.lower_width(node, source),
+                    },
+                    domain,
+                };
+            }
             "bool" => {
                 return Type::Value {
                     kind: ValueKind::Bool,

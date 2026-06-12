@@ -1,0 +1,9 @@
+// bits(n): a raw vector, not a number (planning/bits.md). Eq is its only
+// operator; a decimal literal typed bits prints hex (8'hC8); arithmetic
+// and uint/sint mixing are type errors (see the fail-examples).
+fn f {dom clk: Clock} (raw: bits(8) @clk, key: bits(8) @clk) -> bool @clk {
+    let mask: bits(8) = 200;
+    let hit = raw == key;
+    let m2 = mask == raw;
+    hit == m2
+}

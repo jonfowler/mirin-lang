@@ -281,6 +281,12 @@ fn type_arg_name<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> String {
             ..
         } => format!("sint{w}"),
         Type::Value {
+            kind: ValueKind::Bits {
+                width: ConstArg::Lit(w),
+            },
+            ..
+        } => format!("bits{w}"),
+        Type::Value {
             kind: ValueKind::Bool,
             ..
         } => "bool".to_owned(),
@@ -679,7 +685,9 @@ impl<'db> SvLower<'_, 'db> {
 
     /// A literal expr's GROUND uint width, if its inferred type has one —
     /// drives sized SV literal forms (`8'hFF`).
-    fn expr_type_width(&mut self, expr: ExprId) -> Option<u32> {
+    /// The bool is "prefer hex": bits-typed literals print hex by default
+    /// (planning/bits.md).
+    fn expr_type_width(&mut self, expr: ExprId) -> Option<(u32, bool)> {
         let t = self.inf.expr_type(expr)?.clone();
         let t = ground_widths(
             self.db,
@@ -694,7 +702,14 @@ impl<'db> SvLower<'_, 'db> {
                         width: ConstArg::Lit(w),
                     },
                 ..
-            } if (1..=4096).contains(&w) => Some(w as u32),
+            } if (1..=4096).contains(&w) => Some((w as u32, false)),
+            Type::Value {
+                kind:
+                    ValueKind::Bits {
+                        width: ConstArg::Lit(w),
+                    },
+                ..
+            } if (1..=4096).contains(&w) => Some((w as u32, true)),
             _ => None,
         }
     }
@@ -1861,12 +1876,17 @@ fn is_integer(ty: &Type<'_>) -> bool {
 /// Render a literal in its source base: sized SV when the width is known
 /// (`8'hFF`, `3'b101`), bare otherwise (hex keeps `'h` only with a width —
 /// unsized SV hex needs one, so unknown-width hex falls back to decimal).
-fn render_literal(v: i128, base: crate::hir::body::NumBase, width: Option<u32>) -> String {
+fn render_literal(v: i128, base: crate::hir::body::NumBase, width: Option<(u32, bool)>) -> String {
     use crate::hir::body::NumBase;
+    // bits-typed literals default to hex; negatives stay decimal.
+    let base = match (base, width) {
+        (NumBase::Dec, Some((_, true))) if v >= 0 => NumBase::Hex,
+        (b, _) => b,
+    };
     match (base, width) {
-        (NumBase::Hex, Some(w)) => format!("{w}'h{v:X}"),
-        (NumBase::Bin, Some(w)) => format!("{w}'b{v:b}"),
-        (NumBase::Dec, Some(_)) | (_, None) => v.to_string(),
+        (NumBase::Hex, Some((w, _))) if v >= 0 => format!("{w}'h{v:X}"),
+        (NumBase::Bin, Some((w, _))) if v >= 0 => format!("{w}'b{v:b}"),
+        _ => v.to_string(),
     }
 }
 
@@ -1886,6 +1906,10 @@ fn type_head_def<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> Option<DefId<'d
             kind: ValueKind::SInt { .. },
             ..
         } => prelude("sint"),
+        Type::Value {
+            kind: ValueKind::Bits { .. },
+            ..
+        } => prelude("bits"),
         Type::Value {
             kind: ValueKind::Bool,
             ..
@@ -1935,6 +1959,18 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
         } => match arg(*i) {
             Some(Term::Const(c)) => Type::Value {
                 kind: ValueKind::SInt { width: c.clone() },
+                domain: *domain,
+            },
+            _ => ty.clone(),
+        },
+        Type::Value {
+            kind: ValueKind::Bits {
+                width: ConstArg::Param(i),
+            },
+            domain,
+        } => match arg(*i) {
+            Some(Term::Const(c)) => Type::Value {
+                kind: ValueKind::Bits { width: c.clone() },
                 domain: *domain,
             },
             _ => ty.clone(),
@@ -2028,6 +2064,17 @@ fn strip_field(suffix: &str, field: &str) -> Option<String> {
 /// still unresolved (arithmetic / out-of-range index) falls back to 1-bit.
 fn sv_type(ty: &Type, generics: &[GenericParam]) -> SvType {
     match ty {
+        Type::Value {
+            kind: ValueKind::Bits { width },
+            ..
+        } => match width {
+            ConstArg::Lit(w) => SvType::uint(SvExpr::Lit(w.to_string())),
+            ConstArg::Param(i) => match generics.get(*i as usize) {
+                Some(g) => SvType::uint(SvExpr::Ident(g.name.clone())),
+                None => SvType::bit(),
+            },
+            _ => SvType::bit(),
+        },
         Type::Value {
             kind: ValueKind::SInt { width },
             ..

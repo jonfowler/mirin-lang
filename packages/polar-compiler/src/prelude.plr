@@ -98,6 +98,15 @@ impl {param n: integer} Ord for sint(n) {
     }
 }
 
+// bits(n) is a raw vector, not a number: Eq is its ONLY operator
+// (planning/bits.md) — arithmetic on a representation is almost always
+// a bug; convert deliberately (pack/unpack, when they land).
+impl {param n: integer} Eq for bits(n) {
+    fn eq(self, other: Self) -> bool = verilog {
+        assign ${result} = ${self} == ${other};
+    }
+}
+
 impl Eq for bool {
     fn eq(self, other: Self) -> bool = verilog {
         assign ${result} = ${self} == ${other};

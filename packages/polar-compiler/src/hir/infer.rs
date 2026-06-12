@@ -468,6 +468,7 @@ fn describe_kind(ty: &Type<'_>) -> String {
         Type::Value { kind, .. } => match kind {
             ValueKind::UInt { .. } => "uint".to_owned(),
             ValueKind::SInt { .. } => "sint".to_owned(),
+            ValueKind::Bits { .. } => "bits".to_owned(),
             ValueKind::Bool => "bool".to_owned(),
             ValueKind::Reset => "Reset".to_owned(),
             ValueKind::Event => "Event".to_owned(),
@@ -562,7 +563,8 @@ fn collect_widths<'db>(ty: &Type<'db>) -> Vec<ConstArg<'db>> {
             // Only top-level width slots: a *sub*tree of a width may be
             // negative while the whole is fine (`uint(n - 3 + 10)`).
             if let Type::Value {
-                kind: ValueKind::UInt { width } | ValueKind::SInt { width },
+                kind:
+                    ValueKind::UInt { width } | ValueKind::SInt { width } | ValueKind::Bits { width },
                 ..
             } = t
             {
@@ -715,6 +717,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                                     kind:
                                         ValueKind::UInt { .. }
                                         | ValueKind::SInt { .. }
+                                        | ValueKind::Bits { .. }
                                         | ValueKind::Bool
                                         | ValueKind::Reset
                                         | ValueKind::Event,
@@ -812,7 +815,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                                 }
                             }
                             Type::Value {
-                                kind: ValueKind::UInt { width },
+                                kind: ValueKind::UInt { width } | ValueKind::Bits { width },
                                 ..
                             } => {
                                 let w = self.resolve_const(width);
@@ -893,7 +896,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     // residual (→ elaboration-time assert); a never-resolved
                     // width means the value never reaches hardware.
                     if let Type::Value {
-                        kind: ValueKind::UInt { width } | ValueKind::SInt { width },
+                        kind:
+                            ValueKind::UInt { width }
+                            | ValueKind::SInt { width }
+                            | ValueKind::Bits { width },
                         ..
                     } = &ty
                     {
@@ -1185,7 +1191,8 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn unify_kind(&mut self, a: &ValueKind<'db>, b: &ValueKind<'db>) {
         match (a, b) {
             (ValueKind::UInt { width: wa }, ValueKind::UInt { width: wb })
-            | (ValueKind::SInt { width: wa }, ValueKind::SInt { width: wb }) => {
+            | (ValueKind::SInt { width: wa }, ValueKind::SInt { width: wb })
+            | (ValueKind::Bits { width: wa }, ValueKind::Bits { width: wb }) => {
                 self.unify_width(wa.clone(), wb.clone());
             }
             (ValueKind::Bool, ValueKind::Bool)
@@ -1719,7 +1726,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 matches!(
                     at,
                     Type::Value {
-                        kind: ValueKind::UInt { .. } | ValueKind::SInt { .. } | ValueKind::Integer,
+                        kind: ValueKind::UInt { .. }
+                            | ValueKind::SInt { .. }
+                            | ValueKind::Bits { .. }
+                            | ValueKind::Integer,
                         ..
                     }
                 )
@@ -1962,6 +1972,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 kind: ValueKind::SInt { .. },
                 ..
             } => self.prelude_def("sint"),
+            Type::Value {
+                kind: ValueKind::Bits { .. },
+                ..
+            } => self.prelude_def("bits"),
             Type::Value {
                 kind: ValueKind::Bool,
                 ..
@@ -2210,6 +2224,7 @@ mod tests {
             Type::Value { kind, .. } => match kind {
                 ValueKind::UInt { .. } => "uint",
                 ValueKind::SInt { .. } => "sint",
+                ValueKind::Bits { .. } => "bits",
                 ValueKind::Bool => "bool",
                 ValueKind::Reset => "reset",
                 ValueKind::Event => "event",

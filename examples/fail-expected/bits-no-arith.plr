@@ -1,0 +1,4 @@
+// bits is a representation, not a number: no arithmetic.
+fn g(a: bits(8), b: bits(8)) -> bits(8) {
+    a + b
+}

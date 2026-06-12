@@ -76,6 +76,11 @@ pub enum ValueKind<'db> {
     SInt {
         width: ConstArg<'db>,
     },
+    /// `bits(W)` — a raw bit vector: Eq only, no arithmetic, hex-default
+    /// printing; the pack/unpack and slicing carrier (planning/bits.md).
+    Bits {
+        width: ConstArg<'db>,
+    },
     Bool,
     Reset,
     Event,
@@ -189,7 +194,8 @@ pub fn match_header<'db>(
         ) => bind(binding, *i, Term::Type(goal.clone())),
         (Type::Value { kind: gk, .. }, Type::Value { kind: hk, .. }) => match (gk, hk) {
             (ValueKind::UInt { width: gw }, ValueKind::UInt { width: hw })
-            | (ValueKind::SInt { width: gw }, ValueKind::SInt { width: hw }) => match hw {
+            | (ValueKind::SInt { width: gw }, ValueKind::SInt { width: hw })
+            | (ValueKind::Bits { width: gw }, ValueKind::Bits { width: hw }) => match hw {
                 ConstArg::Param(i) => bind(binding, *i, Term::Const(gw.clone())),
                 _ => gw == hw,
             },
@@ -499,6 +505,9 @@ pub fn super_fold_kind<'db, F: Folder<'db>>(f: &mut F, k: &ValueKind<'db>) -> Va
             width: f.fold_const(width),
         },
         ValueKind::SInt { width } => ValueKind::SInt {
+            width: f.fold_const(width),
+        },
+        ValueKind::Bits { width } => ValueKind::Bits {
             width: f.fold_const(width),
         },
         ValueKind::Struct { def, args } => ValueKind::Struct {
