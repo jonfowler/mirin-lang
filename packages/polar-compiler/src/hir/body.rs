@@ -784,16 +784,19 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                         _ => return,
                     };
                 // `for i, x` requires `.enumerate()`; `for x` forbids it.
-                let (iter, enumerated) = match node.child_by_field_name("iter") {
-                    Some(i) if i.kind() == "for_enumerate" => {
-                        let base = i
-                            .child_by_field_name("base")
-                            .map(|b| self.lower_expr(&b, source))
-                            .unwrap_or_else(|| self.alloc(ExprKind::Missing));
-                        (base, true)
-                    }
-                    Some(i) => (self.lower_expr(&i, source), false),
-                    None => (self.alloc(ExprKind::Missing), false),
+                // (`enumerate` is recognised here, not a real method — it
+                // becomes one when tuples land.)
+                let iter_raw = node
+                    .child_by_field_name("iter")
+                    .map(|i| self.lower_expr(&i, source))
+                    .unwrap_or_else(|| self.alloc(ExprKind::Missing));
+                let (iter, enumerated) = match &self.exprs[iter_raw.0 as usize].kind {
+                    ExprKind::MethodCall {
+                        receiver,
+                        method,
+                        args,
+                    } if method == "enumerate" && args.is_empty() => (*receiver, true),
+                    _ => (iter_raw, false),
                 };
                 if enumerated != index_name.is_some() {
                     self.diag_at(node, BodyDiagnosticKind::ForEnumerateForm);

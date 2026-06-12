@@ -209,9 +209,12 @@ fn f (v: Vec(3, uint(8))) -> uint(8) {
         (for_statement
           a: (identifier)
           b: (identifier)
-          iter: (for_enumerate
-            base: (path_expression
-              segment: (identifier)))
+          iter: (postfix_expression
+            receiver: (path_expression
+              segment: (identifier))
+            (field_access
+              field: (identifier))
+            (argument_list))
           body: (block
             (statement
               (let_statement

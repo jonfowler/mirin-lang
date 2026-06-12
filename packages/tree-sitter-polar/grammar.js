@@ -29,6 +29,12 @@ module.exports = grammar({
     // a typed_literal's type or a path — GLR decides at the next token (a
     // number ends a typed_literal; an identifier continues a path).
     [$.return_type_expression, $.path_expression],
+    // Header positions (if/for/when): after a path, `{` is either the body
+    // block (path = the whole header) or a method's named-argument list
+    // (which the grammar REQUIRES to be followed by `(…)`). GLR keeps both
+    // alive; the named-args fork dies at body content or the missing parens.
+    [$._header_expression, $.header_postfix],
+    [$.header_postfix],
   ],
 
   rules: {
@@ -323,18 +329,74 @@ module.exports = grammar({
         field("body", $.block),
       ),
 
-    // Restricted like if-conditions (a trailing `{` opens the body; a full
-    // postfix expression would let `v {` start a method's named-arg list).
-    // `.enumerate()` is its own form, recognised at lowering.
-    _for_iterable: ($) =>
+    // HEADER expressions (if-conditions, for-iterables, when-events): the
+    // full expression grammar minus BARE record literals — Rust's
+    // no-struct-literal contexts. A record constructor in a header goes in
+    // parens (which reset to the full grammar). Named-arg method calls
+    // (`v.f{a}(x)`) survive because a named-arg list is always followed by
+    // a positional list — the GLR fork resolves at the `(`.
+    _header_expression: ($) =>
       choice(
+        alias($.header_binary, $.binary_expression),
+        alias($.header_unary, $.unary_expression),
+        alias($.header_postfix, $.postfix_expression),
+        $.typed_literal,
         $.path_expression,
+        $.number,
         $.parenthesized_expression,
-        $.for_enumerate,
       ),
 
-    for_enumerate: ($) =>
-      seq(field("base", $.path_expression), ".", "enumerate", "(", ")"),
+    header_binary: ($) =>
+      choice(
+        prec.left(
+          PREC.comparison,
+          seq(
+            field("left", $._header_expression),
+            field("operator", choice("==", "<")),
+            field("right", $._header_expression),
+          ),
+        ),
+        prec.left(
+          PREC.additive,
+          seq(
+            field("left", $._header_expression),
+            field("operator", choice("+", "-")),
+            field("right", $._header_expression),
+          ),
+        ),
+        prec.left(
+          PREC.multiplicative,
+          seq(
+            field("left", $._header_expression),
+            field("operator", "*"),
+            field("right", $._header_expression),
+          ),
+        ),
+      ),
+
+    header_unary: ($) =>
+      prec(
+        PREC.unary,
+        seq(field("operator", "-"), field("operand", $._header_expression)),
+      ),
+
+    header_postfix: ($) =>
+      seq(
+        field(
+          "receiver",
+          choice($.path_expression, $.number, $.parenthesized_expression),
+        ),
+        repeat1(
+          choice(
+            $.field_access,
+            $.index_access,
+            seq($.named_argument_list, $.argument_list),
+            $.argument_list,
+          ),
+        ),
+      ),
+
+    _for_iterable: ($) => $._header_expression,
 
     let_statement: ($) =>
       seq(
@@ -468,28 +530,7 @@ module.exports = grammar({
     // named-args step. For any condition shape outside this set, wrap it
     // in parens — the parenthesized form lets the inner expression be
     // anything because `)` terminates the cond before the block opens.
-    _if_condition: ($) =>
-      choice(
-        $.number,
-        $.path_expression,
-        $.parenthesized_expression,
-        // `if a < b { … }` — comparison with RESTRICTED operands: a full
-        // expression on the right would let `b { a }` parse as a (valid,
-        // shorthand) record constructor and eat the block. Operands beyond
-        // this set go in parens. Aliased to binary_expression so lowering
-        // is uniform.
-        alias($.condition_comparison, $.binary_expression),
-      ),
-
-    condition_comparison: ($) =>
-      seq(
-        field("left", alias($._condition_operand, $.expression)),
-        field("operator", choice("==", "<")),
-        field("right", alias($._condition_operand, $.expression)),
-      ),
-
-    _condition_operand: ($) =>
-      choice($.number, $.path_expression, $.parenthesized_expression),
+    _if_condition: ($) => $._header_expression,
 
     // `when EVENT { … }` — Polar's primitive for registered state. EVENT
     // is conventionally `clk.posedge()`, but any expression yielding a
@@ -509,12 +550,7 @@ module.exports = grammar({
     // `postfix_expression` here because the common case `clk.posedge()`
     // is a postfix that ends with `)` — the parser can tell where the
     // event ends before `{ … }` begins.
-    _when_event: ($) =>
-      choice(
-        $.path_expression,
-        $.postfix_expression,
-        $.parenthesized_expression,
-      ),
+    _when_event: ($) => $._header_expression,
 
     // Explicit literal construction `uint(6)::4` — the value in the type's
     // associated-const namespace (planning/numeric_literals.md L4). The

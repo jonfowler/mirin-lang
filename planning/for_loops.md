@@ -12,14 +12,19 @@ for i, x in v.enumerate() { … }   // index + elem — i IS the genvar
 - The elem binding is an ordinary per-iteration local: the block contains
   `logic … x; assign x = v[i];` — readable, hierarchical (`g_x[i].x`),
   and exactly "replace x with v[i]" without textual substitution.
-- `.enumerate()` is recognised at lowering (not a real method): the pair
-  form requires it, the single form forbids it. The index is REUSED as
+- `.enumerate()` is recognised at lowering (it becomes a real method when
+  tuples land — it returns `Vec(N, (integer, A))` morally): the pair form
+  requires it, the single form forbids it. The index is REUSED as
   the genvar directly — no index vector is ever constructed. Its type is
   `integer` (elaboration-time), so it indexes without bounds asserts
   (the loop bound is the proof).
-- Iterables: `Vec(N, A)` (elem `A`) and `bits(N)` (elem `bool`). The
-  restricted iterable forms match if-conditions (a trailing `{` opens
-  the body).
+- Iterables: `Vec(N, A)` (elem `A`) and `bits(N)` (elem `bool`).
+- HEADER positions (if-conditions, for-iterables, when-events) take the
+  full expression grammar minus BARE record literals — Rust's
+  no-struct-literal contexts; parenthesize a record literal to use one.
+  Named-arg method calls work in headers because a named-argument list
+  is always followed by a positional list (`x.reg{rstn}(0)`) — the GLR
+  fork resolves at the `(`.
 - Bodies: `let`s, element/field assignment (`out[i] = …` — counts as a
   whole-place drive: v1 has no partial-drive tracking, and the loop
   covers every index by construction), and component calls — one
