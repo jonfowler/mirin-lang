@@ -518,6 +518,18 @@ impl<'db> SvLower<'_, 'db> {
                     let body = body.clone();
                     self.lower_for(index, elem, iter, &body);
                 }
+                // Statement-form `when E { v[i] = d; … }`: the body's
+                // equations are CLOCKED (nonblocking) assignments — the
+                // registered-with-hold shape RAMs need; a dynamically
+                // indexed element is the write port (planning/for_loops.md
+                // sibling: planning/when_ram.md).
+                Stmt::Expr(e) if matches!(self.body.expr(*e).kind, ExprKind::When { .. }) => {
+                    let ExprKind::When { event, body } = &self.body.expr(*e).kind else {
+                        unreachable!();
+                    };
+                    let (event, body) = (*event, body.clone());
+                    self.lower_when_stmt(event, &body);
+                }
                 // A bare call statement: a (void) submodule instantiation whose
                 // out-arg connections bind callee `out` params to caller places.
                 Stmt::Expr(e) => {
@@ -1426,6 +1438,38 @@ impl<'db> SvLower<'_, 'db> {
     /// `when ev { … d }` → a reset-less `always_ff @(posedge <ev-clock>)` whose
     /// single clocked assignment drives a synthetic `__block_N` with the body's
     /// tail value `d`. The expression's value is that held register output.
+    /// Statement-form `when`: every body EQUATION becomes a nonblocking
+    /// assignment in one `always_ff` (unwritten elements hold); `let`s lower
+    /// combinationally as D-input plumbing.
+    fn lower_when_stmt(&mut self, event: ExprId, body: &Block) {
+        let clock = self.clock_of_event(event);
+        let mut seq: Vec<SvSeqAssign> = Vec::new();
+        for stmt in &body.stmts {
+            match stmt {
+                Stmt::Equation { lhs, rhs } => {
+                    let (lhs, rhs) = (*lhs, *rhs);
+                    let lhs_leaves: Vec<SvExpr> = self
+                        .place_leaves_dir(lhs)
+                        .into_iter()
+                        .map(|(p, _)| p)
+                        .collect();
+                    let rhs_leaves = self.expr_leaves(rhs);
+                    for (l, (_, r)) in lhs_leaves.into_iter().zip(rhs_leaves) {
+                        seq.push(SvSeqAssign { lhs: l, rhs: r });
+                    }
+                }
+                Stmt::Let { local, value } => self.lower_let(*local, *value),
+                _ => {}
+            }
+        }
+        self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
+            clock,
+            reset: None,
+            reset_body: Vec::new(),
+            clocked_body: seq,
+        }));
+    }
+
     fn lower_when(&mut self, when_expr: ExprId, event: ExprId, body: &Block) -> SvExpr {
         let synth = self.fresh_block();
         let ty = self.expr_type(when_expr);

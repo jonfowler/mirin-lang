@@ -1630,6 +1630,10 @@
         {
           "type": "var_statement",
           "named": true
+        },
+        {
+          "type": "when_expression",
+          "named": true
         }
       ]
     }

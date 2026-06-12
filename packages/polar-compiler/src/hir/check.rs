@@ -327,10 +327,26 @@ fn is_integer_ty(ty: &crate::hir::types::Type<'_>) -> bool {
 }
 
 fn count_block(body: &Body, block: &Block, counts: &mut HashMap<LocalId, Vec<Vec<String>>>) {
+    count_block_in(body, block, counts, false)
+}
+
+fn count_block_in(
+    body: &Body,
+    block: &Block,
+    counts: &mut HashMap<LocalId, Vec<Vec<String>>>,
+    clocked: bool,
+) {
     for stmt in &block.stmts {
         match stmt {
             Stmt::Equation { lhs, rhs } => {
                 if let Some((l, path)) = place_of(body, *lhs) {
+                    counts.entry(l).or_default().push(path);
+                } else if clocked
+                    && let ExprKind::Index { base, .. } = &body.expr(*lhs).kind
+                    && let Some((l, path)) = place_of(body, *base)
+                {
+                    // A clocked dynamically-indexed write (`when … { v[i] = d; }`)
+                    // drives the whole registered place: unwritten elements HOLD.
                     counts.entry(l).or_default().push(path);
                 }
                 count_expr(body, *lhs, counts);
@@ -342,7 +358,7 @@ fn count_block(body: &Body, block: &Block, counts: &mut HashMap<LocalId, Vec<Vec
             Stmt::VarDecl { .. } => {}
             Stmt::For { iter, body: b, .. } => {
                 count_expr(body, *iter, counts);
-                count_block(body, b, counts);
+                count_block_in(body, b, counts, clocked);
             }
         }
     }
@@ -364,7 +380,7 @@ fn count_expr(body: &Body, expr: ExprId, counts: &mut HashMap<LocalId, Vec<Vec<S
             count_block(body, then_branch, counts);
             count_block(body, else_branch, counts);
         }
-        ExprKind::When { body: b, .. } => count_block(body, b, counts),
+        ExprKind::When { body: b, .. } => count_block_in(body, b, counts, true),
         ExprKind::Block(b) => count_block(body, b, counts),
         ExprKind::Record { fields, .. } => {
             for f in fields {
