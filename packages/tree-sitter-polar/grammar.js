@@ -1,8 +1,9 @@
 const PREC = {
   assign: 1,
-  additive: 2,
-  multiplicative: 3,
-  postfix: 4,
+  comparison: 2,
+  additive: 3,
+  multiplicative: 4,
+  postfix: 5,
 };
 
 module.exports = grammar({
@@ -465,6 +466,14 @@ module.exports = grammar({
 
     binary_expression: ($) =>
       choice(
+        prec.left(
+          PREC.comparison,
+          seq(
+            field("left", $.expression),
+            field("operator", choice("==", "<")),
+            field("right", $.expression),
+          ),
+        ),
         prec.left(
           PREC.multiplicative,
           seq(field("left", $.expression), field("operator", "*"), field("right", $.expression)),

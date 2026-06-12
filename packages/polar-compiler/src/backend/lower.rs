@@ -973,18 +973,19 @@ impl<'db> SvLower<'_, 'db> {
             ExprKind::Number(n) => SvExpr::Lit(n.to_string()),
             ExprKind::Bool(b) => SvExpr::Lit(if *b { "1'b1" } else { "1'b0" }.to_owned()),
             ExprKind::Local(l) => SvExpr::Ident(self.local_name(*l)),
-            ExprKind::Call { callee, args, .. } => {
-                let callee = *callee;
-                if let Some(op) = self.prelude_op(callee)
-                    && args.len() == 2
-                {
-                    let (a, b) = (args[0].expr, args[1].expr);
-                    let l = self.expr_value(a);
-                    let r = self.expr_value(b);
-                    return SvExpr::BinOp(op, Box::new(l), Box::new(r));
-                }
+            ExprKind::Call { .. } => {
                 // User-fn calls become module instances (Q5d).
                 SvExpr::Lit("0".to_owned())
+            }
+            // An operator desugar (`a + b` → `a.add(b)`) that selected a
+            // prelude impl: inline SV operator.
+            ExprKind::MethodCall { receiver, args, .. }
+                if self.prelude_op(expr).is_some() && args.len() == 1 =>
+            {
+                let op = self.prelude_op(expr).unwrap();
+                let l = self.expr_value(*receiver);
+                let r = self.expr_value(args[0].expr);
+                SvExpr::BinOp(op, Box::new(l), Box::new(r))
             }
             // `e.reg(rst, init)` in value position: a register into a fresh local.
             ExprKind::MethodCall { .. } if self.as_reg(expr).is_some() => {
@@ -1218,19 +1219,23 @@ impl<'db> SvLower<'_, 'db> {
             .unwrap_or_else(|| "clk".to_owned())
     }
 
-    /// `Some(op)` if the callee expr is the prelude `+` / `*`.
-    fn prelude_op(&self, callee: ExprId) -> Option<SvBinOp> {
-        let ExprKind::Def(def) = self.body.expr(callee).kind else {
-            return None;
-        };
-        let data = self.map.def_data(def)?;
-        if data.module != self.map.prelude() {
+    /// `Some(op)` if a method call resolved to a PRELUDE operator-trait impl
+    /// method — codegen's one operator special case (rustc's enforce_builtin_
+    /// binop shape): the selection is real trait dispatch, but the emission
+    /// is the inline SV operator, never an instance.
+    fn prelude_op(&self, expr: ExprId) -> Option<SvBinOp> {
+        let def = self.inf.method_resolution(expr)?;
+        let t = self.map.trait_of_method(def)?;
+        let tdata = self.map.def_data(t)?;
+        if tdata.module != self.map.prelude() {
             return None;
         }
-        match data.name.as_str() {
-            "+" => Some(SvBinOp::Add),
-            "-" => Some(SvBinOp::Sub),
-            "*" => Some(SvBinOp::Mul),
+        match tdata.name.as_str() {
+            "Add" => Some(SvBinOp::Add),
+            "Sub" => Some(SvBinOp::Sub),
+            "Mul" => Some(SvBinOp::Mul),
+            "Eq" => Some(SvBinOp::Eq),
+            "Ord" => Some(SvBinOp::Lt),
             _ => None,
         }
     }
@@ -1264,6 +1269,9 @@ impl<'db> SvLower<'_, 'db> {
                     named: named.clone(),
                 })
             }
+            // A prelude operator selection is NOT a user call — it lowers
+            // inline (`(a + b)`), never as an instance.
+            ExprKind::MethodCall { .. } if self.prelude_op(expr).is_some() => None,
             ExprKind::MethodCall { receiver, args, .. } if self.as_reg(expr).is_none() => {
                 {
                     let decl = self.inf.method_resolution(expr)?;
@@ -1799,6 +1807,10 @@ fn type_head_def<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> Option<DefId<'d
             kind: ValueKind::Bool,
             ..
         } => prelude("bool"),
+        Type::Value {
+            kind: ValueKind::Integer,
+            ..
+        } => prelude("integer"),
         Type::Port { def, .. } => Some(*def),
         Type::Clock => prelude("Clock"),
         _ => None,

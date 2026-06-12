@@ -289,11 +289,16 @@ functions. **[D4]**
 ## Staging
 
 Each slice is independently committable with examples + fail-examples.
-Status (2026-06): T1-T4 landed (5e297a5, f77d67c, 4324871, 2276fa7).
-T5 (operators) is open on one architectural decision: where the builtin
-operator impls LIVE — synthetic defs with programmatic signatures, or a real
-prelude source file compiled into every crate (rustc's `core` route; pays
-off again for numeric literals and Bits derives).
+Status (2026-06-12): ALL SLICES LANDED (T1-T5). T5 took the prelude-source
+route (Jon's call): `src/prelude.plr` — operator traits (Add/Sub/Mul/Eq/Ord)
+and builtin impls as real, checked code, injected into every crate by the
+vfs and collected into the `$prelude` module. `a + b` desugars to `a.add(b)`
+in body lowering; dispatch is ordinary trait machinery; codegen keeps the
+single rustc-style special case (a prelude operator-impl selection emits the
+inline SV operator, never an instance). The hand-rolled arith path and raw
+`+`/`-`/`*` prelude defs are gone; `==`/`<` landed with comparison
+precedence in the grammar. Numeric literals (replacing the lenient
+`integer ~ uint` arm) are the designed next step, on this foundation.
 Still open from those slices: signature-level impl conformance (name-level
 shipped; type-level needs Self-substituted sig comparison), and
 declaration-level coherence for parameterised headers (two-sided header

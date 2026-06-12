@@ -491,6 +491,18 @@ pub fn crate_def_map<'db>(db: &'db dyn salsa::Database, krate: SourceRoot) -> Cr
     let prelude = collector.new_module(ModuleKind::Prelude, None, vec!["$prelude".to_owned()]);
     collector.map.prelude = prelude;
     collector.populate_prelude(prelude);
+    // The prelude SOURCE (vfs injects `$prelude.plr` into every crate):
+    // operator traits and builtin impls collected into the prelude module,
+    // resolved by the same phases as user code.
+    if let Some(pf) = krate
+        .files(db)
+        .iter()
+        .find(|f| f.path(db).as_os_str() == crate::base::vfs::Vfs::PRELUDE_PATH)
+        .copied()
+    {
+        let ptree = item_tree(db, pf);
+        collector.collect_items(&ptree.top_level, pf, prelude, Path::new(""));
+    }
     let root = krate.root_file(db);
     let tree = item_tree(db, root);
     // File modules declared at the crate root resolve next to the root file.
@@ -606,11 +618,9 @@ impl<'db> Collector<'db> {
             ("Event", DefKind::BuiltinType),
             ("Reset", DefKind::BuiltinType),
             ("Type", DefKind::BuiltinType),
+            ("integer", DefKind::BuiltinType),
             ("reg", DefKind::Fn),
             ("posedge", DefKind::Fn),
-            ("+", DefKind::Fn),
-            ("-", DefKind::Fn),
-            ("*", DefKind::Fn),
         ];
         for (i, (name, kind)) in BUILTINS.iter().enumerate() {
             let ast_id = crate::syntax::ast_id::FileAstId::synthetic(i as u16);

@@ -919,27 +919,27 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         let lhs = self.lower_field_expr(node, "left", source);
         let rhs = self.lower_field_expr(node, "right", source);
         let op = field_text(node, "operator", source);
-        // Operators lower to a call against the prelude op def.
-        let callee = match self.map.resolve_in_scope(self.module, &op, Namespace::Item) {
-            Some(def) => self.alloc(ExprKind::Def(def)),
-            None => {
+        // Operators desugar to the prelude operator traits' methods
+        // (`a + b` → `a.add(b)`; planning/traits.md T5) and dispatch through
+        // the ordinary trait machinery.
+        let method = match op.as_str() {
+            "+" => "add",
+            "-" => "sub",
+            "*" => "mul",
+            "==" => "eq",
+            "<" => "lt",
+            _ => {
                 self.diag_at(node, BodyDiagnosticKind::UnresolvedName { name: op });
-                self.alloc(ExprKind::Missing)
+                return self.alloc(ExprKind::Missing);
             }
         };
-        self.alloc(ExprKind::Call {
-            callee,
-            args: vec![
-                ConnArg {
-                    out: false,
-                    expr: lhs,
-                },
-                ConnArg {
-                    out: false,
-                    expr: rhs,
-                },
-            ],
-            named: Vec::new(),
+        self.alloc(ExprKind::MethodCall {
+            receiver: lhs,
+            method: method.to_owned(),
+            args: vec![ConnArg {
+                out: false,
+                expr: rhs,
+            }],
         })
     }
 
@@ -1400,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_lowers_to_a_call_against_the_prelude_op() {
+    fn binary_desugars_to_the_operator_trait_method() {
         let mut db = RootDatabase::default();
         let mut vfs = Vfs::new();
         let krate = load(
@@ -1412,18 +1412,18 @@ mod tests {
         let Stmt::Return { value } = b.block().stmts[0] else {
             unreachable!()
         };
-        let ExprKind::Call { callee, args, .. } = &b.expr(value).kind else {
-            panic!("expected a call");
+        let ExprKind::MethodCall {
+            receiver,
+            method,
+            args,
+        } = &b.expr(value).kind
+        else {
+            panic!("expected the operator-trait method call");
         };
-        assert!(
-            matches!(b.expr(*callee).kind, ExprKind::Def(_)),
-            "callee is the `+` def"
-        );
-        assert_eq!(args.len(), 2);
-        assert!(
-            args.iter()
-                .all(|a| !a.out && matches!(b.expr(a.expr).kind, ExprKind::Local(_)))
-        );
+        assert_eq!(method, "add");
+        assert!(matches!(b.expr(*receiver).kind, ExprKind::Local(_)));
+        assert_eq!(args.len(), 1);
+        assert!(!args[0].out && matches!(b.expr(args[0].expr).kind, ExprKind::Local(_)));
     }
 
     #[test]

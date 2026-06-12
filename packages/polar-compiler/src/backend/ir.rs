@@ -150,6 +150,7 @@ pub enum SvBinOp {
     Sub,
     Mul,
     Eq,
+    Lt,
 }
 
 // ----- Display: the deterministic pretty-printer -----
@@ -334,6 +335,7 @@ impl fmt::Display for SvExpr {
                     SvBinOp::Mul => "*",
                     SvBinOp::Sub => "-",
                     SvBinOp::Eq => "==",
+                    SvBinOp::Lt => "<",
                 };
                 write!(f, "({l} {op} {r})")
             }

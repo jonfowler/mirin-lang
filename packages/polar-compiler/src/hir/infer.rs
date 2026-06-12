@@ -1279,17 +1279,6 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             return Type::Error;
         };
-        // Prelude `+` / `*`: operands share a structural kind; the result's
-        // domain is the JOIN of operand domains (`@const` absorbs — `x + 3`
-        // stays on x's clock, `3 + 4` stays const).
-        if self.is_prelude_op(def) {
-            let result = self.fresh_type();
-            for a in args {
-                let t = self.infer_expr(body, a.expr);
-                self.merge_branch(&result, &t);
-            }
-            return result;
-        }
         self.call_def(body, at, def, args, named, None)
     }
 
@@ -1685,6 +1674,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 kind: ValueKind::Bool,
                 ..
             } => self.prelude_def("bool"),
+            Type::Value {
+                kind: ValueKind::Integer,
+                ..
+            } => self.prelude_def("integer"),
             Type::Port { def, .. } => Some(def),
             Type::Clock => self.prelude_def("Clock"),
             _ => None,
@@ -1694,15 +1687,6 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn prelude_def(&self, name: &str) -> Option<DefId<'db>> {
         self.map
             .resolve_local(self.map.prelude(), name, Namespace::Item)
-    }
-
-    fn is_prelude_op(&self, def: DefId<'db>) -> bool {
-        self.map
-            .def_data(def)
-            .map(|d| {
-                d.module == self.map.prelude() && (d.name == "+" || d.name == "-" || d.name == "*")
-            })
-            .unwrap_or(false)
     }
 
     /// Build a substitution mapping each of `params`'s indices to a fresh

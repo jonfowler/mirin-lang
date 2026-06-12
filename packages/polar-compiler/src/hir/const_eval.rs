@@ -414,26 +414,47 @@ impl<'db> Evaluator<'db> {
                 self.eval_block(frame, branch, depth)
             }
             ExprKind::Block(b) => self.eval_block(frame, b, depth),
+            // Operator desugar (`a + b` → `a.add(b)`): the prelude trait
+            // methods ARE the const arithmetic — match by method name on
+            // evaluated operands (no inference data needed down here).
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                let [b] = args.as_slice() else { return None };
+                if b.out {
+                    return None;
+                }
+                let a = self.eval_expr(frame, *receiver, depth)?;
+                let b = self.eval_expr(frame, b.expr, depth)?;
+                match method.as_str() {
+                    "add" => arith(ConstOp::Add, &a, &b),
+                    "sub" => arith(ConstOp::Sub, &a, &b),
+                    "mul" => arith(ConstOp::Mul, &a, &b),
+                    "eq" => match (a, b) {
+                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x == y)),
+                        (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x == y)),
+                        _ => None,
+                    },
+                    "lt" => match (a, b) {
+                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x < y)),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
             ExprKind::Call { callee, args, .. } => {
                 let ExprKind::Def(def) = frame.body.expr(*callee).kind else {
                     return None;
                 };
-                if let Some(op) = self.prelude_op(def) {
-                    let [a, b] = args.as_slice() else { return None };
-                    if a.out || b.out {
-                        return None;
-                    }
-                    let a = self.eval_expr(frame, a.expr, depth)?;
-                    let b = self.eval_expr(frame, b.expr, depth)?;
-                    return arith(op, &a, &b);
-                }
                 if depth >= MAX_DEPTH {
                     return None;
                 }
                 let callee_frame = self.enter_call(frame, def, args, depth)?;
                 self.eval_return(&callee_frame, depth + 1)
             }
-            // when / .reg / method calls / Missing / bare defs: not const.
+            // when / .reg / Missing / bare defs: not const.
             _ => None,
         }
     }
@@ -456,19 +477,6 @@ impl<'db> Evaluator<'db> {
             }
         }
         None
-    }
-
-    fn prelude_op(&self, def: DefId<'db>) -> Option<ConstOp> {
-        let d = self.map.def_data(def)?;
-        if d.module != self.map.prelude() {
-            return None;
-        }
-        match d.name.as_str() {
-            "+" => Some(ConstOp::Add),
-            "-" => Some(ConstOp::Sub),
-            "*" => Some(ConstOp::Mul),
-            _ => None,
-        }
     }
 }
 

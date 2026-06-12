@@ -61,11 +61,25 @@ impl Vfs {
     /// needs are loaded; re-calling updates the file set in place (reusing the
     /// same input, so resolution stays incremental). Panics if `root_path` is
     /// not loaded.
+    /// The prelude's in-VFS path. Never a real on-disk file; the leading
+    /// `$` keeps it out of `mod` resolution's way.
+    pub const PRELUDE_PATH: &str = "$prelude.plr";
+
     pub fn source_root(
         &mut self,
         db: &mut RootDatabase,
         root_path: impl AsRef<Path>,
     ) -> SourceRoot {
+        // Every crate carries the prelude source (planning/traits.md T5 —
+        // rustc's `core` move): operator traits + builtin impls as real,
+        // checked code, collected into the `$prelude` module by the def map.
+        if self.file(Self::PRELUDE_PATH).is_none() {
+            self.set_file_text(
+                db,
+                Self::PRELUDE_PATH,
+                include_str!("../prelude.plr").to_owned(),
+            );
+        }
         let root_file = self
             .file(&root_path)
             .expect("root file must be loaded before building its SourceRoot");
