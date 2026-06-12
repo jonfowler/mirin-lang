@@ -46,6 +46,10 @@ pub enum LocalKind {
     Let,
     /// `var x` — block-scoped (pre-scanned), participates in equations.
     Var,
+    /// A `for` loop's elaboration-time binding (the enumerate index, or the
+    /// element of a `range(n)` loop): the genvar. An indexed drive through
+    /// it covers the WHOLE place (the loop spans every index).
+    ForBound,
 }
 
 /// One local binding in a body's local arena.
@@ -806,7 +810,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     let span = self.rel_span(node);
                     self.alloc_local(
                         &n,
-                        LocalKind::Let,
+                        LocalKind::ForBound,
                         Some(Type::Value {
                             kind: ValueKind::Integer,
                             domain: Domain::Const,
@@ -814,8 +818,26 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                         span,
                     )
                 });
+                // A `range(n)` loop's element IS the genvar — mark it so
+                // indexed drives through it count as whole-place.
+                let is_range = matches!(
+                    &self.exprs[iter.0 as usize].kind,
+                    ExprKind::Call { callee, .. }
+                        if matches!(
+                            self.exprs[callee.0 as usize].kind,
+                            ExprKind::Def(d) if self
+                                .map
+                                .def_data(d)
+                                .is_some_and(|dd| dd.name == "range")
+                        )
+                );
+                let elem_kind = if is_range {
+                    LocalKind::ForBound
+                } else {
+                    LocalKind::Let
+                };
                 let span = self.rel_span(node);
-                let elem = self.alloc_local(&elem_name, LocalKind::Let, None, span);
+                let elem = self.alloc_local(&elem_name, elem_kind, None, span);
                 let body = node
                     .child_by_field_name("body")
                     .map(|b| self.lower_block(&b, source))

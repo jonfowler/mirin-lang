@@ -624,6 +624,7 @@ impl<'db> Collector<'db> {
             ("Vec", DefKind::BuiltinType),
             ("reg", DefKind::Fn),
             ("posedge", DefKind::Fn),
+            ("range", DefKind::Fn),
         ];
         for (i, (name, kind)) in BUILTINS.iter().enumerate() {
             let ast_id = crate::syntax::ast_id::FileAstId::synthetic(i as u16);

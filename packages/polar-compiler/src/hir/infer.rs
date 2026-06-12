@@ -1742,6 +1742,34 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             return Type::Error;
         };
+        // The builtin `range(k) -> Vec(k, integer)`: the length IS the
+        // argument, lifted into const position (planning/for_loops.md).
+        // In a `for`, the backend never materialises it — the genvar is
+        // the element.
+        if self
+            .map
+            .def_data(def)
+            .is_some_and(|d| d.module == self.map.prelude() && d.name == "range")
+        {
+            let len = match args.first().map(|a| &body.expr(a.expr).kind) {
+                Some(ExprKind::Number(v, _)) => ConstArg::Lit(*v),
+                Some(ExprKind::Local(l)) => ConstArg::Local(*l),
+                _ => ConstArg::Deferred,
+            };
+            for a in args {
+                self.infer_expr(body, a.expr);
+            }
+            return Type::Value {
+                kind: ValueKind::Vec {
+                    len,
+                    elem: Box::new(Type::Value {
+                        kind: ValueKind::Integer,
+                        domain: Domain::Const,
+                    }),
+                },
+                domain: Domain::Const,
+            };
+        }
         self.call_def(body, at, def, args, named, None)
     }
 

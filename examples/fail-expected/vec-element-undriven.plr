@@ -1,0 +1,7 @@
+// v[1] is never driven.
+fn f {dom clk: Clock} (a: uint(8) @clk) -> uint(8) @clk {
+    var v: Vec(3, uint(8)) @clk;
+    v[0] = a;
+    v[2] = a;
+    v[0]
+}

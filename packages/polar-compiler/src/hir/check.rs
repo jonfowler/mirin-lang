@@ -15,7 +15,7 @@ use crate::base::db::SourceRoot;
 use crate::base::diagnostics::Span;
 use crate::hir::body::{Block, Body, ExprId, ExprKind, LocalKind, Stmt, body};
 use crate::hir::sig::sig_of;
-use crate::hir::types::{Direction, LocalId};
+use crate::hir::types::{ConstArg, Direction, LocalId, Type, ValueKind};
 use crate::nameres::def_map::crate_def_map;
 use crate::nameres::ids::{DefId, DefKind};
 
@@ -145,10 +145,24 @@ fn place_of(body: &Body, expr: ExprId) -> Option<(LocalId, Vec<String>)> {
             path.push(field.clone());
             Some((l, path))
         }
-        // `out[i] = …` counts as a drive of the whole place: v1 has no
-        // partial-drive tracking, and a `for` covers every index by
-        // construction (planning/vectors.md, planning/for_loops.md).
-        ExprKind::Index { base, .. } => place_of(body, *base),
+        // Indexed places: a GROUND index is an element path (`"[2]"` — a
+        // distinct drive from `"[1]"`, conflicting only with itself or the
+        // whole); a `for`-bound index covers the WHOLE place (the loop
+        // spans every index); anything else is not a valid drive target
+        // (flagged in the walk).
+        ExprKind::Index { base, index } => {
+            let (l, mut path) = place_of(body, *base)?;
+            match &body.expr(*index).kind {
+                ExprKind::Number(k, _) => {
+                    path.push(format!("[{k}]"));
+                    Some((l, path))
+                }
+                ExprKind::Local(i) if matches!(body.local(*i).kind, LocalKind::ForBound) => {
+                    Some((l, path))
+                }
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -224,6 +238,32 @@ pub fn completeness<'db>(
             continue;
         }
         let Some(ty) = ty else { continue };
+        // Element-driven vector: every index 0..N must be covered
+        // (`v[0] = …; v[1] = …;` — a missing element is an undriven leaf).
+        if let Type::Value {
+            kind: ValueKind::Vec { len, .. },
+            ..
+        } = ty
+            && paths
+                .iter()
+                .all(|p| p.first().is_some_and(|s| s.starts_with('[')))
+        {
+            if let ConstArg::Lit(n) = len {
+                for k in 0..*n {
+                    let seg = format!("[{k}]");
+                    if !paths.iter().any(|p| p.first() == Some(&seg)) {
+                        out.push(DriverDiagnostic {
+                            span,
+                            kind: DriverDiagnosticKind::UndrivenField {
+                                name: local.name.clone(),
+                                field: seg,
+                            },
+                        });
+                    }
+                }
+            }
+            continue;
+        }
         for leaf in struct_leaf_paths(db, krate, ty, 0) {
             let covered = paths.iter().any(|p| leaf.starts_with(&p[..]));
             if !covered {

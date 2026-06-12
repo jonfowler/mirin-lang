@@ -577,9 +577,25 @@ impl<'db> SvLower<'_, 'db> {
             },
             other => SvExpr::Lit(render_const_sv(other, self.sig)),
         };
-        let var = match index {
-            Some(i) => self.local_name(i),
-            None => {
+        // An integer-element iterable (`range(n)`) never materialises: the
+        // ELEM local is the genvar itself, and no binding is emitted.
+        let elem_is_genvar = matches!(
+            &it,
+            Type::Value {
+                kind: ValueKind::Vec { elem, .. },
+                ..
+            } if matches!(
+                **elem,
+                Type::Value {
+                    kind: ValueKind::Integer,
+                    ..
+                }
+            )
+        );
+        let var = match (elem_is_genvar, index) {
+            (true, _) => self.local_name(elem),
+            (false, Some(i)) => self.local_name(i),
+            (false, None) => {
                 let v = format!("__i{}", self.synth);
                 self.synth += 1;
                 v
@@ -590,7 +606,9 @@ impl<'db> SvLower<'_, 'db> {
         // Body items collect into the generate block.
         let saved = std::mem::take(&mut self.items);
         // The elem binding: `assign x = v[i];` per leaf (or the bit).
-        if is_bits {
+        if elem_is_genvar {
+            // no binding — the genvar is the element
+        } else if is_bits {
             let base = self.expr_value(iter);
             self.declare_local(elem);
             let name = self.local_name(elem);
@@ -1064,6 +1082,13 @@ impl<'db> SvLower<'_, 'db> {
     fn place_leaves_dir(&mut self, e: ExprId) -> Vec<(SvExpr, bool)> {
         match self.body.expr(e).kind {
             ExprKind::Local(l) => self.local_leaves_dir(l),
+            // An indexed place fans out per element-type leaf
+            // (`whole[i] = x` → whole__valid[i], whole__val[i], …).
+            ExprKind::Index { .. } => self
+                .expr_leaves(e)
+                .into_iter()
+                .map(|(_, v)| (v, true))
+                .collect(),
             _ => vec![(self.expr_value(e), true)],
         }
     }

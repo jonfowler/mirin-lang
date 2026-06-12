@@ -32,6 +32,17 @@ for i, x in v.enumerate() { … }   // index + elem — i IS the genvar
 - The loop bound renders symbolically for parametric lengths
   (`for (genvar i = 0; i < n; …)`).
 
-Later: ranges (`for i in 0..n` without a vector), early termination is
-deliberately NEVER (hardware), reductions/comprehension form
-(`let y = for … { … }`), partial-drive tracking for disjoint loops.
+`range(n)` (a prelude builtin typed `-> Vec(n, integer)`) iterates
+without materialising anything: the genvar IS the element
+(`for i in range(4) { shifted[i] = …; }`). Outside loops, element
+assignment tracks PARTIAL drives: a ground index is its own drive path
+(`"[2]"`), distinct indexes are disjoint, completeness requires every
+element covered, and the same element twice (or an element plus the
+whole) conflicts. A `for`-bound index drive still covers the whole
+place (the loop spans every index). Dynamically-indexed drives
+(`v[sel] = …`) are not drive targets.
+
+Later: `0..n` range syntax, early termination is deliberately NEVER
+(hardware), reductions/comprehension form (`let y = for … { … }`),
+partial-drive tracking for disjoint LOOPS (two loops each driving half).
+const_eval of `range` outside for-position (needs const vec values).
