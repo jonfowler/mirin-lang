@@ -31,8 +31,14 @@ b[2]      // b: bits(n) — yields bool (no separate bit type)
 Postfix `[…]`, type-driven: `Vec(N, A)[i] → A`, `bits(N)[i] → bool`. The
 index may be a literal/`integer` (static select) or a `uint` (dynamic); its
 domain joins the base's (a cross-clock index is the usual CDC error).
-v1 checks ground-literal indexes against ground lengths; symbolic bounds
-checks ride later work (the residual machinery exists).
+v1 checks ground-literal indexes against ground lengths. A DYNAMIC
+(uint-typed) index additionally emits a simulation-time bounds assert
+(`always_comb assert (sel < 3);`) unless its width provably cannot
+express an out-of-range value (2^w ≤ N) — synthesis ignores it,
+simulation fires at the access. The end-goal safety story is a bounded
+`Index(N)` type (Clash-shaped) once explicit conversions land — as the
+OPT-IN strict form; uint access stays first-class with the assert as
+its honesty layer.
 
 ## Flattening: struct-of-arrays
 

@@ -95,13 +95,17 @@ impl SvType {
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub enum SvItem {
+    CombAssert(SvCombAssert),
     /// Raw verilog text from an inline-verilog fn body, emitted as-is
     /// (dedented to the module body's indentation).
     Verbatim(String),
     /// `logic [W-1:0] name;`
     Logic(SvLogicDecl),
     /// `assign lhs = rhs;`
-    Assign { lhs: SvExpr, rhs: SvExpr },
+    Assign {
+        lhs: SvExpr,
+        rhs: SvExpr,
+    },
     /// `always_ff @(posedge clk) begin … end`, synchronous active-low reset.
     AlwaysFf(SvAlwaysFf),
     /// `always_comb begin … end` — combinational procedural block.
@@ -109,7 +113,9 @@ pub enum SvItem {
     /// `module inst (.port(expr), …);` — a submodule instantiation.
     Instance(SvInstance),
     /// `initial begin assert (cond); end` — a discharged width obligation.
-    InitialAssert { cond: SvExpr },
+    InitialAssert {
+        cond: SvExpr,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -123,6 +129,14 @@ pub struct SvInstance {
     pub parameters: Vec<(String, SvExpr)>,
     /// Port connections in declaration order: `(port_name, expression)`.
     pub connections: Vec<(String, SvExpr)>,
+}
+
+/// `always_comb assert (i < N);` — a simulation-time bounds check on a
+/// dynamic vector/bits index (planning/vectors.md). Synthesis ignores it;
+/// simulation fires exactly when the out-of-range access happens.
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SvCombAssert {
+    pub cond: String,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -249,6 +263,9 @@ impl fmt::Display for SvPort {
 impl fmt::Display for SvItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CombAssert(a) => {
+                writeln!(f, "    always_comb assert ({});", a.cond)
+            }
             Self::Logic(d) => writeln!(
                 f,
                 "    logic{} {}{};",

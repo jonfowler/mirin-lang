@@ -36,8 +36,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::backend::ir::{
-    SvAlwaysComb, SvAlwaysFf, SvBinOp, SvCombIf, SvCombStmt, SvExpr, SvFile, SvInstance, SvItem,
-    SvLogicDecl, SvModule, SvPort, SvPortDirection, SvSeqAssign, SvType,
+    SvAlwaysComb, SvAlwaysFf, SvBinOp, SvCombAssert, SvCombIf, SvCombStmt, SvExpr, SvFile,
+    SvInstance, SvItem, SvLogicDecl, SvModule, SvPort, SvPortDirection, SvSeqAssign, SvType,
 };
 use crate::base::db::SourceRoot;
 use crate::hir::body::{
@@ -162,6 +162,7 @@ fn build_module<'db>(
         local_names: unique_local_names(body),
         items: Vec::new(),
         synth: 0,
+        index_asserts: std::collections::HashSet::new(),
         instance_counts: HashMap::new(),
         declared: HashSet::new(),
         mono_reqs: Vec::new(),
@@ -471,6 +472,8 @@ struct SvLower<'a, 'db> {
     /// Counter for synthetic `__block_N` (`when`/`if`) and `__call_N` (nested
     /// call-value) locals.
     synth: u32,
+    /// Dynamic-index bounds asserts already emitted (dedup per module).
+    index_asserts: std::collections::HashSet<String>,
     /// Per-callee instance counter (first instance bare, then `_1`, `_2`, …).
     instance_counts: HashMap<String, u32>,
     /// Locals already given a `logic` declaration (so an out-target reused as a
@@ -685,6 +688,71 @@ impl<'db> SvLower<'_, 'db> {
 
     /// A literal expr's GROUND uint width, if its inferred type has one —
     /// drives sized SV literal forms (`8'hFF`).
+    /// A DYNAMIC (uint-typed) index gets a simulation-time bounds assert
+    /// (`always_comb assert (sel < 3);`) unless the width provably cannot
+    /// express an out-of-range value (2^w ≤ N — note a non-power-of-two
+    /// length always leaves a gap). Synthesis ignores it; simulation fires
+    /// at the access. planning/vectors.md.
+    fn index_bounds_assert(&mut self, base: ExprId, index: ExprId, idx_sv: &SvExpr) {
+        let Some(it) = self.inf.expr_type(index).cloned() else {
+            return;
+        };
+        let it = ground_widths(
+            self.db,
+            self.krate,
+            self.def,
+            &subst_type(&it, &self.self_subst),
+        );
+        let Type::Value {
+            kind: ValueKind::UInt { width: iw },
+            ..
+        } = it
+        else {
+            return; // static (integer/literal) indexes are checked in infer
+        };
+        let Some(bt) = self.inf.expr_type(base).cloned() else {
+            return;
+        };
+        let bt = ground_widths(
+            self.db,
+            self.krate,
+            self.def,
+            &subst_type(&bt, &self.self_subst),
+        );
+        let len = match bt {
+            Type::Value {
+                kind: ValueKind::Vec { len, .. },
+                ..
+            } => len,
+            Type::Value {
+                kind: ValueKind::Bits { width },
+                ..
+            } => width,
+            _ => return,
+        };
+        // Provably in range: every expressible value is a valid element.
+        if let (ConstArg::Lit(w), ConstArg::Lit(n)) = (&iw, &len)
+            && *w < 127
+            && (1i128 << *w) <= *n
+        {
+            return;
+        }
+        let len_sv = match &len {
+            ConstArg::Lit(n) => n.to_string(),
+            ConstArg::Param(i) => self
+                .sig
+                .generic_params
+                .get(*i as usize)
+                .map(|g| g.name.clone())
+                .unwrap_or_else(|| "0".to_owned()),
+            other => render_const_sv(other, self.sig),
+        };
+        let cond = format!("{idx_sv} < {len_sv}");
+        if self.index_asserts.insert(cond.clone()) {
+            self.items.push(SvItem::CombAssert(SvCombAssert { cond }));
+        }
+    }
+
     /// The bool is "prefer hex": bits-typed literals print hex by default
     /// (planning/bits.md).
     fn expr_type_width(&mut self, expr: ExprId) -> Option<(u32, bool)> {
@@ -1042,6 +1110,7 @@ impl<'db> SvLower<'_, 'db> {
                 let (base, index) = (*base, *index);
                 let b = self.expr_value(base);
                 let i = self.expr_value(index);
+                self.index_bounds_assert(base, index, &i);
                 SvExpr::Lit(format!("{b}[{i}]"))
             }
             // An operator desugar (`a + b` → `a.add(b)`) that selected a
@@ -1173,6 +1242,7 @@ impl<'db> SvLower<'_, 'db> {
             ExprKind::Index { base, index } => {
                 let (base, index) = (*base, *index);
                 let idx = self.expr_value(index);
+                self.index_bounds_assert(base, index, &idx);
                 self.expr_leaves(base)
                     .into_iter()
                     .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}[{idx}]"))))
