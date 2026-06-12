@@ -16,9 +16,15 @@
   "if"
   "else"
   "when"
+  "init"
+  "self"
+  "verilog"
 ] @keyword
 
 [
+  "pub"
+  "crate"
+  "super"
   "in"
   "out"
   "param"
@@ -45,6 +51,15 @@
 
 ; Constructor uses — `packet { .. }` / `option { .. }` in expressions
 (record_constructor_expression constructor: (identifier) @constructor)
+
+; Builtin type and constant names — plain identifiers in the grammar, resolved
+; in nameres. Keep these lists in sync with `builtin_type_names()` in
+; polar-compiler's def_map (a polar-lsp test enforces it). These must come
+; before the path-expression pattern, which tags every bare segment @type.
+((identifier) @type
+  (#any-of? @type "uint" "sint" "bits" "integer" "bool" "Clock" "Reset" "Event" "Vec" "Type"))
+((identifier) @constant
+  (#any-of? @constant "true" "false" "high" "low"))
 
 ; Type expressions — the head name is always a type
 (type_expression name: (identifier) @type)

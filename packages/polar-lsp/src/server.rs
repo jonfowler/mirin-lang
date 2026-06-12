@@ -230,12 +230,18 @@ impl LanguageServer for Backend {
         };
 
         // Reuse the live tree-sitter parse the document already holds — no
-        // re-parse. `polar-fmt` refuses files with syntax errors; surface that
-        // as "no edits" rather than wiping a buffer the user is mid-typing in.
+        // re-parse. `polar-fmt` refuses files with syntax errors; tell the user
+        // why but return "no edits" rather than wiping a buffer the user is
+        // mid-typing in.
         let source = doc.rope.to_string();
         let formatted = match polar_fmt::format_tree(&source, &doc.tree) {
             Ok(text) => text,
-            Err(_) => return Ok(None),
+            Err(e) => {
+                self.client
+                    .show_message(MessageType::WARNING, format!("polar-fmt: {e}"))
+                    .await;
+                return Ok(None);
+            }
         };
         if formatted == source {
             return Ok(Some(Vec::new()));

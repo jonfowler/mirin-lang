@@ -20,6 +20,10 @@ tests/rtl/run.sh -k counter      # a single RTL test
 
 cd packages/tree-sitter-polar && tree-sitter generate  # regenerate parser sources
 cd packages/tree-sitter-polar && tree-sitter test      # run grammar corpus tests
+
+scripts/install-tooling.sh   # build + install polar-lsp/polar-fmt into ~/.local/bin
+                             # rerun after any grammar/LSP/formatter change, or the
+                             # editor runs a stale binary that can't parse new syntax
 ```
 
 The VS Code syntax extension lives in `editors/vscode/`.

@@ -57,7 +57,7 @@
           }
         },
         {
-          "match": "\\b(struct|port|impl)\\b\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(struct|port|impl|trait|mod)\\b\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": {
               "name": "storage.type.polar"
@@ -125,11 +125,15 @@
         },
         {
           "name": "keyword.control.polar",
-          "match": "\\b(let|var|return|if|else|when)\\b"
+          "match": "\\b(if|else|when|for|return)\\b"
+        },
+        {
+          "name": "keyword.other.polar",
+          "match": "\\b(fn|struct|port|impl|trait|mod|use|const|where|as|verilog)\\b"
         },
         {
           "name": "storage.modifier.polar",
-          "match": "\\b(param|dom|in|out)\\b"
+          "match": "\\b(pub|crate|super|let|var|in|out|param|dom|init)\\b"
         },
         {
           "name": "constant.language.polar",
@@ -141,7 +145,7 @@
       "patterns": [
         {
           "name": "storage.type.polar",
-          "match": "\\b(Clock|Reset|bool|integer|uint|Self)\\b"
+          "match": "\\b(uint|sint|bits|integer|bool|Clock|Reset|Event|Vec|Type|Self)\\b"
         },
         {
           "name": "entity.name.type.polar",
@@ -167,8 +171,16 @@
     "numbers": {
       "patterns": [
         {
+          "name": "constant.numeric.integer.hexadecimal.polar",
+          "match": "\\b0[xX][0-9a-fA-F][0-9a-fA-F_]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.binary.polar",
+          "match": "\\b0[bB][01][01_]*\\b"
+        },
+        {
           "name": "constant.numeric.integer.decimal.polar",
-          "match": "\\b[0-9]+\\b"
+          "match": "\\b[0-9][0-9_]*\\b"
         }
       ]
     },

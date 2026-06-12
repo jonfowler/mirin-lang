@@ -36,6 +36,35 @@ use crate::syntax::item_tree::{
     ImplItem, Item, ModItem, ModKind, UseTree, Visibility as SurfaceVisibility, item_tree,
 };
 
+/// The language builtins seeded into the synthetic prelude module — types and
+/// intrinsic fns. Order matters: each entry's index mints its synthetic
+/// `FileAstId`, so append-only.
+const BUILTINS: &[(&str, DefKind)] = &[
+    ("uint", DefKind::BuiltinType),
+    ("bool", DefKind::BuiltinType),
+    ("Clock", DefKind::BuiltinType),
+    ("Event", DefKind::BuiltinType),
+    ("Reset", DefKind::BuiltinType),
+    ("Type", DefKind::BuiltinType),
+    ("integer", DefKind::BuiltinType),
+    ("sint", DefKind::BuiltinType),
+    ("bits", DefKind::BuiltinType),
+    ("Vec", DefKind::BuiltinType),
+    ("reg", DefKind::Fn),
+    ("posedge", DefKind::Fn),
+    ("range", DefKind::Fn),
+];
+
+/// The builtin *type* names. Exposed so tooling (the LSP's highlight query, the
+/// VS Code TextMate fallback) can be tested against the language's actual
+/// builtin set instead of drifting.
+pub fn builtin_type_names() -> impl Iterator<Item = &'static str> {
+    BUILTINS
+        .iter()
+        .filter(|(_, kind)| matches!(kind, DefKind::BuiltinType))
+        .map(|(name, _)| *name)
+}
+
 /// Index into [`CrateDefMap::modules`]. The root is always `ModuleId(0)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, salsa::Update)]
 pub struct ModuleId(u32);
@@ -611,21 +640,6 @@ impl<'db> Collector<'db> {
     /// rebuilt identically each session and need no cross-session identity).
     /// Signatures for the fns are synthesised later by `sig_of` (Q3b).
     fn populate_prelude(&mut self, prelude: ModuleId) {
-        const BUILTINS: &[(&str, DefKind)] = &[
-            ("uint", DefKind::BuiltinType),
-            ("bool", DefKind::BuiltinType),
-            ("Clock", DefKind::BuiltinType),
-            ("Event", DefKind::BuiltinType),
-            ("Reset", DefKind::BuiltinType),
-            ("Type", DefKind::BuiltinType),
-            ("integer", DefKind::BuiltinType),
-            ("sint", DefKind::BuiltinType),
-            ("bits", DefKind::BuiltinType),
-            ("Vec", DefKind::BuiltinType),
-            ("reg", DefKind::Fn),
-            ("posedge", DefKind::Fn),
-            ("range", DefKind::Fn),
-        ];
         for (i, (name, kind)) in BUILTINS.iter().enumerate() {
             let ast_id = crate::syntax::ast_id::FileAstId::synthetic(i as u16);
             let def = DefId::new(self.db, self.root_file, ast_id, DefRole::Item);

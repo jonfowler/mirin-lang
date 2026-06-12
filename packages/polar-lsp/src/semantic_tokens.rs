@@ -32,6 +32,9 @@ const TOKEN_TYPES: &[SemanticTokenType] = &[
     SemanticTokenType::COMMENT,   // 8
     SemanticTokenType::NUMBER,    // 9
     SemanticTokenType::OPERATOR,  // 10
+    // `@constant` (true/false/high/low) — LSP has no "constant" token type;
+    // enumMember is the conventional stand-in and themes colour it as one.
+    SemanticTokenType::ENUM_MEMBER, // 11
 ];
 
 pub fn legend() -> SemanticTokensLegend {
@@ -60,6 +63,7 @@ fn token_index(capture: &str) -> Option<u32> {
         "comment" => 8,
         "number" => 9,
         "operator" | "punctuation.special" | "punctuation.delimiter" => 10,
+        "constant" => 11,
         _ => return None,
     })
 }
@@ -195,6 +199,109 @@ mod tests {
             ctors, 2,
             "constructor not tagged at both sites: {decoded:?}"
         );
+    }
+
+    /// The VS Code TextMate fallback, read from the repo checkout. Tests use it
+    /// to keep the cold-start grammar in sync with the real one.
+    fn tm_grammar() -> String {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../editors/vscode/syntaxes/polar.tmLanguage.json"
+        );
+        std::fs::read_to_string(path).expect("read polar.tmLanguage.json")
+    }
+
+    /// Whole-word containment: `needle` occurs in `haystack` with non-word
+    /// characters (or the string edge) on both sides.
+    fn contains_word(haystack: &str, needle: &str) -> bool {
+        let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        haystack.match_indices(needle).any(|(i, _)| {
+            let before_ok = haystack[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_word(c));
+            let after_ok = haystack[i + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !is_word(c));
+            before_ok && after_ok
+        })
+    }
+
+    /// Drift guard: every keyword in the grammar (alphabetic anonymous node
+    /// kind) must be captured by highlights.scm AND matched by the TextMate
+    /// fallback. Catches the `pub`/`init` failure mode where a keyword lands in
+    /// the grammar but never gets highlighting.
+    #[test]
+    fn every_grammar_keyword_is_highlighted() {
+        let lang = polar_compiler::language();
+        let tm = tm_grammar();
+        let mut missing = Vec::new();
+        for id in 0..lang.node_kind_count() as u16 {
+            // Visible anonymous alphabetic kinds are exactly the keywords;
+            // hidden kinds (`_repeat1` helpers, `end`) are parser internals.
+            if lang.node_kind_is_named(id) || !lang.node_kind_is_visible(id) {
+                continue;
+            }
+            let Some(kind) = lang.node_kind_for_id(id) else {
+                continue;
+            };
+            if !kind.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                continue;
+            }
+            if !HIGHLIGHTS.contains(&format!("\"{kind}\"")) {
+                missing.push(format!("highlights.scm: `{kind}`"));
+            }
+            if !contains_word(&tm, kind) {
+                missing.push(format!("polar.tmLanguage.json: `{kind}`"));
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "keywords without highlighting: {missing:?}"
+        );
+    }
+
+    /// Drift guard: every builtin type the language seeds into the prelude must
+    /// be highlighted by both grammars (the `sint` failure mode).
+    #[test]
+    fn every_builtin_type_is_highlighted() {
+        let tm = tm_grammar();
+        let mut missing = Vec::new();
+        for name in polar_compiler::builtin_type_names() {
+            if !HIGHLIGHTS.contains(&format!("\"{name}\"")) {
+                missing.push(format!("highlights.scm: `{name}`"));
+            }
+            if !contains_word(&tm, name) {
+                missing.push(format!("polar.tmLanguage.json: `{name}`"));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "builtin types without highlighting: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn recent_keywords_and_builtins_get_expected_tokens() {
+        // `pub` (modifier), `init` (keyword), `sint` (type), `high` (constant).
+        let src = "pub fn smoke {dom clk: Clock, rstn: Reset @clk = high} (a: sint(8) @clk) \
+                   -> sint(8) @clk {\n    var acc: sint(8) @clk;\n    \
+                   acc = init 0 when clk.posedge() { acc + a };\n    acc\n}\n";
+        let doc = Document::open(src);
+        assert!(
+            !doc.tree.root_node().has_error(),
+            "smoke snippet must parse cleanly"
+        );
+        let toks = compute(&doc.rope, &doc.tree, &query(), Encoding::Utf8);
+        let decoded = decode(&toks);
+        let has = |len: u32, ty: u32| decoded.iter().any(|&(_, _, l, t)| l == len && t == ty);
+        assert!(has(3, 7), "`pub` should be a modifier token: {decoded:?}");
+        assert!(has(4, 6), "`init` should be a keyword token: {decoded:?}");
+        assert!(has(4, 1), "`sint` should be a type token: {decoded:?}");
+        assert!(has(4, 11), "`high` should be a constant token: {decoded:?}");
     }
 
     #[test]
