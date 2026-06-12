@@ -577,20 +577,14 @@ impl<'db> SvLower<'_, 'db> {
             },
             other => SvExpr::Lit(render_const_sv(other, self.sig)),
         };
-        // An integer-element iterable (`range(n)`) never materialises: the
-        // ELEM local is the genvar itself, and no binding is emitted.
+        // A `range(n)` iterable never materialises: the ELEM local is the
+        // genvar itself and no binding is emitted. Keyed off the SYNTACTIC
+        // range call (lowering marks its elem ForBound) — the type alone
+        // (Vec(N, integer)) is not enough: `[3, 1, 2]` has the same type
+        // but its values are not 0..N-1 (infer rejects those for now).
         let elem_is_genvar = matches!(
-            &it,
-            Type::Value {
-                kind: ValueKind::Vec { elem, .. },
-                ..
-            } if matches!(
-                **elem,
-                Type::Value {
-                    kind: ValueKind::Integer,
-                    ..
-                }
-            )
+            self.body.local(elem).kind,
+            crate::hir::body::LocalKind::ForBound
         );
         let var = match (elem_is_genvar, index) {
             (true, _) => self.local_name(elem),

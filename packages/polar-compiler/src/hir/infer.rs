@@ -102,6 +102,7 @@ pub enum InferDiagnosticKind {
     NotIterable {
         ty_name: String,
     },
+    ForConstVec,
     BadIndexType {
         ty_name: String,
     },
@@ -188,6 +189,11 @@ impl InferDiagnostic {
                     "widths take `integer` values, found `{ty_name}` \
                      (hardware arithmetic wraps; compile-time arithmetic must not)"
                 )
+            }
+            InferDiagnosticKind::ForConstVec => {
+                "only `range(n)` iterates compile-time integers (a general const \
+                 vector's values cannot drive the genvar)"
+                    .to_owned()
             }
             InferDiagnosticKind::NotIterable { ty_name } => {
                 format!("`{ty_name}` cannot be iterated — `for` takes a Vec or bits")
@@ -532,6 +538,9 @@ struct InferCtx<'a, 'db> {
     literal_vars: Vec<InferVar>,
     /// Literal-fit checks that survived against symbolic widths.
     fit_residuals: Vec<FitResidual<'db>>,
+    /// Non-`range` for-loop elems, re-checked at finish: a compile-time
+    /// integer element can only be the genvar (ForConstVec).
+    for_elem_checks: Vec<(LocalId, Span)>,
     /// Undecided constraints, retried at end-of-body (`discharge_obligations`).
     obligations: Vec<Obligation<'db>>,
     /// Def-relative span of the expression currently under inference — attached
@@ -628,6 +637,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             diagnostics: Vec::new(),
             literal_vars: Vec::new(),
             fit_residuals: Vec::new(),
+            for_elem_checks: Vec::new(),
             obligations: Vec::new(),
             current_span: Span::default(),
         }
@@ -654,6 +664,23 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             let t = self.local_types[&l].clone();
             let t = self.deep_resolve(&t);
             self.local_types.insert(l, t);
+        }
+        for (elem, span) in std::mem::take(&mut self.for_elem_checks) {
+            let t = self
+                .local_types
+                .get(&elem)
+                .cloned()
+                .map(|t| self.resolve_ty(&t));
+            if matches!(
+                t,
+                Some(Type::Value {
+                    kind: ValueKind::Integer,
+                    ..
+                })
+            ) {
+                self.current_span = span;
+                self.diag(InferDiagnosticKind::ForConstVec);
+            }
         }
         self.check_widths();
         let substs: Vec<(ExprId, Vec<Term<'db>>)> = self
@@ -1490,6 +1517,19 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                             Type::Error
                         }
                     };
+                    // A compile-time integer vector only iterates as the
+                    // genvar, which is only correct for `range(n)` itself
+                    // (values 0..N-1 in order) — anything else ([3,1,2],
+                    // a future .reverse()) is rejected until const vecs can
+                    // drive per-iteration elaboration constants. The elem
+                    // type may still be a literal var here (integer comes
+                    // from the end-of-body fallback), so check at finish.
+                    if !matches!(
+                        body.local(*elem).kind,
+                        crate::hir::body::LocalKind::ForBound
+                    ) {
+                        self.for_elem_checks.push((*elem, self.current_span));
+                    }
                     if let Some(et) = self.local_types.get(elem).cloned() {
                         self.unify(&elem_ty, &et);
                     } else {
