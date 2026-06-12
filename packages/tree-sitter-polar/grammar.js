@@ -35,10 +35,6 @@ module.exports = grammar({
     // alive; the named-args fork dies at body content or the missing parens.
     [$._header_expression, $.header_postfix],
     [$.header_postfix],
-    // `when E { … }` opening a statement vs the value-form when expression
-    // (an expression statement) — identical prefixes; GLR settles by what
-    // follows the block (`;` = expression statement).
-    [$.when_statement, $.when_expression],
   ],
 
   rules: {
@@ -313,7 +309,6 @@ module.exports = grammar({
       choice(
         $.let_statement,
         $.for_statement,
-        alias($.when_statement, $.when_expression),
         $.return_statement,
         $.var_statement,
         $.assignment_statement,
@@ -402,15 +397,6 @@ module.exports = grammar({
       ),
 
     _for_iterable: ($) => $._header_expression,
-
-    // Statement-form `when` (no trailing `;`, like Rust block expressions):
-    // body equations are CLOCKED assignments — the RAM write shape.
-    when_statement: ($) =>
-      seq(
-        "when",
-        field("event", $._when_event),
-        field("body", $.block),
-      ),
 
     let_statement: ($) =>
       seq(

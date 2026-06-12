@@ -922,12 +922,6 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     block.stmts.push(Stmt::Expr(id));
                 }
             }
-            // Statement-form `when` (aliased when_statement): a bare when
-            // whose body equations are clocked assignments.
-            "when_expression" => {
-                let id = self.lower_expr(node, source);
-                block.stmts.push(Stmt::Expr(id));
-            }
             _ => {}
         }
     }

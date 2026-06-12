@@ -1869,15 +1869,6 @@
           "name": "for_statement"
         },
         {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "when_statement"
-          },
-          "named": true,
-          "value": "when_expression"
-        },
-        {
           "type": "SYMBOL",
           "name": "return_statement"
         },
@@ -2214,31 +2205,6 @@
     "_for_iterable": {
       "type": "SYMBOL",
       "name": "_header_expression"
-    },
-    "when_statement": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "STRING",
-          "value": "when"
-        },
-        {
-          "type": "FIELD",
-          "name": "event",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_when_event"
-          }
-        },
-        {
-          "type": "FIELD",
-          "name": "body",
-          "content": {
-            "type": "SYMBOL",
-            "name": "block"
-          }
-        }
-      ]
     },
     "let_statement": {
       "type": "SEQ",
@@ -3810,10 +3776,6 @@
     ],
     [
       "header_postfix"
-    ],
-    [
-      "when_statement",
-      "when_expression"
     ]
   ],
   "precedences": [],
