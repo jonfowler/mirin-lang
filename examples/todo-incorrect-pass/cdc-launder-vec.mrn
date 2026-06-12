@@ -1,0 +1,10 @@
+// A clock-domain crossing laundered through a Vec's top-level domain
+// (planning/aggregate_domains.md). `x` is on @a, but the Vec annotated @b
+// stamps its (unspecified) element @b on the READ side (`v[0]`) while never
+// unifying @b with the incoming @a on the WRITE side — so @a data exits as
+// @b with no synchroniser. MUST become a DomainMismatch once `@` on an
+// aggregate propagates into element slots at lowering (Stage 1).
+fn launder {dom a: Clock, dom b: Clock} (x: uint(8) @a) -> uint(8) @b {
+    let v: Vec(2, uint(8)) @b = [x, x];
+    v[0]
+}

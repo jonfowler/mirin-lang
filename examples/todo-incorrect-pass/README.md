@@ -23,4 +23,18 @@ The post-Q7 review worklist (2026-06) has also fully flipped:
   MultipleDrivers). Its passing twin `working/field_drivers.mrn` wires a
   struct field-by-field.
 
-Currently empty.
+Open worklist — **aggregate domains** (2026-06, planning/aggregate_domains.md).
+A domain stored on an aggregate type (rather than on its leaves) is reconciled
+with its element domains only lazily and one-directionally, so `@` on a Vec or
+tuple launders clock domains:
+
+- `cdc-launder-vec`, `cdc-launder-tuple` — `@b` on an aggregate stamps its
+  element on reads but never unifies with the incoming `@a` data on writes, so
+  `@a` exits as `@b`. Flip = DomainMismatch once aggregate `@` propagates into
+  element slots at lowering (Stage 1).
+- `vec-domain-drift` — aggregate `@a` and an explicit element `@b` silently
+  disagree. Flip = DomainMismatch / unrepresentable once domains live on
+  leaves (Stage 3).
+
+The element-level (`Vec(N, uint(8) @b)`), struct-field, and direct `@a`→`@b`
+crossings already reject correctly and guard against regressions.

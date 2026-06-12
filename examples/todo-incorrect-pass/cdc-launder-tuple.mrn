@@ -1,0 +1,7 @@
+// The same clock-domain laundry as cdc-launder-vec, through a tuple's
+// top-level domain (planning/aggregate_domains.md). MUST become a
+// DomainMismatch once aggregate `@` propagates into element slots (Stage 1).
+fn launder {dom a: Clock, dom b: Clock} (x: uint(8) @a) -> uint(8) @b {
+    let t: (uint(8), uint(8)) @b = (x, x);
+    t.0
+}
