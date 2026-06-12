@@ -5,7 +5,7 @@ examples are the acceptance tests).
 
 ## Shape: fn bodies only
 
-```polar
+```mirin
 fn ff_en {dom clk: Clock} (en: bool @clk, d: uint(8) @clk, out q: uint(8) @clk) = verilog {
     always_ff @(posedge ${clk}) if (${en}) ${q} <= ${d};
 }
@@ -19,7 +19,7 @@ is trusted (the compiler cannot verify the verilog drives what the signature
 claims); the verilator `-Wall` corpus lint is the honesty backstop —
 an undriven output or width mismatch in the splice fails it.
 
-Mixed Polar/verilog within one body is deliberately out of scope: driver
+Mixed Mirin/verilog within one body is deliberately out of scope: driver
 accounting inside opaque text has no good answer. Factor the verilog part
 into its own fn.
 
@@ -65,7 +65,7 @@ splits the raw text during body lowering, which keeps the scanner trivial.
 - backend: ports from the signature as usual; the body is one
   `SvItem::Verbatim` with splices substituted. Call sites instantiate
   normally.
-- `polar-fmt`: verilog-bodied fns pass through verbatim.
+- `mirin-fmt`: verilog-bodied fns pass through verbatim.
 
 ## As built
 

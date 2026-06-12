@@ -108,7 +108,7 @@ route through `const_eval`).
 4. **`sig_residuals(def)`.** Carve the residual set out as signature output so a
    caller's `infer` depends on the callee's *signature*, never its body.
 
-## 4. Sub-slices (each leaves polar-db building + tested)
+## 4. Sub-slices (each leaves mirin-db building + tested)
 
 - **Q3a — prelude + in-scope resolution.** Add the synthetic prelude module
   (builtin type `DefId`s + intrinsic fn names) to `crate_def_map`, and a
@@ -136,7 +136,7 @@ route through `const_eval`).
   sideways edge; cycle detection via the query stack.
 - **Q5 — back end.** monomorphise (per-instantiation), block/method/out-arg
   lowering + flatten (per-def), `verilog(def)` + crate `emit`. At parity the CLI
-  switches over and `polar-compiler` is retired.
+  switches over and `mirin-compiler` is retired.
 
 ## 6. Resolved decisions
 

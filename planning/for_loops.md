@@ -4,7 +4,7 @@ Status: v1 landed. `for` is STRUCTURAL REPLICATION, emitted as a real,
 NAMED SV generate-for — never unrolled — so the Verilog hierarchy is
 recoverable: instance paths are `g_<elem>[i].<name>`.
 
-```polar
+```mirin
 for x in v { … }                  // elem only
 for i, x in v.enumerate() { … }   // index + elem — i IS the genvar
 ```

@@ -6,7 +6,7 @@ a let) that shouldn't be opened as a RAM side effect).
 
 ## The functional RAM
 
-```polar
+```mirin
 var mem: Vec(4, uint(8)) @clk;
 mem = init [0x10, 0x20, 0x30, 0x40] when clk.posedge() {
     if we { mem.replace(waddr, wdata) } else { mem }

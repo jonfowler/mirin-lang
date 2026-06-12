@@ -1,16 +1,16 @@
 # IR pipeline
 
-Polar's compiler is a **query-based, demand-driven** pipeline on salsa
+Mirin's compiler is a **query-based, demand-driven** pipeline on salsa
 (`planning/query_engine.md`): each stage is a tracked query, recomputed only
 when its inputs change. This doc is the map; the code in
-`packages/polar-compiler/src/` is the source of truth. (The retired
-whole-crate-pass compiler lives in `packages/polar-compiler-old/`, EOL, kept
+`packages/mirin-compiler/src/` is the source of truth. (The retired
+whole-crate-pass compiler lives in `packages/mirin-compiler-old/`, EOL, kept
 for reference only.)
 
 ## Overview
 
 ```
-.plr text (Vfs overlay)                          base/vfs.rs, base/db.rs
+.mrn text (Vfs overlay)                          base/vfs.rs, base/db.rs
   ─► parse_text          tree-sitter CST          base/parser.rs
   ─► ast_id_map(file)    stable syntax ids        syntax/ast_id.rs
   ─► item_tree(file)     per-file item skeleton   syntax/item_tree.rs   ← syntactic firewall
@@ -26,7 +26,7 @@ for reference only.)
   ─► sv_file / verilog    assemble + emit         backend/lower.rs, backend/ir.rs
 ```
 
-The CLI (`main.rs`) forces `verilog` (or prints the CST). `polar-lsp` forces
+The CLI (`main.rs`) forces `verilog` (or prints the CST). `mirin-lsp` forces
 the per-def queries for diagnostics, hover, and go-to-definition. A test-only
 harness lints every working example with verilator
 (`tests/examples.rs::corpus_is_verilator_clean`).
@@ -36,7 +36,7 @@ harness lints every working example with verilator
 ### CST — concrete syntax tree
 Produced per file by tree-sitter (`base/parser.rs`); owns exact layout
 including trivia. Consumed by `ast_id_map`/`item_tree` lowering, by `sig_of`'s
-and `body`'s targeted re-parsing, and by editor tooling (`polar-fmt`,
+and `body`'s targeted re-parsing, and by editor tooling (`mirin-fmt`,
 highlighting).
 
 ### Item tree — `syntax/item_tree.rs`
@@ -80,7 +80,7 @@ reserved-word collisions.
 | `ast_id_map(file)` | `syntax/ast_id.rs` | Stable per-file syntax-node ids (name-anchored, position-fallback) so later queries can find their CST node across edits. |
 | `item_tree(file)` | `syntax/item_tree.rs` | Lower the CST to the item skeleton. |
 | `syntax_errors(file)` | `syntax/syntax_errors.rs` | Collect tree-sitter ERROR/MISSING nodes as diagnostics. |
-| `crate_def_map(crate)` | `nameres/def_map.rs` | Module tree + def table + imports + privacy + prelude (rustc's resolver shape, two phases + import fixpoint). The prelude is the synthetic builtins PLUS real source: `src/prelude.plr` (operator traits + builtin impls), injected into every crate by the vfs and collected into the `$prelude` module. |
+| `crate_def_map(crate)` | `nameres/def_map.rs` | Module tree + def table + imports + privacy + prelude (rustc's resolver shape, two phases + import fixpoint). The prelude is the synthetic builtins PLUS real source: `src/prelude.mrn` (operator traits + builtin impls), injected into every crate by the vfs and collected into the `$prelude` module. |
 | `sig_of(def)` | `hir/sig.rs` | Lower a def's signature from its CST node: generic params (Type/Const/Domain classification), value params with directions/defaults, struct/port fields, return type. Generic args at type references lower kind-directed — named-section args (`DF{clk}`) become real `Domain`/`Const` args aligned with the params by index. Pure fn signatures are **lifted** (implicit `__Dom` appended, stamped over unannotated slots); explicit signatures require domain annotations; unresolved type names diagnose (`SigDiagnostic`). |
 | `body(def)` | `hir/body.rs` | Lower + name-resolve the body into the per-def arenas; split `var` decls from equations; record declared types on `let`/`var` locals. An inline-verilog fn (`= verilog { … }`) instead stores a splice-resolved `VerilogTemplate` (`planning/inline_verilog.md`). Diagnoses unresolved names/types, overflowing literals, bad splices, and direction prefixes that disagree with their connector. |
 | `infer(def)` | `hir/infer.rs` | Eager-unification walk over `body(def)` against `sig_of` of self + callees (never their bodies — the type-layer firewall). One kinded union-find `InferenceTable` (domain vars carry a `Clock`/`Domain` sort). Domain checking per `domain_checking_redux.md`: `unify` strict, `subsume` (`@const` coercion) at coercion sites, joins at branch/operand merges, record/field domain stamping, the builtin `reg : {dom D: Clock}(self: T @ D, rstn: Reset @ D, init: T @const) -> T @ D`, `when`-clock connection. Undecidable constraints queue as obligations, retried at an end-of-body fixpoint where `const_eval` grounds what it can; true survivors are `const_residuals`. Negative evaluated uint widths reject. Unconstrained domains default to `@const`. Shape checking: positional-arity at calls, unknown/missing/duplicate fields at record constructors, field access on non-aggregates. Trait bounds (`planning/traits.md`): callee predicates instantiate to `Trait` obligations, solved in the same fixpoint (param-env candidates, then impl-header matching; a matched impl's bounds nest at depth+1); method dispatch probes inherent → trait impls → param-env bounds. |

@@ -1,6 +1,6 @@
-# Polar
+# Mirin
 
-Polar is an experimental hardware description language focused on RTL
+Mirin is an experimental hardware description language focused on RTL
 correctness, readability, and high-quality generated SystemVerilog.
 
 > **Status: early and unstable.** The language, compiler, and tooling are under
@@ -9,7 +9,7 @@ correctness, readability, and high-quality generated SystemVerilog.
 
 ## A taste
 
-```polar
+```mirin
 fn multAdd
     {dom clk: Clock, rstn: Reset @clk = high, c: uint(8) @clk = 0}
     (a: uint(8) @clk, b: uint(8) @clk)
@@ -48,7 +48,7 @@ module multAdd (
 endmodule
 ```
 
-Some of the ideas Polar is built around:
+Some of the ideas Mirin is built around:
 
 - **Clock domains are types.** A clocked value is written `uint(8) @clk`;
   crossing domains without saying so is a type error. Clocks and resets are
@@ -71,13 +71,13 @@ are documented in [`planning/`](planning/).
 
 | Path | Contents |
 | --- | --- |
-| `packages/polar-compiler/` | The compiler: a query-based (salsa) front-to-back implementation emitting SystemVerilog |
-| `packages/polar-lsp/` | Language server built on the compiler's query stack |
-| `packages/polar-fmt/` | Source formatter |
-| `packages/tree-sitter-polar/` | Tree-sitter grammar (concrete syntax, highlighting) |
+| `packages/mirin-compiler/` | The compiler: a query-based (salsa) front-to-back implementation emitting SystemVerilog |
+| `packages/mirin-lsp/` | Language server built on the compiler's query stack |
+| `packages/mirin-fmt/` | Source formatter |
+| `packages/tree-sitter-mirin/` | Tree-sitter grammar (concrete syntax, highlighting) |
 | `editors/vscode/` | VS Code extension (syntax + LSP client) |
 | `planning/` | Design documents — the source of truth for language decisions |
-| `examples/`, `fail-examples/` | `.plr` sources used by the test suite |
+| `examples/`, `fail-examples/` | `.mrn` sources used by the test suite |
 | `tests/rtl/` | Behavioural RTL tests (cocotb + verilator) |
 
 ## Building and testing
@@ -85,12 +85,12 @@ are documented in [`planning/`](planning/).
 Requires a recent stable Rust toolchain.
 
 ```bash
-cargo test -p polar-compiler                            # compiler test suite
-cargo run -p polar-compiler -- examples/working/mult_add.plr   # compile a .plr → ./sv/<stem>.sv
+cargo test -p mirin-compiler                            # compiler test suite
+cargo run -p mirin-compiler -- examples/working/mult_add.mrn   # compile a .mrn → ./sv/<stem>.sv
 
 tests/rtl/run.sh        # RTL behavioural tests (needs verilator; bootstraps a python venv)
 
-cd packages/tree-sitter-polar && tree-sitter test       # grammar corpus tests
+cd packages/tree-sitter-mirin && tree-sitter test       # grammar corpus tests
 ```
 
 ## License

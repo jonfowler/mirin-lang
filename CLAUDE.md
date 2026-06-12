@@ -9,19 +9,19 @@ This repository is in a restart/planning state. Treat `planning/top.md` as the s
 ## Commands
 
 ```bash
-cargo test -p polar-compiler                                          # compiler test suite
-cargo test -p polar-compiler infer -- --exact                         # a single test by name
-cargo run -p polar-compiler -- examples/working/mult_add.plr          # compile a .plr → ./sv/<stem>.sv
-cargo run -p polar-compiler -- --emit cst examples/working/mult_add.plr   # print the CST instead
+cargo test -p mirin-compiler                                          # compiler test suite
+cargo test -p mirin-compiler infer -- --exact                         # a single test by name
+cargo run -p mirin-compiler -- examples/working/mult_add.mrn          # compile a .mrn → ./sv/<stem>.sv
+cargo run -p mirin-compiler -- --emit cst examples/working/mult_add.mrn   # print the CST instead
 cargo fmt --all                                                       # format Rust workspace
 
 tests/rtl/run.sh                 # RTL behavioural tests (cocotb + verilator); bootstraps a venv on first run
 tests/rtl/run.sh -k counter      # a single RTL test
 
-cd packages/tree-sitter-polar && tree-sitter generate  # regenerate parser sources
-cd packages/tree-sitter-polar && tree-sitter test      # run grammar corpus tests
+cd packages/tree-sitter-mirin && tree-sitter generate  # regenerate parser sources
+cd packages/tree-sitter-mirin && tree-sitter test      # run grammar corpus tests
 
-scripts/install-tooling.sh   # build + install polar-lsp/polar-fmt into ~/.local/bin
+scripts/install-tooling.sh   # build + install mirin-lsp/mirin-fmt into ~/.local/bin
                              # rerun after any grammar/LSP/formatter change, or the
                              # editor runs a stale binary that can't parse new syntax
 ```
@@ -30,16 +30,16 @@ The VS Code syntax extension lives in `editors/vscode/`.
 
 ## Architecture
 
-**Polar** is an HDL focused on RTL correctness, readability, and high-quality generated Verilog. The repo is a small monorepo:
+**Mirin** is an HDL focused on RTL correctness, readability, and high-quality generated Verilog. The repo is a small monorepo:
 
-- `packages/polar-compiler/` — the compiler: a query-based, demand-driven front-to-back implementation on salsa (`planning/query_engine.md`), structured by layer (`base` → `syntax` → `nameres` → `hir` → `backend`). Emits SystemVerilog; `build.rs` compiles the tree-sitter grammar (C sources) and links it in. This is the primary `polar-compiler`.
-- `packages/polar-compiler-old/` — the original whole-crate-pass compiler, kept as a **parity oracle** (the query-based one reached corpus parity at Q5-mono). Off the build path of everything else; retained for reference/diffing.
-- `packages/polar-lsp/` — the language server, built on `polar-compiler`'s query stack.
-- `packages/tree-sitter-polar/` — Tree-sitter grammar (JavaScript): concrete syntax, highlighting, editor integration.
+- `packages/mirin-compiler/` — the compiler: a query-based, demand-driven front-to-back implementation on salsa (`planning/query_engine.md`), structured by layer (`base` → `syntax` → `nameres` → `hir` → `backend`). Emits SystemVerilog; `build.rs` compiles the tree-sitter grammar (C sources) and links it in. This is the primary `mirin-compiler`.
+- `packages/mirin-compiler-old/` — the original whole-crate-pass compiler, kept as a **parity oracle** (the query-based one reached corpus parity at Q5-mono). Off the build path of everything else; retained for reference/diffing.
+- `packages/mirin-lsp/` — the language server, built on `mirin-compiler`'s query stack.
+- `packages/tree-sitter-mirin/` — Tree-sitter grammar (JavaScript): concrete syntax, highlighting, editor integration.
 - `planning/` — Design docs that are the source of truth for language decisions.
-- `examples/` / `fail-examples/` — `.plr` source files used in tests.
+- `examples/` / `fail-examples/` — `.mrn` source files used in tests.
 
-Data flow: `.plr` source → tree-sitter CST → per-file `item_tree` → `crate_def_map` (name resolution) → `sig_of`/`body`/`infer` (typed HIR) → `verilog` (flatten + monomorphise + emit). Each is a salsa query.
+Data flow: `.mrn` source → tree-sitter CST → per-file `item_tree` → `crate_def_map` (name resolution) → `sig_of`/`body`/`infer` (typed HIR) → `verilog` (flatten + monomorphise + emit). Each is a salsa query.
 
 Tree-sitter owns concrete syntax; Rust owns CST-to-AST lowering, elaboration, and semantic analysis.
 
@@ -70,7 +70,7 @@ cleanly when something turns out wrong two slices later.
 
 ## Designing new language features
 
-Polar's compiler is rustc-shaped (staged pipeline, distinct IRs per phase, eager unification with deferred obligations). Before designing a new feature, work the rust analogy:
+Mirin's compiler is rustc-shaped (staged pipeline, distinct IRs per phase, eager unification with deferred obligations). Before designing a new feature, work the rust analogy:
 
 1. **Find the analogous feature or pass in rustc.** `if`/`when` lower like Rust's block-to-MIR flattening. Method dispatch routes through an `impl_methods` table the way rustc resolves inherent impls. Domain inference borrows the OutsideIn(X) split. Look first; reinvent only when nothing fits.
 2. **Research the rust implementation before settling on a design.** Use a sub-agent (Explore or general-purpose) to read the relevant rustc passes/docs when the shape isn't already obvious. Use what you learn to inform the IR choice, the pass placement, and the failure modes. Note the differences too — HDL semantics force divergence (e.g. `var` participates in an equation system, not single-assignment locals).

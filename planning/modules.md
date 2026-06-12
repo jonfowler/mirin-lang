@@ -25,18 +25,18 @@ Goals:
 
 Non-goals for this slice:
 
-- The `polar` build tool itself — manifest, dependency fetching, driving the
+- The `mirin` build tool itself — manifest, dependency fetching, driving the
   compiler (§2). The compiler is, however, designed to accept multiple crate
   roots at once.
 - Per-crate **separate compilation** and a crate-metadata format. This is
   explicitly *not* our model: we compile all crates monolithically (§2).
-- Macros / conditional compilation. Polar has none, which makes name resolution
+- Macros / conditional compilation. Mirin has none, which makes name resolution
   meaningfully simpler than rustc's (§7).
 - Trait coherence / orphan rules.
 
-## 2. Monolithic compilation, and `polar-compiler` vs `polar`
+## 2. Monolithic compilation, and `mirin-compiler` vs `mirin`
 
-Decision: **one monolithic compile over all crates.** `polar-compiler` is handed
+Decision: **one monolithic compile over all crates.** `mirin-compiler` is handed
 the source roots of the whole dependency closure at once and compiles them in a
 single pass into one `DefId`/`DefPath` space. There is no per-crate metadata
 artifact, no serialized metadata format, no separate-compilation boundary to
@@ -49,12 +49,12 @@ metadata format and its versioning, the `CStore`/`--extern` machinery, and the
 *single-layer* (§8) instead of two layers (cargo crate-level + rustc
 query-level) that must compose across a boundary.
 
-We still expect a `polar` build tool eventually — it owns the manifest, fetches
-dependencies, and drives the compiler — but it hands `polar-compiler` all the
+We still expect a `mirin` build tool eventually — it owns the manifest, fetches
+dependencies, and drives the compiler — but it hands `mirin-compiler` all the
 crate roots together rather than orchestrating per-crate invocations that pass
 metadata between them.
 
-| Concern | `polar-compiler` | `polar` (build tool) |
+| Concern | `mirin-compiler` | `mirin` (build tool) |
 |---|---|---|
 | Unit of work | the whole dependency closure, one monolithic compile | the package graph + driving the compiler |
 | Sees manifest / versions / features | no | yes |
@@ -74,7 +74,7 @@ What we give up by dropping separate compilation, and why it is acceptable here:
 - Coarse build parallelism and lower peak memory from compiling crates in
   separate processes. Unlikely to matter at RTL project sizes.
 
-`polar` is the user's main point of contact. We do **not** build it now; the
+`mirin` is the user's main point of contact. We do **not** build it now; the
 interim CLI simply accepts the crate root(s) directly.
 
 ## 3. Crates as namespace roots
@@ -87,9 +87,9 @@ There is **one** compilation over all crates. Within it:
 - There is one `DefId`/`DefPath` space spanning all crates. `CrateNum` (§6.1)
   partitions that space by crate; with monolithic compilation every crate is
   present in the same session, so there is no local-vs-external distinction.
-- The **root crate's root** is the `.plr` file passed on the CLI — today's single
+- The **root crate's root** is the `.mrn` file passed on the CLI — today's single
   input file simply becomes the crate root module, keeping the CLI unchanged.
-  Dependency crate roots are handed to the compiler too (by `polar` eventually;
+  Dependency crate roots are handed to the compiler too (by `mirin` eventually;
   by a CLI flag in the interim).
 - Each crate root is an unnamed top-level module. `crate::` resolves to the root
   of the crate the code lives in (each crate has its own root); `use dep::…`
@@ -102,11 +102,11 @@ There is **one** compilation over all crates. Within it:
 
 ```rust
 mod foo { /* items */ }   // inline
-mod foo;                  // file-based: body loaded from foo.plr
+mod foo;                  // file-based: body loaded from foo.mrn
 pub mod foo;              // with visibility
 ```
 
-A `mod foo;` declaration *pulls a file into the module tree*. A `.plr` file on
+A `mod foo;` declaration *pulls a file into the module tree*. A `.mrn` file on
 disk is **not** part of the crate just by existing — some ancestor must declare
 it with `mod`. The filesystem does not define the graph; `mod` statements do.
 File layout only says where the compiler *looks* for the body. (Same rule as
@@ -114,15 +114,15 @@ Rust, and the one newcomers most often misread.)
 
 ### 4.2 File mapping
 
-- Extension: `.plr`.
-- A module `foo` declared `mod foo;` inside the file `dir/X.plr` loads from
-  `dir/foo.plr`. Its own children live under `dir/foo/`.
-- Worked example: root `main.plr` contains `mod util;` → `util.plr`; `util.plr`
-  contains `mod cfg;` → `util/cfg.plr`. The directory is named after the module
-  that *owns* the children; that module's body is the sibling `<name>.plr`.
+- Extension: `.mrn`.
+- A module `foo` declared `mod foo;` inside the file `dir/X.mrn` loads from
+  `dir/foo.mrn`. Its own children live under `dir/foo/`.
+- Worked example: root `main.mrn` contains `mod util;` → `util.mrn`; `util.mrn`
+  contains `mod cfg;` → `util/cfg.mrn`. The directory is named after the module
+  that *owns* the children; that module's body is the sibling `<name>.mrn`.
 - **Decision: drop the `mod.rs` duality.** Rust allows both `foo.rs` and
-  `foo/mod.rs`; we allow only `foo.plr` + a `foo/` directory for its children,
-  and reject a `mod.plr`. Rationale: the duality is a back-compat wart Rust
+  `foo/mod.rs`; we allow only `foo.mrn` + a `foo/` directory for its children,
+  and reject a `mod.mrn`. Rationale: the duality is a back-compat wart Rust
   carries; a greenfield language has none to preserve. This is the single
   deliberate divergence and it is trivially reversible if we change our minds.
 - Having an ambiguous or missing backing file is a hard error.
@@ -146,7 +146,7 @@ pub use a::b;              // re-export: becomes part of this module's public su
 2018-style **relative** resolution: a path resolves relative to the current
 module unless it starts with an anchor — `crate::` (root), `super::` (parent,
 chainable), `self::` (current). This applies uniformly to `use` paths and to
-paths in expression/type position (`foo::Bar`, `Type::method`). Polar already has
+paths in expression/type position (`foo::Bar`, `Type::method`). Mirin already has
 a `PathExpression` node for the `Type::member` shape; multi-segment module paths
 extend it.
 
@@ -176,8 +176,8 @@ Two namespaces, splitting **modules** from everything else:
 
 This deliberately differs from Rust's type/value split. Rust separates types
 from values mainly so a unit/tuple struct's *type* and *constructor* can share
-one name; Polar gives constructors **distinct** names (`struct Bus = bus`), so it
-needs no such split. Instead Polar keeps a **single item namespace** — a type and
+one name; Mirin gives constructors **distinct** names (`struct Bus = bus`), so it
+needs no such split. Instead Mirin keeps a **single item namespace** — a type and
 its constructor both live in it and therefore must differ (`struct S = S` is a
 name collision) — and splits out only **modules**, because a module name appears
 solely in path-prefix position (`df::X`) and so can coexist with an item of the
@@ -291,7 +291,7 @@ first cut: a single crate-wide `NodeId` counter during lowering.
 
 Walk every module's items, allocate `DefId`s, populate each `ModuleData` name
 table and the `defs`/`def_paths` tables, record visibility. No imports yet.
-Because Polar has no macros, there is **no expansion to interleave and no
+Because Mirin has no macros, there is **no expansion to interleave and no
 fixpoint** here — strictly simpler than rustc's early resolver.
 
 ### 7.3 Phase 2 — resolve imports (new)
@@ -396,7 +396,7 @@ Existing single-file examples and tests pass unchanged — the crate root module
 
 ## 11. Open questions
 
-- Crate-root filename convention once `polar` exists (`main.plr`/`lib.plr`?). For
+- Crate-root filename convention once `mirin` exists (`main.mrn`/`lib.mrn`?). For
   now the CLI input file is the root.
 - `#[path = "…"]` override analog — defer.
 - Block-scoped `mod` — defer (rare).
@@ -416,8 +416,8 @@ pass); `rustc_metadata` (`CStore`, cross-crate metadata — deferred);
 `rustc_query_system` + ICH (incremental — partially adopted, single-layer).
 `rustc_metadata` / `CStore` and cargo's per-crate orchestration are **not**
 mirrored: we compile monolithically (§2), so there is no metadata boundary and
-the future `polar` tool drives one whole-program compile rather than orchestrating
-separate ones. Polar's simplifications over rustc: monolithic (single-layer)
+the future `mirin` tool drives one whole-program compile rather than orchestrating
+separate ones. Mirin's simplifications over rustc: monolithic (single-layer)
 compilation instead of separate compilation + a two-tier incremental scheme; no
 macros (so phase 1 needs no expansion/fixpoint); two namespaces instead of three;
 and no `mod.rs` duality. Monolithic whole-program compilation also matches how HDL

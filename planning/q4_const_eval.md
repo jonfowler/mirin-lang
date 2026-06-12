@@ -32,19 +32,19 @@ evaluated by a memoized `const_eval` query. Grounded in `planning/parametricity.
 
 ## 1. rustc analogy
 
-- **Const generics** (`fn f<const N: usize>`) = Polar `{ param N: usize }`.
+- **Const generics** (`fn f<const N: usize>`) = Mirin `{ param N: usize }`.
   Instantiation is `EarlyBinder::instantiate` over a positional `GenericArgs`
   (already mirrored in `infer`'s `substitute` + `fresh_subst`).
 - **`ConstKind`**: `Param` / `Infer(ct-var)` / `Value` / `Unevaluated{def, args}`
-  / `Error`. Polar's `NormalConst` covers `Param`+`Infer`+`Value` (linear);
+  / `Error`. Mirin's `NormalConst` covers `Param`+`Infer`+`Value` (linear);
   `Unevaluated` is the **anon-const** referenced by a `DefId`, the `const_eval`
   case.
 - **Anon consts**: rustc gives array-length / generic-arg const expressions their
   own `DefKind::AnonConst` + body, evaluated by `tcx.const_eval_*` (memoized,
-  cycle-checked). Polar's `uint(<expr>)` is exactly this; the `DefPathSegment::
+  cycle-checked). Mirin's `uint(<expr>)` is exactly this; the `DefPathSegment::
   AnonConst` role baked in at Q2d is the identity hook.
 - **OutsideIn(X) residuals**: wanted constraints simplify; the residual rides on
-  the signature and is re-checked at call sites. Polar's `ConstEq` obligations +
+  the signature and is re-checked at call sites. Mirin's `ConstEq` obligations +
   `sig_residuals` are the same.
 
 ## 2. The pieces

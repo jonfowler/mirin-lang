@@ -3,7 +3,7 @@
 Compile-time evaluation of `@const` values: width arithmetic (`uint(n + 1)`),
 struct-valued configuration (`uint(cfg.bits)`), and const functions
 (if/else, `out`-param fns). This doc is the design; the examples in
-`examples/working/const_*.plr` are the acceptance tests.
+`examples/working/const_*.mrn` are the acceptance tests.
 
 ## The rustc analogy
 
@@ -13,13 +13,13 @@ keyed by `(DefId, args)`; structural results become valtrees. We follow the
 lazy-until-demanded shape and the "consts carry a body reference" idea, with
 two deliberate divergences:
 
-1. **No separate const IR.** Polar fn bodies are equation systems, not
+1. **No separate const IR.** Mirin fn bodies are equation systems, not
    statement lists — the body HIR is already the thing to interpret. A width
    expression lowers to a small `ConstArg` tree whose `Local` leaves point
    into the enclosing body; everything bigger (calls, if/else) is reached *by
    demanding a local*.
 2. **Demand-driven, not sequential.** rustc's interpreter steps a CFG. A
-   Polar fn with `out` params has no execution order — outputs are equations.
+   Mirin fn with `out` params has no execution order — outputs are equations.
    So evaluation is *per-output thunks*: demanding an out param (or any
    local) finds its defining `let` / driving equation / out-connection and
    evaluates that expression, memoized, with an in-progress marker for cycle
@@ -89,11 +89,11 @@ Pure-value code keeps full laziness.
 
 ## Acceptance examples
 
-- `const_arith.plr` — `let n = 3; let x: uint(n + 5)` → `[7:0]`.
-- `const_record_config.plr` — `uint(cfg.bits + cfg.extra)` through a struct
+- `const_arith.mrn` — `let n = 3; let x: uint(n + 5)` → `[7:0]`.
+- `const_record_config.mrn` — `uint(cfg.bits + cfg.extra)` through a struct
   value.
-- `const_fn_if.plr` — `let w = pick(false, 8, 16); uint(w)` forcing branch
+- `const_fn_if.mrn` — `let w = pick(false, 8, 16); uint(w)` forcing branch
   evaluation in a callee.
-- `const_out_params.plr` — `widths(3, => narrow, => wide)`; each out param
+- `const_out_params.mrn` — `widths(3, => narrow, => wide)`; each out param
   is an independent thunk; `uint(narrow + wide)`.
-- `fail-expected/negative-width.plr` — `uint(n - 3)` with `n = 1` → error.
+- `fail-expected/negative-width.mrn` — `uint(n - 3)` with `n = 1` → error.

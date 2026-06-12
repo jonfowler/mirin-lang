@@ -31,7 +31,7 @@ doc §rustc) flagged the i32 default as a wart — defaulting interleaving
 with trait resolution breeds order-dependence — but the *mechanism*
 (literal-flavored var + post-stall fallback) is right.
 
-Polar's divergence: our default is **`integer`** — the arbitrary-size
+Mirin's divergence: our default is **`integer`** — the arbitrary-size
 compile-time scalar — which is safe in a way `i32` is not. There is no
 wrong-width hazard: an unconstrained literal stays a compile-time number,
 and compile-time numbers don't synthesize. Width never comes from a
@@ -55,7 +55,7 @@ Two clarifications (settled 2026-06):
 
 ### Lexical: bases and separators **[L1]**
 
-```polar
+```mirin
 let a: uint(8)  = 255;
 let b: uint(8)  = 0xFF;
 let c: uint(8)  = 0b1111_1111;
@@ -112,7 +112,7 @@ it is exactly the place rustc's int-vars interact with method lookup.
 
 ### Explicit construction: `uint(6)::4` **[L4]**
 
-```polar
+```mirin
 let x = uint(6)::4;          // exactly uint(6), value 4
 let y = uint(8)::0xFF;
 let m = uint(n)::1;          // parametric width — fit check rides the residuals
@@ -140,7 +140,7 @@ the T5 pattern (`planning/traits.md`). The lexer has **no negative
 literals**: `-5` is `neg(5)`, like Rust. This is unambiguous in a C-call
 expression grammar (a `-` at operand-start is unary, after an operand is
 binary); Haskell's pain comes from juxtaposition-application and operator
-sections, neither of which Polar has. We even dodge Rust's `-128i8`
+sections, neither of which Mirin has. We even dodge Rust's `-128i8`
 carve-out, since literals are arbitrary-size at birth and `neg` is just
 const arithmetic.
 

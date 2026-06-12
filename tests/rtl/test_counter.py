@@ -1,5 +1,5 @@
-"""counter.plr: parametric-width free-running counter. Built at two widths to
-check the SV parameter (Polar const generic) actually elaborates."""
+"""counter.mrn: parametric-width free-running counter. Built at two widths to
+check the SV parameter (Mirin const generic) actually elaborates."""
 
 import cocotb
 import pytest

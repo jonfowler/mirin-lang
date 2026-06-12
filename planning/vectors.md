@@ -11,7 +11,7 @@ the existing generic machinery, so `Vec(n, T)` is polymorphic in fns with
 
 ## Construction
 
-```polar
+```mirin
 let v: Vec(3, uint(4)) = [1, 2, 3];   // list form
 let z: Vec(n, uint(4)) = [0; n];      // repeat form — REQUIRED for parametric n
 ```
@@ -22,7 +22,7 @@ be written as a list. Rust-shaped on purpose.
 
 ## Indexing
 
-```polar
+```mirin
 v[0]      // static: bounds-checked at compile time when index and len ground
 v[i]      // i: uint(k) — a hardware select (an SV mux)
 b[2]      // b: bits(n) — yields bool (no separate bit type)

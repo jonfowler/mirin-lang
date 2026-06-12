@@ -2,6 +2,6 @@
 
 Examples that document intended syntax but are not yet supported by the first-pass compiler. They will move back to `examples/` as the corresponding features land.
 
-- `impl_examples.plr` — depends on static methods / path expressions (`Packet::idle()`) and generic `impl` blocks over a port's domain parameter (exact impl-generics syntax TBD). Plain `impl` methods with their own `{dom …}` already work — see `working/delay_impl.plr`.
+- `impl_examples.mrn` — depends on static methods / path expressions (`Packet::idle()`) and generic `impl` blocks over a port's domain parameter (exact impl-generics syntax TBD). Plain `impl` methods with their own `{dom …}` already work — see `working/delay_impl.mrn`.
 
-Landed and removed from here: `simple_port.plr` and `parameterized_port.plr` (now `working/simple_port.plr`, `working/parameterized_port.plr`), `parameterized_struct.plr` (now `working/parametric_struct.plr` and `working/parametric_struct_extended.plr`), and the `multi_module.plr` stub (its port-impl sketch is covered by `impl_examples.plr`).
+Landed and removed from here: `simple_port.mrn` and `parameterized_port.mrn` (now `working/simple_port.mrn`, `working/parameterized_port.mrn`), `parameterized_struct.mrn` (now `working/parametric_struct.mrn` and `working/parametric_struct_extended.mrn`), and the `multi_module.mrn` stub (its port-impl sketch is covered by `impl_examples.mrn`).

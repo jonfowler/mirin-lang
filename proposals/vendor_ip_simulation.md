@@ -2,7 +2,7 @@
 
 Research note, 2026-06-11. Question: when generated SystemVerilog targets FPGA
 RAM/DSP resources (Quartus and Vivado), how can the result still be simulated
-with Verilator (or Icarus/GHDL/cocotb), and what should that imply for Polar's
+with Verilator (or Icarus/GHDL/cocotb), and what should that imply for Mirin's
 backend?
 
 Findings below are sourced from vendor docs and primary repos. Items marked
@@ -10,7 +10,7 @@ Findings below are sourced from vendor docs and primary repos. Items marked
 quoted from primary sources but were not independently re-checked (the
 verification pass was cut short).
 
-## TL;DR for Polar
+## TL;DR for Mirin
 
 1. **Emit inference templates, not vendor primitives, as the default.** Plain
    synchronous-read RTL infers BRAM in both Vivado and Quartus; `(* ram_style
@@ -155,17 +155,17 @@ generated scripts.
   altera_mf/unisims mean "compile the vendor library under Verilator" is
   never zero-patch; it works per-cell, not wholesale.
 
-## Implications for the Polar backend
+## Implications for the Mirin backend
 
 - Make **inferable RTL the only default output** for memories and arithmetic.
-  Polar controls the emitted idiom, so it can emit the intersection-idiom that
+  Mirin controls the emitted idiom, so it can emit the intersection-idiom that
   Vivado, Quartus, and Yosys all infer, with `ram_style`-class attributes as a
   user-steerable knob. Simulation then needs nothing beyond the generated SV.
-- Define RDW semantics in the language (Polar already cares about RTL
+- Define RDW semantics in the language (Mirin already cares about RTL
   correctness) and emit the idiom matching the chosen semantics, rather than
   inheriting whatever each vendor's BRAM mode does.
 - For explicit primitive targeting, design it as a **dual-emission** feature
-  from day one: the vendor instantiation for synthesis and a Polar-owned
+  from day one: the vendor instantiation for synthesis and a Mirin-owned
   behavioral model (or selected open model) for simulation, behind the same
   module interface — the openMSP430/verilator-unisims pattern, but generated.
 - Treat encrypted hard IP as foreign: a port-boundary `extern` the user wires

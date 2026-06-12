@@ -8,7 +8,7 @@ discharge locally.
 
 The first-pass goal is to make programs like
 
-```polar
+```mirin
 fn bitwise_xor { param N: usize } (a: uint(N), b: uint(N)) -> uint(N) { ... }
 fn add        { param N: usize } (a: uint(N), b: uint(N)) -> uint(N) { ... }
 fn concat     { param M: usize, param N: usize }
@@ -32,7 +32,7 @@ away.
   it to function call sites and to width positions inside types.
 - **OutsideIn(X) and GHC's constraint solver.** Type-checking emits a set
   of `Wanted` constraints; the solver simplifies, the residual moves onto
-  the function's signature. Polar's `Obligation` queue is the same
+  the function's signature. Mirin's `Obligation` queue is the same
   mechanism; we extend it to `ConstEq` constraints over widths.
 
 ## State at the start of this work
@@ -42,7 +42,7 @@ In place:
   already exist in HIR (`hir/mod.rs`).
 - Struct/port use sites carry `GenericArgs`; flatten substitutes them into
   field types via `instantiate_type`, including Const-kind args
-  (`parametric_width_port.plr` proves this end-to-end).
+  (`parametric_width_port.mrn` proves this end-to-end).
 - Function call sites: Type-kind and Domain-kind inference work via
   `SigSubst`; Const-kind is a no-op stub (`typeck.rs` `build_sig_subst`).
 - Widths are `HirExpr`s. Param references inside widths are
@@ -75,7 +75,7 @@ substitution shape to extend.
   generic args / inference variables. This asymmetry stays — it matches the
   named-vs-positional surface distinction.
 
-Tests: the existing `parameterized_port.plr` and `parametric_width_port.plr`
+Tests: the existing `parameterized_port.mrn` and `parametric_width_port.mrn`
 keep passing. All 115 lib + 15 CLI tests stay green.
 
 ## Phase B — Const-kind inference variables
@@ -164,7 +164,7 @@ end
 so SV elaboration catches the violation. Statically-decidable residuals
 discharge at compile time and emit nothing.
 
-This is the only respect in which Polar's situation is *better* than
+This is the only respect in which Mirin's situation is *better* than
 GHC's: GHC's deferred type errors become runtime exceptions; ours become
 elaboration-time assertion failures, which is the right granularity for
 HDL.

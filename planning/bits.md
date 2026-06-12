@@ -25,8 +25,8 @@ The reasons it exists, each owned by later work:
    indexing/slicing workstream); on uint/sint, slicing will require going
    through bits (or an explicit method), keeping "number" and "bit field"
    honest.
-3. **X at the BIT level.** When Polar grows 4-state semantics, `bits` is
+3. **X at the BIT level.** When Mirin grows 4-state semantics, `bits` is
    where per-bit X lives. uint/sint get VALUE-level semantics (a uint
    with any X bit is a poisoned value, not a partially-known number) —
-   this is where Polar diverges from Verilog's logic-everywhere, and bits
+   this is where Mirin diverges from Verilog's logic-everywhere, and bits
    is the honest carrier for the Verilog-shaped case.

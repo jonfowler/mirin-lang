@@ -1,0 +1,20 @@
+// A clock-domain crossing through a method call: `connect` requires self
+// and downstream on ONE clock (the impl-level `dom clk`), so c1 vs c2 is a
+// DomainMismatch at the call. Passing twin: working/stream_connect.mrn.
+port Stream8 = stream8 {
+    out valid: bool,
+    out data: uint(8),
+    in ready: bool,
+}
+
+impl {dom clk: Clock} Stream8 {
+    fn connect(self @clk, out downstream: Stream8 @clk) {
+        downstream.valid = self.valid;
+        downstream.data = self.data;
+        self.ready = downstream.ready;
+    }
+}
+
+fn bad {dom c1: Clock, dom c2: Clock} (upstream: Stream8 @c1, out downstream: Stream8 @c2) {
+    upstream.connect(=> downstream);
+}

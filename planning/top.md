@@ -1,7 +1,7 @@
 
 # Big picture
 
-We are creating a HDL language, currently named polar.
+We are creating a HDL language, currently named mirin.
 
 ## Key ideas
 

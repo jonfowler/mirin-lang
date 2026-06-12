@@ -1,0 +1,10 @@
+// Must FAIL once domain checking lands (Q7 phase C2). `reg`'s real prelude
+// signature is `{dom D: Clock}(self: T @ D, rstn: Reset @ D, init: T @const)
+// -> T @ D` — ONE domain for the data and its reset. Here the reset belongs
+// to `c1` but the registered value is on `c2`: a classic CDC hazard (reset
+// deasserts asynchronously to the register's clock). D instantiates to c2
+// from `x`, then `rstn: Reset @c1` fails to unify at the rstn argument.
+// The legal twin is working/reg_const_input.mrn (@const coerces; c1 doesn't).
+fn cross_reset {dom c1: Clock, dom c2: Clock, rstn: Reset @c1} (x: uint(8) @c2) -> uint(8) @c2 {
+    x.reg(rstn, 0)
+}

@@ -1,0 +1,7 @@
+// A module directory: `mod gain;` / `mod offset;` load `stages/gain.mrn`
+// and `stages/offset.mrn`. `offset` is re-exported flat (`pub use`), so
+// `main` imports it as `crate::stages::offset`.
+pub mod gain;
+mod offset;
+
+pub use crate::stages::offset::offset;

@@ -1,11 +1,11 @@
 [workspace]
 members = [
-  "packages/polar-compiler",
-  "packages/polar-fmt",
-  "packages/polar-lsp",
+  "packages/mirin-compiler",
+  "packages/mirin-fmt",
+  "packages/mirin-lsp",
 ]
 # EOL: kept on disk for reference only (parity oracle until Q5-mono). Excluded
 # so `cargo test` no longer builds it — its bundled grammar predates `let`
 # type ascription and won't parse the current examples.
-exclude = ["packages/polar-compiler-old"]
+exclude = ["packages/mirin-compiler-old"]
 resolver = "3"

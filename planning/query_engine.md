@@ -1,8 +1,8 @@
 # Query-based compilation
 
-Polar's compiler today is a staged pipeline of **monolithic whole-crate passes**
+Mirin's compiler today is a staged pipeline of **monolithic whole-crate passes**
 (`planning/ir_pipeline.md`): `resolve_file` resolves the entire crate, `typeck`
-checks the whole file, and so on. This works for batch `.plr → .sv`, but it does
+checks the whole file, and so on. This works for batch `.mrn → .sv`, but it does
 not give incremental recompilation or the demand-driven evaluation a responsive
 language server needs.
 
@@ -37,7 +37,7 @@ database. Compilation is a graph of queries over a small set of mutable
 
 ### 1.1 Inputs
 
-The leaves of the graph, set from outside, never computed. For Polar:
+The leaves of the graph, set from outside, never computed. For Mirin:
 
 - **File text**, supplied through a **VFS** (`path → (text, revision)`), not
   direct `fs` reads (§5). The batch CLI fills it from disk once; the LSP overlays
@@ -143,7 +143,7 @@ current loader uses a single crate-wide `NodeId` counter (`surface/loader.rs`),
 which is *not* owner-relative; making body ids owner-relative is part of the
 migration (§6).
 
-## 3. The query graph for Polar
+## 3. The query graph for Mirin
 
 Data flows top→bottom; an edge `X ▶ Y` means *Y is computed from X*. A batch
 compile or an LSP request enters at the **bottom** and pulls **upward** toward
@@ -225,7 +225,7 @@ is *already* per-fn (`hirt/typeck.rs` runs a per-fn `InferCtxt`), so it maps ont
 There is no intra-body incremental inference: change anything in a body and the
 whole body re-infers. This is forced, not lazy — type/domain inference within a
 body is a coupled constraint system (inference variables thread bidirectionally),
-and for Polar a body is literally a `var` **equation system** that must be solved
+and for Mirin a body is literally a `var` **equation system** that must be solved
 as a unit (`planning/cycles_and_scoping.md`). The body is the smallest
 independently-solvable sub-graph, hence the atom. Cost scales with body size, so
 keep module bodies decomposable.
@@ -281,7 +281,7 @@ from "walk the whole crate" to "compute this one key."
 
 | Current pass (`ir_pipeline.md`) | Query | Key | Notes |
 |---|---|---|---|
-| tree-sitter parse | *(no query)* | — | **transient**: a `tree_sitter::Tree` is not `salsa::Update`, so it can't be a tracked value. Parsing happens *inside* the queries that need the tree (§7). This is where Polar diverges from rust-analyzer, whose rowan trees back a real `parse` query. |
+| tree-sitter parse | *(no query)* | — | **transient**: a `tree_sitter::Tree` is not `salsa::Update`, so it can't be a tracked value. Parsing happens *inside* the queries that need the tree (§7). This is where Mirin diverges from rust-analyzer, whose rowan trees back a real `parse` query. |
 | (new) stable identity | `ast_id_map` | file | per-file `FileAstId`s by hash-of-identity (§2.2). Done (Q1b). |
 | (new) item summary | `item_tree` | file | the firewall: lean (name+vis+id, mod nesting, impl method index), no types/bodies. Done (Q1c). |
 | `resolve_file` ph.1–2 | `crate_def_map` | crate | already rustc-shaped |
@@ -300,7 +300,7 @@ arrive through a `path → (text, revision)` overlay, not `fs` reads. The
 ("the seam a future VFS overlays editor buffers onto"). Concretely the VFS *is*
 the set of file-text inputs; bumping a file's revision is what mutates an input
 and advances the engine's global revision. This is what lets the batch CLI and
-`polar-lsp` share **one in-process engine** with zero serialization or locking
+`mirin-lsp` share **one in-process engine** with zero serialization or locking
 (`planning/lsp.md`).
 
 ## 6. Migration tensions in the current code
@@ -345,7 +345,7 @@ state — is adopted from day one regardless; that is the part worth having
 immediately, and it is what makes the later swap mechanical.
 
 **`salsa` was validated by spike (Q0) — VERDICT: adopt it.** The Q0 spike
-(`polar-db/src/salsa_spike.rs`, feature `spike-salsa`) reimplemented `parse` on
+(`mirin-db/src/salsa_spike.rs`, feature `spike-salsa`) reimplemented `parse` on
 salsa 0.26 and compiled as written save for one trivial `use salsa::Setter`; the
 test confirms automatic memoization (one execution for two calls) and
 invalidation on input change. The macro API (`#[salsa::input]` /
@@ -361,7 +361,7 @@ one ergonomic cost to watch.
 
 ## 8. Implementation plan
 
-**Strategy: a separate crate, replacing `polar-compiler` when done.** Rationale:
+**Strategy: a separate crate, replacing `mirin-compiler` when done.** Rationale:
 converting the monolithic whole-crate passes is real work that touches the
 foundations (per-file `item_tree`, owner-relative ids, splitting the combined
 `SourceFile`); doing that *in place* means fighting the existing structures under
@@ -374,13 +374,13 @@ old crate is scaffolding we delete at the end, never a permanent second frontend
 
 Working method:
 
-- **The old `polar-compiler` is a reference oracle.** It stays runnable
+- **The old `mirin-compiler` is a reference oracle.** It stays runnable
   throughout: copy pass logic from it, and run it to clarify expected behaviour on
   any example while building the new system.
 - **Use rust-analyzer as the per-stage reference.** Each slice has a direct RA
   analogue (`base-db` VFS, `hir-def` `ItemTree`/`DefMap`, `hir-ty` `infer`); read
   the corresponding RA crate before building ours.
-- New crate (name TBD, e.g. `polar-cc`); split into sub-crates later the way RA
+- New crate (name TBD, e.g. `mirin-cc`); split into sub-crates later the way RA
   does (`vfs`, `base-db`, `hir-def`, `hir-ty`) if it earns its keep.
 
 Front-to-back slices, each a self-contained chunk that leaves the new crate
@@ -401,10 +401,10 @@ building (even while overall behaviour is incomplete):
 - **Q5** — back end as per-def / per-instantiation queries (`monomorphise`,
   block/method/out-arg lowering, `flatten`, `verilog`). Driver = "force
   `verilog` for each item". **At this point the new crate is at parity** — switch
-  the CLI over and retire `polar-compiler`. **Full plan:
+  the CLI over and retire `mirin-compiler`. **Full plan:
   `planning/q5_backend.md`** (prereqs Q5a; vertical slice Q5b; registers Q5c;
   flatten/instantiation Q5d; monomorphise Q5e; parity+swap Q5f).
-- **Q6** — `diagnostics(def)` accumulator; point `polar-lsp` M2 at the engine.
+- **Q6** — `diagnostics(def)` accumulator; point `mirin-lsp` M2 at the engine.
 - **Q7** (deferred) — if still on the thin store: real red-green/backdating,
   durability, optional on-disk cache. If on salsa, these largely come for free.
 

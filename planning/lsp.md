@@ -1,6 +1,6 @@
 # Language server
 
-Polar ships a single editor-agnostic language server (`polar-lsp`) that speaks
+Mirin ships a single editor-agnostic language server (`mirin-lsp`) that speaks
 LSP over stdio. It reuses the compiler's own tree-sitter parser, so there is one
 grammar and one CST shared between the compiler and the editor tooling. The
 server starts as a thin syntactic adapter and grows semantic features as the
@@ -13,14 +13,14 @@ Zed. The alternative — driving tree-sitter inside a VS Code extension via a WA
 build and a JS semantic-tokens provider — is throwaway work the moment the LSP
 lands, and it only ever serves one editor.
 
-The decisive fact is that `packages/polar-compiler` already compiles and links
+The decisive fact is that `packages/mirin-compiler` already compiles and links
 the tree-sitter grammar through the Rust `tree-sitter` crate and exposes
 `language()`, a `Parser`, and `collect_syntax_diagnostics` (`parser/tree_sitter.rs`).
-A Rust LSP depends on `polar-compiler` and reuses that parser directly. There is
+A Rust LSP depends on `mirin-compiler` and reuses that parser directly. There is
 no second parser, no WASM toolchain, and the path from "highlight tokens" to
 "resolve names with `resolve.rs`" is a straight line through the same crate.
 
-The existing TextMate grammar (`editors/vscode/syntaxes/polar.tmLanguage.json`)
+The existing TextMate grammar (`editors/vscode/syntaxes/mirin.tmLanguage.json`)
 stays as a cold-start fallback: VS Code composites TextMate colour underneath
 LSP semantic tokens, so the file has colour before the server attaches.
 
@@ -30,15 +30,15 @@ A new thin crate, no grammar recompile:
 
 ```
 packages/
-  tree-sitter-polar/   grammar + C sources (unchanged)
-  polar-compiler/      links grammar; re-exports language() + parse()
-  polar-lsp/   (new)   depends on polar-compiler; stdio binary
+  tree-sitter-mirin/   grammar + C sources (unchanged)
+  mirin-compiler/      links grammar; re-exports language() + parse()
+  mirin-lsp/   (new)   depends on mirin-compiler; stdio binary
 editors/vscode/        LSP client (keeps TextMate as fallback)
 ```
 
-`polar-lsp` is an adapter, not an analyser. Per open document it holds a `ropey`
+`mirin-lsp` is an adapter, not an analyser. Per open document it holds a `ropey`
 rope and a `tree_sitter::Tree`; an edit updates both, reparses incrementally, and
-maps the result to LSP. All real analysis lives in `polar-compiler` — the server
+maps the result to LSP. All real analysis lives in `mirin-compiler` — the server
 never reimplements resolution or type checking.
 
 ## Stack
@@ -55,8 +55,8 @@ never reimplements resolution or type checking.
 
 ### M0 — Skeleton
 
-New `polar-lsp` crate. Re-export `polar_language()`/`parse()` from
-`polar-compiler`. `initialize` advertising capabilities and negotiating UTF-8.
+New `mirin-lsp` crate. Re-export `mirin_language()`/`parse()` from
+`mirin-compiler`. `initialize` advertising capabilities and negotiating UTF-8.
 `didOpen`/`didChange`/`didClose` maintaining a rope + `Tree` per document.
 Server attaches and logs to stderr.
 
@@ -84,18 +84,18 @@ Route through the compiler as pipeline stages stabilise.
   edit; the cheap reparse still runs per keystroke.
 - **Go-to-definition / references / scope-aware highlight** via `resolve.rs`.
   These must use the real resolver, not tree-sitter name matching — name-equality
-  matching breaks on Polar's `let` shadowing and `var` scoping by design.
+  matching breaks on Mirin's `let` shadowing and `var` scoping by design.
 - **Hover** with resolved types; **completion** seeded by node-at-cursor context
   plus resolver symbols (port fields, `param`s, `dom` clocks).
 
 ### M3 — Multi-editor and packaging
 
-One `cargo build --release -p polar-lsp` binary serves every editor.
+One `cargo build --release -p mirin-lsp` binary serves every editor.
 
 - **VS Code** — thin `vscode-languageclient` extension (~30 lines), reusing
   `editors/vscode/`, keeping the TextMate grammar as fallback.
 - **Neovim (0.11+) / Helix** — config-only, no plugin: point `cmd`/`command` at
-  the binary and register the `.plr` filetype.
+  the binary and register the `.mrn` filetype.
 - **Zed** — needs a small WASM extension to register the server; defer.
 
 ## Diagnostics and sharing work with a checker
@@ -116,11 +116,11 @@ analyses rather than sharing.
 Instead, one long-lived process holds **one in-memory incremental query engine**
 (the single-layer engine of `planning/modules.md` §8), with several consumers:
 
-- `polar-compiler` exposes an incremental, query-shaped API whose inputs arrive
+- `mirin-compiler` exposes an incremental, query-shaped API whose inputs arrive
   through a **VFS** — a `path → (text, revision)` overlay, not direct `fs` reads.
-  Batch CLI fills the VFS from disk once; `polar-lsp` overlays editor buffers and
+  Batch CLI fills the VFS from disk once; `mirin-lsp` overlays editor buffers and
   bumps the revision on `didChange`.
-- `polar-lsp` owns that engine. Go-to-definition, highlighting, **and** type-error
+- `mirin-lsp` owns that engine. Go-to-definition, highlighting, **and** type-error
   diagnostics are all queries against the same in-process store — so the work is
   shared with zero serialization and zero locking.
 - The "bacon" experience is just the server's own `publishDiagnostics`, surfaced

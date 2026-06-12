@@ -1,6 +1,6 @@
 """Shared glue for the cocotb RTL tests.
 
-Each test compiles a `.plr` example with the polar compiler, then builds the
+Each test compiles a `.mrn` example with the mirin compiler, then builds the
 generated SystemVerilog under Verilator and runs cocotb coroutines against it
 via cocotb's Python runner. Test files pair a pytest entry point (which calls
 `simulate`) with `@cocotb.test()` coroutines in the same module — the runner
@@ -19,10 +19,10 @@ BUILD = Path(__file__).resolve().parent / "build"
 
 
 def compile_plr(stem: str) -> Path:
-    """Compile `examples/working/<stem>.plr` and return the emitted SV path."""
-    src = EXAMPLES / f"{stem}.plr"
+    """Compile `examples/working/<stem>.mrn` and return the emitted SV path."""
+    src = EXAMPLES / f"{stem}.mrn"
     subprocess.run(
-        ["cargo", "run", "-q", "-p", "polar-compiler", "--", str(src)],
+        ["cargo", "run", "-q", "-p", "mirin-compiler", "--", str(src)],
         cwd=REPO,
         check=True,
     )
@@ -38,7 +38,7 @@ def simulate(
 ):
     """Build `top` from the example's generated SV and run the cocotb tests
     in `test_module` against it. `parameters` bind the module's SV parameters
-    (Polar const generics) at elaboration.
+    (Mirin const generics) at elaboration.
 
     `expect_sim_stop`: a test deliberately trips a $stop (e.g. proving a
     bounds assertion fires), so the simulator exits nonzero even though

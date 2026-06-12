@@ -1,6 +1,6 @@
 # Structs and ports
 
-This document records the current design direction for structs and ports in Polar.
+This document records the current design direction for structs and ports in Mirin.
 
 It focuses on:
 
@@ -233,7 +233,7 @@ The current design should **not** add extra syntax for explicit constructor-side
 
 Structs and ports share one internal structure in the compiler, distinguished by a kind tag — not by separate types. This is the IR realization of the *Core principle* above ("structs and ports share the same declaration structure"). The slogan: **a struct is a port whose fields are all outputs.**
 
-This follows rustc directly. rustc has no separate `StructDef` / `EnumDef` / `UnionDef`; it has one `AdtDef` carrying an `AdtKind::{Struct, Enum, Union}` tag, and field lookup, layout, and generic substitution all run through it uniformly — the kind is consulted only where behaviour genuinely forks. Polar mirrors this with a single aggregate def:
+This follows rustc directly. rustc has no separate `StructDef` / `EnumDef` / `UnionDef`; it has one `AdtDef` carrying an `AdtKind::{Struct, Enum, Union}` tag, and field lookup, layout, and generic substitution all run through it uniformly — the kind is consulted only where behaviour genuinely forks. Mirin mirrors this with a single aggregate def:
 
 ```text
 enum AdtKind { Struct, Port }          // provenance + rule selector, not a structural fork
@@ -261,7 +261,7 @@ Two design points make this pay off:
 
 **Guardrail:** this shares *representation*, not *identity*. The `AdtKind` tag plus distinct `DefId`s keep structs and ports separate everywhere it matters — unification still rejects a struct where a port is required, diagnostics still name the right concept, and the *struct = all-`Out`-fields* invariant is enforced from the direction tags. Sharing the machinery is not collapsing the concept (cf. CLAUDE.md, "Ports are first-class… Do not collapse them with structs").
 
-This decision targets the polar-db rewrite; the current `polar-compiler` still splits at the struct/port seam (`HirTypeKind::Value` vs `HirTypeKind::Port`), which is why its domain handling is duplicated. See the `WARNING` notes in `polar-compiler/src/hir/mod.rs`.
+This decision targets the mirin-db rewrite; the current `mirin-compiler` still splits at the struct/port seam (`HirTypeKind::Value` vs `HirTypeKind::Port`), which is why its domain handling is duplicated. See the `WARNING` notes in `mirin-compiler/src/hir/mod.rs`.
 
 ## Current open questions
 

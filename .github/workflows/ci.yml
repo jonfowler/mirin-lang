@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: packages/tree-sitter-polar
+        working-directory: packages/tree-sitter-mirin
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

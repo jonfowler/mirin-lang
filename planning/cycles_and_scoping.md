@@ -1,10 +1,10 @@
 # Bindings, cycles, and scoping
 
-This document records the design decisions around local bindings, cyclic definitions, and structural wiring in Polar.
+This document records the design decisions around local bindings, cyclic definitions, and structural wiring in Mirin.
 
 ## The two binding forms
 
-Polar has two distinct ways to introduce a local name:
+Mirin has two distinct ways to introduce a local name:
 
 ### `let` — sequential lexical binding
 
@@ -172,17 +172,17 @@ Declaring a `var` that shadows an earlier `let` binding in the same block is an 
 
 SystemVerilog is useful background but not a model to copy directly.
 
-- The LRM requires declaration before use for ordinary names (Clause 6). Polar follows this: `var` must be declared before it is used, even if the equation referencing it may be written later.
-- Redeclaration within the same namespace is illegal in SV. Polar instead allows shadowing across forms (`let` shadows `var`) but not within the same form in the same scope.
-- SV separates scope from lifetime. Polar follows this principle: `var` scope is the enclosing block; lifetime is determined by the elaboration and register structure, not the declaration form.
-- SV's unnamed generate blocks receive synthesized names. Polar should avoid user-facing semantics that depend on generated names.
+- The LRM requires declaration before use for ordinary names (Clause 6). Mirin follows this: `var` must be declared before it is used, even if the equation referencing it may be written later.
+- Redeclaration within the same namespace is illegal in SV. Mirin instead allows shadowing across forms (`let` shadows `var`) but not within the same form in the same scope.
+- SV separates scope from lifetime. Mirin follows this principle: `var` scope is the enclosing block; lifetime is determined by the elaboration and register structure, not the declaration form.
+- SV's unnamed generate blocks receive synthesized names. Mirin should avoid user-facing semantics that depend on generated names.
 
 ## Open questions
 
 - Should there be a lint warning when a `let` shadows a `var`, given the readability risk?
 - Type annotation on `var` is always optional; the type is inferred from the equation. This applies to both the two-statement form and the combined `var x = expr` form.
 - Can `var` be used inside `impl` method bodies, or only in component bodies? The safest initial rule is to disallow it and require stateful logic to live in a sub-component, but this needs an explicit decision before `impl` bodies are elaborated.
-- How do `var` declarations interact with explicit block scoping if Polar adds named or anonymous block forms later?
+- How do `var` declarations interact with explicit block scoping if Mirin adds named or anonymous block forms later?
 - Is `var` legal inside `if`/`match` branches? Hardware signals do not conditionally exist, so the likely rule is that `var` is illegal in conditional branches and must be hoisted to the nearest component body. This must be decided before `if`/`match` is implemented.
 - What is the error when a `var` is declared but never assigned an equation? The compiler should catch this at elaboration time (undriven signal), not at RTL lowering. The check should be: every `var` in a block must have exactly one equation whose LHS resolves to that signal node.
 - Are two `var` declarations with the same name in the same block an error? Based on the principle that `var` declares a node in an equation system (unlike `let` which shadows), duplicate `var` declarations in the same scope should be a hard error.

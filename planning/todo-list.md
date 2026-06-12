@@ -9,13 +9,14 @@
      - DONE (2026-06): `tests/rtl/` — cocotb 2.0 + verilator behavioural suite over the working examples (`tests/rtl/run.sh`)
 - traits
 - numeric literals
+- support for vectors, indexing, "for constructs"
 
 
 ## List of things we want in the language
 
 - "crate" system
 - support for wide range of primitives
-- support for vectors, indexing, slicing, "for constructs"
+- further vector support (slicing)
 - support for tuples
 - support for higher level functions!
 - support for "let mut", to allow for wide range of for looping.

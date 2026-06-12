@@ -1,4 +1,4 @@
-"""delay.plr: four chained reg2 stages (two double_delays). The payload is
+"""delay.mrn: four chained reg2 stages (two double_delays). The payload is
 registered at every stage; valid passes through combinationally."""
 
 import random
