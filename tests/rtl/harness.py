@@ -29,10 +29,20 @@ def compile_plr(stem: str) -> Path:
     return REPO / "sv" / f"{stem}.sv"
 
 
-def simulate(stem: str, top: str, test_module: str, parameters: dict | None = None):
+def simulate(
+    stem: str,
+    top: str,
+    test_module: str,
+    parameters: dict | None = None,
+    expect_sim_stop: bool = False,
+):
     """Build `top` from the example's generated SV and run the cocotb tests
     in `test_module` against it. `parameters` bind the module's SV parameters
-    (Polar const generics) at elaboration."""
+    (Polar const generics) at elaboration.
+
+    `expect_sim_stop`: a test deliberately trips a $stop (e.g. proving a
+    bounds assertion fires), so the simulator exits nonzero even though
+    every cocotb test passed - fall back to judging by the results file."""
     sv = compile_plr(stem)
     suffix = "_".join(str(v) for v in (parameters or {}).values())
     build_dir = BUILD / (f"{stem}_{top}" + (f"_{suffix}" if suffix else ""))
@@ -43,5 +53,19 @@ def simulate(stem: str, top: str, test_module: str, parameters: dict | None = No
         parameters=parameters or {},
         build_dir=build_dir,
         always=True,
+        # Evaluate immediate assertions (dynamic-index bounds checks,
+        # elaboration-time fit/width residuals) during simulation.
+        build_args=["--assert"],
     )
-    runner.test(hdl_toplevel=top, test_module=test_module, build_dir=build_dir)
+    try:
+        runner.test(hdl_toplevel=top, test_module=test_module, build_dir=build_dir)
+    except SystemExit:
+        if not expect_sim_stop:
+            raise
+        from cocotb_tools.runner import get_results
+
+        # Under pytest the runner writes `<test name>.result.xml`.
+        candidates = sorted(build_dir.glob("*.xml"), key=lambda f: f.stat().st_mtime)
+        assert candidates, f"no results xml in {build_dir}"
+        num_tests, num_failed = get_results(candidates[-1])
+        assert num_failed == 0, f"{num_failed} of {num_tests} cocotb tests failed"
