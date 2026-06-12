@@ -1,0 +1,4 @@
+# GitHub (Linguist) has no Mirin support yet; highlight .mrn as Rust when
+# browsing — closest grammar (fn/let/struct/impl/trait). Side effect: language
+# stats count these as Rust. Drop once Linguist gains real Mirin support.
+*.mrn linguist-language=Rust
