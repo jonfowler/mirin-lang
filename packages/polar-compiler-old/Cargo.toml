@@ -2,6 +2,7 @@
 name = "polar-compiler-old"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 # The original whole-crate-pass compiler, kept as a parity oracle after the
 # query-based reimplementation (now `polar-compiler`) reached corpus parity at

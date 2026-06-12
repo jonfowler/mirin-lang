@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (fmt, build, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace
+
+  grammar:
+    name: Tree-sitter grammar
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/tree-sitter-polar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Pinned to the devDependency version so generated sources are stable.
+      - name: Corpus tests
+        run: npx --yes tree-sitter-cli@0.24.7 test
+      - name: Generated parser is up to date
+        run: |
+          npx --yes tree-sitter-cli@0.24.7 generate
+          git diff --exit-code -- src/
+
+  rtl:
+    name: RTL behavioural tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # apt's verilator is too old for cocotb 2.x (needs >= 5.036).
+      - uses: YosysHQ/setup-oss-cad-suite@v3
+      - run: tests/rtl/run.sh

@@ -2,6 +2,7 @@
 name = "polar-compiler"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 # The compiler: a query-based, demand-driven reimplementation front-to-back
 # (planning/query_engine.md), now the primary `polar-compiler`. It links the

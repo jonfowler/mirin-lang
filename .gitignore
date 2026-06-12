@@ -1,5 +1,4 @@
 target/
-Cargo.lock
 result/
 sv/
 tests/rtl/.venv/

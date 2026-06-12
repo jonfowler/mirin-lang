@@ -2,6 +2,7 @@
 name = "polar-fmt"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 # A rustfmt-shaped formatter for Polar. Re-emits source from the tree-sitter
 # CST through a Wadler/Prettier-style width-aware pretty printer.
