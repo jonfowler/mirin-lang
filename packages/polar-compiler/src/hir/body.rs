@@ -26,7 +26,9 @@ use crate::base::db::SourceRoot;
 use crate::base::diagnostics::Span;
 use crate::base::parser;
 use crate::hir::sig::{lower_type_expr, sig_of};
-use crate::hir::types::{ConstArg, ConstOp, GenericParam, LocalId, TermKind, Type};
+use crate::hir::types::{
+    ConstArg, ConstOp, Domain, GenericParam, LocalId, TermKind, Type, ValueKind,
+};
 use crate::nameres::def_map::{CrateDefMap, ModuleId, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
 use crate::syntax::ast_id;
@@ -202,6 +204,15 @@ pub enum Stmt {
     Return { value: ExprId },
     /// A bare expression statement.
     Expr(ExprId),
+    /// `for x in v { … }` — structural replication (planning/for_loops.md).
+    /// `index` is bound for the `for i, x in v.enumerate()` form; the elem
+    /// local is "let x = v[i]" per iteration.
+    For {
+        index: Option<LocalId>,
+        elem: LocalId,
+        iter: ExprId,
+        body: Block,
+    },
 }
 
 /// A body-resolution diagnostic. The [`Span`] is **def-relative** (a byte offset
@@ -216,21 +227,36 @@ pub struct BodyDiagnostic {
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub enum BodyDiagnosticKind {
     /// A name reference that did not resolve to a local or a def.
-    UnresolvedName { name: String },
+    UnresolvedName {
+        name: String,
+    },
     /// An expression form not yet lowered (e.g. a named-argument instantiation
     /// call, deferred to a later slice).
-    Unsupported { what: String },
+    Unsupported {
+        what: String,
+    },
     /// The same name is declared as `var` more than once in one block.
-    DuplicateVar { name: String },
+    DuplicateVar {
+        name: String,
+    },
     /// A `var x` declared after a `let x` binding in the same block.
-    VarAfterLet { name: String },
+    VarAfterLet {
+        name: String,
+    },
     /// A type name in a `let`/`var` ascription that resolved to nothing.
-    UnresolvedType { name: String },
+    UnresolvedType {
+        name: String,
+    },
+    ForEnumerateForm,
     /// A numeric literal that does not fit in 128 bits.
-    NumberTooLarge { text: String },
+    NumberTooLarge {
+        text: String,
+    },
     /// An `in`/`out` prefix on a named argument that disagrees with its
     /// connector (`in` supplies a value with `=`; `out` receives with `=>`).
-    DirectionPrefixMismatch { direction: String },
+    DirectionPrefixMismatch {
+        direction: String,
+    },
 }
 
 impl BodyDiagnostic {
@@ -240,6 +266,9 @@ impl BodyDiagnostic {
             BodyDiagnosticKind::UnresolvedName { name } => format!("undefined name `{name}`"),
             BodyDiagnosticKind::Unsupported { what } => format!("unsupported syntax: {what}"),
             BodyDiagnosticKind::UnresolvedType { name } => format!("cannot find type `{name}`"),
+            BodyDiagnosticKind::ForEnumerateForm => {
+                "`for i, x` takes `.enumerate()`; `for x` takes the vector directly".to_owned()
+            }
             BodyDiagnosticKind::NumberTooLarge { text } => {
                 format!("numeric literal `{text}` does not fit in 128 bits")
             }
@@ -747,6 +776,55 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
 
     fn lower_stmt(&mut self, node: &Node, source: &str, block: &mut Block) {
         match node.kind() {
+            "for_statement" => {
+                let (index_name, elem_name) =
+                    match (node.child_by_field_name("a"), node.child_by_field_name("b")) {
+                        (Some(a), Some(b)) => (Some(node_text(&a, source)), node_text(&b, source)),
+                        (Some(a), None) => (None, node_text(&a, source)),
+                        _ => return,
+                    };
+                // `for i, x` requires `.enumerate()`; `for x` forbids it.
+                let (iter, enumerated) = match node.child_by_field_name("iter") {
+                    Some(i) if i.kind() == "for_enumerate" => {
+                        let base = i
+                            .child_by_field_name("base")
+                            .map(|b| self.lower_expr(&b, source))
+                            .unwrap_or_else(|| self.alloc(ExprKind::Missing));
+                        (base, true)
+                    }
+                    Some(i) => (self.lower_expr(&i, source), false),
+                    None => (self.alloc(ExprKind::Missing), false),
+                };
+                if enumerated != index_name.is_some() {
+                    self.diag_at(node, BodyDiagnosticKind::ForEnumerateForm);
+                }
+                self.scopes.push(HashMap::new());
+                let index = index_name.map(|n| {
+                    let span = self.rel_span(node);
+                    self.alloc_local(
+                        &n,
+                        LocalKind::Let,
+                        Some(Type::Value {
+                            kind: ValueKind::Integer,
+                            domain: Domain::Const,
+                        }),
+                        span,
+                    )
+                });
+                let span = self.rel_span(node);
+                let elem = self.alloc_local(&elem_name, LocalKind::Let, None, span);
+                let body = node
+                    .child_by_field_name("body")
+                    .map(|b| self.lower_block(&b, source))
+                    .unwrap_or_default();
+                self.scopes.pop();
+                block.stmts.push(Stmt::For {
+                    index,
+                    elem,
+                    iter,
+                    body,
+                });
+            }
             "let_statement" => {
                 let value = self.lower_field_expr(node, "value", source);
                 let name = field_text(node, "name", source);

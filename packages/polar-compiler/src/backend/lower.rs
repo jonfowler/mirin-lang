@@ -37,7 +37,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::backend::ir::{
     SvAlwaysComb, SvAlwaysFf, SvBinOp, SvCombAssert, SvCombIf, SvCombStmt, SvExpr, SvFile,
-    SvInstance, SvItem, SvLogicDecl, SvModule, SvPort, SvPortDirection, SvSeqAssign, SvType,
+    SvGenerateFor, SvInstance, SvItem, SvLogicDecl, SvModule, SvPort, SvPortDirection, SvSeqAssign,
+    SvType,
 };
 use crate::base::db::SourceRoot;
 use crate::hir::body::{
@@ -507,6 +508,16 @@ impl<'db> SvLower<'_, 'db> {
                     self.lower_equation(*lhs, *rhs)
                 }
                 Stmt::Return { value } => self.drive_result(*value),
+                Stmt::For {
+                    index,
+                    elem,
+                    iter,
+                    body,
+                } => {
+                    let (index, elem, iter) = (*index, *elem, *iter);
+                    let body = body.clone();
+                    self.lower_for(index, elem, iter, &body);
+                }
                 // A bare call statement: a (void) submodule instantiation whose
                 // out-arg connections bind callee `out` params to caller places.
                 Stmt::Expr(e) => {
@@ -520,6 +531,91 @@ impl<'db> SvLower<'_, 'db> {
                 }
             }
         }
+    }
+
+    /// `for x in v { … }` → a NAMED generate-for (planning/for_loops.md):
+    /// the genvar is the (elided, integer-typed) index local; the elem local
+    /// is an ordinary per-iteration binding `assign x = v[i];` inside the
+    /// block, so hierarchy is recoverable as `label[i].name`.
+    fn lower_for(
+        &mut self,
+        index: Option<LocalId>,
+        elem: LocalId,
+        iter: ExprId,
+        body: &crate::hir::body::Block,
+    ) {
+        // The loop bound, from the iterable's type.
+        let it = self
+            .inf
+            .expr_type(iter)
+            .cloned()
+            .map(|t| {
+                ground_widths(
+                    self.db,
+                    self.krate,
+                    self.def,
+                    &subst_type(&t, &self.self_subst),
+                )
+            })
+            .unwrap_or(Type::Error);
+        let (len, is_bits) = match &it {
+            Type::Value {
+                kind: ValueKind::Vec { len, .. },
+                ..
+            } => (len.clone(), false),
+            Type::Value {
+                kind: ValueKind::Bits { width },
+                ..
+            } => (width.clone(), true),
+            _ => return,
+        };
+        let bound = match &len {
+            ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
+            ConstArg::Param(i) => match self.sig.generic_params.get(*i as usize) {
+                Some(g) => SvExpr::Ident(g.name.clone()),
+                None => SvExpr::Lit("0".to_owned()),
+            },
+            other => SvExpr::Lit(render_const_sv(other, self.sig)),
+        };
+        let var = match index {
+            Some(i) => self.local_name(i),
+            None => {
+                let v = format!("__i{}", self.synth);
+                self.synth += 1;
+                v
+            }
+        };
+        let label = format!("g_{}", self.local_name(elem));
+
+        // Body items collect into the generate block.
+        let saved = std::mem::take(&mut self.items);
+        // The elem binding: `assign x = v[i];` per leaf (or the bit).
+        if is_bits {
+            let base = self.expr_value(iter);
+            self.declare_local(elem);
+            let name = self.local_name(elem);
+            self.items.push(SvItem::Assign {
+                lhs: SvExpr::Ident(name),
+                rhs: SvExpr::Lit(format!("{base}[{var}]")),
+            });
+        } else {
+            self.declare_local(elem);
+            let elem_base = self.local_name(elem);
+            for (suffix, e) in self.expr_leaves(iter) {
+                self.items.push(SvItem::Assign {
+                    lhs: SvExpr::Ident(join(&elem_base, &suffix)),
+                    rhs: SvExpr::Lit(format!("{e}[{var}]")),
+                });
+            }
+        }
+        self.lower_stmts(&body.stmts);
+        let items = std::mem::replace(&mut self.items, saved);
+        self.items.push(SvItem::GenerateFor(SvGenerateFor {
+            var,
+            bound,
+            label,
+            items,
+        }));
     }
 
     /// `let x = value;`. A builtin `.reg` makes the let the register itself

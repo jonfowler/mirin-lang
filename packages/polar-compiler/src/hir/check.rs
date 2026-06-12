@@ -145,6 +145,10 @@ fn place_of(body: &Body, expr: ExprId) -> Option<(LocalId, Vec<String>)> {
             path.push(field.clone());
             Some((l, path))
         }
+        // `out[i] = …` counts as a drive of the whole place: v1 has no
+        // partial-drive tracking, and a `for` covers every index by
+        // construction (planning/vectors.md, planning/for_loops.md).
+        ExprKind::Index { base, .. } => place_of(body, *base),
         _ => None,
     }
 }
@@ -296,6 +300,10 @@ fn count_block(body: &Body, block: &Block, counts: &mut HashMap<LocalId, Vec<Vec
             Stmt::Return { value } => count_expr(body, *value, counts),
             Stmt::Expr(e) => count_expr(body, *e, counts),
             Stmt::VarDecl { .. } => {}
+            Stmt::For { iter, body: b, .. } => {
+                count_expr(body, *iter, counts);
+                count_block(body, b, counts);
+            }
         }
     }
     if let Some(tail) = block.tail {

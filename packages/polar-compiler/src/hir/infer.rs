@@ -99,6 +99,9 @@ pub enum InferDiagnosticKind {
     NotIndexable {
         ty_name: String,
     },
+    NotIterable {
+        ty_name: String,
+    },
     BadIndexType {
         ty_name: String,
     },
@@ -185,6 +188,9 @@ impl InferDiagnostic {
                     "widths take `integer` values, found `{ty_name}` \
                      (hardware arithmetic wraps; compile-time arithmetic must not)"
                 )
+            }
+            InferDiagnosticKind::NotIterable { ty_name } => {
+                format!("`{ty_name}` cannot be iterated — `for` takes a Vec or bits")
             }
             InferDiagnosticKind::NotIndexable { ty_name } => {
                 format!("`{ty_name}` cannot be indexed")
@@ -1446,6 +1452,60 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 }
                 Stmt::Expr(e) => {
                     self.infer_expr(body, *e);
+                }
+                Stmt::For {
+                    index,
+                    elem,
+                    iter,
+                    body: for_body,
+                } => {
+                    let it = self.infer_expr(body, *iter);
+                    let it = self.resolve_ty(&it);
+                    let elem_ty = match &it {
+                        Type::Value {
+                            kind: ValueKind::Vec { elem, .. },
+                            domain,
+                        } => {
+                            let mut t = (**elem).clone();
+                            if let Type::Value { domain: ed, .. } | Type::Port { domain: ed, .. } =
+                                &mut t
+                                && matches!(ed, Domain::Unspecified)
+                            {
+                                *ed = *domain;
+                            }
+                            t
+                        }
+                        Type::Value {
+                            kind: ValueKind::Bits { .. },
+                            domain,
+                        } => Type::Value {
+                            kind: ValueKind::Bool,
+                            domain: *domain,
+                        },
+                        Type::Error => Type::Error,
+                        other => {
+                            self.diag(InferDiagnosticKind::NotIterable {
+                                ty_name: describe_kind(other),
+                            });
+                            Type::Error
+                        }
+                    };
+                    if let Some(et) = self.local_types.get(elem).cloned() {
+                        self.unify(&elem_ty, &et);
+                    } else {
+                        self.local_types.insert(*elem, elem_ty);
+                    }
+                    if let Some(i) = index {
+                        self.local_types.insert(
+                            *i,
+                            Type::Value {
+                                kind: ValueKind::Integer,
+                                domain: Domain::Const,
+                            },
+                        );
+                    }
+                    let for_body = for_body.clone();
+                    self.infer_block(body, &for_body, None);
                 }
             }
         }

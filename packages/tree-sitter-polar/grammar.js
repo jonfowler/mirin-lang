@@ -302,11 +302,39 @@ module.exports = grammar({
     statement: ($) =>
       choice(
         $.let_statement,
+        $.for_statement,
         $.return_statement,
         $.var_statement,
         $.assignment_statement,
         $.expression_statement,
       ),
+
+    // `for x in v { … }` / `for i, x in v.enumerate() { … }` — structural
+    // replication over a vector, emitted as a NAMED SV generate-for
+    // (planning/for_loops.md). The iterable uses the same restricted forms
+    // as if-conditions (a trailing `{` opens the body).
+    for_statement: ($) =>
+      seq(
+        "for",
+        field("a", $.identifier),
+        optional(seq(",", field("b", $.identifier))),
+        "in",
+        field("iter", $._for_iterable),
+        field("body", $.block),
+      ),
+
+    // Restricted like if-conditions (a trailing `{` opens the body; a full
+    // postfix expression would let `v {` start a method's named-arg list).
+    // `.enumerate()` is its own form, recognised at lowering.
+    _for_iterable: ($) =>
+      choice(
+        $.path_expression,
+        $.parenthesized_expression,
+        $.for_enumerate,
+      ),
+
+    for_enumerate: ($) =>
+      seq(field("base", $.path_expression), ".", "enumerate", "(", ")"),
 
     let_statement: ($) =>
       seq(

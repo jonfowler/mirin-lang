@@ -96,6 +96,10 @@ impl SvType {
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub enum SvItem {
     CombAssert(SvCombAssert),
+    /// A named generate-for: structural replication with a RECOVERABLE
+    /// hierarchy — instance paths are `label[i].name`
+    /// (planning/for_loops.md).
+    GenerateFor(SvGenerateFor),
     /// Raw verilog text from an inline-verilog fn body, emitted as-is
     /// (dedented to the module body's indentation).
     Verbatim(String),
@@ -129,6 +133,15 @@ pub struct SvInstance {
     pub parameters: Vec<(String, SvExpr)>,
     /// Port connections in declaration order: `(port_name, expression)`.
     pub connections: Vec<(String, SvExpr)>,
+}
+
+/// `for (genvar i = 0; i < N; i++) begin : label … end`.
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SvGenerateFor {
+    pub var: String,
+    pub bound: SvExpr,
+    pub label: String,
+    pub items: Vec<SvItem>,
 }
 
 /// `always_comb assert (i < N);` — a simulation-time bounds check on a
@@ -263,6 +276,27 @@ impl fmt::Display for SvPort {
 impl fmt::Display for SvItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::GenerateFor(g) => {
+                writeln!(
+                    f,
+                    "    for (genvar {v} = 0; {v} < {b}; {v}++) begin : {l}",
+                    v = g.var,
+                    b = g.bound,
+                    l = g.label
+                )?;
+                for item in &g.items {
+                    // Re-indent the item's own rendering one level deeper.
+                    let rendered = item.to_string();
+                    for line in rendered.lines() {
+                        if line.is_empty() {
+                            writeln!(f)?;
+                        } else {
+                            writeln!(f, "    {line}")?;
+                        }
+                    }
+                }
+                writeln!(f, "    end")
+            }
             Self::CombAssert(a) => {
                 writeln!(f, "    always_comb assert ({});", a.cond)
             }

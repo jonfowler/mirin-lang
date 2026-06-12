@@ -178,6 +178,19 @@ impl<'a> Formatter<'a> {
             }
             "where_clause" => self.where_clause(n),
 
+            "for_statement" => {
+                let mut parts = vec![text("for ")];
+                parts.push(text(self.text(self.field(n, "a").unwrap())));
+                if let Some(b) = self.field(n, "b") {
+                    parts.push(text(", "));
+                    parts.push(text(self.text(b)));
+                }
+                parts.push(text(" in "));
+                parts.push(self.doc(self.field(n, "iter").unwrap()));
+                parts.push(text(" "));
+                parts.push(self.block_doc(self.field(n, "body").unwrap()));
+                concat(parts)
+            }
             "let_statement" => self.let_stmt(n),
             "return_statement" => self.return_stmt(n),
             "var_statement" => self.var_stmt(n),

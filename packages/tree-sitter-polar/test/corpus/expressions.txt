@@ -153,3 +153,71 @@ fn f (a: uint(4)) -> uint(4) {
           (index_access
             index: (expression
               (number))))))))
+
+========================================
+for loops over vectors
+========================================
+
+fn f (v: Vec(3, uint(8))) -> uint(8) {
+    for x in v {
+        let y = x;
+    }
+    for i, x in v.enumerate() {
+        let y = x;
+    }
+    0
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))
+            (type_argument
+              (type_expression
+                name: (identifier)
+                (type_index
+                  (type_argument
+                    (number)))))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (for_statement
+          a: (identifier)
+          iter: (path_expression
+            segment: (identifier))
+          body: (block
+            (statement
+              (let_statement
+                name: (identifier)
+                value: (expression
+                  (path_expression
+                    segment: (identifier))))))))
+      (statement
+        (for_statement
+          a: (identifier)
+          b: (identifier)
+          iter: (for_enumerate
+            base: (path_expression
+              segment: (identifier)))
+          body: (block
+            (statement
+              (let_statement
+                name: (identifier)
+                value: (expression
+                  (path_expression
+                    segment: (identifier))))))))
+      tail: (expression
+        (number)))))

@@ -1,0 +1,7 @@
+// Only Vec and bits iterate.
+fn f(a: uint(8)) -> uint(8) {
+    for x in a {
+        let y = x;
+    }
+    0
+}
