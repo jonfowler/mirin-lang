@@ -961,6 +961,22 @@ struct TypeLowerer<'a, 'db> {
 
 impl<'db> TypeLowerer<'_, 'db> {
     fn lower_type(&self, node: &Node, source: &str) -> Type<'db> {
+        // `(A, B)` — elements are full types (own domains); a trailing
+        // `@clk` is the tuple's own domain, the default for elements
+        // without one (planning/tuples.md).
+        if node.kind() == "tuple_type" {
+            let domain = self.lower_domain(node, source);
+            let mut cursor = node.walk();
+            let elems = node
+                .children(&mut cursor)
+                .filter(|c| matches!(c.kind(), "type_expression" | "tuple_type"))
+                .map(|c| self.lower_type(&c, source))
+                .collect();
+            return Type::Value {
+                kind: ValueKind::Tuple(elems),
+                domain,
+            };
+        }
         let name = field_text(node, "name", source);
         let domain = self.lower_domain(node, source);
 

@@ -87,6 +87,11 @@ pub enum ValueKind<'db> {
         len: ConstArg<'db>,
         elem: Box<Type<'db>>,
     },
+    /// `(A, B)` — a structural product (planning/tuples.md). Elements are
+    /// FULL types: each carries its own domain, so mixed-domain tuples are
+    /// legal; an element's `Unspecified` slot means "the tuple binding's own
+    /// domain", as for struct fields. Arity ≥ 2.
+    Tuple(Vec<Type<'db>>),
     Bool,
     Reset,
     Event,
@@ -218,6 +223,9 @@ pub fn match_header<'db>(
             | (ValueKind::Integer, ValueKind::Integer) => true,
             (ValueKind::Struct { def: gd, args: ga }, ValueKind::Struct { def: hd, args: ha }) => {
                 gd == hd && match_header_args(ga, ha, binding)
+            }
+            (ValueKind::Tuple(ge), ValueKind::Tuple(he)) => {
+                ge.len() == he.len() && ge.iter().zip(he).all(|(g, h)| match_header(g, h, binding))
             }
             _ => false,
         },
@@ -527,6 +535,7 @@ pub fn super_fold_kind<'db, F: Folder<'db>>(f: &mut F, k: &ValueKind<'db>) -> Va
             len: f.fold_const(len),
             elem: Box::new(f.fold_type(elem)),
         },
+        ValueKind::Tuple(elems) => ValueKind::Tuple(elems.iter().map(|e| f.fold_type(e)).collect()),
         ValueKind::Struct { def, args } => ValueKind::Struct {
             def: *def,
             args: super_fold_args(f, args),

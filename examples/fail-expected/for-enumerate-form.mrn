@@ -1,6 +1,6 @@
-// `for i, x` requires .enumerate(); `for x` forbids it.
+// `.enumerate()` loops bind `for (i, x)`; a bare binder drops the index.
 fn f(v: Vec(3, uint(8))) -> uint(8) {
-    for i, x in v {
+    for x in v.enumerate() {
         let y = x;
     }
     0

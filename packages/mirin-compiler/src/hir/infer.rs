@@ -506,6 +506,7 @@ fn describe_kind(ty: &Type<'_>) -> String {
             ValueKind::Event => "Event".to_owned(),
             ValueKind::Integer => "integer".to_owned(),
             ValueKind::Struct { .. } => "a struct".to_owned(),
+            ValueKind::Tuple(_) => "a tuple".to_owned(),
             ValueKind::Param(_) => "a type parameter".to_owned(),
         },
         Type::Port { .. } => "a port".to_owned(),
@@ -1637,6 +1638,16 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     domain: Domain::Unspecified,
                 }
             }
+            // `(a, b)`: elements type independently — each keeps its own
+            // domain (planning/tuples.md).
+            ExprKind::TupleLit(elems) => {
+                let elems = elems.clone();
+                let tys = elems.iter().map(|e| self.infer_expr(body, *e)).collect();
+                Type::Value {
+                    kind: ValueKind::Tuple(tys),
+                    domain: Domain::Unspecified,
+                }
+            }
             // `[e; N]`.
             ExprKind::VecRepeat { elem, len } => {
                 let len = len.clone();
@@ -2547,6 +2558,7 @@ mod tests {
                 ValueKind::Event => "event",
                 ValueKind::Integer => "integer",
                 ValueKind::Struct { .. } => "struct",
+                ValueKind::Tuple(_) => "tuple",
                 ValueKind::Param(_) => "param",
             },
             Type::Port { .. } => "port",
