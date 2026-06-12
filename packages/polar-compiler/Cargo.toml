@@ -1,0 +1,27 @@
+[package]
+name = "polar-compiler"
+version = "0.1.0"
+edition = "2024"
+
+# The compiler: a query-based, demand-driven reimplementation front-to-back
+# (planning/query_engine.md), now the primary `polar-compiler`. It links the
+# tree-sitter grammar itself. The original whole-crate-pass compiler lives on as
+# `polar-compiler-old`, a parity oracle (reached corpus parity at Q5-mono).
+#
+# Engine: salsa (validated by the Q0 spike, see planning/query_engine.md §7).
+
+[lib]
+name = "polar_compiler"
+path = "src/lib.rs"
+
+[[bin]]
+name = "polar-compiler"
+path = "src/main.rs"
+
+[dependencies]
+tree-sitter = "0.25"
+tree-sitter-language = "0.1"
+salsa = "0.26"
+
+[build-dependencies]
+cc = "1.1"

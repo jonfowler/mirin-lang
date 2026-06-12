@@ -1,0 +1,7 @@
+fn add7(x: uint(8)) -> uint(8) {
+    x + 7
+}
+
+fn add7_dom {dom clk: Clock} (x: uint(8) @clk) -> uint(8) @clk {
+    add7(x)
+}

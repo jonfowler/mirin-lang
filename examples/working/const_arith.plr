@@ -1,0 +1,7 @@
+// Const eval: simple width arithmetic through a let-bound local.
+// `n + 5` evaluates to 8, so `x` is uint(8) and the module emits [7:0].
+fn top() -> uint(8) {
+    let n: integer = 3;
+    let x: uint(n + 5) = 200;
+    x
+}

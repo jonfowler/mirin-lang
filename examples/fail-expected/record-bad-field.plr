@@ -1,0 +1,11 @@
+// `c` is not a field of `Pair` (UnknownField), and `b` is never written
+// (MissingField). Both diagnosed by infer's record shape check.
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn top() -> uint(8) {
+    let p = pair { a = 1, c = 2 };
+    p.a
+}

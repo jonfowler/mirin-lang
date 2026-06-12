@@ -1,0 +1,15 @@
+// `p` is driven whole by the equation AND `p.a` again by a field equation —
+// overlapping drive paths (one a prefix of the other), a MultipleDrivers
+// error under per-leaf accounting. Previously the backend emitted
+// `assign p__a = ...` twice. Passing twin: working/field_drivers.plr.
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn top(x: uint(8)) -> uint(8) {
+    var p: Pair;
+    p = pair { a = x, b = x };
+    p.a = x;
+    p.a + p.b
+}

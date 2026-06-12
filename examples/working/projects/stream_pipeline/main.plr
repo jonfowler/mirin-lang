@@ -1,0 +1,28 @@
+// A multi-file project exercising the module system end-to-end
+// (planning/modules.md): file-based `mod`, a nested module directory,
+// `use` in every form (single, group, glob, `as`, `pub use` re-export,
+// `super::` paths), restricted visibility (`pub(crate)`, `pub(super)`),
+// and cross-module semantics — a port type, impl-level dom generics, and
+// const eval all crossing file boundaries.
+mod stream;
+mod stages;
+mod util;
+
+use crate::stages::{gain::gain, offset};
+use crate::stream::Stream8;
+use crate::util::*;
+
+// `width` is a const fn from util (via glob); its result sizes the register.
+fn top
+    {dom clk: Clock, rstn: Reset @clk = high}
+    (upstream: Stream8 @clk, out downstream: Stream8 @clk)
+    -> uint(9) @clk {
+    var mid: Stream8 @clk;
+    gain(upstream, => mid);
+    offset(mid, => downstream);
+
+    let w: integer = width(config { extra = 1 });
+    var count: uint(w);
+    count = (count + 1).reg(rstn, 0);
+    count
+}

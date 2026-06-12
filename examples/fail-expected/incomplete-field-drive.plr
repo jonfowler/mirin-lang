@@ -1,0 +1,14 @@
+// Typed completeness: `p` is driven field-by-field but `b` is never covered
+// (UndrivenField). Single-assignment conflicts are syntactic
+// (check_drivers); knowing which fields exist needs the type, so this check
+// runs post-infer. Passing twin: working/field_drivers.plr.
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn top(x: uint(8)) -> uint(8) {
+    var p: Pair;
+    p.a = x;
+    p.a + p.b
+}

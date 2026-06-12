@@ -1,65 +1,44 @@
-# polar README
+# Polar for VS Code
 
-This is the README for your extension "polar". After writing up a brief description, we recommend including the following sections.
+Language support for the [Polar](../../planning/top.md) HDL: a TextMate grammar
+for cold-start colour, plus a thin client for the `polar-lsp` language server
+(semantic tokens, outline, folding, selection ranges, diagnostics, and document
+formatting — growing as the server does, see `planning/lsp.md`).
 
-## Features
+Document formatting is served by `polar-lsp` via the `polar-fmt` crate, so
+**Format Document** (and `editor.formatOnSave`) reformat `.plr` files the same
+way the `polar-fmt` CLI does. Files with syntax errors are left untouched.
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+The extension is editor-agnostic at heart: the same `polar-lsp` binary serves
+Neovim, Helix, and Zed. This package is just the VS Code client.
 
-For example if there is an image subfolder under your extension project workspace:
+## Build & run (development)
 
-\!\[feature X\]\(images/feature-x.png\)
+1. **Build the server:**
+   ```bash
+   cargo build --release -p polar-lsp     # produces target/release/polar-lsp
+   ```
+2. **Point the client at it** — either put `polar-lsp` on your `PATH`, or set
+   `polar.server.path` (Settings → Polar) to the absolute binary path, e.g.
+   `/path/to/polar/target/release/polar-lsp`.
+3. **Build the client:**
+   ```bash
+   cd editors/vscode
+   npm install
+   npm run compile        # or `npm run watch` while iterating
+   ```
+4. **Launch:** open this folder in VS Code and press <kbd>F5</kbd> ("Run Polar
+   Extension"). Open a `.plr` file in the Extension Development Host.
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+## Settings
 
-## Requirements
+| Setting             | Default     | Description                                  |
+| ------------------- | ----------- | -------------------------------------------- |
+| `polar.server.path` | `polar-lsp` | Path to the language server binary.          |
+| `polar.trace.server`| `off`       | Trace JSON-RPC traffic (`messages`/`verbose`)|
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+## Packaging
 
-## Extension Settings
-
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+```bash
+npm run compile && npx vsce package      # produces polar-lsp-<version>.vsix
+```

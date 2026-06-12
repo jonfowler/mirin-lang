@@ -1,0 +1,294 @@
+
+========================================
+literal bases and unary minus
+========================================
+
+fn f() -> uint(8) {
+    let a = 0xF0 + 0b1010_0001;
+    let b = -a;
+    return 1_000;
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section)
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (let_statement
+          name: (identifier)
+          value: (expression
+            (binary_expression
+              left: (expression
+                (number))
+              right: (expression
+                (number))))))
+      (statement
+        (let_statement
+          name: (identifier)
+          value: (expression
+            (unary_expression
+              operand: (expression
+                (path_expression
+                  segment: (identifier)))))))
+      (statement
+        (return_statement
+          value: (expression
+            (number)))))))
+
+========================================
+typed literal construction
+========================================
+
+fn f() -> uint(8) {
+    return uint(8)::0xFF;
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section)
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (return_statement
+          value: (expression
+            (typed_literal
+              type: (return_type_expression
+                name: (identifier)
+                (type_index
+                  (type_argument
+                    (number))))
+              value: (number))))))))
+
+========================================
+vector construction and indexing
+========================================
+
+fn f (a: uint(4)) -> uint(4) {
+    let v: Vec(3, uint(4)) = [a, 2, 3];
+    let z: Vec(3, uint(4)) = [0; 3];
+    v[0]
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (let_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              (type_argument
+                (number))
+              (type_argument
+                (type_expression
+                  name: (identifier)
+                  (type_index
+                    (type_argument
+                      (number)))))))
+          value: (expression
+            (vec_literal
+              (expression
+                (path_expression
+                  segment: (identifier)))
+              (expression
+                (number))
+              (expression
+                (number))))))
+      (statement
+        (let_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              (type_argument
+                (number))
+              (type_argument
+                (type_expression
+                  name: (identifier)
+                  (type_index
+                    (type_argument
+                      (number)))))))
+          value: (expression
+            (vec_literal
+              elem: (expression
+                (number))
+              len: (expression
+                (number))))))
+      tail: (expression
+        (postfix_expression
+          receiver: (path_expression
+            segment: (identifier))
+          (index_access
+            index: (expression
+              (number))))))))
+
+========================================
+for loops over vectors
+========================================
+
+fn f (v: Vec(3, uint(8))) -> uint(8) {
+    for x in v {
+        let y = x;
+    }
+    for i, x in v.enumerate() {
+        let y = x;
+    }
+    0
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))
+            (type_argument
+              (type_expression
+                name: (identifier)
+                (type_index
+                  (type_argument
+                    (number)))))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (for_statement
+          a: (identifier)
+          iter: (path_expression
+            segment: (identifier))
+          body: (block
+            (statement
+              (let_statement
+                name: (identifier)
+                value: (expression
+                  (path_expression
+                    segment: (identifier))))))))
+      (statement
+        (for_statement
+          a: (identifier)
+          b: (identifier)
+          iter: (postfix_expression
+            receiver: (path_expression
+              segment: (identifier))
+            (field_access
+              field: (identifier))
+            (argument_list))
+          body: (block
+            (statement
+              (let_statement
+                name: (identifier)
+                value: (expression
+                  (path_expression
+                    segment: (identifier))))))))
+      tail: (expression
+        (number)))))
+
+========================================
+init preceder on when
+========================================
+
+fn f {dom clk: Clock} (a: uint(8)) -> uint(8) {
+    var c: uint(8);
+    c = init 5 when clk.posedge() { c + 1 };
+    c
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    named_parameters: (named_parameter_section
+      (named_parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (var_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              (type_argument
+                (number))))))
+      (statement
+        (assignment_statement
+          left: (expression
+            (path_expression
+              segment: (identifier)))
+          right: (expression
+            (when_expression
+              init: (number)
+              event: (postfix_expression
+                receiver: (path_expression
+                  segment: (identifier))
+                (field_access
+                  field: (identifier))
+                (argument_list))
+              body: (block
+                tail: (expression
+                  (binary_expression
+                    left: (expression
+                      (path_expression
+                        segment: (identifier)))
+                    right: (expression
+                      (number)))))))))
+      tail: (expression
+        (path_expression
+          segment: (identifier))))))

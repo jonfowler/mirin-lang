@@ -1,0 +1,12 @@
+// Record connectors must match the field's declared direction: `ready` is an
+// `in` field (bind with `=> target`), and `valid` is supplied by the
+// constructor (use `=`). Both mistakes diagnose (RecordConnector).
+port Stream8 = stream8 {
+    out valid: bool,
+    in ready: bool,
+}
+
+fn bad {dom clk: Clock} (r: bool @clk, out downstream: Stream8 @clk) {
+    var sink: bool @clk;
+    downstream = stream8 { valid => sink, ready = r };
+}

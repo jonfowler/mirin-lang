@@ -1,0 +1,24 @@
+// Both the width-generic and the concrete impl match uint(8): ambiguous.
+trait Amp {
+    fn amp(self) -> Self;
+}
+
+impl {param n: integer} Amp for uint(n) {
+    fn amp(self) -> Self {
+        return self + self;
+    }
+}
+
+impl Amp for uint(8) {
+    fn amp(self) -> Self {
+        return self;
+    }
+}
+
+fn boost {param T: Amp} (x: T) -> T {
+    x.amp()
+}
+
+fn top {dom clk: Clock} (x: uint(8) @clk) -> uint(8) @clk {
+    boost(x)
+}

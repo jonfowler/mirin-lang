@@ -1,0 +1,33 @@
+trait Scale {
+    fn scaled(self, k: uint(8)) -> uint(8);
+}
+
+struct Sample = sample {
+    value: uint(8),
+}
+
+impl Scale for Sample {
+    fn scaled(self, k: uint(8)) -> uint(8) {
+        return self.value * k;
+    }
+}
+
+fn top {dom clk: Clock} (s: Sample @clk, k: uint(8) @clk) -> uint(8) @clk {
+    s.scaled(k)
+}
+
+// A trait implemented for a builtin: `Self` in the signature resolves to
+// the impl's self type (`bool`).
+trait Invert {
+    fn invert(self) -> Self;
+}
+
+impl Invert for bool {
+    fn invert(self) -> Self {
+        return self;
+    }
+}
+
+fn top2 {dom clk: Clock} (x: bool @clk) -> bool @clk {
+    x.invert()
+}

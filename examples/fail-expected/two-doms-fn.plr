@@ -1,0 +1,14 @@
+// Must FAIL once domain checking lands (planning/domain_checking_redux.md).
+// The pure `adder` lifts to ONE shared domain variable over all arguments
+// and the result — `fn adder{dom D: Domain}(x: uint{D}(8), y: uint{D}(8))
+// -> uint{D}(8)` — deliberately unlike Rust elision's per-argument
+// lifetimes, because distinct clocks never unify and `x + y` across
+// domains is exactly the CDC error to catch. Instantiating D = clk from
+// `x` then fails to unify clk2 against clk at the `y` argument.
+fn adder(x: uint(8), y: uint(8)) -> uint(8) {
+    x + y
+}
+
+fn add7_dom {dom clk: Clock, dom clk2: Clock} (x: uint(8) @clk, y: uint(8) @clk2) -> uint(8) @clk {
+    adder(x, y)
+}

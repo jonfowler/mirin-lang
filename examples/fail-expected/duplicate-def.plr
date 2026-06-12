@@ -1,0 +1,7 @@
+fn process(data: uint(8)) {
+    let out = data + 1;
+}
+
+fn process(value: uint(8)) {
+    let out = value * 2;
+}

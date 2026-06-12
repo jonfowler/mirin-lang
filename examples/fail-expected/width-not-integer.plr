@@ -1,0 +1,6 @@
+// A hardware-typed value cannot be a width: uint arithmetic wraps,
+// compile-time width arithmetic must not (the L7 wrap guard).
+fn f {dom clk: Clock} (n: uint(4) @clk, x: uint(8) @clk) -> uint(8) @clk {
+    let y: uint(n) @clk = x;
+    y
+}

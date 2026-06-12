@@ -1,0 +1,12 @@
+// Operators are trait methods (planning/traits.md T5): `+`/`-`/`*` desugar
+// to the prelude's Add/Sub/Mul, `==`/`<` to Eq/Ord — selected by ordinary
+// trait dispatch, emitted inline by the backend. The mux picks via a
+// comparison; everything stays one combinational module.
+fn clamp {dom clk: Clock} (x: uint(8) @clk, hi: uint(8) @clk) -> uint(8) @clk {
+    let over = hi < x;
+    if over { hi } else { x }
+}
+
+fn same {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> bool @clk {
+    a == b
+}

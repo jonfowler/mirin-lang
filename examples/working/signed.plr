@@ -1,0 +1,12 @@
+// sint(n): two's-complement signed vectors. Same width machinery, traits,
+// and literal inference as uint; `-` is live (Neg for sint inlines as
+// (-d)); comparisons are SIGNED in the emitted SV because the operands
+// are declared `logic signed`. -8 fits sint(4) via the neg-of-literal
+// constant fold (the -128i8 case).
+fn s {dom clk: Clock, rstn: Reset @clk} (a: sint(8) @clk, b: sint(8) @clk) -> sint(8) @clk {
+    let d = a - b;
+    let n = -d;
+    let lo = if n < a { n } else { a };
+    let x: sint(4) = -8;
+    lo.reg(rstn, -1)
+}

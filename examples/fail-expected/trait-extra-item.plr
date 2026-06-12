@@ -1,0 +1,18 @@
+// `shift` is not a member of trait Codec.
+trait Codec {
+    fn pack(self) -> uint(8);
+}
+
+struct Sample = sample {
+    value: uint(8),
+}
+
+impl Codec for Sample {
+    fn pack(self) -> uint(8) {
+        return self.value;
+    }
+
+    fn shift(self) -> uint(8) {
+        return self.value;
+    }
+}

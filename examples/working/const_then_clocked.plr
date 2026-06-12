@@ -1,0 +1,14 @@
+// verilator: -Wno-UNUSEDSIGNAL
+// The same pure fn instantiated at @const and at a clock in one body. Lifting
+// quantifies over the Domain sort (not Clock), so `double(3)` stays @const —
+// constant folding survives — and the @const result then coerces into the
+// clocked addition (`@const <: @clk`, the one subtyping edge). Must stay
+// passing through Q7 phase C; see planning/domain_checking_redux.md.
+fn double(v: uint(8)) -> uint(8) {
+    v + v
+}
+
+fn use_both {dom clk: Clock} (x: uint(8) @clk) -> uint(8) @clk {
+    let k = double(3);
+    x + k
+}

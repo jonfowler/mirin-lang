@@ -1,0 +1,10 @@
+// `a` is written twice (DuplicateField). Previously the first write silently
+// won and the second was discarded.
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn top() -> Pair {
+    pair { a = 1, a = 2, b = 3 }
+}

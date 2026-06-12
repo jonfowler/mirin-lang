@@ -1,0 +1,17 @@
+// verilator: -Wno-UNUSEDSIGNAL
+// Clock-less port declaration. `Stream8`'s fields carry no `@`-annotation;
+// the `@clk` at the use site (`Stream8 @clk`) stamps the domain over every
+// field at flatten time — the same trick `Packet @clk` uses for structs.
+port Stream8 = stream8 {
+    out valid: bool,
+    out data: uint(8),
+    in ready: bool,
+}
+
+// A passthrough between two `Stream8` ports under the same clock. Equation
+// `downstream = upstream` flattens per-field: the producer-side fields
+// (`valid`, `data`) flow from upstream to downstream; the consumer-side
+// `ready` flows the other way. Direction-checking enforces that pairing.
+fn connectStream {dom clk: Clock} (upstream: Stream8 @clk, out downstream: Stream8 @clk) {
+    downstream = upstream;
+}

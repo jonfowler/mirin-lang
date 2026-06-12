@@ -1,0 +1,5 @@
+// Two elements cannot be a Vec(3, _).
+fn g(a: uint(4)) -> uint(4) {
+    let v: Vec(3, uint(4)) = [a, a];
+    v[0]
+}

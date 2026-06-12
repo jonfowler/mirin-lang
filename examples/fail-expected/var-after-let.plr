@@ -1,0 +1,4 @@
+fn proc(x: uint(8)) {
+    let acc = x;
+    var acc;
+}

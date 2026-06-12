@@ -1,0 +1,39 @@
+struct Option = option {
+    valid: bool,
+    payload: uint(8),
+}
+
+fn reg2 {dom clk: Clock} (a: Option @clk, rstn: Reset @clk) -> Option @clk {
+    let payloadd = a.payload.reg(rstn, 0);
+    return option { valid = a.valid, payload = payloadd };
+}
+
+fn double_delay_named
+    {dom clk: Clock, rstn: Reset @clk, out downstream: Option @clk}
+    (in upstream: Option @clk) {
+    let delay1 = reg2(upstream, rstn);
+    let delay2 = reg2(delay1, rstn);
+    downstream = delay2;
+}
+
+fn test_out_binding_named
+    {dom clk: Clock, rstn: Reset @clk}
+    (in upstream: Option @clk, out downstream: Option @clk) {
+    double_delay_named{ rstn, downstream => ds }(upstream);
+    double_delay_named{ rstn, downstream => downstream }(ds);
+}
+
+fn double_delay_pos
+    {dom clk: Clock, rstn: Reset @clk}
+    (in upstream: Option @clk, out downstream: Option @clk) {
+    let delay1 = reg2(upstream, rstn);
+    let delay2 = reg2(delay1, rstn);
+    downstream = delay2;
+}
+
+fn test_out_binding_pos
+    {dom clk: Clock, rstn: Reset @clk}
+    (in upstream: Option @clk, out downstream: Option @clk) {
+    double_delay_pos{ rstn }(upstream, out => ds);
+    double_delay_pos{ rstn }(ds, out => downstream);
+}

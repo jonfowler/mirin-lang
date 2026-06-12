@@ -1,0 +1,5 @@
+// A numeric literal cannot be bool.
+fn f() -> bool {
+    let x: bool = 3;
+    x
+}

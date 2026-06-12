@@ -1,0 +1,15 @@
+// A clock-domain crossing: `upstream` is on `c1`, `downstream` on `c2`, and
+// the whole-port connection demands c1 = c2 (DomainMismatch). Named type
+// args (`DF{c1}`) lower to real Domain::Param args, so the two ports'
+// generic args unify strictly. Passing twin: working/parameterized_port.plr.
+port DF {dom clk: Clock} (A: Type) = df {
+    in ready: bool @clk,
+    out valid: bool @clk,
+    out data: A @clk,
+}
+
+fn xing
+    {dom c1: Clock, dom c2: Clock}
+    (upstream: DF{c1}(uint(8)), out downstream: DF{c2}(uint(8))) {
+    downstream = upstream;
+}

@@ -1,0 +1,12 @@
+// `super::` paths: `twice` is reached through the sibling stage's `pub use`
+// re-export. `add_one` is `pub(crate)` in util — visible here, but not
+// outside the crate.
+use super::gain::twice;
+use crate::stream::Stream8;
+use crate::util::add_one;
+
+pub fn offset {dom clk: Clock} (upstream: Stream8 @clk, out downstream: Stream8 @clk) {
+    downstream.valid = upstream.valid;
+    downstream.data = add_one(twice(upstream.data));
+    upstream.ready = downstream.ready;
+}

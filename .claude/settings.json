@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo test *)",
+      "Bash(cargo build *)",
+      "Bash(cargo check *)",
+      "Bash(cargo fmt *)",
+      "Bash(tree-sitter generate)",
+      "Bash(tree-sitter test *)"
+    ]
+  }
+}

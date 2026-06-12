@@ -1,0 +1,14 @@
+// verilator: -Gn=8 -Gm=8 -Wno-UNUSEDSIGNAL
+// Two distinct generic widths constrained equal by use inside the body.
+// The body `a + b` requires both operands have the same width — `+`'s
+// `?K` first binds to `Param(0)` (n) from `a`, then unifying against `b`
+// (width `Param(1)` = m) produces an *unresolvable* ConstEq:
+//   Param(0) = Param(1)   i.e.  n = m
+// Phase D records this as a residual on `pair_add`'s signature. Use
+// sites with concrete n/m discharge it; mismatched ones error.
+fn pair_add
+    {dom clk: Clock}
+    (param n: integer, param m: integer, a: uint(n) @clk, b: uint(m) @clk)
+    -> uint(n) @clk {
+    return a + b;
+}

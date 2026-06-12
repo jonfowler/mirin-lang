@@ -1,25 +1,91 @@
 {
-  "name": "polar",
-  "displayName": "polar",
-  "description": "Polar hardware description language",
-  "version": "0.0.1",
+  "name": "polar-lsp",
+  "displayName": "Polar",
+  "description": "Polar HDL language support: syntax highlighting + the polar-lsp language server",
+  "version": "0.1.0",
+  "publisher": "jonfowler",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jonfowler/polar.git",
+    "directory": "editors/vscode"
+  },
   "engines": {
-    "vscode": "^1.100.0"
+    "vscode": "^1.90.0"
   },
   "categories": [
     "Programming Languages"
   ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:polar"
+  ],
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  },
   "contributes": {
-    "languages": [{
-      "id": "polar",
-      "aliases": ["polar", "polar"],
-      "extensions": [".plr",".polar"],
-      "configuration": "./language-configuration.json"
-    }],
-    "grammars": [{
-      "language": "polar",
-      "scopeName": "source.polar",
-      "path": "./syntaxes/polar.tmLanguage.json"
-    }]
+    "configurationDefaults": {
+      "[polar]": {
+        "editor.defaultFormatter": "jonfowler.polar-lsp",
+        "editor.formatOnSave": true
+      }
+    },
+    "languages": [
+      {
+        "id": "polar",
+        "aliases": [
+          "Polar",
+          "polar"
+        ],
+        "extensions": [
+          ".plr"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "polar",
+        "scopeName": "source.polar",
+        "path": "./syntaxes/polar.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.polar.codeblock",
+        "path": "./syntaxes/polar.markdown-injection.json",
+        "injectTo": ["text.html.markdown"],
+        "embeddedLanguages": {
+          "meta.embedded.block.polar": "polar"
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Polar",
+      "properties": {
+        "polar.server.path": {
+          "type": "string",
+          "default": "polar-lsp",
+          "description": "Path to the polar-lsp language server binary. Defaults to `polar-lsp` on your PATH; set an absolute path (e.g. the repo's target/release/polar-lsp) otherwise."
+        },
+        "polar.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the JSON-RPC traffic between VS Code and polar-lsp."
+        }
+      }
+    }
   }
 }

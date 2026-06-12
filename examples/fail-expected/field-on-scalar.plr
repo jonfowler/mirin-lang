@@ -1,0 +1,5 @@
+// `uint(8)` has no fields (FieldOnNonAggregate). Previously infer returned
+// a silent `Type::Error` and the backend emitted an undriven `result`.
+fn top(x: uint(8)) -> uint(8) {
+    x.bogus
+}

@@ -1,0 +1,11 @@
+// Const eval: a function call evaluated at compile time, with branch
+// selection — `pick(false, 8, 16)` evaluates the else branch to 16.
+fn pick(c: bool, a: integer, b: integer) -> integer {
+    if c { a } else { b }
+}
+
+fn top() -> uint(16) {
+    let w: integer = pick(false, 8, 16);
+    let x: uint(w) = 0;
+    x
+}

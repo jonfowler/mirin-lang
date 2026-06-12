@@ -1,0 +1,11 @@
+// The impl provides pack but not the declared const width.
+trait Bits {
+    const width: integer;
+    fn pack(self) -> uint(width);
+}
+
+impl Bits for bool {
+    fn pack(self) -> uint(1) {
+        if self { 1 } else { 0 }
+    }
+}

@@ -1,0 +1,14 @@
+// `Sample` is a struct, not a trait — `impl Sample for …` is rejected.
+struct Sample = sample {
+    value: uint(8),
+}
+
+struct Other = other {
+    value: uint(8),
+}
+
+impl Sample for Other {
+    fn pack(self) -> uint(8) {
+        return self.value;
+    }
+}

@@ -1,0 +1,3 @@
+fn shift(a: uint(8)) {
+    let result = a + offset;
+}

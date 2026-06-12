@@ -1,0 +1,4 @@
+// A uint is not its representation: no implicit bits/uint mixing.
+fn h(a: bits(8), b: uint(8)) -> bool {
+    a == b
+}

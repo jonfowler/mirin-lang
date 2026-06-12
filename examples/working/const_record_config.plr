@@ -1,0 +1,12 @@
+// Const eval: a struct-valued configuration projected in width position.
+// `cfg.bits + cfg.extra` evaluates to 12 through the record value.
+struct Config = config {
+    bits: integer,
+    extra: integer,
+}
+
+fn top() -> uint(12) {
+    let cfg = config { bits = 8, extra = 4 };
+    let x: uint(cfg.bits + cfg.extra) = 0;
+    x
+}

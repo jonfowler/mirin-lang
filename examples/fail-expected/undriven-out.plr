@@ -1,0 +1,5 @@
+// An `out` param the body never drives (UndrivenOut) — previously emitted
+// as a floating module output with no diagnostic.
+fn top(x: uint(8), out o: uint(8)) {
+    let unused = x;
+}

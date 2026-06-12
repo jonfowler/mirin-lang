@@ -1,0 +1,10 @@
+// `f` takes two arguments with no defaults; the call supplies one. infer's
+// arity check rejects it (`PositionalArity`) — previously the instance was
+// emitted with the `y` port simply unconnected (a floating input).
+fn f(x: uint(8), y: uint(8)) -> uint(8) {
+    x + y
+}
+
+fn top() -> uint(8) {
+    f(1)
+}

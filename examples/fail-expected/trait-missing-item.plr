@@ -1,0 +1,15 @@
+// A trait impl must provide every declared method: `unpack` is missing.
+trait Codec {
+    fn pack(self) -> uint(8);
+    fn unpack(self) -> uint(8);
+}
+
+struct Sample = sample {
+    value: uint(8),
+}
+
+impl Codec for Sample {
+    fn pack(self) -> uint(8) {
+        return self.value;
+    }
+}

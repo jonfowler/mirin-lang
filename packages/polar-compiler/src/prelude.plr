@@ -1,0 +1,152 @@
+// The Polar prelude — real source compiled into every crate as the hidden
+// `$prelude` module (rustc's `core` move; planning/traits.md T5). Operator
+// expressions desugar to these traits' methods (`a + b` → `a.add(b)`), and
+// dispatch routes through the ordinary trait machinery. The impl bodies are
+// inline verilog, but calls that select a prelude operator impl are emitted
+// INLINE by the backend (`(a + b)`), never as instances — the bodies are the
+// checked record of the semantics. The builtin types (uint, bool, Clock, …)
+// and `reg`/`posedge` stay synthetic: they are type-system primitives, not
+// library code.
+
+pub trait Add {
+    fn add(self, other: Self) -> Self;
+}
+
+pub trait Sub {
+    fn sub(self, other: Self) -> Self;
+}
+
+pub trait Mul {
+    fn mul(self, other: Self) -> Self;
+}
+
+pub trait Neg {
+    fn neg(self) -> Self;
+}
+
+pub trait Eq {
+    fn eq(self, other: Self) -> bool;
+}
+
+pub trait Ord {
+    fn lt(self, other: Self) -> bool;
+}
+
+impl {param n: integer} Add for uint(n) {
+    fn add(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} + ${other};
+    }
+}
+
+impl {param n: integer} Sub for uint(n) {
+    fn sub(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} - ${other};
+    }
+}
+
+impl {param n: integer} Mul for uint(n) {
+    fn mul(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} * ${other};
+    }
+}
+
+impl {param n: integer} Eq for uint(n) {
+    fn eq(self, other: Self) -> bool = verilog {
+        assign ${result} = ${self} == ${other};
+    }
+}
+
+impl {param n: integer} Ord for uint(n) {
+    fn lt(self, other: Self) -> bool = verilog {
+        assign ${result} = ${self} < ${other};
+    }
+}
+
+impl {param n: integer} Add for sint(n) {
+    fn add(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} + ${other};
+    }
+}
+
+impl {param n: integer} Sub for sint(n) {
+    fn sub(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} - ${other};
+    }
+}
+
+impl {param n: integer} Mul for sint(n) {
+    fn mul(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} * ${other};
+    }
+}
+
+impl {param n: integer} Neg for sint(n) {
+    fn neg(self) -> Self = verilog {
+        assign ${result} = -${self};
+    }
+}
+
+impl {param n: integer} Eq for sint(n) {
+    fn eq(self, other: Self) -> bool = verilog {
+        assign ${result} = ${self} == ${other};
+    }
+}
+
+impl {param n: integer} Ord for sint(n) {
+    fn lt(self, other: Self) -> bool = verilog {
+        assign ${result} = ${self} < ${other};
+    }
+}
+
+// bits(n) is a raw vector, not a number: Eq is its ONLY operator
+// (planning/bits.md) — arithmetic on a representation is almost always
+// a bug; convert deliberately (pack/unpack, when they land).
+impl {param n: integer} Eq for bits(n) {
+    fn eq(self, other: Self) -> bool = verilog {
+        assign ${result} = ${self} == ${other};
+    }
+}
+
+impl Eq for bool {
+    fn eq(self, other: Self) -> bool = verilog {
+        assign ${result} = ${self} == ${other};
+    }
+}
+
+// `integer` is compile-time only — these impls type arithmetic on consts;
+// evaluation lives in const_eval and nothing is ever emitted for them.
+impl Add for integer {
+    fn add(self, other: Self) -> Self = verilog {
+        // compile-time only
+    }
+}
+
+impl Sub for integer {
+    fn sub(self, other: Self) -> Self = verilog {
+        // compile-time only
+    }
+}
+
+impl Mul for integer {
+    fn mul(self, other: Self) -> Self = verilog {
+        // compile-time only
+    }
+}
+
+impl Neg for integer {
+    fn neg(self) -> Self = verilog {
+        // compile-time only
+    }
+}
+
+impl Eq for integer {
+    fn eq(self, other: Self) -> bool = verilog {
+        // compile-time only
+    }
+}
+
+impl Ord for integer {
+    fn lt(self, other: Self) -> bool = verilog {
+        // compile-time only
+    }
+}

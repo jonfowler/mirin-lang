@@ -1,0 +1,7 @@
+// `for i, x` requires .enumerate(); `for x` forbids it.
+fn f(v: Vec(3, uint(8))) -> uint(8) {
+    for i, x in v {
+        let y = x;
+    }
+    0
+}

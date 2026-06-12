@@ -1,0 +1,8 @@
+// v[0] is driven twice.
+fn f {dom clk: Clock} (a: uint(8) @clk) -> uint(8) @clk {
+    var v: Vec(2, uint(8)) @clk;
+    v[0] = a;
+    v[0] = a;
+    v[1] = a;
+    v[0]
+}

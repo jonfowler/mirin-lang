@@ -1,0 +1,15 @@
+// verilator: -Wno-UNUSEDSIGNAL
+// A pure fn used at two DIFFERENT clocks from one caller. `inc` lifts to one
+// shared domain variable, but the variable is instantiated fresh PER CALL
+// SITE — `inc(x)` at `a`, `inc(y)` at `b`. A checker that gave `inc` one
+// domain for the whole def (rather than per instantiation) would wrongly
+// unify `a` with `b` here. Must stay passing through Q7 phase C.
+fn inc(v: uint(8)) -> uint(8) {
+    v + 1
+}
+
+fn two_domains {dom a: Clock, dom b: Clock} (x: uint(8) @a, y: uint(8) @b) -> uint(8) @a {
+    let xs = inc(x);
+    let ys = inc(y);
+    xs
+}

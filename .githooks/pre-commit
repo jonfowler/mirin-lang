@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Reject a commit whose staged examples/working/*.plr are not polar-fmt-clean.
+#
+# Enable in a fresh clone with:  git config core.hooksPath .githooks
+# (this repo sets it; the line above is for new checkouts).
+
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Staged (added/copied/modified) .plr files under examples/working.
+mapfile -t files < <(
+    git diff --cached --name-only --diff-filter=ACM -- examples/working \
+        | grep '\.plr$' || true
+)
+[ "${#files[@]}" -eq 0 ] && exit 0
+
+# Use a prebuilt formatter if present; otherwise build it once.
+bin=""
+for cand in target/release/polar-fmt target/debug/polar-fmt; do
+    [ -x "$cand" ] && bin="$cand" && break
+done
+if [ -z "$bin" ]; then
+    echo "pre-commit: building polar-fmt…" >&2
+    cargo build -q -p polar-fmt
+    bin="target/debug/polar-fmt"
+fi
+
+# Check the *staged* content of each file (not the working tree), so the hook
+# verifies exactly what is about to be committed.
+unformatted=()
+for f in "${files[@]}"; do
+    if ! git show ":$f" | "$bin" --check - >/dev/null 2>&1; then
+        unformatted+=("$f")
+    fi
+done
+
+if [ "${#unformatted[@]}" -ne 0 ]; then
+    echo "pre-commit: these staged examples are not polar-fmt-formatted:" >&2
+    printf '  %s\n' "${unformatted[@]}" >&2
+    echo >&2
+    echo "  fix: $bin ${unformatted[*]}" >&2
+    exit 1
+fi

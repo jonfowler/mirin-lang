@@ -1,0 +1,9 @@
+// `f` takes one argument; the call supplies three. infer's arity check
+// rejects the surplus (`PositionalArity`) instead of silently dropping it.
+fn f(x: uint(8)) -> uint(8) {
+    x
+}
+
+fn top() -> uint(8) {
+    f(1, 2, 3)
+}

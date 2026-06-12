@@ -1,0 +1,24 @@
+// Field assignment through `self` and an `out` param, with impl-level
+// generics: the impl block's `{dom clk: Clock}` is prepended to every
+// method's signature (Rust's `impl<T>` shape), and `self @clk` carries the
+// receiver's domain into the method — so connecting streams on different
+// clocks fails (fail-expected/stream-connect-cdc.plr). Direction folding:
+// `ready` is an `in` field, so `self.ready = downstream.ready` drives the
+// module's `self__ready` output.
+port Stream8 = stream8 {
+    out valid: bool,
+    out data: uint(8),
+    in ready: bool,
+}
+
+impl {dom clk: Clock} Stream8 {
+    fn connect(self @clk, out downstream: Stream8 @clk) {
+        downstream.valid = self.valid;
+        downstream.data = self.data;
+        self.ready = downstream.ready;
+    }
+}
+
+fn top {dom clk: Clock} (upstream: Stream8 @clk, out downstream: Stream8 @clk) {
+    upstream.connect(=> downstream);
+}

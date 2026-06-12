@@ -1,0 +1,28 @@
+// Two traits provide `weigh` for Sample: a method call cannot choose.
+trait Mass {
+    fn weigh(self) -> uint(8);
+}
+
+trait Importance {
+    fn weigh(self) -> uint(8);
+}
+
+struct Sample = sample {
+    value: uint(8),
+}
+
+impl Mass for Sample {
+    fn weigh(self) -> uint(8) {
+        return self.value;
+    }
+}
+
+impl Importance for Sample {
+    fn weigh(self) -> uint(8) {
+        return self.value;
+    }
+}
+
+fn top {dom clk: Clock} (s: Sample @clk) -> uint(8) @clk {
+    s.weigh()
+}

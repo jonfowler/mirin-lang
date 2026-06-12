@@ -1,0 +1,10 @@
+// The constructor omits `b` (MissingField). Previously the emitted module's
+// `result__b` output was simply undriven.
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn top() -> Pair {
+    pair { a = 1 }
+}

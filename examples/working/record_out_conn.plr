@@ -1,0 +1,19 @@
+// A port constructor with an out-connection: `=` supplies the fields this
+// value drives (its `out` fields); `ready => accepted` binds the opposite-
+// direction `in` field back into scope — the record-literal analogue of a
+// named-arg out-connection. The emitted SV: downstream__valid/data driven
+// forward, `assign accepted = downstream__ready` driven in reverse.
+port Stream8 = stream8 {
+    out valid: bool,
+    out data: uint(8),
+    in ready: bool,
+}
+
+fn produce
+    {dom clk: Clock}
+    (v: bool @clk, d: uint(8) @clk, out downstream: Stream8 @clk)
+    -> bool @clk {
+    var accepted: bool @clk;
+    downstream = stream8 { valid = v, data = d, ready => accepted };
+    accepted
+}

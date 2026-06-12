@@ -1,0 +1,4 @@
+// A ground index checks against a ground length at compile time.
+fn g(v: Vec(3, uint(4))) -> uint(4) {
+    v[5]
+}
