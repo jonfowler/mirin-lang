@@ -145,6 +145,16 @@ pub enum InferDiagnosticKind {
     FieldOnNonAggregate {
         name: String,
     },
+    /// `p.2` on a 2-tuple — the projection index is past the arity.
+    TupleIndexOutOfBounds {
+        index: usize,
+        arity: usize,
+    },
+    /// Tuples of different arities met at a unification site.
+    TupleArityMismatch {
+        expected: usize,
+        found: usize,
+    },
 }
 
 impl InferDiagnostic {
@@ -251,6 +261,12 @@ impl InferDiagnostic {
             }
             InferDiagnosticKind::FieldOnNonAggregate { name } => {
                 format!("no field `{name}`: this type has no fields")
+            }
+            InferDiagnosticKind::TupleIndexOutOfBounds { index, arity } => {
+                format!("no element `{index}` on a {arity}-tuple")
+            }
+            InferDiagnosticKind::TupleArityMismatch { expected, found } => {
+                format!("expected a {expected}-tuple, found a {found}-tuple")
             }
         }
     }
@@ -1277,6 +1293,19 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 let (ea, eb) = ((**ea).clone(), (**eb).clone());
                 self.unify(&ea, &eb);
             }
+            (ValueKind::Tuple(ea), ValueKind::Tuple(eb)) => {
+                if ea.len() != eb.len() {
+                    self.diag(InferDiagnosticKind::TupleArityMismatch {
+                        expected: eb.len(),
+                        found: ea.len(),
+                    });
+                    return;
+                }
+                let (ea, eb) = (ea.clone(), eb.clone());
+                for (x, y) in ea.iter().zip(&eb) {
+                    self.unify(x, y);
+                }
+            }
             (ValueKind::Param(i), ValueKind::Param(j)) if i == j => {}
             _ => self.diag(InferDiagnosticKind::TypeMismatch),
         }
@@ -1368,6 +1397,27 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             return;
         }
         match (&a, &b) {
+            // Tuples subsume ELEMENT-WISE (covariant along the const edge):
+            // a tuple is a positional composite of independent values, so
+            // each element of a tuple at a coercion site is itself at a
+            // coercion site — `(x, 5)` fits `(uint(8) @a, uint(4) @b)`
+            // (planning/tuples.md).
+            (
+                Type::Value {
+                    kind: ValueKind::Tuple(ea),
+                    domain: da,
+                },
+                Type::Value {
+                    kind: ValueKind::Tuple(eb),
+                    domain: db,
+                },
+            ) if ea.len() == eb.len() => {
+                let (ea, eb, da, db) = (ea.clone(), eb.clone(), *da, *db);
+                for (x, y) in ea.iter().zip(&eb) {
+                    self.subsume(x, y);
+                }
+                self.subsume_domain(da, db);
+            }
             (
                 Type::Value {
                     kind: ka,
@@ -1947,6 +1997,32 @@ impl<'a, 'db> InferCtx<'a, 'db> {
 
     fn infer_field(&mut self, body: &Body<'db>, receiver: ExprId, field: &str) -> Type<'db> {
         let recv = self.infer_expr(body, receiver);
+        // Tuple projection `p.0` (planning/tuples.md): the numeric field
+        // indexes the element list. The receiver's domain stamps the
+        // element's `Unspecified` slots, exactly as for struct fields.
+        if let Type::Value {
+            kind: ValueKind::Tuple(elems),
+            ..
+        } = self.resolve_ty(&recv)
+        {
+            let Ok(i) = field.parse::<usize>() else {
+                self.diag(InferDiagnosticKind::UnknownField {
+                    name: field.to_owned(),
+                });
+                return Type::Error;
+            };
+            let Some(elem) = elems.get(i).cloned() else {
+                self.diag(InferDiagnosticKind::TupleIndexOutOfBounds {
+                    index: i,
+                    arity: elems.len(),
+                });
+                return Type::Error;
+            };
+            return match self.domain_of(&recv) {
+                Some(rd) if rd != Domain::Unspecified => Stamp { dom: rd }.fold_type(&elem),
+                _ => elem,
+            };
+        }
         // The field type is declared in terms of the def's generic params; we
         // instantiate it with the receiver's type args (`EarlyBinder::instantiate`).
         let (def, args) = match self.resolve_ty(&recv) {
@@ -2135,6 +2211,40 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     kind: ValueKind::Vec {
                         len,
                         elem: Box::new(elem),
+                    },
+                    domain,
+                };
+            }
+            // Builtin `Vec(N, A).enumerate() -> Vec(N, (integer, A))` — a
+            // REAL method now that tuples exist (planning/tuples.md). Inside
+            // a `for` it is also recognised syntactically so the index
+            // reuses the genvar; elsewhere the type is honest and `integer`
+            // is const-only, failing where any const-only value would.
+            if let Type::Value {
+                kind: ValueKind::Vec { len, elem },
+                domain,
+            } = &recv_r
+                && method == "enumerate"
+            {
+                let (len, elem, domain) = (len.clone(), (**elem).clone(), *domain);
+                if !args.is_empty() {
+                    self.diag(InferDiagnosticKind::PositionalArity {
+                        callee: "enumerate".to_owned(),
+                        expected: 0,
+                        found: args.len(),
+                    });
+                }
+                let index_ty = Type::Value {
+                    kind: ValueKind::Integer,
+                    domain: Domain::Const,
+                };
+                return Type::Value {
+                    kind: ValueKind::Vec {
+                        len,
+                        elem: Box::new(Type::Value {
+                            kind: ValueKind::Tuple(vec![index_ty, elem]),
+                            domain: Domain::Unspecified,
+                        }),
                     },
                     domain,
                 };
@@ -2842,6 +2952,137 @@ mod tests {
         assert_eq!(
             before.0, "bool",
             "the summary should observe the return type"
+        );
+    }
+
+    #[test]
+    fn tuple_construction_projection_and_destructuring_type_check() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f (a: uint(8), b: bool) -> uint(8) {
+                 let p = (a, b);
+                 let (x, y) = p;
+                 return p.0 + x;
+             }",
+        );
+        assert_eq!(kind_str(&return_ty(&db, krate, "f").unwrap()), "uint");
+        let inf = infer(&db, krate, def_of(&db, krate, "f"));
+        assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
+    }
+
+    #[test]
+    fn tuple_return_type_checks_element_wise() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f (a: uint(8), b: bool) -> (uint(8), bool) { return (a, b); }",
+        );
+        assert_eq!(kind_str(&return_ty(&db, krate, "f").unwrap()), "tuple");
+        let inf = infer(&db, krate, def_of(&db, krate, "f"));
+        assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
+    }
+
+    #[test]
+    fn tuple_projection_past_arity_is_diagnosed() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f (a: uint(8), b: bool) -> uint(8) { return (a, b).2; }",
+        );
+        let inf = infer(&db, krate, def_of(&db, krate, "f"));
+        assert!(
+            inf.diagnostics().iter().any(|d| matches!(
+                d.kind,
+                InferDiagnosticKind::TupleIndexOutOfBounds { index: 2, arity: 2 }
+            )),
+            "{:?}",
+            inf.diagnostics()
+        );
+    }
+
+    #[test]
+    fn tuple_arity_mismatch_is_diagnosed() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f (a: uint(8), b: bool) -> (uint(8), bool) { return (a, b, a); }",
+        );
+        let inf = infer(&db, krate, def_of(&db, krate, "f"));
+        assert!(
+            inf.diagnostics()
+                .iter()
+                .any(|d| matches!(d.kind, InferDiagnosticKind::TupleArityMismatch { .. })),
+            "{:?}",
+            inf.diagnostics()
+        );
+    }
+
+    #[test]
+    fn const_elements_coerce_into_clocked_tuple_slots() {
+        // Element-wise subsumption: a literal element fits a clocked slot.
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f {dom clk: Clock} (a: uint(8) @clk) -> (uint(8), uint(4)) @clk {
+                 return (a, 5);
+             }",
+        );
+        let inf = infer(&db, krate, def_of(&db, krate, "f"));
+        assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
+    }
+
+    #[test]
+    fn enumerate_is_a_real_method_returning_a_tuple_vec() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn f (v: Vec(3, uint(8))) -> Vec(3, (integer, uint(8))) { return v.enumerate(); }",
+        );
+        assert_eq!(kind_str(&return_ty(&db, krate, "f").unwrap()), "Vec");
+        let inf = infer(&db, krate, def_of(&db, krate, "f"));
+        assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
+    }
+
+    #[test]
+    fn mixed_domain_tuples_keep_per_element_clocks() {
+        // The fully-polymorphic case: two clocks in one tuple; projecting
+        // each element recovers its own domain, and crossing them into one
+        // add is a domain mismatch.
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn ok {dom a: Clock, dom b: Clock} (x: uint(8) @a, y: uint(8) @b)
+                 -> (uint(8) @a, uint(8) @b) {
+                 let t: (uint(8) @a, uint(8) @b) = (x, y);
+                 return (t.0, t.1);
+             }
+             fn bad {dom a: Clock, dom b: Clock} (x: uint(8) @a, y: uint(8) @b)
+                 -> uint(8) @a {
+                 let t: (uint(8) @a, uint(8) @b) = (x, y);
+                 return t.0 + t.1;
+             }",
+        );
+        let ok = infer(&db, krate, def_of(&db, krate, "ok"));
+        assert!(ok.diagnostics().is_empty(), "{:?}", ok.diagnostics());
+        let bad = infer(&db, krate, def_of(&db, krate, "bad"));
+        assert!(
+            !bad.diagnostics().is_empty(),
+            "crossing two domains through tuple projections must be diagnosed"
         );
     }
 }

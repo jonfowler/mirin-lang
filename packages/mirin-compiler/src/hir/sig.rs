@@ -1045,9 +1045,16 @@ impl<'db> TypeLowerer<'_, 'db> {
                 };
             }
             "integer" => {
+                // `integer` is elaboration-only — it has no clocked
+                // existence, so an unannotated slot is `@const` from birth
+                // (and is NOT lifted to a pure signature's `__Dom`).
                 return Type::Value {
                     kind: ValueKind::Integer,
-                    domain,
+                    domain: if domain == Domain::Unspecified {
+                        Domain::Const
+                    } else {
+                        domain
+                    },
                 };
             }
             "Clock" => return Type::Clock,
