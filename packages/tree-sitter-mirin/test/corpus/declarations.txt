@@ -67,7 +67,7 @@ fn multAdd
     body: (block
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           value: (expression
             (binary_expression
               left: (expression
@@ -78,7 +78,7 @@ fn multAdd
                   segment: (identifier)))))))
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           value: (expression
             (postfix_expression
               receiver: (path_expression
@@ -93,7 +93,7 @@ fn multAdd
                   (number)))))))
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           value: (expression
             (binary_expression
               left: (expression
@@ -214,7 +214,7 @@ mod math {
         body: (block
           (statement
             (let_statement
-              name: (identifier)
+              pattern: (identifier)
               value: (expression
                 (path_expression
                   segment: (identifier)))))))
@@ -261,7 +261,7 @@ mod math {
         body: (block
           (statement
             (let_statement
-              name: (identifier)
+              pattern: (identifier)
               value: (expression
                 (path_expression
                   segment: (identifier))))))))))
@@ -324,7 +324,7 @@ fn f() {
     body: (block
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           value: (expression
             (path_expression
               segment: (identifier)
@@ -356,7 +356,7 @@ pub use crate::a::b;
     body: (block
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           value: (expression
             (path_expression
               segment: (identifier)))))))
@@ -408,7 +408,7 @@ fn f {dom clk: Clock} (x: uint(8) @clk) {
     body: (block
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           type: (type_expression
             name: (identifier)
             (type_index
@@ -420,7 +420,7 @@ fn f {dom clk: Clock} (x: uint(8) @clk) {
               segment: (identifier)))))
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           type: (type_expression
             name: (identifier))
           value: (expression
@@ -450,7 +450,7 @@ fn top() -> uint(8) {
     body: (block
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           value: (expression
             (record_constructor_expression
               constructor: (identifier)
@@ -493,7 +493,7 @@ fn top() -> uint(8) {
     body: (block
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           type: (type_expression
             name: (identifier)
             (type_index
@@ -506,7 +506,7 @@ fn top() -> uint(8) {
             (number))))
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           type: (type_expression
             name: (identifier)
             (type_index
@@ -590,3 +590,129 @@ impl {dom clk: Clock} Stream8 {
               name: (identifier)
               domain: (identifier))))
         body: (block)))))
+
+========================================
+tuple types: ascription, nesting, domains, vec-of-tuple
+========================================
+
+fn g {dom a: Clock, dom b: Clock} (x: uint(8) @a, y: uint(4) @b, v: Vec(3, (bool, uint(2)))) -> (uint(8) @a, uint(4) @b) {
+    let t: (uint(8) @a, uint(4) @b) = (x, y);
+    let n: ((bool, bool), uint(4),) = ((true, true), y);
+    t
+}
+
+---
+
+(source_file
+  (function_definition
+    (identifier)
+    (named_parameter_section
+      (named_parameter
+        (identifier)
+        (type_expression
+          (identifier)))
+      (named_parameter
+        (identifier)
+        (type_expression
+          (identifier))))
+    (parameter_section
+      (parameter
+        (identifier)
+        (type_expression
+          (identifier)
+          (type_index
+            (type_argument
+              (number)))
+          (identifier)))
+      (parameter
+        (identifier)
+        (type_expression
+          (identifier)
+          (type_index
+            (type_argument
+              (number)))
+          (identifier)))
+      (parameter
+        (identifier)
+        (type_expression
+          (identifier)
+          (type_index
+            (type_argument
+              (number))
+            (type_argument
+              (tuple_type
+                (type_expression
+                  (identifier))
+                (type_expression
+                  (identifier)
+                  (type_index
+                    (type_argument
+                      (number))))))))))
+    (tuple_type
+      (type_expression
+        (identifier)
+        (type_index
+          (type_argument
+            (number)))
+        (identifier))
+      (type_expression
+        (identifier)
+        (type_index
+          (type_argument
+            (number)))
+        (identifier)))
+    (block
+      (statement
+        (let_statement
+          (identifier)
+          (tuple_type
+            (type_expression
+              (identifier)
+              (type_index
+                (type_argument
+                  (number)))
+              (identifier))
+            (type_expression
+              (identifier)
+              (type_index
+                (type_argument
+                  (number)))
+              (identifier)))
+          (expression
+            (tuple_expression
+              (expression
+                (path_expression
+                  (identifier)))
+              (expression
+                (path_expression
+                  (identifier)))))))
+      (statement
+        (let_statement
+          (identifier)
+          (tuple_type
+            (tuple_type
+              (type_expression
+                (identifier))
+              (type_expression
+                (identifier)))
+            (type_expression
+              (identifier)
+              (type_index
+                (type_argument
+                  (number)))))
+          (expression
+            (tuple_expression
+              (expression
+                (tuple_expression
+                  (expression
+                    (path_expression
+                      (identifier)))
+                  (expression
+                    (path_expression
+                      (identifier)))))
+              (expression
+                (path_expression
+                  (identifier)))))))
+      (expression
+        (path_expression
+          (identifier))))))

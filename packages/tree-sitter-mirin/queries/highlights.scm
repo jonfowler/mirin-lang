@@ -75,12 +75,15 @@
 (named_parameter name: (identifier) @variable.parameter)
 (parameter name: (identifier) @variable.parameter)
 
-; Local binding names
-(let_statement name: (identifier) @variable)
+; Local binding names (let/for binders are patterns: bare or tuple)
+(let_statement pattern: (identifier) @variable)
+(for_statement pattern: (identifier) @variable)
+(tuple_pattern (identifier) @variable)
 (var_statement (identifier) @variable)
 
 ; Field access and named argument field names
 (field_access field: (identifier) @property)
+(field_access field: (number) @property)
 (named_or_shorthand_argument name: (identifier) @property)
 (record_field_value name: (identifier) @property)
 (record_field_type name: (identifier) @property)

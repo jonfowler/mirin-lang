@@ -146,7 +146,12 @@ module.exports = grammar({
         field("name", $.identifier),
         optional(field("named_parameters", $.named_parameter_section)),
         field("parameters", $.parameter_section),
-        optional(seq("->", field("return_type", $.return_type_expression))),
+        optional(
+          seq(
+            "->",
+            field("return_type", choice($.return_type_expression, $.tuple_type)),
+          ),
+        ),
         ";",
       ),
 
@@ -155,7 +160,7 @@ module.exports = grammar({
         "const",
         field("name", $.identifier),
         ":",
-        field("type", $.type_expression),
+        field("type", $._type),
         ";",
       ),
 
@@ -186,7 +191,7 @@ module.exports = grammar({
         "const",
         field("name", $.identifier),
         ":",
-        field("type", $.type_expression),
+        field("type", $._type),
         "=",
         field("value", $.expression),
         ";",
@@ -218,7 +223,12 @@ module.exports = grammar({
         field("name", $.identifier),
         optional(field("named_parameters", $.named_parameter_section)),
         field("parameters", $.parameter_section),
-        optional(seq("->", field("return_type", $.return_type_expression))),
+        optional(
+          seq(
+            "->",
+            field("return_type", choice($.return_type_expression, $.tuple_type)),
+          ),
+        ),
         optional(field("where", $.where_clause)),
         choice(
           field("body", $.block),
@@ -257,7 +267,7 @@ module.exports = grammar({
           optional(
             seq(
               ":",
-              field("type", $.type_expression),
+              field("type", $._type),
               repeat(seq("+", field("bound", $.trait_bound))),
             ),
           ),
@@ -276,7 +286,7 @@ module.exports = grammar({
           optional(field("kind", choice("param", "dom"))),
           field("name", $.identifier),
           ":",
-          field("type", $.type_expression),
+          field("type", $._type),
           repeat(seq("+", field("bound", $.trait_bound))),
           optional(seq("=", field("default", $.expression))),
         ),
@@ -288,14 +298,14 @@ module.exports = grammar({
     port_body: ($) => seq("{", commaSep($.port_field), optional(","), "}"),
 
     record_field_type: ($) =>
-      seq(field("name", $.identifier), ":", field("type", $.type_expression)),
+      seq(field("name", $.identifier), ":", field("type", $._type)),
 
     port_field: ($) =>
       seq(
         field("direction", choice("in", "out")),
         field("name", $.identifier),
         ":",
-        field("type", $.type_expression),
+        field("type", $._type),
       ),
 
     // `{ stmt; ...; tail }` — used both as a function/if/when body and in
@@ -315,15 +325,15 @@ module.exports = grammar({
         $.expression_statement,
       ),
 
-    // `for x in v { … }` / `for i, x in v.enumerate() { … }` — structural
+    // `for x in v { … }` / `for (i, x) in v.enumerate() { … }` — structural
     // replication over a vector, emitted as a NAMED SV generate-for
-    // (planning/for_loops.md). The iterable uses the same restricted forms
-    // as if-conditions (a trailing `{` opens the body).
+    // (planning/for_loops.md). The binder is a pattern (planning/tuples.md);
+    // the iterable uses the same restricted forms as if-conditions (a
+    // trailing `{` opens the body).
     for_statement: ($) =>
       seq(
         "for",
-        field("a", $.identifier),
-        optional(seq(",", field("b", $.identifier))),
+        field("pattern", $._pattern),
         "in",
         field("iter", $._for_iterable),
         field("body", $.block),
@@ -345,6 +355,7 @@ module.exports = grammar({
         $.path_expression,
         $.number,
         $.parenthesized_expression,
+        $.tuple_expression,
       ),
 
     header_binary: ($) =>
@@ -385,7 +396,12 @@ module.exports = grammar({
       seq(
         field(
           "receiver",
-          choice($.path_expression, $.number, $.parenthesized_expression),
+          choice(
+            $.path_expression,
+            $.number,
+            $.parenthesized_expression,
+            $.tuple_expression,
+          ),
         ),
         repeat1(
           choice(
@@ -402,12 +418,20 @@ module.exports = grammar({
     let_statement: ($) =>
       seq(
         "let",
-        field("name", $.identifier),
-        optional(seq(":", field("type", $.type_expression))),
+        field("pattern", $._pattern),
+        optional(seq(":", field("type", $._type))),
         "=",
         field("value", $.expression),
         ";",
       ),
+
+    // `(a, b)` / `(a, (b, c))` in binder position — destructuring
+    // (planning/tuples.md). Identifiers only; lowering desugars patterns to
+    // field projections, so there is no pattern IR. Arity ≥ 2.
+    tuple_pattern: ($) =>
+      seq("(", $._pattern, ",", commaSep1($._pattern), optional(","), ")"),
+
+    _pattern: ($) => choice($.identifier, $.tuple_pattern),
 
     return_statement: ($) => seq("return", field("value", $.expression), ";"),
 
@@ -415,7 +439,7 @@ module.exports = grammar({
       seq(
         "var",
         commaSep1(field("name", $.identifier)),
-        optional(seq(":", field("type", $.type_expression))),
+        optional(seq(":", field("type", $._type))),
         optional(seq("=", field("value", $.expression))),
         ";",
       ),
@@ -451,7 +475,25 @@ module.exports = grammar({
     //   Bus(A)           — type-kinded parameter reference (TypeExpression)
     type_index: ($) => seq("(", commaSep1($.type_argument), ")"),
 
-    type_argument: ($) => choice($.type_expression, $.number, $.const_expression),
+    type_argument: ($) =>
+      choice($.type_expression, $.tuple_type, $.number, $.const_expression),
+
+    // Any type form: a named type or a tuple (planning/tuples.md).
+    _type: ($) => choice($.type_expression, $.tuple_type),
+
+    // `(A, B)` — a structural product type; each element may carry its own
+    // domain, and a trailing `@clk` is the default for elements without one
+    // (planning/tuples.md). Arity ≥ 2.
+    tuple_type: ($) =>
+      seq(
+        "(",
+        $._type,
+        ",",
+        commaSep1($._type),
+        optional(","),
+        ")",
+        optional(seq("@", field("domain", $.identifier))),
+      ),
 
     // The restricted const grammar in type positions: arithmetic over
     // literals, names, and field projections. Anything bigger (a call, an
@@ -507,6 +549,7 @@ module.exports = grammar({
         $.path_expression,
         $.number,
         $.parenthesized_expression,
+        $.tuple_expression,
         $.block,
         $.if_expression,
         $.when_expression,
@@ -606,7 +649,12 @@ module.exports = grammar({
         seq(
           field(
             "receiver",
-            choice($.path_expression, $.number, $.parenthesized_expression),
+            choice(
+            $.path_expression,
+            $.number,
+            $.parenthesized_expression,
+            $.tuple_expression,
+          ),
           ),
           repeat1(
             choice(
@@ -619,7 +667,10 @@ module.exports = grammar({
         ),
       ),
 
-    field_access: ($) => seq(".", field("field", $.identifier)),
+    // `.f` named projection, `.0` tuple projection (planning/tuples.md) —
+    // numbers never contain dots, so `x.0.1` lexes cleanly.
+    field_access: ($) =>
+      seq(".", field("field", choice($.identifier, $.number))),
 
     // `v[i]` — single-element indexing (planning/vectors.md).
     index_access: ($) => seq("[", field("index", $.expression), "]"),
@@ -705,6 +756,18 @@ module.exports = grammar({
       ),
 
     parenthesized_expression: ($) => seq("(", $.expression, ")"),
+
+    // `(a, b)` — tuple construction (planning/tuples.md). The comma makes
+    // the tuple: `(e)` is a parenthesized expression. Arity ≥ 2.
+    tuple_expression: ($) =>
+      seq(
+        "(",
+        $.expression,
+        ",",
+        commaSep1($.expression),
+        optional(","),
+        ")",
+      ),
 
     identifier: () => /[A-Za-z_][A-Za-z0-9_]*/,
     // Decimal / 0x hex / 0b binary, `_` separators after the first char
