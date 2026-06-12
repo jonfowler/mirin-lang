@@ -801,6 +801,15 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
     ) {
         let span = self.rel_span(pat);
         if pat.kind() == "tuple_pattern" {
+            // Destructuring an existing local needs no synthetic copy —
+            // project straight off it (an ascription still pins a synthetic
+            // so the declared type has a carrier).
+            if let ExprKind::Local(l) = self.exprs[value.0 as usize].kind
+                && declared_ty.is_none()
+            {
+                self.destructure_into(pat, source, l, stmts);
+                return;
+            }
             let synth = format!("__pat{}", self.locals.len());
             let local = self.alloc_local(&synth, LocalKind::Let, declared_ty, span);
             stmts.push(Stmt::Let { local, value });

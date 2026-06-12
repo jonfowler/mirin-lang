@@ -1374,6 +1374,18 @@ impl<'db> SvLower<'_, 'db> {
                     })
                     .collect()
             }
+            // `(a, b)`: element leaves prefixed with their index — the
+            // anonymous-struct shape (planning/tuples.md).
+            ExprKind::TupleLit(elems) => {
+                let elems = elems.clone();
+                let mut out = Vec::new();
+                for (i, e) in elems.iter().enumerate() {
+                    for (suf, v) in self.expr_leaves(*e) {
+                        out.push((join(&i.to_string(), &suf), v));
+                    }
+                }
+                out
+            }
             // `[e; N]`: SV replication pattern per leaf.
             ExprKind::VecRepeat { elem, len } => {
                 let len = len.clone();
@@ -2149,6 +2161,25 @@ fn flatten_leaves(
                 for sub in flatten_leaves(db, krate, &fty, drives, generics) {
                     out.push(Leaf {
                         suffix: join(&f.name, &sub.suffix),
+                        ty: sub.ty,
+                        drives: sub.drives,
+                    });
+                }
+            }
+            out
+        }
+        // A tuple flattens like a struct whose field names are element
+        // indices: `x.0.valid` → `x__0__valid` (planning/tuples.md). Port
+        // elements fold direction through their own flattening.
+        Type::Value {
+            kind: ValueKind::Tuple(elems),
+            ..
+        } => {
+            let mut out = Vec::new();
+            for (i, ety) in elems.iter().enumerate() {
+                for sub in flatten_leaves(db, krate, ety, drives, generics) {
+                    out.push(Leaf {
+                        suffix: join(&i.to_string(), &sub.suffix),
                         ty: sub.ty,
                         drives: sub.drives,
                     });

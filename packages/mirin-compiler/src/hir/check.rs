@@ -280,8 +280,8 @@ pub fn completeness<'db>(
     out
 }
 
-/// The field paths of a struct type down to non-struct leaves; empty for
-/// non-structs (ports deferred — direction folding decides their owed set).
+/// The field paths of a struct/tuple type down to non-aggregate leaves; empty
+/// for other types (ports deferred — direction folding decides their owed set).
 fn struct_leaf_paths<'db>(
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
@@ -291,6 +291,27 @@ fn struct_leaf_paths<'db>(
     use crate::hir::types::{Type, ValueKind};
     if depth > 16 {
         return Vec::new();
+    }
+    // A tuple's "fields" are its element indices: `r.0 = …` covers leaf "0"
+    // (planning/tuples.md).
+    if let Type::Value {
+        kind: ValueKind::Tuple(elems),
+        ..
+    } = ty
+    {
+        let mut out = Vec::new();
+        for (i, ety) in elems.iter().enumerate() {
+            let subs = struct_leaf_paths(db, krate, ety, depth + 1);
+            if subs.is_empty() {
+                out.push(vec![i.to_string()]);
+            } else {
+                for mut sub in subs {
+                    sub.insert(0, i.to_string());
+                    out.push(sub);
+                }
+            }
+        }
+        return out;
     }
     let Type::Value {
         kind: ValueKind::Struct { def, .. },
