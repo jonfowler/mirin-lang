@@ -11,6 +11,8 @@ This document defines the small Polar surface syntax subset that current example
 - named argument sections
 - positional argument sections
 - clocked types with `@clk`
+- `uint(n)` / `sint(n)` integer vectors (signed = two's complement; no
+  implicit signedness mixing) and compile-time `integer`
 - clock-associated resets with `Reset @clk`
 - `let` bindings (sequential, forward-only) and `var` signal declarations (block-scoped, supports cyclic equations)
 - component connection blocks: `=` for sinks (inputs), `=>` for sources (outputs, introduces a `var`-scoped name)

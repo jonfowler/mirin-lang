@@ -489,6 +489,10 @@
         "required": true,
         "types": [
           {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
             "type": "number",
             "named": true
           },

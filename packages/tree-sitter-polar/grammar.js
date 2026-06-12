@@ -444,7 +444,23 @@ module.exports = grammar({
         $.number,
         $.path_expression,
         $.parenthesized_expression,
+        // `if a < b { … }` — comparison with RESTRICTED operands: a full
+        // expression on the right would let `b { a }` parse as a (valid,
+        // shorthand) record constructor and eat the block. Operands beyond
+        // this set go in parens. Aliased to binary_expression so lowering
+        // is uniform.
+        alias($.condition_comparison, $.binary_expression),
       ),
+
+    condition_comparison: ($) =>
+      seq(
+        field("left", alias($._condition_operand, $.expression)),
+        field("operator", choice("==", "<")),
+        field("right", alias($._condition_operand, $.expression)),
+      ),
+
+    _condition_operand: ($) =>
+      choice($.number, $.path_expression, $.parenthesized_expression),
 
     // `when EVENT { … }` — Polar's primitive for registered state. EVENT
     // is conventionally `clk.posedge()`, but any expression yielding a

@@ -44,21 +44,37 @@ pub enum SvPortDirection {
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub struct SvType {
     pub width: Option<SvExpr>,
+    /// `logic signed [..]` — sint's two's-complement vectors.
+    pub signed: bool,
 }
 
 impl SvType {
     pub fn bit() -> Self {
-        Self { width: None }
+        Self {
+            width: None,
+            signed: false,
+        }
     }
     pub fn uint(width: SvExpr) -> Self {
-        Self { width: Some(width) }
+        Self {
+            width: Some(width),
+            signed: false,
+        }
+    }
+    pub fn sint(width: SvExpr) -> Self {
+        Self {
+            width: Some(width),
+            signed: true,
+        }
     }
     /// Render the optional packed range as ` [W-1:0]` (concrete widths
-    /// pre-subtracted to look idiomatic) or `""` for single-bit.
+    /// pre-subtracted to look idiomatic) or `""` for single-bit, with a
+    /// ` signed` qualifier first when applicable.
     pub fn bracketed(&self) -> String {
+        let sign = if self.signed { " signed" } else { "" };
         match &self.width {
-            Some(w) => format!(" [{}:0]", w_minus_1(w)),
-            None => String::new(),
+            Some(w) => format!("{sign} [{}:0]", w_minus_1(w)),
+            None => sign.to_owned(),
         }
     }
 }
@@ -152,6 +168,10 @@ pub enum SvBinOp {
     Eq,
     Lt,
 }
+
+/// `(-x)` — the one unary operator (Neg on sint).
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SvNeg(pub Box<SvExpr>);
 
 // ----- Display: the deterministic pretty-printer -----
 

@@ -275,6 +275,12 @@ fn type_arg_name<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> String {
             ..
         } => format!("uint{w}"),
         Type::Value {
+            kind: ValueKind::SInt {
+                width: ConstArg::Lit(w),
+            },
+            ..
+        } => format!("sint{w}"),
+        Type::Value {
             kind: ValueKind::Bool,
             ..
         } => "bool".to_owned(),
@@ -1026,6 +1032,13 @@ impl<'db> SvLower<'_, 'db> {
                 let r = self.expr_value(args[0].expr);
                 SvExpr::BinOp(op, Box::new(l), Box::new(r))
             }
+            // `-x` (Neg on sint): inline unary minus.
+            ExprKind::MethodCall { receiver, args, .. }
+                if args.is_empty() && self.prelude_neg(expr) =>
+            {
+                let x = self.expr_value(*receiver);
+                SvExpr::Lit(format!("(-{x})"))
+            }
             // `e.reg(rst, init)` in value position: a register into a fresh local.
             ExprKind::MethodCall { .. } if self.as_reg(expr).is_some() => {
                 let reg = self.as_reg(expr).unwrap();
@@ -1258,6 +1271,17 @@ impl<'db> SvLower<'_, 'db> {
             .unwrap_or_else(|| "clk".to_owned())
     }
 
+    /// Did this method call select the prelude `Neg` impl?
+    fn prelude_neg(&self, expr: ExprId) -> bool {
+        let Some(def) = self.inf.method_resolution(expr) else {
+            return false;
+        };
+        self.map
+            .trait_of_method(def)
+            .and_then(|t| self.map.def_data(t))
+            .is_some_and(|d| d.module == self.map.prelude() && d.name == "Neg")
+    }
+
     /// `Some(op)` if a method call resolved to a PRELUDE operator-trait impl
     /// method — codegen's one operator special case (rustc's enforce_builtin_
     /// binop shape): the selection is real trait dispatch, but the emission
@@ -1309,8 +1333,12 @@ impl<'db> SvLower<'_, 'db> {
                 })
             }
             // A prelude operator selection is NOT a user call — it lowers
-            // inline (`(a + b)`), never as an instance.
-            ExprKind::MethodCall { .. } if self.prelude_op(expr).is_some() => None,
+            // inline (`(a + b)`, `(-x)`), never as an instance.
+            ExprKind::MethodCall { .. }
+                if self.prelude_op(expr).is_some() || self.prelude_neg(expr) =>
+            {
+                None
+            }
             ExprKind::MethodCall { receiver, args, .. } if self.as_reg(expr).is_none() => {
                 {
                     let decl = self.inf.method_resolution(expr)?;
@@ -1855,6 +1883,10 @@ fn type_head_def<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> Option<DefId<'d
             ..
         } => prelude("uint"),
         Type::Value {
+            kind: ValueKind::SInt { .. },
+            ..
+        } => prelude("sint"),
+        Type::Value {
             kind: ValueKind::Bool,
             ..
         } => prelude("bool"),
@@ -1893,6 +1925,18 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
             ..
         } => match arg(*i) {
             Some(Term::Type(t)) => t.clone(),
+            _ => ty.clone(),
+        },
+        Type::Value {
+            kind: ValueKind::SInt {
+                width: ConstArg::Param(i),
+            },
+            domain,
+        } => match arg(*i) {
+            Some(Term::Const(c)) => Type::Value {
+                kind: ValueKind::SInt { width: c.clone() },
+                domain: *domain,
+            },
             _ => ty.clone(),
         },
         Type::Value {
@@ -1984,6 +2028,17 @@ fn strip_field(suffix: &str, field: &str) -> Option<String> {
 /// still unresolved (arithmetic / out-of-range index) falls back to 1-bit.
 fn sv_type(ty: &Type, generics: &[GenericParam]) -> SvType {
     match ty {
+        Type::Value {
+            kind: ValueKind::SInt { width },
+            ..
+        } => match width {
+            ConstArg::Lit(w) => SvType::sint(SvExpr::Lit(w.to_string())),
+            ConstArg::Param(i) => match generics.get(*i as usize) {
+                Some(g) => SvType::sint(SvExpr::Ident(g.name.clone())),
+                None => SvType::bit(),
+            },
+            _ => SvType::bit(),
+        },
         Type::Value {
             kind: ValueKind::UInt { width },
             ..

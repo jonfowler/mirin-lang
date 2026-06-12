@@ -873,8 +873,14 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             }
             "unary_expression" => {
                 // `-x` desugars to the prelude `Neg` trait's method
-                // (planning/numeric_literals.md L5).
+                // (planning/numeric_literals.md L5) — EXCEPT applied to a
+                // literal, where it constant-folds into a negative literal
+                // value (`let x: sint(4) = -8;` must fit-check -8, not 8 —
+                // the -128i8 case; the LEXER still has no negative literals).
                 let operand = self.lower_field_expr(node, "operand", source);
+                if let ExprKind::Number(v, base) = self.exprs[operand.0 as usize].kind {
+                    return self.alloc(ExprKind::Number(-v, base));
+                }
                 self.alloc(ExprKind::MethodCall {
                     receiver: operand,
                     method: "neg".to_owned(),

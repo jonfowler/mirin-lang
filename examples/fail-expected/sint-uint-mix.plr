@@ -1,0 +1,4 @@
+// Signedness never mixes implicitly: convert explicitly (future) or don't.
+fn f {dom clk: Clock} (a: sint(8) @clk, b: uint(8) @clk) -> sint(8) @clk {
+    a + b
+}

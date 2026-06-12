@@ -1,0 +1,6 @@
+// sint(4) holds -8..7: both ends checked at the literal.
+fn f() -> sint(4) {
+    let a: sint(4) = 8;
+    let b: sint(4) = -9;
+    a
+}

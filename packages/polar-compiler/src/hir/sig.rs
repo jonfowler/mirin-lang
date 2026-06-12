@@ -974,6 +974,14 @@ impl<'db> TypeLowerer<'_, 'db> {
                     domain,
                 };
             }
+            "sint" => {
+                return Type::Value {
+                    kind: ValueKind::SInt {
+                        width: self.lower_width(node, source),
+                    },
+                    domain,
+                };
+            }
             "bool" => {
                 return Type::Value {
                     kind: ValueKind::Bool,
