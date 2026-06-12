@@ -82,6 +82,9 @@ pub enum InferDiagnosticKind {
     CannotInferBound {
         trait_name: String,
     },
+    LiteralDoesNotFit { value: i128, width: i128 },
+    LiteralBadType { ty_name: String },
+    WidthNotInteger { ty_name: String },
     /// A uint width whose const evaluation came out negative.
     NegativeWidth {
         value: i128,
@@ -147,6 +150,18 @@ impl InferDiagnostic {
             InferDiagnosticKind::BoundOverflow { trait_name } => {
                 format!("overflow checking `{trait_name}` bound (recursion limit)")
             }
+            InferDiagnosticKind::LiteralDoesNotFit { value, width } => {
+                format!("`{value}` does not fit `uint({width})`")
+            }
+            InferDiagnosticKind::LiteralBadType { ty_name } => {
+                format!("a numeric literal cannot have type `{ty_name}`")
+            }
+            InferDiagnosticKind::WidthNotInteger { ty_name } => {
+                format!(
+                    "widths take `integer` values, found `{ty_name}` \
+                     (hardware arithmetic wraps; compile-time arithmetic must not)"
+                )
+            }
             InferDiagnosticKind::CannotInferBound { trait_name } => {
                 format!("cannot infer the type for a `{trait_name}` bound — add an annotation")
             }
@@ -196,6 +211,15 @@ impl InferDiagnostic {
     }
 }
 
+/// A literal-fit check that survived inference against a still-symbolic
+/// width: `value` must fit `uint(width)` — the backend emits an
+/// elaboration-time assert.
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
+pub struct FitResidual<'db> {
+    pub value: i128,
+    pub width: ConstArg<'db>,
+}
+
 /// The result of inferring one def: a type per expression and per local, the
 /// resolved method calls, and the diagnostics.
 #[derive(Clone, PartialEq, Eq, Default, salsa::Update)]
@@ -214,6 +238,9 @@ pub struct Inference<'db> {
     /// back end discharges Param-Param pairs as `initial assert (n == m)`;
     /// `const_eval` (Q4c) takes the rest.
     const_residuals: Vec<(ConstArg<'db>, ConstArg<'db>)>,
+    /// Literal-fit checks against still-symbolic widths: `(value, width)` —
+    /// the backend emits each as an elaboration-time assert.
+    fit_residuals: Vec<FitResidual<'db>>,
 }
 
 impl<'db> Inference<'db> {
@@ -241,6 +268,10 @@ impl<'db> Inference<'db> {
     /// `initial assert` and, later, `const_eval`.
     pub fn const_residuals(&self) -> &[(ConstArg<'db>, ConstArg<'db>)] {
         &self.const_residuals
+    }
+
+    pub fn fit_residuals(&self) -> &[FitResidual<'db>] {
+        &self.fit_residuals
     }
 }
 
@@ -417,6 +448,24 @@ impl<'db> InferenceTable<'db> {
     }
 }
 
+/// A short name for a type in literal/width diagnostics.
+fn describe_kind(ty: &Type<'_>) -> String {
+    match ty {
+        Type::Value { kind, .. } => match kind {
+            ValueKind::UInt { .. } => "uint".to_owned(),
+            ValueKind::Bool => "bool".to_owned(),
+            ValueKind::Reset => "Reset".to_owned(),
+            ValueKind::Event => "Event".to_owned(),
+            ValueKind::Integer => "integer".to_owned(),
+            ValueKind::Struct { .. } => "a struct".to_owned(),
+            ValueKind::Param(_) => "a type parameter".to_owned(),
+        },
+        Type::Port { .. } => "a port".to_owned(),
+        Type::Clock => "Clock".to_owned(),
+        _ => "this type".to_owned(),
+    }
+}
+
 struct InferCtx<'a, 'db> {
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
@@ -436,6 +485,11 @@ struct InferCtx<'a, 'db> {
     /// renders Const-kind entries as SV parameter bindings (`#(.n(8))`).
     call_substs: HashMap<ExprId, Vec<Term<'db>>>,
     diagnostics: Vec<InferDiagnostic>,
+    /// Literal inference vars (in creation order): unresolved ones fall
+    /// back to `integer` when the obligation fixpoint stalls.
+    literal_vars: Vec<InferVar>,
+    /// Literal-fit checks that survived against symbolic widths.
+    fit_residuals: Vec<FitResidual<'db>>,
     /// Undecided constraints, retried at end-of-body (`discharge_obligations`).
     obligations: Vec<Obligation<'db>>,
     /// Def-relative span of the expression currently under inference — attached
@@ -464,6 +518,9 @@ enum ObligationKind<'db> {
         self_ty: Type<'db>,
         depth: u32,
     },
+    /// A literal's value must fit the type its variable resolves to
+    /// (planning/numeric_literals.md L2).
+    LiteralFits { ty: Type<'db>, value: i128 },
 }
 
 /// The body locals referenced in const (width) position anywhere in `ty`.
@@ -526,6 +583,8 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             method_resolutions: HashMap::new(),
             call_substs: HashMap::new(),
             diagnostics: Vec::new(),
+            literal_vars: Vec::new(),
+            fit_residuals: Vec::new(),
             obligations: Vec::new(),
             current_span: Span::default(),
         }
@@ -578,6 +637,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             call_substs: self.call_substs,
             diagnostics: self.diagnostics,
             const_residuals,
+            fit_residuals: self.fit_residuals,
         }
     }
 
@@ -620,6 +680,40 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             for ob in pending {
                 match &ob.kind {
                     ObligationKind::ConstDomain(l) => {
+                        // L7 wrap guard: the width-position local must be
+                        // `integer`-typed (an unresolved literal binds here).
+                        let lt = self.local_types.get(l).cloned();
+                        if let Some(lt) = lt {
+                            if self.is_literal_ty(&lt) {
+                                let int = Type::Value {
+                                    kind: ValueKind::Integer,
+                                    domain: Domain::Const,
+                                };
+                                self.unify(&lt, &int);
+                            }
+                            let r = self.resolve_ty(&lt);
+                            match &r {
+                                // Hardware scalars are the wrap hazard; a
+                                // struct local is fine (only its integer
+                                // FIELDS are projected into widths).
+                                Type::Value {
+                                    kind:
+                                        ValueKind::UInt { .. }
+                                        | ValueKind::Bool
+                                        | ValueKind::Reset
+                                        | ValueKind::Event,
+                                    ..
+                                } => {
+                                    let other = &r;
+                                    self.current_span = ob.span;
+                                    let ty_name = describe_kind(other);
+                                    self.diag(InferDiagnosticKind::WidthNotInteger { ty_name });
+                                    progress = true;
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                        }
                         let dom = self
                             .local_types
                             .get(l)
@@ -659,6 +753,57 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                             progress = true;
                         }
                     }
+                    ObligationKind::LiteralFits { ty, value } => {
+                        let t = self.resolve_ty(ty);
+                        let value = *value;
+                        match &t {
+                            Type::Infer(_) => self.obligations.push(Obligation {
+                                span: ob.span,
+                                kind: ObligationKind::LiteralFits { ty: t, value },
+                            }),
+                            Type::Error
+                            | Type::Value {
+                                kind: ValueKind::Integer,
+                                ..
+                            } => progress = true,
+                            Type::Value {
+                                kind: ValueKind::UInt { width },
+                                ..
+                            } => {
+                                let w = self.resolve_const(width);
+                                match self.try_eval(&w) {
+                                    Some(n) => {
+                                        let fits = value >= 0
+                                            && (n >= 127 || (n >= 0 && value < (1i128 << n.clamp(0, 126))));
+                                        if !fits {
+                                            self.current_span = ob.span;
+                                            self.diag(InferDiagnosticKind::LiteralDoesNotFit {
+                                                value,
+                                                width: n,
+                                            });
+                                        }
+                                        progress = true;
+                                    }
+                                    // Width still symbolic/unresolved: retry;
+                                    // the drain turns symbolic survivors into
+                                    // elaboration-time fit residuals.
+                                    None => self.obligations.push(Obligation {
+                                        span: ob.span,
+                                        kind: ObligationKind::LiteralFits {
+                                            ty: t.clone(),
+                                            value,
+                                        },
+                                    }),
+                                }
+                            }
+                            other => {
+                                self.current_span = ob.span;
+                                let ty_name = describe_kind(other);
+                                self.diag(InferDiagnosticKind::LiteralBadType { ty_name });
+                                progress = true;
+                            }
+                        }
+                    }
                     ObligationKind::ConstEq(a, b) => {
                         let a = self.resolve_const(a);
                         let b = self.resolve_const(b);
@@ -684,6 +829,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 }
             }
             if !progress {
+                // The stall: bind every still-unresolved literal var to
+                // `integer` (rustc's fallback placement — after the main
+                // fixpoint, before error reporting) and run once more.
+                if self.fallback_literals() {
+                    continue;
+                }
                 break;
             }
         }
@@ -691,6 +842,21 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             match ob.kind {
                 ObligationKind::ConstEq(a, b) => residuals.push((a, b)),
                 ObligationKind::ConstDomain(_) => {}
+                ObligationKind::LiteralFits { ty, value } => {
+                    // A fit against a still-symbolic width survives as a
+                    // residual (→ elaboration-time assert); a never-resolved
+                    // width means the value never reaches hardware.
+                    if let Type::Value {
+                        kind: ValueKind::UInt { width },
+                        ..
+                    } = &ty
+                    {
+                        let w = self.resolve_const(width);
+                        if !matches!(w, ConstArg::Infer(_)) {
+                            self.fit_residuals.push(FitResidual { value, width: w });
+                        }
+                    }
+                }
                 ObligationKind::Trait { trait_def, .. } => {
                     // Still here ⇒ the self type never resolved.
                     self.current_span = ob.span;
@@ -812,6 +978,36 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 }
             }
         }
+    }
+
+    /// Bind every still-unresolved literal var to `integer @const`.
+    /// Returns whether anything was bound (→ run the fixpoint once more).
+    fn fallback_literals(&mut self) -> bool {
+        let vars = self.literal_vars.clone();
+        let mut bound = false;
+        for v in vars {
+            let t = self.resolve_ty(&Type::Infer(v));
+            if matches!(t, Type::Infer(_)) {
+                let int = Type::Value {
+                    kind: ValueKind::Integer,
+                    domain: Domain::Const,
+                };
+                self.unify(&Type::Infer(v), &int);
+                bound = true;
+            }
+        }
+        bound
+    }
+
+    /// Is this (resolved) type an unresolved literal variable?
+    fn is_literal_ty(&mut self, ty: &Type<'db>) -> bool {
+        let Type::Infer(root) = self.resolve_ty(ty) else {
+            return false;
+        };
+        let vars = self.literal_vars.clone();
+        vars.into_iter().any(|v| {
+            matches!(self.resolve_ty(&Type::Infer(v)), Type::Infer(r) if r == root)
+        })
     }
 
     fn trait_name(&self, trait_def: DefId<'db>) -> String {
@@ -950,12 +1146,6 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             | (ValueKind::Reset, ValueKind::Reset)
             | (ValueKind::Event, ValueKind::Event)
             | (ValueKind::Integer, ValueKind::Integer) => {}
-            // Literal polymorphism, approximated: a number literal infers as
-            // `uint` of a fresh width, but must also serve `integer` const
-            // positions (`pick(false, 8, 16)`). Until literals get their own
-            // inference type, `integer ~ uint` is accepted leniently.
-            (ValueKind::Integer, ValueKind::UInt { .. })
-            | (ValueKind::UInt { .. }, ValueKind::Integer) => {}
             (ValueKind::Struct { def: x, args: ax }, ValueKind::Struct { def: y, args: ay })
                 if x == y =>
             {
@@ -1197,14 +1387,24 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn infer_expr_inner(&mut self, body: &Body<'db>, expr: ExprId) -> Type<'db> {
         match &body.expr(expr).kind {
             ExprKind::Missing => Type::Error,
-            // A literal is `uint @const` of an inferred width — a fresh const var
-            // that unifies to the width its context demands.
-            ExprKind::Number(..) => {
-                let width = self.fresh_const();
-                Type::Value {
-                    kind: ValueKind::UInt { width },
-                    domain: Domain::Const,
+            // A literal is a fresh LITERAL-flavored inference variable plus a
+            // fit obligation (rustc's `{integer}` var, planning/numeric_literals.md
+            // L2): it unifies with `uint(n)` or `integer` as context demands,
+            // the fit check fires on resolution, and an unconstrained literal
+            // falls back to `integer` when the fixpoint stalls.
+            ExprKind::Number(v, _) => {
+                let t = self.fresh_type();
+                if let Type::Infer(var) = t {
+                    self.literal_vars.push(var);
                 }
+                self.obligations.push(Obligation {
+                    span: self.current_span,
+                    kind: ObligationKind::LiteralFits {
+                        ty: t.clone(),
+                        value: *v,
+                    },
+                });
+                t
             }
             ExprKind::Bool(_) => Type::Value {
                 kind: ValueKind::Bool,
@@ -1443,6 +1643,29 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         args: &[ConnArg],
     ) -> Type<'db> {
         let recv = self.infer_expr(body, receiver);
+        // The L3 rule (planning/numeric_literals.md): a LITERAL receiver
+        // takes its type from the first concrete numeric argument
+        // (`1 + x` adds at x's type), else `integer` (`-8`, `1 + 2`).
+        // Literal-var-only — not general bidirectional inference.
+        if self.is_literal_ty(&recv) {
+            let from_arg = args.first().and_then(|a| {
+                let at = self.infer_expr(body, a.expr);
+                let at = self.resolve_ty(&at);
+                matches!(
+                    at,
+                    Type::Value {
+                        kind: ValueKind::UInt { .. } | ValueKind::Integer,
+                        ..
+                    }
+                )
+                .then_some(at)
+            });
+            let target = from_arg.unwrap_or(Type::Value {
+                kind: ValueKind::Integer,
+                domain: Domain::Const,
+            });
+            self.unify(&recv, &target);
+        }
         let owner = self.owner_of(&recv);
 
         if let Some(owner) = owner
@@ -2086,10 +2309,14 @@ mod tests {
         );
         let inf = infer(&db, krate, def_of(&db, krate, "bad"));
         assert!(
-            inf.diagnostics()
-                .iter()
-                .any(|d| matches!(&d.kind, InferDiagnosticKind::ClockedWidth)),
-            "a clocked width must be rejected, got {:?}",
+            inf.diagnostics().iter().any(|d| matches!(
+                &d.kind,
+                // The L7 wrap guard rejects the hardware-typed width before
+                // the domain check even looks: uint values can't be widths
+                // at all (planning/numeric_literals.md).
+                InferDiagnosticKind::WidthNotInteger { .. }
+            )),
+            "a clocked uint width must be rejected, got {:?}",
             inf.diagnostics()
         );
     }

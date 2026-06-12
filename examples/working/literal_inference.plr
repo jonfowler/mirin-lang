@@ -1,0 +1,17 @@
+// verilator: -Gn=8
+// Literal inference (planning/numeric_literals.md L2/L3): a literal is an
+// inference variable that takes its type from context — `1 + x` adds at
+// x's width, the reg init fits-checks against uint(8), the width local
+// falls back to `integer`, and a literal against a SYMBOLIC width
+// (`x + 200` at uint(n)) survives as an elaboration-time fit assert.
+fn lits {dom clk: Clock, rstn: Reset @clk} (x: uint(8) @clk) -> uint(8) @clk {
+    let a = 1 + x;
+    let r = a.reg(rstn, 0xFF);
+    let j = -(-3);
+    let w: uint(j + 5) = r;
+    w
+}
+
+fn fill {param n: integer} (x: uint(n)) -> uint(n) {
+    x + 200
+}

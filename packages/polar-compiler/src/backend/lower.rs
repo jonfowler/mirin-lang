@@ -196,6 +196,16 @@ fn build_module<'db>(
         }
     }
 
+    // Literal-fit residuals (a literal against a still-symbolic width)
+    // discharge at elaboration: `initial assert (255 < (1 << n));`.
+    for fit in inf.fit_residuals() {
+        if let ConstArg::Param(i) = &fit.width {
+            lower.items.push(SvItem::InitialAssert {
+                cond: SvExpr::Lit(format!("{} < (1 << {})", fit.value, name_of(*i))),
+            });
+        }
+    }
+
     // Const-kind generics become SV `#(parameter int N)`, in declaration order.
     let parameters = sig
         .generic_params
