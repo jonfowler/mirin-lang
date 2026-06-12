@@ -35,6 +35,20 @@ wrong-width hazard: an unconstrained literal stays a compile-time number,
 and compile-time numbers don't synthesize. Width never comes from a
 default; it comes from context or explicit construction.
 
+Two clarifications (settled 2026-06):
+
+- **Inference, not subtyping.** A literal occurrence has exactly ONE
+  monomorphic type, found by unification — `?L` is an inference variable
+  with a restricted domain, not a polymorphic `Num a => a`. The language
+  keeps exactly one subtyping edge (`@const` below clocks); literals do
+  not add a second, for the same reason the domains doc rejects lattice
+  growth: edges degrade unification into ≤-solving.
+- **Types police where values live, never how const arithmetic
+  computes.** const_eval is arbitrary-precision integer math regardless
+  of inferred types. An ascription commits first: `let x: uint(8) = 512;
+  let y = x - 288;` errors AT the literal `512` even though 224 would
+  fit downstream — evaluation cannot launder a type commitment.
+
 ## Design
 
 ### Lexical: bases and separators **[L1]**
@@ -136,16 +150,29 @@ const arithmetic.
 - Grammar: prefix `-` at `PREC` above multiplicative (Rust: unary binds
   tighter than any binary arithmetic).
 
+### Widths require `integer` (the wrap guard)
+
+Hardware uint arithmetic wraps at its width (`uint(8)`: 200 + 100 = 44);
+const_eval's integer math does not (300). The one channel where the two
+could be OBSERVED disagreeing is a hardware-typed `@const` value flowing
+into a width position (`uint(x)` with `x: uint(8) @const` — const_eval
+would compute the unwrapped value). So width/const positions **require
+`integer`-typed values**: literals are fine (an unconstrained literal
+falls back to `integer`), a hardware-typed value is "widths take
+`integer`, found `uint(8)`" — explicit conversion is the future escape
+hatch. With this rule const_eval never folds uint-typed arithmetic at
+all, and the unbounded/wrapping divergence is unobservable. (rustc's
+CTFE wraps because u8 arithmetic IS u8-typed; widths are our one
+typed-value→pure-arithmetic channel, so we guard the channel.)
+
 ### const_eval and the backend
 
 - const_eval: literals already evaluate; `neg` joins the method-name
   arithmetic. Fit checks never reach const_eval (they're obligations).
-- Backend: a literal that resolved to `uint(n)` emits as today (decimal
-  SV literal against a sized port — Verilator's width lint is the
-  backstop). `uint(6)::4` emits `4`. Hex/binary forms emit as decimal —
-  **[L6]**: or preserve the base in emitted SV (`8'hFF`) for readability
-  of the generated code; preserving costs carrying the base through the
-  HIR.
+- Backend: a literal that resolved to `uint(n)` emits in its **source
+  base** (`0xFF` → `8'hFF`, `0b101` → `3'b101`, decimal stays decimal) —
+  the base rides as a field on the Number expr ([L6], settled).
+  `uint(6)::4` emits `4`. Verilator's width lint remains the backstop.
 
 ### Future, explicitly out of scope
 
@@ -175,6 +202,7 @@ const arithmetic.
   argument first (`1 + x`), as a literal-var-only rule.
 - **[L4]** `uint(6)::4` construction (the assoc-const namespace).
 - **[L5]** `-` is `Neg::neg`; `Neg for integer` only (no uint until sint).
-- **[L6]** Emit literals in their source base (`8'hFF`) or all-decimal?
-  Source-base is nicer to read in generated SV; costs carrying the base
-  through HIR. Recommend: carry the base (one byte on the Number expr).
+- **[L6]** SETTLED: emitted SV preserves the source base (`8'hFF`); the
+  base is a field on the Number expr.
+- **[L7]** SETTLED (from the L2 discussion): width/const positions
+  require `integer`-typed values — the wrap guard above.
