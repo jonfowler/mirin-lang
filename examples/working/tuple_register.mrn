@@ -1,0 +1,7 @@
+// A registered tuple: the var IS the register, one always_ff assignment
+// per leaf (r__0, r__1) — a tuple is an anonymous struct to the backend.
+fn regPair {dom clk: Clock} (a: uint(8) @clk, b: bool @clk) -> (uint(8), bool) @clk {
+    var r: (uint(8), bool) @clk;
+    r = when clk.posedge() { (a, b) };
+    r
+}

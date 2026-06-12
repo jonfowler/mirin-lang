@@ -1,0 +1,11 @@
+// A Vec of tuples flattens struct-of-arrays (ps__0[0:2] + ps__1[0:2]);
+// `for (i, p) in ps.enumerate()` reuses the genvar for i, and the tuple
+// binder destructures the element inside the generate block.
+fn pickPairs {dom clk: Clock} (ps: Vec(3, (bool, uint(8))) @clk) -> uint(8) @clk {
+    var acc: Vec(3, uint(8)) @clk;
+    for (i, p) in ps.enumerate() {
+        let (valid, data) = p;
+        acc[i] = if valid { data } else { uint(8)::0 };
+    }
+    acc[0] + acc[1] + acc[2]
+}

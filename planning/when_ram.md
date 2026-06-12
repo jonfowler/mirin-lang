@@ -40,4 +40,6 @@ mem[raddr]
   unchanged, tools happy.
 - `init` conflict checking (two inits of one place), file-based init
   ($readmemh-shaped) for big memories.
-- enumerate/replace become real methods when tuples land.
+- `enumerate` became a real method with tuples (planning/tuples.md);
+  `replace` is still builtin-typed — a real prelude signature needs
+  parametric self types.

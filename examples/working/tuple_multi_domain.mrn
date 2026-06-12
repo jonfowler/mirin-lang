@@ -1,0 +1,12 @@
+// verilator: -Wno-UNUSEDSIGNAL
+// A mixed-domain tuple: each element carries its OWN clock domain, and
+// projecting an element recovers it — the fully-polymorphic aggregate
+// (planning/tuples.md). Crossing t.0 and t.1 into one expression is a
+// domain error (see fail-expected/tuple-domain-cross.mrn).
+fn carryPair
+    {dom a: Clock, dom b: Clock}
+    (x: uint(8) @a, y: uint(8) @b)
+    -> (uint(8) @a, uint(8) @b) {
+    let t: (uint(8) @a, uint(8) @b) = (x, y);
+    (t.0, t.1)
+}

@@ -892,9 +892,23 @@ fn lower_fn_sig<'db>(
 /// named-section type application (`DF{clk}(…)`) — a port/struct applied to
 /// its domain arguments is fully domain-specified.
 fn type_has_domain(t: Node) -> bool {
-    t.child_by_field_name("domain").is_some()
+    if t.child_by_field_name("domain").is_some()
         || t.children(&mut t.walk())
             .any(|c| c.kind() == "type_named_args")
+    {
+        return true;
+    }
+    // A tuple type is annotated when EVERY element is (each element carries
+    // its own domain — planning/tuples.md).
+    if t.kind() == "tuple_type" {
+        let mut cursor = t.walk();
+        let elems: Vec<Node> = t
+            .children(&mut cursor)
+            .filter(|c| matches!(c.kind(), "type_expression" | "tuple_type"))
+            .collect();
+        return !elems.is_empty() && elems.into_iter().all(type_has_domain);
+    }
+    false
 }
 
 /// Does any type written in this signature carry an `@domain` annotation?

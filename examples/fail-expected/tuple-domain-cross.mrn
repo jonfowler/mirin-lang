@@ -1,0 +1,6 @@
+// Projections of a mixed-domain tuple recover per-element clocks; adding
+// them crosses domains: DomainMismatch.
+fn f {dom a: Clock, dom b: Clock} (x: uint(8) @a, y: uint(8) @b) -> uint(8) @a {
+    let t: (uint(8) @a, uint(8) @b) = (x, y);
+    return t.0 + t.1;
+}

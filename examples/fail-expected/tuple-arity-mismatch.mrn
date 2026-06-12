@@ -1,0 +1,4 @@
+// A 3-tuple where a 2-tuple is declared: TupleArityMismatch.
+fn f(a: uint(8), b: bool) -> (uint(8), bool) {
+    return (a, b, a);
+}

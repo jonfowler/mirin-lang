@@ -114,8 +114,10 @@ fn connectStream
 
 Mirin uses two distinct binding forms:
 
-- `let x = expr` — sequential lexical binding. Forward-only scope. Supports shadowing for pipeline-style code.
+- `let x = expr` — sequential lexical binding. Forward-only scope. Supports shadowing for pipeline-style code. The binder is a pattern: `let (a, b) = pair;` destructures (nested patterns allowed; planning/tuples.md).
 - `var x: T` — block-scoped signal declaration. Participates in cyclic equations for register feedback and mutual structural wiring.
+
+Tuples are Rust-shaped: `(A, B)` types (each element may carry its own `@domain`), `(a, b)` expressions, `x.0` projection, arity ≥ 2 (planning/tuples.md). `for` binders are patterns too: `for (i, x) in v.enumerate()`.
 
 State feedback example:
 

@@ -1,0 +1,8 @@
+// Tuple basics (planning/tuples.md): construction `(a, b)`, projection
+// `p.0`, and destructuring `let (x, y) = p` — which desugars to projection
+// lets, so the SV is plain per-leaf assigns (p__0, p__1, …).
+fn pairSwap {dom clk: Clock} (a: uint(8) @clk, b: uint(4) @clk) -> (uint(4), uint(8)) @clk {
+    let p = (a, b);
+    let (x, y) = p;
+    (y, p.0 + x - x)
+}

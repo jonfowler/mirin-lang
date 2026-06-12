@@ -1,0 +1,6 @@
+// Element-driven tuple var missing an element: field `1` is never driven.
+fn f {dom clk: Clock} (a: uint(8) @clk) -> (uint(8), bool) @clk {
+    var r: (uint(8), bool) @clk;
+    r.0 = a;
+    r
+}

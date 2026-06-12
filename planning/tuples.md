@@ -54,3 +54,7 @@ polymorphic types and the domain machinery.
 - `_` and literal patterns; match.
 - Tuples as trait `Self` (no operator impls on tuples).
 - Tuple equality — needs derived `Eq`; comes with trait derive work.
+- Reverse-direction fields of a RETURNED port (tuple-wrapped or not):
+  a returned port's consumer-side fields emit as outputs today — a
+  pre-existing limit of result emission, not of tuples; `out` params
+  are the directional path.

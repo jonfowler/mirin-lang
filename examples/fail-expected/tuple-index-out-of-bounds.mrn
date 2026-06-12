@@ -1,0 +1,4 @@
+// `.2` on a 2-tuple: TupleIndexOutOfBounds.
+fn f(a: uint(8), b: bool) -> uint(8) {
+    return (a, b).2;
+}

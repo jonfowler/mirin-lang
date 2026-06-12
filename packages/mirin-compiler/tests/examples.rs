@@ -48,6 +48,10 @@ fn examples() -> Vec<(String, String)> {
 /// functional type checker over it.
 const CLEAN: &[&str] = &[
     "ram.mrn",
+    "tuples.mrn",
+    "tuple_register.mrn",
+    "vec_of_tuples.mrn",
+    "tuple_multi_domain.mrn",
     "range_and_index_set.mrn",
     "for_loops.mrn",
     "for_instances.mrn",
@@ -186,6 +190,10 @@ fn dump_verilog() {
 /// this harness reads and forwards.
 const VERILATOR_CLEAN: &[&str] = &[
     "ram.mrn",
+    "tuples.mrn",
+    "tuple_register.mrn",
+    "vec_of_tuples.mrn",
+    "tuple_multi_domain.mrn",
     "range_and_index_set.mrn",
     "for_loops.mrn",
     "for_instances.mrn",
