@@ -73,3 +73,83 @@ fn f() -> uint(8) {
                   (type_argument
                     (number))))
               value: (number))))))))
+
+========================================
+vector construction and indexing
+========================================
+
+fn f (a: uint(4)) -> uint(4) {
+    let v: Vec(3, uint(4)) = [a, 2, 3];
+    let z: Vec(3, uint(4)) = [0; 3];
+    v[0]
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (let_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              (type_argument
+                (number))
+              (type_argument
+                (type_expression
+                  name: (identifier)
+                  (type_index
+                    (type_argument
+                      (number)))))))
+          value: (expression
+            (vec_literal
+              (expression
+                (path_expression
+                  segment: (identifier)))
+              (expression
+                (number))
+              (expression
+                (number))))))
+      (statement
+        (let_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              (type_argument
+                (number))
+              (type_argument
+                (type_expression
+                  name: (identifier)
+                  (type_index
+                    (type_argument
+                      (number)))))))
+          value: (expression
+            (vec_literal
+              elem: (expression
+                (number))
+              len: (expression
+                (number))))))
+      tail: (expression
+        (postfix_expression
+          receiver: (path_expression
+            segment: (identifier))
+          (index_access
+            index: (expression
+              (number))))))))

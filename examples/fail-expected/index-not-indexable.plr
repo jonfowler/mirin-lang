@@ -1,0 +1,4 @@
+// Only Vec and bits index.
+fn g(a: uint(4)) -> uint(4) {
+    a[0]
+}

@@ -621,6 +621,7 @@ impl<'db> Collector<'db> {
             ("integer", DefKind::BuiltinType),
             ("sint", DefKind::BuiltinType),
             ("bits", DefKind::BuiltinType),
+            ("Vec", DefKind::BuiltinType),
             ("reg", DefKind::Fn),
             ("posedge", DefKind::Fn),
         ];

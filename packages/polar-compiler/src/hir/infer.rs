@@ -96,6 +96,16 @@ pub enum InferDiagnosticKind {
     WidthNotInteger {
         ty_name: String,
     },
+    NotIndexable {
+        ty_name: String,
+    },
+    BadIndexType {
+        ty_name: String,
+    },
+    IndexOutOfBounds {
+        index: i128,
+        len: i128,
+    },
     /// A uint width whose const evaluation came out negative.
     NegativeWidth {
         value: i128,
@@ -175,6 +185,15 @@ impl InferDiagnostic {
                     "widths take `integer` values, found `{ty_name}` \
                      (hardware arithmetic wraps; compile-time arithmetic must not)"
                 )
+            }
+            InferDiagnosticKind::NotIndexable { ty_name } => {
+                format!("`{ty_name}` cannot be indexed")
+            }
+            InferDiagnosticKind::BadIndexType { ty_name } => {
+                format!("an index must be a uint or an integer, found `{ty_name}`")
+            }
+            InferDiagnosticKind::IndexOutOfBounds { index, len } => {
+                format!("index `{index}` is out of bounds (length {len})")
             }
             InferDiagnosticKind::CannotInferBound { trait_name } => {
                 format!("cannot infer the type for a `{trait_name}` bound — add an annotation")
@@ -469,6 +488,7 @@ fn describe_kind(ty: &Type<'_>) -> String {
             ValueKind::UInt { .. } => "uint".to_owned(),
             ValueKind::SInt { .. } => "sint".to_owned(),
             ValueKind::Bits { .. } => "bits".to_owned(),
+            ValueKind::Vec { .. } => "a vector".to_owned(),
             ValueKind::Bool => "bool".to_owned(),
             ValueKind::Reset => "Reset".to_owned(),
             ValueKind::Event => "Event".to_owned(),
@@ -1061,6 +1081,20 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             .any(|v| matches!(self.resolve_ty(&Type::Infer(v)), Type::Infer(r) if r == root))
     }
 
+    /// `v[3]` against `Vec(3, _)`: a ground-literal index out of a ground
+    /// length errors now; anything symbolic waits (planning/vectors.md).
+    fn check_index_bounds(&mut self, body: &Body<'db>, index: ExprId, len: &ConstArg<'db>) {
+        let ExprKind::Number(i, _) = body.expr(index).kind else {
+            return;
+        };
+        let len = self.resolve_const(len);
+        if let Some(n) = self.try_eval(&len)
+            && (i < 0 || i >= n)
+        {
+            self.diag(InferDiagnosticKind::IndexOutOfBounds { index: i, len: n });
+        }
+    }
+
     fn trait_name(&self, trait_def: DefId<'db>) -> String {
         self.map
             .def_data(trait_def)
@@ -1203,6 +1237,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 if x == y =>
             {
                 self.unify_args(ax, ay)
+            }
+            (ValueKind::Vec { len: la, elem: ea }, ValueKind::Vec { len: lb, elem: eb }) => {
+                self.unify_width(la.clone(), lb.clone());
+                let (ea, eb) = ((**ea).clone(), (**eb).clone());
+                self.unify(&ea, &eb);
             }
             (ValueKind::Param(i), ValueKind::Param(j)) if i == j => {}
             _ => self.diag(InferDiagnosticKind::TypeMismatch),
@@ -1482,6 +1521,98 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 kind: ValueKind::Bool,
                 domain: Domain::Const,
             },
+            // `[a, b, c]`: the elements unify; the length is theirs to count.
+            ExprKind::VecLit(elems) => {
+                let elems = elems.clone();
+                let elem_ty = self.fresh_type();
+                for e in &elems {
+                    let t = self.infer_expr(body, *e);
+                    self.subsume(&t, &elem_ty);
+                }
+                Type::Value {
+                    kind: ValueKind::Vec {
+                        len: ConstArg::Lit(elems.len() as i128),
+                        elem: Box::new(elem_ty),
+                    },
+                    domain: Domain::Unspecified,
+                }
+            }
+            // `[e; N]`.
+            ExprKind::VecRepeat { elem, len } => {
+                let len = len.clone();
+                let t = self.infer_expr(body, *elem);
+                Type::Value {
+                    kind: ValueKind::Vec {
+                        len,
+                        elem: Box::new(t),
+                    },
+                    domain: Domain::Unspecified,
+                }
+            }
+            // `v[i]`: Vec(N, A) → A; bits(N) → bool. The index is a literal,
+            // an integer, or a uint (a hardware select); its domain joins the
+            // base's via the result.
+            ExprKind::Index { base, index } => {
+                let (base, index) = (*base, *index);
+                let bt = self.infer_expr(body, base);
+                let it = self.infer_expr(body, index);
+                // A literal index resolves to integer (a static select).
+                if self.is_literal_ty(&it) {
+                    let int = Type::Value {
+                        kind: ValueKind::Integer,
+                        domain: Domain::Const,
+                    };
+                    self.unify(&it, &int);
+                }
+                let it = self.resolve_ty(&it);
+                if !matches!(
+                    &it,
+                    Type::Value {
+                        kind: ValueKind::UInt { .. } | ValueKind::Integer,
+                        ..
+                    } | Type::Error
+                ) {
+                    self.diag(InferDiagnosticKind::BadIndexType {
+                        ty_name: describe_kind(&it),
+                    });
+                }
+                let bt_r = self.resolve_ty(&bt);
+                match &bt_r {
+                    Type::Value {
+                        kind: ValueKind::Vec { len, elem },
+                        domain,
+                    } => {
+                        // Ground-literal index against a ground length:
+                        // bounds-check now.
+                        self.check_index_bounds(body, index, len);
+                        let mut t = (**elem).clone();
+                        if let Type::Value { domain: ed, .. } | Type::Port { domain: ed, .. } =
+                            &mut t
+                            && matches!(ed, Domain::Unspecified)
+                        {
+                            *ed = *domain;
+                        }
+                        t
+                    }
+                    Type::Value {
+                        kind: ValueKind::Bits { width },
+                        domain,
+                    } => {
+                        self.check_index_bounds(body, index, width);
+                        Type::Value {
+                            kind: ValueKind::Bool,
+                            domain: *domain,
+                        }
+                    }
+                    Type::Error => Type::Error,
+                    other => {
+                        self.diag(InferDiagnosticKind::NotIndexable {
+                            ty_name: describe_kind(other),
+                        });
+                        Type::Error
+                    }
+                }
+            }
             ExprKind::Local(l) => self.local_types.get(l).cloned().unwrap_or(Type::Error),
             ExprKind::Def(_) => Type::Error, // a bare item ref is not a value
             ExprKind::Call {
@@ -2225,6 +2356,7 @@ mod tests {
                 ValueKind::UInt { .. } => "uint",
                 ValueKind::SInt { .. } => "sint",
                 ValueKind::Bits { .. } => "bits",
+                ValueKind::Vec { .. } => "Vec",
                 ValueKind::Bool => "bool",
                 ValueKind::Reset => "reset",
                 ValueKind::Event => "event",

@@ -46,6 +46,9 @@ pub struct SvType {
     pub width: Option<SvExpr>,
     /// `logic signed [..]` — sint's two's-complement vectors.
     pub signed: bool,
+    /// Unpacked-array dims, outermost first — rendered AFTER the name
+    /// (`logic [3:0] v [0:2]`). Vec flattening fills these.
+    pub unpacked: Vec<SvExpr>,
 }
 
 impl SvType {
@@ -53,23 +56,34 @@ impl SvType {
         Self {
             width: None,
             signed: false,
+            unpacked: Vec::new(),
         }
     }
     pub fn uint(width: SvExpr) -> Self {
         Self {
             width: Some(width),
             signed: false,
+            unpacked: Vec::new(),
         }
     }
     pub fn sint(width: SvExpr) -> Self {
         Self {
             width: Some(width),
             signed: true,
+            unpacked: Vec::new(),
         }
     }
     /// Render the optional packed range as ` [W-1:0]` (concrete widths
     /// pre-subtracted to look idiomatic) or `""` for single-bit, with a
     /// ` signed` qualifier first when applicable.
+    /// The unpacked dims after the name: ` [0:N-1]` each.
+    pub fn unpacked_suffix(&self) -> String {
+        self.unpacked
+            .iter()
+            .map(|n| format!(" [0:{}]", w_minus_1(n)))
+            .collect()
+    }
+
     pub fn bracketed(&self) -> String {
         let sign = if self.signed { " signed" } else { "" };
         match &self.width {
@@ -222,14 +236,26 @@ impl fmt::Display for SvPort {
             SvPortDirection::Input => "input ",
             SvPortDirection::Output => "output",
         };
-        write!(f, "{dir} logic{} {}", self.ty.bracketed(), self.name)
+        write!(
+            f,
+            "{dir} logic{} {}{}",
+            self.ty.bracketed(),
+            self.name,
+            self.ty.unpacked_suffix()
+        )
     }
 }
 
 impl fmt::Display for SvItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Logic(d) => writeln!(f, "    logic{} {};", d.ty.bracketed(), d.name),
+            Self::Logic(d) => writeln!(
+                f,
+                "    logic{} {}{};",
+                d.ty.bracketed(),
+                d.name,
+                d.ty.unpacked_suffix()
+            ),
             Self::Assign { lhs, rhs } => writeln!(f, "    assign {lhs} = {rhs};"),
             Self::AlwaysFf(a) => write!(f, "{a}"),
             Self::AlwaysComb(a) => {

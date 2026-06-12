@@ -410,6 +410,7 @@ module.exports = grammar({
         $.binary_expression,
         $.unary_expression,
         $.typed_literal,
+        $.vec_literal,
         $.postfix_expression,
         $.record_constructor_expression,
         $.path_expression,
@@ -540,6 +541,7 @@ module.exports = grammar({
           repeat1(
             choice(
               $.field_access,
+              $.index_access,
               seq($.named_argument_list, $.argument_list),
               $.argument_list,
             ),
@@ -548,6 +550,24 @@ module.exports = grammar({
       ),
 
     field_access: ($) => seq(".", field("field", $.identifier)),
+
+    // `v[i]` — single-element indexing (planning/vectors.md).
+    index_access: ($) => seq("[", field("index", $.expression), "]"),
+
+    // `[a, b, c]` / `[e; N]` — vector construction (planning/vectors.md).
+    // The repeat form's length is a const expression (a literal or a
+    // Const-kind generic); it is required for parametric lengths.
+    vec_literal: ($) =>
+      choice(
+        seq("[", commaSep($.expression), optional(","), "]"),
+        seq(
+          "[",
+          field("elem", $.expression),
+          ";",
+          field("len", $.expression),
+          "]",
+        ),
+      ),
 
     named_argument_list: ($) =>
       seq("{", commaSep($.named_or_shorthand_argument), optional(","), "}"),

@@ -1,0 +1,21 @@
+// Vec(N, A) v1 (planning/vectors.md): list + repeat construction, static
+// and dynamic (mux) indexing, bits indexing → bool, and struct-of-arrays
+// flattening — Vec(2, Pix) becomes one unpacked array PER FIELD
+// (pixels__on[0:1], pixels__val[0:1]), assigned with SV patterns.
+struct Pix = pix {
+    on: bool,
+    val: uint(4),
+}
+
+fn f
+    {dom clk: Clock}
+    (a: uint(4) @clk, b: uint(4) @clk, sel: uint(2) @clk, raw: bits(8) @clk)
+    -> uint(4) @clk {
+    let v: Vec(3, uint(4)) = [a, b, 5];
+    let z: Vec(3, uint(4)) = [0; 3];
+    let pixels: Vec(2, Pix) = [pix { on = true, val = a }, pix { on = raw[0], val = b }];
+    let first = v[0];
+    let dyn_pick = v[sel];
+    let zz = z[1];
+    first + dyn_pick + zz
+}

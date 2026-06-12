@@ -1037,6 +1037,13 @@ impl<'db> SvLower<'_, 'db> {
                 // User-fn calls become module instances (Q5d).
                 SvExpr::Lit("0".to_owned())
             }
+            // `v[i]` in scalar position.
+            ExprKind::Index { base, index } => {
+                let (base, index) = (*base, *index);
+                let b = self.expr_value(base);
+                let i = self.expr_value(index);
+                SvExpr::Lit(format!("{b}[{i}]"))
+            }
             // An operator desugar (`a + b` → `a.add(b)`) that selected a
             // prelude impl: inline SV operator.
             ExprKind::MethodCall { receiver, args, .. }
@@ -1118,6 +1125,57 @@ impl<'db> SvLower<'_, 'db> {
                 self.expr_leaves(receiver)
                     .into_iter()
                     .filter_map(|(suf, e)| strip_field(&suf, &field).map(|rest| (rest, e)))
+                    .collect()
+            }
+            // `[a, b, c]` per element-type leaf: an SV assignment pattern
+            // over the elements' corresponding leaves.
+            ExprKind::VecLit(elems) => {
+                let elems = elems.clone();
+                let per_elem: Vec<Vec<(String, SvExpr)>> =
+                    elems.iter().map(|e| self.expr_leaves(*e)).collect();
+                let Some(first) = per_elem.first() else {
+                    return vec![(String::new(), SvExpr::Lit("'{}".to_owned()))];
+                };
+                first
+                    .iter()
+                    .enumerate()
+                    .map(|(li, (suffix, _))| {
+                        let parts: Vec<String> = per_elem
+                            .iter()
+                            .map(|leaves| {
+                                leaves
+                                    .get(li)
+                                    .map(|(_, e)| e.to_string())
+                                    .unwrap_or_else(|| "0".to_owned())
+                            })
+                            .collect();
+                        (
+                            suffix.clone(),
+                            SvExpr::Lit(format!("'{{{}}}", parts.join(", "))),
+                        )
+                    })
+                    .collect()
+            }
+            // `[e; N]`: SV replication pattern per leaf.
+            ExprKind::VecRepeat { elem, len } => {
+                let len = len.clone();
+                let n =
+                    match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &len) {
+                        Some(v) => v.to_string(),
+                        None => render_const_sv(&len, self.sig),
+                    };
+                self.expr_leaves(*elem)
+                    .into_iter()
+                    .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("'{{{n}{{{e}}}}}"))))
+                    .collect()
+            }
+            // `v[i]`: each base leaf, selected.
+            ExprKind::Index { base, index } => {
+                let (base, index) = (*base, *index);
+                let idx = self.expr_value(index);
+                self.expr_leaves(base)
+                    .into_iter()
+                    .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}[{idx}]"))))
                     .collect()
             }
             ExprKind::Record { ctor, fields } => {
@@ -1682,6 +1740,28 @@ fn flatten_leaves(
     generics: &[GenericParam],
 ) -> Vec<Leaf> {
     match ty {
+        // Struct-of-arrays (planning/vectors.md): one unpacked-array leaf
+        // per ELEMENT-TYPE leaf — Vec(3, Packet) → v__valid[0:2] + ….
+        Type::Value {
+            kind: ValueKind::Vec { len, elem },
+            ..
+        } => {
+            let dim = match len {
+                ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
+                ConstArg::Param(i) => match generics.get(*i as usize) {
+                    Some(g) => SvExpr::Ident(g.name.clone()),
+                    None => SvExpr::Lit("1".to_owned()),
+                },
+                _ => SvExpr::Lit("1".to_owned()),
+            };
+            flatten_leaves(db, krate, elem, drives, generics)
+                .into_iter()
+                .map(|mut leaf| {
+                    leaf.ty.unpacked.insert(0, dim.clone());
+                    leaf
+                })
+                .collect()
+        }
         Type::Value {
             kind: ValueKind::Struct { def, args },
             ..
@@ -2002,6 +2082,25 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
             args: subst_args(args, subst),
             domain: *domain,
         },
+        Type::Value {
+            kind: ValueKind::Vec { len, elem },
+            domain,
+        } => {
+            let len = match len {
+                ConstArg::Param(i) => match arg(*i) {
+                    Some(Term::Const(c)) => c.clone(),
+                    _ => len.clone(),
+                },
+                other => other.clone(),
+            };
+            Type::Value {
+                kind: ValueKind::Vec {
+                    len,
+                    elem: Box::new(subst_type(elem, subst)),
+                },
+                domain: *domain,
+            }
+        }
         other => other.clone(),
     }
 }
@@ -2064,6 +2163,22 @@ fn strip_field(suffix: &str, field: &str) -> Option<String> {
 /// still unresolved (arithmetic / out-of-range index) falls back to 1-bit.
 fn sv_type(ty: &Type, generics: &[GenericParam]) -> SvType {
     match ty {
+        Type::Value {
+            kind: ValueKind::Vec { len, elem },
+            ..
+        } => {
+            let mut t = sv_type(elem, generics);
+            let dim = match len {
+                ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
+                ConstArg::Param(i) => match generics.get(*i as usize) {
+                    Some(g) => SvExpr::Ident(g.name.clone()),
+                    None => SvExpr::Lit("1".to_owned()),
+                },
+                _ => SvExpr::Lit("1".to_owned()),
+            };
+            t.unpacked.insert(0, dim);
+            t
+        }
         Type::Value {
             kind: ValueKind::Bits { width },
             ..

@@ -81,6 +81,12 @@ pub enum ValueKind<'db> {
     Bits {
         width: ConstArg<'db>,
     },
+    /// `Vec(N, A)` — N elements of A (planning/vectors.md). Flattens
+    /// struct-of-arrays: one unpacked-array leaf per element-type leaf.
+    Vec {
+        len: ConstArg<'db>,
+        elem: Box<Type<'db>>,
+    },
     Bool,
     Reset,
     Event,
@@ -199,6 +205,13 @@ pub fn match_header<'db>(
                 ConstArg::Param(i) => bind(binding, *i, Term::Const(gw.clone())),
                 _ => gw == hw,
             },
+            (ValueKind::Vec { len: gl, elem: ge }, ValueKind::Vec { len: hl, elem: he }) => {
+                let len_ok = match hl {
+                    ConstArg::Param(i) => bind(binding, *i, Term::Const(gl.clone())),
+                    _ => gl == hl,
+                };
+                len_ok && match_header(ge, he, binding)
+            }
             (ValueKind::Bool, ValueKind::Bool)
             | (ValueKind::Reset, ValueKind::Reset)
             | (ValueKind::Event, ValueKind::Event)
@@ -509,6 +522,10 @@ pub fn super_fold_kind<'db, F: Folder<'db>>(f: &mut F, k: &ValueKind<'db>) -> Va
         },
         ValueKind::Bits { width } => ValueKind::Bits {
             width: f.fold_const(width),
+        },
+        ValueKind::Vec { len, elem } => ValueKind::Vec {
+            len: f.fold_const(len),
+            elem: Box::new(f.fold_type(elem)),
         },
         ValueKind::Struct { def, args } => ValueKind::Struct {
             def: *def,

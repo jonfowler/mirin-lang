@@ -124,6 +124,37 @@ impl<'a> Formatter<'a> {
             "module_definition" => self.module_def(n),
             "use_declaration" => self.use_decl(n),
 
+            "vec_literal" => {
+                if let Some(elem) = self.field(n, "elem") {
+                    return concat([
+                        text("["),
+                        self.doc(elem),
+                        text("; "),
+                        self.doc(self.field(n, "len").unwrap()),
+                        text("]"),
+                    ]);
+                }
+                let mut cursor = n.walk();
+                let elems: Vec<Doc> = n
+                    .named_children(&mut cursor)
+                    .filter(|c| c.kind() == "expression")
+                    .map(|c| self.doc(c))
+                    .collect();
+                let mut parts = vec![text("[")];
+                for (i, e) in elems.into_iter().enumerate() {
+                    if i > 0 {
+                        parts.push(text(", "));
+                    }
+                    parts.push(e);
+                }
+                parts.push(text("]"));
+                concat(parts)
+            }
+            "index_access" => concat([
+                text("["),
+                self.doc(self.field(n, "index").unwrap()),
+                text("]"),
+            ]),
             "typed_literal" => concat([
                 self.doc(self.field(n, "type").unwrap()),
                 text("::"),

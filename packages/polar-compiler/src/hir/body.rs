@@ -84,6 +84,12 @@ pub enum ExprKind<'db> {
         base: NumBase,
         ty: Type<'db>,
     },
+    /// `[a, b, c]` — vector construction (planning/vectors.md).
+    VecLit(Vec<ExprId>),
+    /// `[e; N]` — repeat construction; the length is a const expression.
+    VecRepeat { elem: ExprId, len: ConstArg<'db> },
+    /// `v[i]` — single-element indexing (Vec → elem; bits → bool).
+    Index { base: ExprId, index: ExprId },
     /// A boolean literal (`true` / `false`).
     Bool(bool),
     /// A resolved local (param / let / var).
@@ -847,6 +853,24 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 };
                 self.alloc(ExprKind::Number(v, base))
             }
+            "vec_literal" => {
+                // `[e; N]` repeat or `[a, b, c]` list.
+                if let Some(elem) = node.child_by_field_name("elem") {
+                    let elem = self.lower_expr(&elem, source);
+                    let len = node
+                        .child_by_field_name("len")
+                        .map(|l| self.lower_len_const(&l, source))
+                        .unwrap_or(ConstArg::Deferred);
+                    return self.alloc(ExprKind::VecRepeat { elem, len });
+                }
+                let mut cursor = node.walk();
+                let elems: Vec<ExprId> = node
+                    .children(&mut cursor)
+                    .filter(|c| c.kind() == "expression")
+                    .map(|c| self.lower_expr(&c, source))
+                    .collect();
+                self.alloc(ExprKind::VecLit(elems))
+            }
             "typed_literal" => {
                 let (value, base) = node
                     .child_by_field_name("value")
@@ -971,6 +995,39 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         ExprKind::Missing
     }
 
+    /// The `[e; N]` repeat length: a literal, a Const-kind generic, or a
+    /// const local — the same leaves the width fragment allows.
+    fn lower_len_const(&mut self, node: &Node, source: &str) -> ConstArg<'db> {
+        match node.kind() {
+            "expression" | "parenthesized_expression" => {
+                let mut cursor = node.walk();
+                match node.children(&mut cursor).find(|c| c.is_named()) {
+                    Some(inner) => self.lower_len_const(&inner, source),
+                    None => ConstArg::Deferred,
+                }
+            }
+            "number" => parse_number(&node_text(node, source))
+                .map(|(v, _)| ConstArg::Lit(v))
+                .unwrap_or(ConstArg::Deferred),
+            "path_expression" | "identifier" => {
+                let name = node_text(node, source);
+                let name = name.rsplit("::").next().unwrap_or(&name).to_owned();
+                if let Some(i) = self
+                    .generics
+                    .iter()
+                    .position(|g| g.name == name && g.kind == TermKind::Const)
+                {
+                    return ConstArg::Param(i as u32);
+                }
+                match self.lookup_local(&name) {
+                    Some(l) => ConstArg::Local(l),
+                    None => ConstArg::Deferred,
+                }
+            }
+            _ => ConstArg::Deferred,
+        }
+    }
+
     fn lower_binary(&mut self, node: &Node, source: &str) -> ExprId {
         let lhs = self.lower_field_expr(node, "left", source);
         let rhs = self.lower_field_expr(node, "right", source);
@@ -1014,6 +1071,11 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         while i < ops.len() {
             let op = ops[i];
             match op.kind() {
+                "index_access" => {
+                    let index = self.lower_field_expr(&op, "index", source);
+                    cur = self.alloc(ExprKind::Index { base: cur, index });
+                    i += 1;
+                }
                 "field_access" => {
                     let field = field_text(&op, "field", source);
                     if i + 1 < ops.len() && ops[i + 1].kind() == "argument_list" {

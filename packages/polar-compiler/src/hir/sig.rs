@@ -990,6 +990,26 @@ impl<'db> TypeLowerer<'_, 'db> {
                     domain,
                 };
             }
+            "Vec" => {
+                // `Vec(N, A)`: first positional arg is the const length,
+                // second the element type.
+                let args = vec_type_args(node);
+                let len = args
+                    .first()
+                    .map(|n| self.lower_const_expr(n, source))
+                    .unwrap_or(ConstArg::Deferred);
+                let elem = args
+                    .get(1)
+                    .map(|n| self.lower_type(n, source))
+                    .unwrap_or(Type::Error);
+                return Type::Value {
+                    kind: ValueKind::Vec {
+                        len,
+                        elem: Box::new(elem),
+                    },
+                    domain,
+                };
+            }
             "bool" => {
                 return Type::Value {
                     kind: ValueKind::Bool,
@@ -1433,6 +1453,28 @@ fn type_index<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     let mut cursor = node.walk();
     node.children(&mut cursor)
         .find(|c| c.kind() == "type_index")
+}
+
+/// All positional type-argument nodes of a type reference, in order.
+fn vec_type_args<'t>(node: &Node<'t>) -> Vec<Node<'t>> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    for index in node
+        .children(&mut cursor)
+        .filter(|c| c.kind() == "type_index")
+    {
+        let mut c2 = index.walk();
+        for arg in index
+            .children(&mut c2)
+            .filter(|c| c.kind() == "type_argument")
+        {
+            let mut c3 = arg.walk();
+            if let Some(inner) = arg.children(&mut c3).find(|c| c.is_named()) {
+                out.push(inner);
+            }
+        }
+    }
+    out
 }
 
 fn first_type_argument<'a>(node: &Node<'a>) -> Option<Node<'a>> {

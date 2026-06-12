@@ -357,6 +357,10 @@
           "named": true
         },
         {
+          "type": "vec_literal",
+          "named": true
+        },
+        {
           "type": "when_expression",
           "named": true
         }
@@ -628,6 +632,22 @@
         ]
       },
       "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "index_access",
+    "named": true,
+    "fields": {
+      "index": {
         "multiple": false,
         "required": true,
         "types": [
@@ -1218,6 +1238,10 @@
         },
         {
           "type": "field_access",
+          "named": true
+        },
+        {
+          "type": "index_access",
           "named": true
         },
         {
@@ -1961,6 +1985,42 @@
     }
   },
   {
+    "type": "vec_literal",
+    "named": true,
+    "fields": {
+      "elem": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      },
+      "len": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "verilog_block",
     "named": true,
     "fields": {
@@ -2128,6 +2188,14 @@
   },
   {
     "type": "@",
+    "named": false
+  },
+  {
+    "type": "[",
+    "named": false
+  },
+  {
+    "type": "]",
     "named": false
   },
   {
