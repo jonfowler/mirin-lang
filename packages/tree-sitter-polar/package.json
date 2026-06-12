@@ -1,9 +1,0 @@
-{
-  "name": "tree-sitter-polar",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Tree-sitter grammar for the Polar HDL",
-  "devDependencies": {
-    "tree-sitter-cli": "^0.24.7"
-  }
-}

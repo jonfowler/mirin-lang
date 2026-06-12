@@ -2,7 +2,7 @@
 
 Q5 takes the typed HIR (Q3/Q4) all the way to SystemVerilog, ports the old
 compiler's back-end passes onto queries, and — at parity — switches the CLI to
-`polar-db` and retires `polar-compiler`. This is the largest phase (≈ all of
+`mirin-db` and retires `mirin-compiler`. This is the largest phase (≈ all of
 Q2+Q3 combined), so it is planned as a *de-risking sequence*, not one drop.
 
 Grounded in `ir_pipeline.md` (the back-end pass table), `parametricity.md`
@@ -14,8 +14,8 @@ Grounded in `ir_pipeline.md` (the back-end pass table), `parametricity.md`
 - **The one deferred front-end piece is a Q5 prerequisite: call connections.**
   Module instantiation is **a `fn` call** whose callee has `out` params, wired by
   the call's named-argument section and out-arguments — there is no separate
-  "port literal" syntax. From `delay.plr`:
-  ```polar
+  "port literal" syntax. From `delay.mrn`:
+  ```mirin
   double_delay_named{rstn, downstream => ds}(upstream);   // named section: shorthand `rstn`, out-conn `downstream => ds`
   double_delay_pos{rstn}(ds, out => downstream);           // positional out-arg `out => downstream`
   ```
@@ -35,8 +35,8 @@ Grounded in `ir_pipeline.md` (the back-end pass table), `parametricity.md`
   item." The compiler should take an **optional top-entity argument** (default:
   every top-level item). Which exact set of instances gets emitted is not
   critical to pin down precisely now.
-- **Parity is the exit condition, loosely.** `polar-db`'s emitted `.sv` should be
-  *equivalent* to `polar-compiler`'s for the working corpus before the old crate
+- **Parity is the exit condition, loosely.** `mirin-db`'s emitted `.sv` should be
+  *equivalent* to `mirin-compiler`'s for the working corpus before the old crate
   is retired — exact byte-match is not the priority. The example harness
   (`tests/examples.rs`) is where this is asserted.
 
@@ -44,7 +44,7 @@ Grounded in `ir_pipeline.md` (the back-end pass table), `parametricity.md`
 
 - **Monomorphisation collector / shimming** (`rustc_monomorphize`): walk from
   roots, collect `MonoItem`s (`Instance = (DefId, GenericArgs)`), dedup by
-  interned instance, codegen each once. Polar: the same, with `MonoInstance`
+  interned instance, codegen each once. Mirin: the same, with `MonoInstance`
   interned like `DefId`. Type-kind args monomorphise; const generics stay
   polymorphic (rustc's const generics do too).
 - **MIR → codegen** ≈ flatten HIR → SV IR → text. The late tree→statement
@@ -109,14 +109,14 @@ simplest programs — then widen to instantiation, then parametrics.
 - **Q5b — SV IR + a vertical slice. _(done)_** Ported `svir/ir.rs` (combinational
   subset); added `sv_module(def)` + `verilog(crate)` for the **non-generic,
   non-aggregate, single-fn** scalar-combinational case. Driver forces `verilog`.
-  Byte-parity with `polar-compiler` on `add_constant`.
+  Byte-parity with `mirin-compiler` on `add_constant`.
 - **Q5c — registers + control flow. _(done)_** Extended the SV IR with
   `AlwaysFf`/`AlwaysComb` and lowered the clocked + control-flow forms directly
   in `backend/lower.rs` (no separate `lowered_body` query yet): `e.reg(rst,init)`
   → `always_ff` with reset (bound local is the register); `when ev { d }` →
   reset-less `always_ff` (synthetic `__block_N`); `if c {a} else {b}` →
   `always_comb`. Register clock derived from the value's domain. Shadowed `let`s
-  uniquified. Byte-parity with `polar-compiler` on `when_counter`/`pipeline`/
+  uniquified. Byte-parity with `mirin-compiler` on `when_counter`/`pipeline`/
   `shift_register`/`if_expression` modulo `__block_N` numbering; all verilator-
   clean. (The `lowered_body`/out-arg desugar + method→module split move to Q5d
   alongside instantiation, where they first matter.)
@@ -130,22 +130,22 @@ simplest programs — then widen to instantiation, then parametrics.
   callee `out` params to caller places, return → binding / `result` / a fresh
   `__call_N`); methods qualify their module name by owner (`Option__reg`). The
   driver emits every `fn`/method crate-wide (modules erased), prelude excluded.
-  Byte-equivalent to `polar-compiler` on `packet_struct`/`simple_port`/`delay`/
+  Byte-equivalent to `mirin-compiler` on `packet_struct`/`simple_port`/`delay`/
   `delay_impl`/`multi_call`/`use_across_modules`/`pub_use_reexport` (modulo
   synthetic `__call_N`/`__block_N` numbering and module ordering); all
   verilator-clean. **Deferred to Q5-mono:** parametric type/width substitution
   (`parameterized_port`, `parametric_*`, `equal_width_fn`'s `#(parameter …)`).
 - **Q5e — parity + CLI swap. _(done)_** Module emission switched to **source
   order** (across files by path, within a file by byte position) — the whole
-  non-parametric corpus is now byte-identical to `polar-compiler` modulo only the
+  non-parametric corpus is now byte-identical to `mirin-compiler` modulo only the
   synthetic `__call_N`/`__block_N` numbering (left as-is; semantically identical,
-  loose-parity bar). New `polar-db` **bin** (`src/main.rs`): recursive FS loader
+  loose-parity bar). New `mirin-db` **bin** (`src/main.rs`): recursive FS loader
   (root + `mod foo;` files into the `Vfs`), runs the query stack, prints
   diagnostics (exit 1) / IO errors (exit 2), writes `verilog(crate)` to
-  `<out>/<stem>.sv`; `--emit cst` debug aid. `polar-db` is now the primary CLI.
+  `<out>/<stem>.sv`; `--emit cst` debug aid. `mirin-db` is now the primary CLI.
   Verification: `non_parametric_corpus_is_verilator_clean` lints the 15
   non-parametric examples with verilator (`-Wall` minus cosmetic/expected lints),
-  gated on verilator being installed. **`polar-compiler` is kept as the parity
+  gated on verilator being installed. **`mirin-compiler` is kept as the parity
   oracle** (Jon's call) until Q5-mono lands — not retired yet.
 - **Q5-mono — monomorphisation.** Done in three sub-slices in `backend/lower.rs`
   (no separate `mono_body` query needed for the non-fn-generic cases):
@@ -172,7 +172,7 @@ simplest programs — then widen to instantiation, then parametrics.
     (worklist, appended after the source-ordered concrete modules). Omitted
     defaulted params wire their default at the instance (`sig::Param` gained
     `default`; `default_value` renders `high`→`1'b1` etc.). `parametric_struct_
-    extended` byte-identical to polar-compiler — **whole 22-example corpus now at
+    extended` byte-identical to mirin-compiler — **whole 22-example corpus now at
     parity** (non-parametric ones modulo synthetic `__call_N`/`__block_N`).
 
 Each slice promotes more of `tests/examples.rs` from "runs" to "emits matching
@@ -180,7 +180,7 @@ Verilog".
 
 ## 6. Decisions to settle
 
-1. **Verification of parity.** (a) **Diff against `polar-compiler`** — emit from
+1. **Verification of parity.** (a) **Diff against `mirin-compiler`** — emit from
    both, assert byte-equal per example (direct "at parity" check while the oracle
    still exists); (b) **golden `.sv` files** checked in; (c) **verilator** on the
    new output. (a) is the most direct and self-updating against the oracle; (c)

@@ -1,4 +1,4 @@
-"""inline_verilog.plr: hand-written enabled flop behind a Polar signature —
+"""inline_verilog.mrn: hand-written enabled flop behind a Mirin signature —
 checks the verbatim body and its `${…}` splices actually simulate."""
 
 import random

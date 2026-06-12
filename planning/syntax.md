@@ -1,6 +1,6 @@
 # First-pass syntax subset
 
-This document defines the small Polar surface syntax subset that current examples, tooling, and parser work should target.
+This document defines the small Mirin surface syntax subset that current examples, tooling, and parser work should target.
 
 ## Scope
 
@@ -112,7 +112,7 @@ fn connectStream
 
 ## Bindings and cycles
 
-Polar uses two distinct binding forms:
+Mirin uses two distinct binding forms:
 
 - `let x = expr` — sequential lexical binding. Forward-only scope. Supports shadowing for pipeline-style code.
 - `var x: T` — block-scoped signal declaration. Participates in cyclic equations for register feedback and mutual structural wiring.
@@ -144,7 +144,7 @@ The `in`/`out` direction keywords are optional and checked for consistency when 
 
 ## Modules
 
-Polar follows Rust's module system. The first implemented slice is the inline
+Mirin follows Rust's module system. The first implemented slice is the inline
 form — `mod name { items… }` — which introduces a named scope nesting the same
 item set (fns, structs, ports, impls, and further `mod`s):
 
@@ -157,10 +157,10 @@ mod arith {
 }
 ```
 
-File-based modules use `mod foo;`: the body is loaded from `foo.plr` in the
+File-based modules use `mod foo;`: the body is loaded from `foo.mrn` in the
 current file's directory, and that module's own children live under `foo/`
-(e.g. `main.plr`'s `mod util;` → `util.plr`; `util.plr`'s `mod cfg;` →
-`util/cfg.plr`). A `.plr` file joins the crate only when some ancestor declares
+(e.g. `main.mrn`'s `mod util;` → `util.mrn`; `util.mrn`'s `mod cfg;` →
+`util/cfg.mrn`). A `.mrn` file joins the crate only when some ancestor declares
 it with `mod`.
 
 A module is a name-resolution scope only — it does not change what Verilog is

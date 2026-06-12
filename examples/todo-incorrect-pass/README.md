@@ -8,7 +8,7 @@ a worklist. As each file starts failing for the documented reason, move it to
 
 The original Q7 phase-C worklist has fully flipped (`two-doms-fn`,
 `when_no_clk`, `cross-reset`, `clocked-width`, `mixed-struct-clocks` — all in
-`fail-expected/` now; `no-dom-reg` became `working/inferred_dom_reg.plr` when
+`fail-expected/` now; `no-dom-reg` became `working/inferred_dom_reg.mrn` when
 the elision rules settled bare body types as domain-inferred).
 
 The post-Q7 review worklist (2026-06) has also fully flipped:
@@ -20,7 +20,7 @@ The post-Q7 review worklist (2026-06) has also fully flipped:
   `num-overflow` (NumberTooLarge), `named-dom-cross` (named type args lower
   to real Domain args; the CDC is a DomainMismatch).
 - **Driver checking:** `double-drive-field` (per-leaf drive paths; overlap =
-  MultipleDrivers). Its passing twin `working/field_drivers.plr` wires a
+  MultipleDrivers). Its passing twin `working/field_drivers.mrn` wires a
   struct field-by-field.
 
 Currently empty.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reject a commit whose staged examples/working/*.plr are not polar-fmt-clean.
+# Reject a commit whose staged examples/working/*.mrn are not mirin-fmt-clean.
 #
 # Enable in a fresh clone with:  git config core.hooksPath .githooks
 # (this repo sets it; the line above is for new checkouts).
@@ -9,22 +9,22 @@ set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
 
-# Staged (added/copied/modified) .plr files under examples/working.
+# Staged (added/copied/modified) .mrn files under examples/working.
 mapfile -t files < <(
     git diff --cached --name-only --diff-filter=ACM -- examples/working \
-        | grep '\.plr$' || true
+        | grep '\.mrn$' || true
 )
 [ "${#files[@]}" -eq 0 ] && exit 0
 
 # Use a prebuilt formatter if present; otherwise build it once.
 bin=""
-for cand in target/release/polar-fmt target/debug/polar-fmt; do
+for cand in target/release/mirin-fmt target/debug/mirin-fmt; do
     [ -x "$cand" ] && bin="$cand" && break
 done
 if [ -z "$bin" ]; then
-    echo "pre-commit: building polar-fmt…" >&2
-    cargo build -q -p polar-fmt
-    bin="target/debug/polar-fmt"
+    echo "pre-commit: building mirin-fmt…" >&2
+    cargo build -q -p mirin-fmt
+    bin="target/debug/mirin-fmt"
 fi
 
 # Check the *staged* content of each file (not the working tree), so the hook
@@ -37,7 +37,7 @@ for f in "${files[@]}"; do
 done
 
 if [ "${#unformatted[@]}" -ne 0 ]; then
-    echo "pre-commit: these staged examples are not polar-fmt-formatted:" >&2
+    echo "pre-commit: these staged examples are not mirin-fmt-formatted:" >&2
     printf '  %s\n' "${unformatted[@]}" >&2
     echo >&2
     echo "  fix: $bin ${unformatted[*]}" >&2

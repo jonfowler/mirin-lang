@@ -18,8 +18,8 @@ Each `test_<example>.py` pairs a pytest entry point with `@cocotb.test()`
 coroutines in the same file. The pytest function calls `harness.simulate`,
 which:
 
-1. compiles `examples/working/<stem>.plr` with the polar compiler
-   (`cargo run -p polar-compiler`) → `sv/<stem>.sv`,
+1. compiles `examples/working/<stem>.mrn` with the mirin compiler
+   (`cargo run -p mirin-compiler`) → `sv/<stem>.sv`,
 2. builds the chosen top module under Verilator (binding SV parameters for
    parametric tops, e.g. `counter` at `bits=3` and `bits=8`),
 3. runs the file's cocotb coroutines against it.

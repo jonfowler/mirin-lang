@@ -1,4 +1,4 @@
-"""vectors.plr: vec construction + dynamic (mux) indexing, and the
+"""vectors.mrn: vec construction + dynamic (mux) indexing, and the
 dynamic-index bounds assertion actually firing on an out-of-range access
 (the harness builds with --assert)."""
 

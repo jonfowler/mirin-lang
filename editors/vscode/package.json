@@ -1,12 +1,13 @@
 {
-  "name": "polar-lsp",
-  "displayName": "Polar",
-  "description": "Polar HDL language support: syntax highlighting + the polar-lsp language server",
+  "name": "mirin-lsp",
+  "displayName": "Mirin",
+  "description": "Mirin HDL language support: syntax highlighting + the mirin-lsp language server",
   "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
   "publisher": "jonfowler",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jonfowler/polar.git",
+    "url": "https://github.com/jonfowler/mirin.git",
     "directory": "editors/vscode"
   },
   "engines": {
@@ -17,7 +18,7 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onLanguage:polar"
+    "onLanguage:mirin"
   ],
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -34,48 +35,48 @@
   },
   "contributes": {
     "configurationDefaults": {
-      "[polar]": {
-        "editor.defaultFormatter": "jonfowler.polar-lsp",
+      "[mirin]": {
+        "editor.defaultFormatter": "jonfowler.mirin-lsp",
         "editor.formatOnSave": true
       }
     },
     "languages": [
       {
-        "id": "polar",
+        "id": "mirin",
         "aliases": [
-          "Polar",
-          "polar"
+          "Mirin",
+          "mirin"
         ],
         "extensions": [
-          ".plr"
+          ".mrn"
         ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
-        "language": "polar",
-        "scopeName": "source.polar",
-        "path": "./syntaxes/polar.tmLanguage.json"
+        "language": "mirin",
+        "scopeName": "source.mirin",
+        "path": "./syntaxes/mirin.tmLanguage.json"
       },
       {
-        "scopeName": "markdown.polar.codeblock",
-        "path": "./syntaxes/polar.markdown-injection.json",
+        "scopeName": "markdown.mirin.codeblock",
+        "path": "./syntaxes/mirin.markdown-injection.json",
         "injectTo": ["text.html.markdown"],
         "embeddedLanguages": {
-          "meta.embedded.block.polar": "polar"
+          "meta.embedded.block.mirin": "mirin"
         }
       }
     ],
     "configuration": {
-      "title": "Polar",
+      "title": "Mirin",
       "properties": {
-        "polar.server.path": {
+        "mirin.server.path": {
           "type": "string",
-          "default": "polar-lsp",
-          "description": "Path to the polar-lsp language server binary. Defaults to `polar-lsp` on your PATH; set an absolute path (e.g. the repo's target/release/polar-lsp) otherwise."
+          "default": "mirin-lsp",
+          "description": "Path to the mirin-lsp language server binary. Defaults to `mirin-lsp` on your PATH; set an absolute path (e.g. the repo's target/release/mirin-lsp) otherwise."
         },
-        "polar.trace.server": {
+        "mirin.trace.server": {
           "type": "string",
           "enum": [
             "off",
@@ -83,7 +84,7 @@
             "verbose"
           ],
           "default": "off",
-          "description": "Trace the JSON-RPC traffic between VS Code and polar-lsp."
+          "description": "Trace the JSON-RPC traffic between VS Code and mirin-lsp."
         }
       }
     }

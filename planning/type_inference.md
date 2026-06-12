@@ -1,9 +1,9 @@
 # Type and domain inference
 
-This document describes Polar's type-checking pass: how HIR is annotated with concrete types, and which constraints are deferred for later passes. It draws on two pieces of prior art:
+This document describes Mirin's type-checking pass: how HIR is annotated with concrete types, and which constraints are deferred for later passes. It draws on two pieces of prior art:
 
 - **rustc's `InferCtxt`** for the engineering shape — a per-function context that owns inference-variable substitution tables, performs eager unification when an expression is visited, and queues obligations it can't yet solve into a fulfillment context.
-- **OutsideIn(X)** (Vytiniotis et al., 2011) for the conceptual layering — the constraint generator is uniform; the solver is parameterised by the constraint domain X. Polar has two such domains today (types and clock domains), and others may appear later (widths, const-eval).
+- **OutsideIn(X)** (Vytiniotis et al., 2011) for the conceptual layering — the constraint generator is uniform; the solver is parameterised by the constraint domain X. Mirin has two such domains today (types and clock domains), and others may appear later (widths, const-eval).
 
 The first-pass goal is end-to-end type-checking of every example in `examples/`, with a structure that generalises cleanly to parametric structs.
 
@@ -73,7 +73,7 @@ We deliberately separate the pools rather than tagging a single "var" enum. Type
 
 When we walk `(acc + data)`, we know immediately that the two operands' types must match. Equating them on the spot lets *one* of them (e.g. a literal `0` of type `uint(?N) @const`) propagate concrete information into the other branch (`uint(8) @clk`). Deferring this to a post-walk solver loses that local context and produces worse errors.
 
-The cases that genuinely *can't* be solved at the walk site go onto the obligation queue. In rustc this is the fulfillment context for trait obligations; in Polar the same shape handles things like "two widths I cannot evaluate yet are supposed to be equal."
+The cases that genuinely *can't* be solved at the walk site go onto the obligation queue. In rustc this is the fulfillment context for trait obligations; in Mirin the same shape handles things like "two widths I cannot evaluate yet are supposed to be equal."
 
 ### Why the obligation queue exists at all
 
@@ -133,7 +133,7 @@ The walker computes a type for each expression and records it in `expr_types`. R
 
 For `Call`, inferable named params (`dom clk`) become *fresh `DomainVar`s* at the call site. Each arg's inferred domain unifies with the corresponding param's domain — which threads `dom clk` through `rstn`'s `Reset @clk`, the receiver's `self @clk`, and the result's `uint(N) @clk` until they all agree.
 
-This is exactly the substitution rustc applies when instantiating a generic function: fresh variables stand in for each generic parameter, get unified with use sites, and the answer is read out at the end. Polar's "generics" right now are the inferable `dom clk` named params and the `uint(N)` widths; parametric structs (`struct Bus(A: Type)`) will plug in here unchanged when they return — they just add more fresh-variable slots at instantiation.
+This is exactly the substitution rustc applies when instantiating a generic function: fresh variables stand in for each generic parameter, get unified with use sites, and the answer is read out at the end. Mirin's "generics" right now are the inferable `dom clk` named params and the `uint(N)` widths; parametric structs (`struct Bus(A: Type)`) will plug in here unchanged when they return — they just add more fresh-variable slots at instantiation.
 
 Note that operators are also calls. `a + b` lowers to a `HirCall` against the prelude `+` DefId; `.reg(...)` likewise. There is no `HirExprKind::Binary` and no method-call shape at the HIR layer. `+`, `*`, `reg`, and `posedge` all have polymorphic signatures handled uniformly by the substitution path: each is a synthesised prelude `HirFn` with its `generic_params` declared on the resolve-side def, and `build_sig_subst` allocates fresh `ValueKind::Var`, `ConstVar`, or `DomainVar` per kind. No bespoke paths remain — see `planning/parametricity.md` for the const-kind inference design.
 
@@ -211,7 +211,7 @@ pub enum DomainKind { ClockDomain }   // currently only this; future: NegativeEd
 
 At a call site, the callee's residuals get their `Param(i)` references rewritten through the call's `GenericArgs`, then pushed as fresh `ConstEq` obligations in the caller's queue — the caller's own discharge loop handles them. This propagates residuals up the call graph until they hit a monomorphic instantiation, where `lower_to_sv` emits surviving residuals as `initial begin assert(lhs == rhs); end` (Phase D′).
 
-This is structurally the same as GHC's `Wanted` constraint solver and rustc's "select all obligations" loop in `FulfillmentContext`. The Polar twist: residuals that *do* survive to monomorphisation become SystemVerilog elaboration-time checks rather than runtime exceptions.
+This is structurally the same as GHC's `Wanted` constraint solver and rustc's "select all obligations" loop in `FulfillmentContext`. The Mirin twist: residuals that *do* survive to monomorphisation become SystemVerilog elaboration-time checks rather than runtime exceptions.
 
 ## Errors
 

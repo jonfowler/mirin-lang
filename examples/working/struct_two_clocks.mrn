@@ -1,0 +1,15 @@
+// verilator: -Wno-UNUSEDSIGNAL
+// One lifted struct instantiated at two different clocks in the same item.
+// `Pair` lifts to `Pair{dom __Dom: Domain}`; `Pair @c1` and `Pair @c2` are
+// distinct instantiations, and field access projects the receiver's domain
+// (`p.a + p.b` is wholly on `c1`). Must stay passing through Q7 phase C —
+// the failing twin (mixing c1/c2 fields in ONE Pair) is
+// todo-incorrect-pass/mixed-struct-clocks.mrn.
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn sum_first {dom c1: Clock, dom c2: Clock} (p: Pair @c1, q: Pair @c2) -> uint(8) @c1 {
+    p.a + p.b
+}

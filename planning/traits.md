@@ -57,7 +57,7 @@ domain lattice, specialization, HRTB, auto traits, implied bounds.
 The compiler is rustc-shaped and the trait system follows rustc's old
 solver, minus its documented mistakes. Mapping:
 
-| Polar | rustc |
+| Mirin | rustc |
 |---|---|
 | `TraitRef { trait_def, args: Vec<Term> }` | `ty::TraitRef` (kinded GenericArgs) |
 | `predicates_of(def)` query | `predicates_of` |
@@ -84,7 +84,7 @@ Deliberate divergences (designing out rustc's pain):
   the complexity lives.)
 - **No literal defaulting pass.** Rustc's integer fallback (`{integer}` →
   `i32`) interleaves with trait solving and breeds order-dependence.
-  Polar literals take width from context or error.
+  Mirin literals take width from context or error.
 - **No associated types in the core.** Operators return `Self` (widths
   are value-level consts, so `uint(n) + uint(n) -> uint(n)` needs no
   `Output`). Associated *consts* are in scope; associated types wait for
@@ -95,7 +95,7 @@ Deliberate divergences (designing out rustc's pain):
 
 ### Trait declarations
 
-```polar
+```mirin
 trait Add {
     fn add(self, other: Self) -> Self;
 }
@@ -126,7 +126,7 @@ One rule, extending the existing ascription-determines-kind scheme
 Type): **a trait name in a `param` ascription is a Type-kind param with
 that bound**.
 
-```polar
+```mirin
 fn sum  {param T: Add}        (a: T, b: T) -> T { a.add(b) }
 fn wide {param T: Add + Bits} (x: T) -> uint(T::width) { x.pack() }
 ```
@@ -137,7 +137,7 @@ Bounds that don't fit the inline form go in a `where` clause after the
 signature — the same clause that `domain_checking_redux.md` needs for
 `T @ D`:
 
-```polar
+```mirin
 fn delay {dom clk: Clock, param T: Bits} (x: T) -> T
     where T @ clk
 { ... }
@@ -153,7 +153,7 @@ Inherent impls keep today's syntax (`impl Option { … }`,
 impl-level generics implicitly applied to the owner). Trait impls need
 the binder *before* the self type, since the self type mentions it:
 
-```polar
+```mirin
 impl Add for uint8 { ... }                          // concrete (T2)
 
 impl {param n: integer} Add for uint(n) {           // generic (T3)
@@ -290,7 +290,7 @@ functions. **[D4]**
 
 Each slice is independently committable with examples + fail-examples.
 Status (2026-06-12): ALL SLICES LANDED (T1-T5). T5 took the prelude-source
-route (Jon's call): `src/prelude.plr` — operator traits (Add/Sub/Mul/Eq/Ord)
+route (Jon's call): `src/prelude.mrn` — operator traits (Add/Sub/Mul/Eq/Ord)
 and builtin impls as real, checked code, injected into every crate by the
 vfs and collected into the `$prelude` module. `a + b` desugars to `a.add(b)`
 in body lowering; dispatch is ordinary trait machinery; codegen keeps the
@@ -344,7 +344,7 @@ What transfers from r-a's trait stack to ours, beyond the rustc shape:
 - **Do NOT memoize per-goal solves in salsa.** r-a hit this twice: salsa
   bookkeeping per canonical goal is a memory pathology. Their mature
   position: solver-internal provisional cache + (if ever needed) a
-  revision-scoped side cache. For Polar's goal volume, no cache at all is
+  revision-scoped side cache. For Mirin's goal volume, no cache at all is
   the right v1.
 - **Impl maps are a per-crate query keyed by trait, with a self-type
   fingerprint (head constructor) index** — candidate assembly is a

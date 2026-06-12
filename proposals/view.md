@@ -2,7 +2,7 @@
 
 ## Motivation
 
-Polar's ports carry per-field direction: a `DF` interface
+Mirin's ports carry per-field direction: a `DF` interface
 declares which side drives which field, and direction-checking enforces that
 each field is driven exactly once. But code that only *observes* a port —
 without driving anything — is common: assertions, monitor logic, predicates
@@ -19,7 +19,7 @@ of declared direction.
 `view` is a **binding-form keyword**, in the same slot as `in` / `out` —
 before the name, not on the type. The type stays the port:
 
-```polar
+```mirin
 fn trans (view self: DF @clk) -> bool {
   self.valid && self.ready
 }
@@ -40,7 +40,7 @@ who drives what.
 
 ## Worked example: handshake-transfer predicate on `DF`
 
-```polar
+```mirin
 port DF = df {
   in  ready: bool,
   out valid: bool,
@@ -105,7 +105,7 @@ change.
 A natural extension is the callee-provided view — the callee surfaces a view
 of one of its internal ports, exposed as an optional named-section output:
 
-```polar
+```mirin
 fn pipeline { dom clk: Clock, out view probe: DF @clk = unattached } (...)
 ```
 

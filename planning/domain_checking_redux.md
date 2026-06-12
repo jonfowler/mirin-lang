@@ -19,7 +19,7 @@ Rust it says so and why.
 The immediate idea is to incorporate domains into almost all types so they have to be provided
 to construct that type. For instance:
 
-```polar
+```mirin
 // Note `type` is hypothetical syntax for a type declaration which isn't a struct
 type uint{dom D : Clock}(N: integer) -> Type
 
@@ -28,7 +28,7 @@ type bool{dom D : Clock} -> Type
 
 A struct also has a similar structure:
 
-```polar
+```mirin
 struct Bus{dom D : Clock}(N: integer) -> Type = bus {
    valid: bool{D},
    data: uint{D}(N)
@@ -38,7 +38,7 @@ struct Bus{dom D : Clock}(N: integer) -> Type = bus {
 So almost all types have a domain parameter. The main exception are domains themselves, which
 do have a domain parameter but it's not required to construct them:
 
-```polar
+```mirin
 type Clock{} -> Type
 ```
 
@@ -46,7 +46,7 @@ type Clock{} -> Type
 
 Polymorphic types are the hard case. We want to write:
 
-```polar
+```mirin
 type Write{dom D: Clock}(T: Type) -> Type = write {
    valid: bool{D},
    data: T{D}
@@ -56,7 +56,7 @@ type Write{dom D: Clock}(T: Type) -> Type = write {
 But now `T` is applied to a domain, so its declared kind must really be a *function* from
 domains to types:
 
-```polar
+```mirin
 type Write{dom D: Clock}(T: Fn{dom D: Clock} -> Type) -> Type = ...
 ```
 
@@ -100,7 +100,7 @@ There are two distinct forms, and only one of them is application:
 
 No `DomType` kind, no shadow definitions, no name mangling. The polymorphic struct becomes:
 
-```polar
+```mirin
 // provisional `where` syntax for domain bounds
 struct Write{dom D: Clock}(T: Type) where T @ D = write {
    valid: bool{D},
@@ -113,7 +113,7 @@ inference just `Write(uint(8)) @clk`, which solves both domain slots at once.
 
 ### Tuples, once
 
-```polar
+```mirin
 struct Tuple(T: Type, U: Type) -> Type = tuple {
    _1: T,
    _2: U,
@@ -131,7 +131,7 @@ them all to `clk`.
 Constraints cannot express "instantiate `T` at a *different* domain than the caller used".
 The one real customer is CDC primitives — "same shape, different domain":
 
-```polar
+```mirin
 fn sync{dom A: Clock, dom B: Clock}(T: Type)(x: T @ A) -> Retag(T, B)
 ```
 
@@ -149,7 +149,7 @@ Two ways of writing a type, as before:
 
 1. **Implicit domains / pure types.** The definition contains no domain annotations:
 
-   ```polar
+   ```mirin
    struct Bus(N: integer) -> Type = bus {
       valid: bool,
       data: uint(N)
@@ -158,7 +158,7 @@ Two ways of writing a type, as before:
 
    This is lifted to a single shared domain parameter applied to every field:
 
-   ```polar
+   ```mirin
    struct Bus{dom __Dom: Domain}(N: integer) -> Type = bus {
       valid: bool{__Dom},
       data: uint{__Dom}(N)
@@ -168,7 +168,7 @@ Two ways of writing a type, as before:
    For a *polymorphic* pure struct, lifting cannot apply `__Dom` to an opaque parameter —
    instead it imposes the constraint:
 
-   ```polar
+   ```mirin
    struct Pair(T: Type) = pair { a: T, b: T }
    // lifts to
    struct Pair{dom __Dom: Domain}(T: Type) where T @ __Dom = pair { a: T, b: T }
@@ -193,7 +193,7 @@ sugar means by inspection (same stance as Rust's lifetime elision).
 
 A pure function lifts all arguments and the result onto **one shared domain variable**:
 
-```polar
+```mirin
 fn add(x: uint(8), y: uint(8)) -> uint(8)
 // lifts to
 fn add{dom D: Domain}(x: uint{D}(8), y: uint{D}(8)) -> uint{D}(8)
@@ -216,7 +216,7 @@ Note the lifted variable has sort `Domain`, not `Clock` — see below.
 `Domain` is the full sort including `@const`; `Clock` is the sub-sort of edge-bearing
 domains. `@const` does not inhabit `Clock`.
 
-```polar
+```mirin
 fn flipflop{dom D: Clock}(x: T @ D) -> T @ D     // registers genuinely need an edge
 fn add{dom D: Domain}(...)                        // pure logic works at @const too
 ```
@@ -248,7 +248,7 @@ domain; the coercion is silent because it is always sound and never informative.
 Coercions are inserted at the usual sites (argument positions, ascribed `let`, `return`),
 with bidirectional checking. Worked example:
 
-```polar
+```mirin
 let x: bool @clk = true.flipflop();
 ```
 
@@ -278,7 +278,7 @@ would be inconsistent with function lifting, where a bare type means "shared inf
 
 Readability is handled by the surface, not the semantics. Three levels of annotation:
 
-```polar
+```mirin
 let x: uint(8) = a + b          // domain fully elided, inferred
 let x: uint(8) @_ = a + b       // "this is clocked, inferred which" — cf. Rust's '_
 let x: uint(8) @clk = a + b     // fully explicit
@@ -315,7 +315,7 @@ Later versions want clock+reset domains, and delay-indexed domains (cf. Clash's
 3. **Indices** are for structure that operations *transform*. Delay is an index, not a sort
    or lattice point — domains become a small term language with constructors:
 
-   ```polar
+   ```mirin
    fn dreg{dom C: Clock, N: integer}(x: T @ Delayed(C, N)) -> T @ Delayed(C, N + 1)
    ```
 
@@ -326,7 +326,7 @@ Later versions want clock+reset domains, and delay-indexed domains (cf. Clash's
    `toSignal` to forget). `Delayed` is *not* `⊑ Clock` — plain `reg : T@D -> T@D` would be
    wrong on a delayed domain (it must bump the index) — so the underlying clock is reached by
    projection, `clock_of(Delayed(c, n)) = c`, not subsumption. (Clash hangs the delay index
-   on the signal type and keeps one domain kind; Polar folds it into the domain term because
+   on the signal type and keeps one domain kind; Mirin folds it into the domain term because
    `@` is the single annotation slot. The behavioral lessons carry over regardless.)
 
 **Implementation note for the current pass**: represent domains in the checker as a term

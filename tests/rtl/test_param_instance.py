@@ -1,4 +1,4 @@
-"""param_instance.plr: result = reg(x + 1) through width-generic instances —
+"""param_instance.mrn: result = reg(x + 1) through width-generic instances —
 exercises the `#(.n(8))` instance parameter bindings end to end."""
 
 import random

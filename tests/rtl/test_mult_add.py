@@ -1,4 +1,4 @@
-"""mult_add.plr: registered multiply with combinational add of `c`."""
+"""mult_add.mrn: registered multiply with combinational add of `c`."""
 
 import random
 

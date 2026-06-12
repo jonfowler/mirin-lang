@@ -126,7 +126,7 @@ enum DomainSort { Domain, Clock }   // Clock ⊑ Domain; @const inhabits only Do
   chalk does). Not speculative robustness: the `Vec<Option<_>>` buckets
   already produced a real bug — `v + v` unified a domain var with itself,
   the bind arm wrote `Infer(v) := Infer(v)`, and `resolve_*` hung forever
-  (found via `const_then_clocked.plr`; band-aided with same-term early-outs
+  (found via `const_then_clocked.mrn`; band-aided with same-term early-outs
   in all three unifiers + a regression test). Union-find makes `unify(v, v)`
   a no-op structurally. All `fresh_*` become `fresh(kind)`.
 - **One `unify(Term, Term)`** dispatching structurally. Kind mismatch is an ICE,
@@ -245,7 +245,7 @@ implementation:
 - **Phase A — mechanical merge, zero behaviour change.** `Term`/`InferVar`/one
   table; port unify/resolve/subst onto the folder; `GenericArg = Term`;
   `Unspecified` survives temporarily. Whole corpus stays green. Also: rewrite
-  `planning/ir_pipeline.md`, which still documents `polar-compiler-old`'s pass
+  `planning/ir_pipeline.md`, which still documents `mirin-compiler-old`'s pass
   list, to describe the query pipeline (CLAUDE.md requires it kept in sync).
 - **Phase B — obligations + const groundwork.** Obligation queue with the
   end-of-body fixpoint (`ConstEq` first); `width_residuals: Vec<(u32, u32)>`
@@ -281,5 +281,5 @@ implementation:
   current corpus; grammar work decides the rest.
 - ~~**Grammar gap found while writing examples**: `let_statement` has no type
   ascription.~~ **Fixed before Phase A**: the grammar now accepts
-  `let <name> (: <type>)? = <expr>` (tree-sitter, polar-fmt, body lowering all
-  updated); `clocked-width.plr` and `reg_const_input.plr` exercise it.
+  `let <name> (: <type>)? = <expr>` (tree-sitter, mirin-fmt, body lowering all
+  updated); `clocked-width.mrn` and `reg_const_input.mrn` exercise it.

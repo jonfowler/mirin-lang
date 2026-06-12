@@ -1,4 +1,4 @@
-"""for_loops.plr: generate-for replication — scale_all computes
+"""for_loops.mrn: generate-for replication — scale_all computes
 sum(v[i] * k) through three generate-block instances of the body."""
 
 import random

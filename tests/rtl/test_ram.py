@@ -1,4 +1,4 @@
-"""ram.plr: the functional RAM — init contents visible at power-on,
+"""ram.mrn: the functional RAM — init contents visible at power-on,
 replace-based writes with enable, holds under we=0."""
 
 import random
