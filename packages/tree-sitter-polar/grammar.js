@@ -309,7 +309,6 @@ module.exports = grammar({
       choice(
         $.let_statement,
         $.for_statement,
-        $.init_statement,
         $.return_statement,
         $.var_statement,
         $.assignment_statement,
@@ -342,6 +341,7 @@ module.exports = grammar({
         alias($.header_unary, $.unary_expression),
         alias($.header_postfix, $.postfix_expression),
         $.typed_literal,
+        $.vec_literal,
         $.path_expression,
         $.number,
         $.parenthesized_expression,
@@ -398,17 +398,6 @@ module.exports = grammar({
       ),
 
     _for_iterable: ($) => $._header_expression,
-
-    // `init mem = [0; 4];` — POWER-ON state (an SV initial block):
-    // simulation + FPGA bitstream init; NOT reset (planning/when_ram.md).
-    init_statement: ($) =>
-      seq(
-        "init",
-        field("left", $.expression),
-        "=",
-        field("right", $.expression),
-        ";",
-      ),
 
     let_statement: ($) =>
       seq(
@@ -550,8 +539,13 @@ module.exports = grammar({
     // restricted form as if-conditions for the same reason: a trailing
     // `{` opens the body block, so the event expression must end before
     // the parser sees `{`.
+    // An optional `init VALUE` preceder is POWER-ON state for the register
+    // this `when` produces (an SV initial block; sim + FPGA bitstream, NOT
+    // reset). Attached HERE so init-on-a-wire is unrepresentable —
+    // planning/when_ram.md.
     when_expression: ($) =>
       seq(
+        optional(seq("init", field("init", $._header_expression))),
         "when",
         field("event", $._when_event),
         field("body", $.block),

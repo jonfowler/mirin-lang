@@ -1870,10 +1870,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "init_statement"
-        },
-        {
-          "type": "SYMBOL",
           "name": "return_statement"
         },
         {
@@ -1985,6 +1981,10 @@
         {
           "type": "SYMBOL",
           "name": "typed_literal"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "vec_literal"
         },
         {
           "type": "SYMBOL",
@@ -2209,39 +2209,6 @@
     "_for_iterable": {
       "type": "SYMBOL",
       "name": "_header_expression"
-    },
-    "init_statement": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "STRING",
-          "value": "init"
-        },
-        {
-          "type": "FIELD",
-          "name": "left",
-          "content": {
-            "type": "SYMBOL",
-            "name": "expression"
-          }
-        },
-        {
-          "type": "STRING",
-          "value": "="
-        },
-        {
-          "type": "FIELD",
-          "name": "right",
-          "content": {
-            "type": "SYMBOL",
-            "name": "expression"
-          }
-        },
-        {
-          "type": "STRING",
-          "value": ";"
-        }
-      ]
     },
     "let_statement": {
       "type": "SEQ",
@@ -2917,6 +2884,31 @@
     "when_expression": {
       "type": "SEQ",
       "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "init"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "init",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_header_expression"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
         {
           "type": "STRING",
           "value": "when"

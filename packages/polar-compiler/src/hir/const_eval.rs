@@ -271,8 +271,6 @@ impl<'db> Evaluator<'db> {
                 Stmt::VarDecl { .. } => None,
                 // Loop-varying bindings are not const.
                 Stmt::For { .. } => None,
-                // Power-on state is not a const value source.
-                Stmt::Init { .. } => None,
             };
             if let Some(e) = nested
                 && let Some(v) = self.demand_in_expr_blocks(frame, e, local, depth)

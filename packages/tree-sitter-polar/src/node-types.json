@@ -83,6 +83,10 @@
           {
             "type": "unary_expression",
             "named": true
+          },
+          {
+            "type": "vec_literal",
+            "named": true
           }
         ]
       },
@@ -146,6 +150,10 @@
           },
           {
             "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "vec_literal",
             "named": true
           }
         ]
@@ -519,6 +527,10 @@
           {
             "type": "unary_expression",
             "named": true
+          },
+          {
+            "type": "vec_literal",
+            "named": true
           }
         ]
       }
@@ -644,6 +656,10 @@
           },
           {
             "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "vec_literal",
             "named": true
           }
         ]
@@ -786,32 +802,6 @@
     "named": true,
     "fields": {
       "index": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "expression",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
-    "type": "init_statement",
-    "named": true,
-    "fields": {
-      "left": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "expression",
-            "named": true
-          }
-        ]
-      },
-      "right": {
         "multiple": false,
         "required": true,
         "types": [
@@ -1646,10 +1636,6 @@
           "named": true
         },
         {
-          "type": "init_statement",
-          "named": true
-        },
-        {
           "type": "let_statement",
           "named": true
         },
@@ -2031,6 +2017,10 @@
           {
             "type": "unary_expression",
             "named": true
+          },
+          {
+            "type": "vec_literal",
+            "named": true
           }
         ]
       },
@@ -2295,6 +2285,48 @@
           },
           {
             "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "vec_literal",
+            "named": true
+          }
+        ]
+      },
+      "init": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
+            "named": true
+          },
+          {
+            "type": "postfix_expression",
+            "named": true
+          },
+          {
+            "type": "typed_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "vec_literal",
             "named": true
           }
         ]

@@ -508,21 +508,6 @@ impl<'db> SvLower<'_, 'db> {
                     self.lower_equation(*lhs, *rhs)
                 }
                 Stmt::Return { value } => self.drive_result(*value),
-                Stmt::Init { lhs, rhs } => {
-                    let (lhs, rhs) = (*lhs, *rhs);
-                    let lhs_leaves: Vec<SvExpr> = self
-                        .place_leaves_dir(lhs)
-                        .into_iter()
-                        .map(|(p, _)| p)
-                        .collect();
-                    let rhs_leaves = self.expr_leaves(rhs);
-                    let assigns = lhs_leaves
-                        .into_iter()
-                        .zip(rhs_leaves)
-                        .map(|(l, (_, r))| (l, r))
-                        .collect();
-                    self.items.push(SvItem::Initial(assigns));
-                }
                 Stmt::For {
                     index,
                     elem,
@@ -701,12 +686,20 @@ impl<'db> SvLower<'_, 'db> {
         // `init mem = …` (an SV initial block) actually takes effect and
         // the RAM idiom stays one array (planning/when_ram.md).
         if let ExprKind::Local(l) = self.body.expr(lhs).kind
-            && let ExprKind::When { event, body } = &self.body.expr(rhs).kind
+            && let ExprKind::When { event, body, init } = &self.body.expr(rhs).kind
         {
-            let (event, b) = (*event, body.clone());
+            let (event, b, init) = (*event, body.clone(), *init);
             let clock = self.clock_of_event(event);
-            let d = self.block_leaves(&b);
             let base = self.local_name(l);
+            if let Some(init) = init {
+                let init_leaves = self.expr_leaves(init);
+                let assigns = init_leaves
+                    .into_iter()
+                    .map(|(suffix, v)| (SvExpr::Ident(join(&base, &suffix)), v))
+                    .collect();
+                self.items.push(SvItem::Initial(assigns));
+            }
+            let d = self.block_leaves(&b);
             let clocked_body = d
                 .into_iter()
                 .map(|(suffix, dv)| SvSeqAssign {
@@ -1299,10 +1292,10 @@ impl<'db> SvLower<'_, 'db> {
                 self.emit_reg(synth.clone(), clock, reg);
                 SvExpr::Ident(synth)
             }
-            ExprKind::When { event, body } => {
-                let event = *event;
+            ExprKind::When { event, body, init } => {
+                let (event, init) = (*event, *init);
                 let body = body.clone();
-                self.lower_when(expr, event, &body)
+                self.lower_when(expr, event, &body, init)
             }
             ExprKind::If {
                 cond,
@@ -1446,10 +1439,18 @@ impl<'db> SvLower<'_, 'db> {
                 out
             }
             // An aggregate-valued `when`: per-leaf register of the tail.
-            ExprKind::When { event, body } => {
-                let (event, b) = (*event, body.clone());
+            ExprKind::When { event, body, init } => {
+                let (event, b, init) = (*event, body.clone(), *init);
                 let synth = self.fresh_block();
                 let clock = self.clock_of_event(event);
+                if let Some(init) = init {
+                    let init_leaves = self.expr_leaves(init);
+                    let assigns = init_leaves
+                        .into_iter()
+                        .map(|(suffix, v)| (SvExpr::Ident(join(&synth, &suffix)), v))
+                        .collect();
+                    self.items.push(SvItem::Initial(assigns));
+                }
                 let d_leaves = self.block_leaves(&b);
                 let tys = self.expr_leaf_types(expr);
                 let mut out = Vec::new();
@@ -1578,13 +1579,24 @@ impl<'db> SvLower<'_, 'db> {
     /// `when ev { … d }` → a reset-less `always_ff @(posedge <ev-clock>)` whose
     /// single clocked assignment drives a synthetic `__block_N` with the body's
     /// tail value `d`. The expression's value is that held register output.
-    fn lower_when(&mut self, when_expr: ExprId, event: ExprId, body: &Block) -> SvExpr {
+    fn lower_when(
+        &mut self,
+        when_expr: ExprId,
+        event: ExprId,
+        body: &Block,
+        init: Option<ExprId>,
+    ) -> SvExpr {
         let synth = self.fresh_block();
         let ty = self.expr_type(when_expr);
         self.items.push(SvItem::Logic(SvLogicDecl {
             ty,
             name: synth.clone(),
         }));
+        if let Some(init) = init {
+            let v = self.expr_value(init);
+            self.items
+                .push(SvItem::Initial(vec![(SvExpr::Ident(synth.clone()), v)]));
+        }
         let clock = self.clock_of_event(event);
         let d = self.block_value(body);
         self.items.push(SvItem::AlwaysFf(SvAlwaysFf {

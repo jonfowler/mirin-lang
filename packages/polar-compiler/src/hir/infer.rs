@@ -1480,11 +1480,6 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 Stmt::Expr(e) => {
                     self.infer_expr(body, *e);
                 }
-                Stmt::Init { lhs, rhs } => {
-                    let l = self.infer_expr(body, *lhs);
-                    let r = self.infer_expr(body, *rhs);
-                    self.subsume(&r, &l);
-                }
                 Stmt::For {
                     index,
                     elem,
@@ -1745,10 +1740,21 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 self.infer_block(body, &else_branch, Some(&result));
                 result
             }
-            ExprKind::When { event, body: inner } => {
+            ExprKind::When {
+                event,
+                body: inner,
+                init,
+            } => {
                 self.infer_expr(body, *event);
-                let inner = inner.clone();
+                let (inner, init) = (inner.clone(), *init);
                 let result = self.fresh_type();
+                if let Some(init) = init {
+                    // Power-on state: a CONSTANT of the produced type
+                    // (like a reg init).
+                    let it = self.infer_expr(body, init);
+                    let want = self.with_domain(&result, Domain::Const);
+                    self.subsume(&it, &want);
+                }
                 self.infer_block(body, &inner, Some(&result));
                 // The registered value lives on the event's clock: the body's
                 // domain coerces in (@const may register), the result is ON it.

@@ -178,13 +178,6 @@ impl<'a> Formatter<'a> {
             }
             "where_clause" => self.where_clause(n),
 
-            "init_statement" => concat([
-                text("init "),
-                self.doc(self.field(n, "left").unwrap()),
-                text(" = "),
-                self.doc(self.field(n, "right").unwrap()),
-                text(";"),
-            ]),
             "for_statement" => {
                 let mut parts = vec![text("for ")];
                 parts.push(text(self.text(self.field(n, "a").unwrap())));
@@ -824,9 +817,14 @@ impl<'a> Formatter<'a> {
     }
 
     fn when_expr(&self, n: Node) -> Doc {
+        let init = match self.field(n, "init") {
+            Some(v) => concat([text("init "), self.doc(v), text(" ")]),
+            None => NIL,
+        };
         let event = self.doc(self.field(n, "event").unwrap());
         let (inner, multi) = self.block_inner(self.field(n, "body").unwrap());
         let doc = concat([
+            init,
             text("when "),
             event,
             text(" {"),

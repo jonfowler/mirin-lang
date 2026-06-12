@@ -134,7 +134,12 @@ pub enum ExprKind<'db> {
         else_branch: Block,
     },
     /// `when event { … }` — Polar's registered-state primitive.
-    When { event: ExprId, body: Block },
+    When {
+        event: ExprId,
+        body: Block,
+        /// `init VALUE when …` — power-on state for the produced register.
+        init: Option<ExprId>,
+    },
     /// A block in expression position.
     Block(Block),
 }
@@ -208,9 +213,6 @@ pub enum Stmt {
     Return { value: ExprId },
     /// A bare expression statement.
     Expr(ExprId),
-    /// `init place = value;` — power-on state (an SV `initial` block;
-    /// planning/when_ram.md). Not a drive; not reset.
-    Init { lhs: ExprId, rhs: ExprId },
     /// `for x in v { … }` — structural replication (planning/for_loops.md).
     /// `index` is bound for the `for i, x in v.enumerate()` form; the elem
     /// local is "let x = v[i]" per iteration.
@@ -783,11 +785,6 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
 
     fn lower_stmt(&mut self, node: &Node, source: &str, block: &mut Block) {
         match node.kind() {
-            "init_statement" => {
-                let lhs = self.lower_field_expr(node, "left", source);
-                let rhs = self.lower_field_expr(node, "right", source);
-                block.stmts.push(Stmt::Init { lhs, rhs });
-            }
             "for_statement" => {
                 let (index_name, elem_name) =
                     match (node.child_by_field_name("a"), node.child_by_field_name("b")) {
@@ -1042,7 +1039,10 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             "when_expression" => {
                 let event = self.lower_field_expr(node, "event", source);
                 let body = self.lower_block_field(node, "body", source);
-                self.alloc(ExprKind::When { event, body })
+                let init = node
+                    .child_by_field_name("init")
+                    .map(|i| self.lower_expr(&i, source));
+                self.alloc(ExprKind::When { event, body, init })
             }
             "block" => {
                 let b = self.lower_block(node, source);

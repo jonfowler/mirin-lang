@@ -226,13 +226,13 @@ fn f (v: Vec(3, uint(8))) -> uint(8) {
         (number)))))
 
 ========================================
-init statement
+init preceder on when
 ========================================
 
-fn f (a: uint(8)) -> uint(8) {
-    var v: Vec(2, uint(8));
-    init v = [0, 1];
-    a
+fn f {dom clk: Clock} (a: uint(8)) -> uint(8) {
+    var c: uint(8);
+    c = init 5 when clk.posedge() { c + 1 };
+    c
 }
 
 ---
@@ -240,6 +240,11 @@ fn f (a: uint(8)) -> uint(8) {
 (source_file
   (function_definition
     name: (identifier)
+    named_parameters: (named_parameter_section
+      (named_parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
     parameters: (parameter_section
       (parameter
         name: (identifier)
@@ -261,24 +266,29 @@ fn f (a: uint(8)) -> uint(8) {
             name: (identifier)
             (type_index
               (type_argument
-                (number))
-              (type_argument
-                (type_expression
-                  name: (identifier)
-                  (type_index
-                    (type_argument
-                      (number)))))))))
+                (number))))))
       (statement
-        (init_statement
+        (assignment_statement
           left: (expression
             (path_expression
               segment: (identifier)))
           right: (expression
-            (vec_literal
-              (expression
-                (number))
-              (expression
-                (number))))))
+            (when_expression
+              init: (number)
+              event: (postfix_expression
+                receiver: (path_expression
+                  segment: (identifier))
+                (field_access
+                  field: (identifier))
+                (argument_list))
+              body: (block
+                tail: (expression
+                  (binary_expression
+                    left: (expression
+                      (path_expression
+                        segment: (identifier)))
+                    right: (expression
+                      (number)))))))))
       tail: (expression
         (path_expression
           segment: (identifier))))))

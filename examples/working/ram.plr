@@ -1,15 +1,14 @@
-// A RAM, functionally (planning/when_ram.md): `replace` is a copy with
-// one element swapped, the value-form `when` registers the feedback, and
-// `init` is POWER-ON state (an SV initial block — sim + FPGA bitstream,
-// NOT reset). `mem = when …` registers the local directly, so the init
-// takes effect.
+// A RAM, functionally (planning/when_ram.md): `replace` is a copy with one
+// element swapped, the value-form `when` registers the feedback, and the
+// `init VALUE` preceder is POWER-ON state (an SV initial block — sim + FPGA
+// bitstream, NOT reset). init attaches to `when` so initialising a wire is
+// unrepresentable.
 fn ram
     {dom clk: Clock}
     (waddr: uint(2) @clk, wdata: uint(8) @clk, we: bool @clk, raddr: uint(2) @clk)
     -> uint(8) @clk {
     var mem: Vec(4, uint(8)) @clk;
-    init mem = [0x10, 0x20, 0x30, 0x40];
-    mem = when clk.posedge() {
+    mem = init [0x10, 0x20, 0x30, 0x40] when clk.posedge() {
         if we { mem.replace(waddr, wdata) } else { mem }
     };
     mem[raddr]

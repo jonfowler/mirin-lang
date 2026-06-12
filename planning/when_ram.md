@@ -8,8 +8,7 @@ a let) that shouldn't be opened as a RAM side effect).
 
 ```polar
 var mem: Vec(4, uint(8)) @clk;
-init mem = [0x10, 0x20, 0x30, 0x40];
-mem = when clk.posedge() {
+mem = init [0x10, 0x20, 0x30, 0x40] when clk.posedge() {
     if we { mem.replace(waddr, wdata) } else { mem }
 };
 mem[raddr]
@@ -23,11 +22,14 @@ mem[raddr]
   on mem's own leaves, no synthetic register, no continuous assign.
   (Also why init works: an initial block on a continuously-assigned net
   is dead.)
-- **`init place = value;`** — a separate statement (Verilog's `initial`
-  shape, per Jon): POWER-ON state, effective in simulation and FPGA
-  bitstreams, ignored by ASIC flows (documented: init is NOT reset).
-  Not a drive (doesn't count toward single-assignment/completeness);
-  orthogonal to and combinable with `.reg` resets.
+- **`init VALUE when …`** — init is an optional PRECEDER on the `when`
+  expression (revised from a free-standing statement, per Jon: a
+  statement could target a continuously-assigned net, where an SV
+  initial block is silently dead — a bug waiting to happen; attached to
+  `when`, init-on-a-wire is unrepresentable). POWER-ON state: effective
+  in simulation and FPGA bitstreams, ignored by ASIC flows (init is NOT
+  reset). The value types as a constant of the produced register's type.
+  Orthogonal to and combinable with `.reg` resets.
 
 ## Later
 
