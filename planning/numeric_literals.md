@@ -188,12 +188,10 @@ typed-value→pure-arithmetic channel, so we guard the channel.)
 
 ## Staging
 
-- **N1**: lexical (bases, separators) + `Neg for integer` + prefix-minus
-  grammar and desugar. No typing change; corpus untouched.
-- **N2**: literal vars + LiteralFits + fallback-to-integer; delete the
-  lenient arm; fix corpus fallout; fit residuals → `initial assert`.
-- **N3**: `uint(6)::4` construction syntax end to end; fail-examples
-  (doesn't fit, ambiguous literal, neg-on-uint).
+ALL LANDED (2026-06-12): N1 (48e304e), N2 (8016c47), N3 (follows).
+The lenient `integer ~ uint` arm is gone; the corpus survived with one
+adjustment (the wrap guard exempts struct-valued config locals, whose
+integer FIELDS project into widths legitimately).
 
 ## Decision points
 

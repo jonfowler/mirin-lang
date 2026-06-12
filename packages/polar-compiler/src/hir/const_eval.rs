@@ -382,6 +382,7 @@ impl<'db> Evaluator<'db> {
         self.tick()?;
         match &frame.body.expr(expr).kind {
             ExprKind::Number(n, _) => Some(Value::Int(*n)),
+            ExprKind::TypedLiteral { value, .. } => Some(Value::Int(*value)),
             ExprKind::Bool(b) => Some(Value::Bool(*b)),
             ExprKind::Local(l) => self.demand(frame, *l, depth),
             ExprKind::Field { receiver, field } => {

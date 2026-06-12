@@ -82,9 +82,16 @@ pub enum InferDiagnosticKind {
     CannotInferBound {
         trait_name: String,
     },
-    LiteralDoesNotFit { value: i128, width: i128 },
-    LiteralBadType { ty_name: String },
-    WidthNotInteger { ty_name: String },
+    LiteralDoesNotFit {
+        value: i128,
+        width: i128,
+    },
+    LiteralBadType {
+        ty_name: String,
+    },
+    WidthNotInteger {
+        ty_name: String,
+    },
     /// A uint width whose const evaluation came out negative.
     NegativeWidth {
         value: i128,
@@ -774,7 +781,8 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                                 match self.try_eval(&w) {
                                     Some(n) => {
                                         let fits = value >= 0
-                                            && (n >= 127 || (n >= 0 && value < (1i128 << n.clamp(0, 126))));
+                                            && (n >= 127
+                                                || (n >= 0 && value < (1i128 << n.clamp(0, 126))));
                                         if !fits {
                                             self.current_span = ob.span;
                                             self.diag(InferDiagnosticKind::LiteralDoesNotFit {
@@ -1005,9 +1013,8 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             return false;
         };
         let vars = self.literal_vars.clone();
-        vars.into_iter().any(|v| {
-            matches!(self.resolve_ty(&Type::Infer(v)), Type::Infer(r) if r == root)
-        })
+        vars.into_iter()
+            .any(|v| matches!(self.resolve_ty(&Type::Infer(v)), Type::Infer(r) if r == root))
     }
 
     fn trait_name(&self, trait_def: DefId<'db>) -> String {
@@ -1402,6 +1409,25 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     kind: ObligationKind::LiteralFits {
                         ty: t.clone(),
                         value: *v,
+                    },
+                });
+                t
+            }
+            // `uint(6)::4`: the type is written; the fit check is direct
+            // (same obligation, concrete from birth). An elided domain is
+            // `@const` — a constructed constant.
+            ExprKind::TypedLiteral { value, ty, .. } => {
+                let mut t = ty.clone();
+                if let Type::Value { domain, .. } | Type::Port { domain, .. } = &mut t
+                    && matches!(domain, Domain::Unspecified)
+                {
+                    *domain = Domain::Const;
+                }
+                self.obligations.push(Obligation {
+                    span: self.current_span,
+                    kind: ObligationKind::LiteralFits {
+                        ty: t.clone(),
+                        value: *value,
                     },
                 });
                 t

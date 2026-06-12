@@ -25,6 +25,10 @@ module.exports = grammar({
     // brace contents — a valid record literal wins. (`if`/`when` conditions
     // dodge this entirely by restricting their expression form.)
     [$.path_expression, $.record_constructor_expression],
+    // `uint(6)::4` vs `a::b`: a bare identifier before `::` could open either
+    // a typed_literal's type or a path — GLR decides at the next token (a
+    // number ends a typed_literal; an identifier continues a path).
+    [$.return_type_expression, $.path_expression],
   ],
 
   rules: {
@@ -405,6 +409,7 @@ module.exports = grammar({
       choice(
         $.binary_expression,
         $.unary_expression,
+        $.typed_literal,
         $.postfix_expression,
         $.record_constructor_expression,
         $.path_expression,
@@ -464,6 +469,16 @@ module.exports = grammar({
         $.path_expression,
         $.postfix_expression,
         $.parenthesized_expression,
+      ),
+
+    // Explicit literal construction `uint(6)::4` — the value in the type's
+    // associated-const namespace (planning/numeric_literals.md L4). The
+    // restricted type form, like return types: a brace would be ambiguous.
+    typed_literal: ($) =>
+      seq(
+        field("type", $.return_type_expression),
+        "::",
+        field("value", $.number),
       ),
 
     // Prefix minus — `-x` is `Neg::neg(x)`, never a negative literal

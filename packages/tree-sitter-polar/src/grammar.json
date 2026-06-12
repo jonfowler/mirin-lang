@@ -2472,6 +2472,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "typed_literal"
+        },
+        {
+          "type": "SYMBOL",
           "name": "postfix_expression"
         },
         {
@@ -2597,6 +2601,31 @@
         {
           "type": "SYMBOL",
           "name": "parenthesized_expression"
+        }
+      ]
+    },
+    "typed_literal": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "type",
+          "content": {
+            "type": "SYMBOL",
+            "name": "return_type_expression"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "::"
+        },
+        {
+          "type": "FIELD",
+          "name": "value",
+          "content": {
+            "type": "SYMBOL",
+            "name": "number"
+          }
         }
       ]
     },
@@ -3313,6 +3342,10 @@
     [
       "path_expression",
       "record_constructor_expression"
+    ],
+    [
+      "return_type_expression",
+      "path_expression"
     ]
   ],
   "precedences": [],

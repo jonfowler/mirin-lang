@@ -1,0 +1,4 @@
+// 16 needs five bits.
+fn h() -> uint(4) {
+    uint(4)::16
+}

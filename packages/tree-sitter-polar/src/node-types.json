@@ -349,6 +349,10 @@
           "named": true
         },
         {
+          "type": "typed_literal",
+          "named": true
+        },
+        {
           "type": "unary_expression",
           "named": true
         },
@@ -1760,6 +1764,32 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "typed_literal",
+    "named": true,
+    "fields": {
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "return_type_expression",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "number",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {

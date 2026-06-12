@@ -42,3 +42,34 @@ fn f() -> uint(8) {
         (return_statement
           value: (expression
             (number)))))))
+
+========================================
+typed literal construction
+========================================
+
+fn f() -> uint(8) {
+    return uint(8)::0xFF;
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section)
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (return_statement
+          value: (expression
+            (typed_literal
+              type: (return_type_expression
+                name: (identifier)
+                (type_index
+                  (type_argument
+                    (number))))
+              value: (number))))))))

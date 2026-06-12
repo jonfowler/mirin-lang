@@ -1007,6 +1007,9 @@ impl<'db> SvLower<'_, 'db> {
             ExprKind::Number(n, base) => {
                 SvExpr::Lit(render_literal(*n, *base, self.expr_type_width(expr)))
             }
+            ExprKind::TypedLiteral { value, base, .. } => {
+                SvExpr::Lit(render_literal(*value, *base, self.expr_type_width(expr)))
+            }
             ExprKind::Bool(b) => SvExpr::Lit(if *b { "1'b1" } else { "1'b0" }.to_owned()),
             ExprKind::Local(l) => SvExpr::Ident(self.local_name(*l)),
             ExprKind::Call { .. } => {

@@ -77,6 +77,13 @@ pub enum ExprKind<'db> {
     Missing,
     /// A numeric literal.
     Number(i128, NumBase),
+    /// `uint(6)::4` — a literal at an explicitly written type
+    /// (planning/numeric_literals.md L4). The fit check is direct.
+    TypedLiteral {
+        value: i128,
+        base: NumBase,
+        ty: Type<'db>,
+    },
     /// A boolean literal (`true` / `false`).
     Bool(bool),
     /// A resolved local (param / let / var).
@@ -839,6 +846,30 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     }
                 };
                 self.alloc(ExprKind::Number(v, base))
+            }
+            "typed_literal" => {
+                let (value, base) = node
+                    .child_by_field_name("value")
+                    .and_then(|v| parse_number(&node_text(&v, source)))
+                    .unwrap_or((0, NumBase::Dec));
+                let lookup = |n: &str| self.lookup_local(n);
+                let mut unres = Vec::new();
+                let ty = node
+                    .child_by_field_name("type")
+                    .map(|t| {
+                        lower_type_expr(
+                            self.map,
+                            self.module,
+                            self.generics,
+                            Some(&lookup),
+                            &t,
+                            source,
+                            Some(&mut unres),
+                        )
+                    })
+                    .unwrap_or(Type::Error);
+                self.diag_unresolved_types(unres);
+                self.alloc(ExprKind::TypedLiteral { value, base, ty })
             }
             "unary_expression" => {
                 // `-x` desugars to the prelude `Neg` trait's method
