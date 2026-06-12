@@ -508,6 +508,21 @@ impl<'db> SvLower<'_, 'db> {
                     self.lower_equation(*lhs, *rhs)
                 }
                 Stmt::Return { value } => self.drive_result(*value),
+                Stmt::Init { lhs, rhs } => {
+                    let (lhs, rhs) = (*lhs, *rhs);
+                    let lhs_leaves: Vec<SvExpr> = self
+                        .place_leaves_dir(lhs)
+                        .into_iter()
+                        .map(|(p, _)| p)
+                        .collect();
+                    let rhs_leaves = self.expr_leaves(rhs);
+                    let assigns = lhs_leaves
+                        .into_iter()
+                        .zip(rhs_leaves)
+                        .map(|(l, (_, r))| (l, r))
+                        .collect();
+                    self.items.push(SvItem::Initial(assigns));
+                }
                 Stmt::For {
                     index,
                     elem,
@@ -679,6 +694,32 @@ impl<'db> SvLower<'_, 'db> {
             let base = self.local_name(l);
             let clock = self.clock_of_type(self.inf.local_type(l));
             self.emit_registers(&base, &leaves, reg, clock, false);
+            return;
+        }
+        // `mem = when E { tail };` — the local IS the register: always_ff
+        // directly on its leaves (no synthetic, no continuous assign), so
+        // `init mem = …` (an SV initial block) actually takes effect and
+        // the RAM idiom stays one array (planning/when_ram.md).
+        if let ExprKind::Local(l) = self.body.expr(lhs).kind
+            && let ExprKind::When { event, body } = &self.body.expr(rhs).kind
+        {
+            let (event, b) = (*event, body.clone());
+            let clock = self.clock_of_event(event);
+            let d = self.block_leaves(&b);
+            let base = self.local_name(l);
+            let clocked_body = d
+                .into_iter()
+                .map(|(suffix, dv)| SvSeqAssign {
+                    lhs: SvExpr::Ident(join(&base, &suffix)),
+                    rhs: dv,
+                })
+                .collect();
+            self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
+                clock,
+                reset: None,
+                reset_body: Vec::new(),
+                clocked_body,
+            }));
             return;
         }
         // `place = f(args)` — the callee's result drives `place`.
@@ -1363,6 +1404,117 @@ impl<'db> SvLower<'_, 'db> {
                     .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}[{idx}]"))))
                     .collect()
             }
+            // An aggregate-valued `if`: per-leaf mux into a synthetic.
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let (cond, tb, eb) = (*cond, then_branch.clone(), else_branch.clone());
+                let synth = self.fresh_block();
+                let c = self.expr_value(cond);
+                let then_leaves = self.block_leaves(&tb);
+                let else_leaves = self.block_leaves(&eb);
+                let tys = self.expr_leaf_types(expr);
+                let mut out = Vec::new();
+                let mut body = Vec::new();
+                for (k, (suffix, tv)) in then_leaves.into_iter().enumerate() {
+                    let name = join(&synth, &suffix);
+                    let ty = tys.get(k).cloned().unwrap_or_else(SvType::bit);
+                    self.items.push(SvItem::Logic(SvLogicDecl {
+                        ty,
+                        name: name.clone(),
+                    }));
+                    let ev = else_leaves
+                        .get(k)
+                        .map(|(_, e)| e.clone())
+                        .unwrap_or_else(|| SvExpr::Lit("0".to_owned()));
+                    body.push(SvCombStmt::If(SvCombIf {
+                        cond: c.clone(),
+                        then_branch: vec![SvCombStmt::Assign {
+                            lhs: SvExpr::Ident(name.clone()),
+                            rhs: tv,
+                        }],
+                        else_branch: vec![SvCombStmt::Assign {
+                            lhs: SvExpr::Ident(name.clone()),
+                            rhs: ev,
+                        }],
+                    }));
+                    out.push((suffix, SvExpr::Ident(name)));
+                }
+                self.items.push(SvItem::AlwaysComb(SvAlwaysComb { body }));
+                out
+            }
+            // An aggregate-valued `when`: per-leaf register of the tail.
+            ExprKind::When { event, body } => {
+                let (event, b) = (*event, body.clone());
+                let synth = self.fresh_block();
+                let clock = self.clock_of_event(event);
+                let d_leaves = self.block_leaves(&b);
+                let tys = self.expr_leaf_types(expr);
+                let mut out = Vec::new();
+                let mut seq = Vec::new();
+                for (k, (suffix, d)) in d_leaves.into_iter().enumerate() {
+                    let name = join(&synth, &suffix);
+                    let ty = tys.get(k).cloned().unwrap_or_else(SvType::bit);
+                    self.items.push(SvItem::Logic(SvLogicDecl {
+                        ty,
+                        name: name.clone(),
+                    }));
+                    seq.push(SvSeqAssign {
+                        lhs: SvExpr::Ident(name.clone()),
+                        rhs: d,
+                    });
+                    out.push((suffix, SvExpr::Ident(name)));
+                }
+                self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
+                    clock,
+                    reset: None,
+                    reset_body: Vec::new(),
+                    clocked_body: seq,
+                }));
+                out
+            }
+            // `v.replace(i, x)`: a combinational copy with one element
+            // swapped — `__repl = v; __repl[i] = x;` per leaf.
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+            } if method == "replace" && args.len() == 2 => {
+                let (receiver, i_e, x_e) = (*receiver, args[0].expr, args[1].expr);
+                let synth = self.fresh_block();
+                let idx = self.expr_value(i_e);
+                self.index_bounds_assert(receiver, i_e, &idx);
+                let recv_leaves = self.expr_leaves(receiver);
+                let x_leaves = self.expr_leaves(x_e);
+                let tys = self.expr_leaf_types(receiver);
+                let mut out = Vec::new();
+                let mut body = Vec::new();
+                for (k, (suffix, rv)) in recv_leaves.into_iter().enumerate() {
+                    let name = join(&synth, &suffix);
+                    let ty = tys.get(k).cloned().unwrap_or_else(SvType::bit);
+                    self.items.push(SvItem::Logic(SvLogicDecl {
+                        ty,
+                        name: name.clone(),
+                    }));
+                    body.push(SvCombStmt::Assign {
+                        lhs: SvExpr::Ident(name.clone()),
+                        rhs: rv,
+                    });
+                    let xv = x_leaves
+                        .get(k)
+                        .map(|(_, e)| e.clone())
+                        .unwrap_or_else(|| SvExpr::Lit("0".to_owned()));
+                    body.push(SvCombStmt::Assign {
+                        lhs: SvExpr::Lit(format!("{name}[{idx}]")),
+                        rhs: xv,
+                    });
+                    out.push((suffix, SvExpr::Ident(name)));
+                }
+                self.items.push(SvItem::AlwaysComb(SvAlwaysComb { body }));
+                out
+            }
             ExprKind::Record { ctor, fields } => {
                 let ctor = *ctor;
                 let fields = fields.clone();
@@ -1482,6 +1634,32 @@ impl<'db> SvLower<'_, 'db> {
     }
 
     /// Lower a block's statements (combinationally) and return its tail value.
+    /// A block's value as leaves (statements lower; the tail fans out).
+    fn block_leaves(&mut self, block: &Block) -> Vec<(String, SvExpr)> {
+        self.lower_stmts(&block.stmts);
+        match block.tail {
+            Some(tail) => self.expr_leaves(tail),
+            None => Vec::new(),
+        }
+    }
+
+    /// The SV types of an expression's leaves, in leaf order.
+    fn expr_leaf_types(&mut self, expr: ExprId) -> Vec<SvType> {
+        let Some(t) = self.inf.expr_type(expr).cloned() else {
+            return Vec::new();
+        };
+        let t = ground_widths(
+            self.db,
+            self.krate,
+            self.def,
+            &subst_type(&t, &self.self_subst),
+        );
+        flatten_leaves(self.db, self.krate, &t, true, &self.sig.generic_params)
+            .into_iter()
+            .map(|l| l.ty)
+            .collect()
+    }
+
     fn block_value(&mut self, block: &Block) -> SvExpr {
         self.lower_stmts(&block.stmts);
         match block.tail {
@@ -2448,11 +2626,11 @@ endmodule
         let sv = emit(
             "fn counter { dom clk: Clock } () -> uint(8) @clk {\n  var count: uint(8) @clk;\n  count = when clk.posedge() { count + 1 };\n  count\n}",
         );
-        // A synthetic register, clocked, reset-less, fed by the body tail.
+        // `count = when …` registers the LOCAL directly — no synthetic, no
+        // continuous assign — so `init count = …` would take effect.
         assert!(sv.contains("    logic [7:0] count;"), "{sv}");
         assert!(sv.contains("    always_ff @(posedge clk) begin"), "{sv}");
-        assert!(sv.contains("__block_0 <= (count + 1);"), "{sv}");
-        assert!(sv.contains("assign count = __block_0;"), "{sv}");
+        assert!(sv.contains("count <= (count + 1);"), "{sv}");
         assert!(sv.contains("assign result = count;"), "{sv}");
         // No reset branch on a `when`.
         assert!(!sv.contains("if (!"), "{sv}");

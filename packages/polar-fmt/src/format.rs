@@ -178,6 +178,13 @@ impl<'a> Formatter<'a> {
             }
             "where_clause" => self.where_clause(n),
 
+            "init_statement" => concat([
+                text("init "),
+                self.doc(self.field(n, "left").unwrap()),
+                text(" = "),
+                self.doc(self.field(n, "right").unwrap()),
+                text(";"),
+            ]),
             "for_statement" => {
                 let mut parts = vec![text("for ")];
                 parts.push(text(self.text(self.field(n, "a").unwrap())));

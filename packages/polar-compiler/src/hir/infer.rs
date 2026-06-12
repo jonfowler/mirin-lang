@@ -1480,6 +1480,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 Stmt::Expr(e) => {
                     self.infer_expr(body, *e);
                 }
+                Stmt::Init { lhs, rhs } => {
+                    let l = self.infer_expr(body, *lhs);
+                    let r = self.infer_expr(body, *rhs);
+                    self.subsume(&r, &l);
+                }
                 Stmt::For {
                     index,
                     elem,
@@ -2070,6 +2075,52 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     });
                     return Type::Error;
                 }
+            }
+        }
+        // Builtin `Vec(N, A).replace(i, x) -> Vec(N, A)` — the FUNCTIONAL
+        // single-element update (planning/when_ram.md): a copy with element
+        // i swapped. RAM feedback composes it with the value-form `when`.
+        {
+            let recv_r = self.resolve_ty(&recv);
+            if let Type::Value {
+                kind: ValueKind::Vec { len, elem },
+                domain,
+            } = &recv_r
+                && method == "replace"
+            {
+                let (len, elem, domain) = (len.clone(), (**elem).clone(), *domain);
+                if let [i, x] = args {
+                    let it = self.infer_expr(body, i.expr);
+                    if self.is_literal_ty(&it) {
+                        let int = Type::Value {
+                            kind: ValueKind::Integer,
+                            domain: Domain::Const,
+                        };
+                        self.unify(&it, &int);
+                    }
+                    let xt = self.infer_expr(body, x.expr);
+                    let mut want = elem.clone();
+                    if let Type::Value { domain: ed, .. } | Type::Port { domain: ed, .. } =
+                        &mut want
+                        && matches!(ed, Domain::Unspecified)
+                    {
+                        *ed = domain;
+                    }
+                    self.subsume(&xt, &want);
+                } else {
+                    self.diag(InferDiagnosticKind::PositionalArity {
+                        callee: "replace".to_owned(),
+                        expected: 2,
+                        found: args.len(),
+                    });
+                }
+                return Type::Value {
+                    kind: ValueKind::Vec {
+                        len,
+                        elem: Box::new(elem),
+                    },
+                    domain,
+                };
             }
         }
         // Prelude methods not in the impl-method index yet (Q3a backfill pending).

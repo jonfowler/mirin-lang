@@ -309,6 +309,7 @@ module.exports = grammar({
       choice(
         $.let_statement,
         $.for_statement,
+        $.init_statement,
         $.return_statement,
         $.var_statement,
         $.assignment_statement,
@@ -397,6 +398,17 @@ module.exports = grammar({
       ),
 
     _for_iterable: ($) => $._header_expression,
+
+    // `init mem = [0; 4];` — POWER-ON state (an SV initial block):
+    // simulation + FPGA bitstream init; NOT reset (planning/when_ram.md).
+    init_statement: ($) =>
+      seq(
+        "init",
+        field("left", $.expression),
+        "=",
+        field("right", $.expression),
+        ";",
+      ),
 
     let_statement: ($) =>
       seq(

@@ -96,6 +96,8 @@ impl SvType {
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub enum SvItem {
     CombAssert(SvCombAssert),
+    /// `initial begin lhs = rhs; … end` — power-on state.
+    Initial(Vec<(SvExpr, SvExpr)>),
     /// A named generate-for: structural replication with a RECOVERABLE
     /// hierarchy — instance paths are `label[i].name`
     /// (planning/for_loops.md).
@@ -294,6 +296,13 @@ impl fmt::Display for SvItem {
                             writeln!(f, "    {line}")?;
                         }
                     }
+                }
+                writeln!(f, "    end")
+            }
+            Self::Initial(assigns) => {
+                writeln!(f, "    initial begin")?;
+                for (l, r) in assigns {
+                    writeln!(f, "        {l} = {r};")?;
                 }
                 writeln!(f, "    end")
             }

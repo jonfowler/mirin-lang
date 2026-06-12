@@ -798,6 +798,32 @@
     }
   },
   {
+    "type": "init_statement",
+    "named": true,
+    "fields": {
+      "left": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      },
+      "right": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "let_statement",
     "named": true,
     "fields": {
@@ -1620,6 +1646,10 @@
           "named": true
         },
         {
+          "type": "init_statement",
+          "named": true
+        },
+        {
           "type": "let_statement",
           "named": true
         },
@@ -2431,6 +2461,10 @@
   },
   {
     "type": "in",
+    "named": false
+  },
+  {
+    "type": "init",
     "named": false
   },
   {

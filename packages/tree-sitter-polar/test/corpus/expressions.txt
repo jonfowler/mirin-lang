@@ -224,3 +224,61 @@ fn f (v: Vec(3, uint(8))) -> uint(8) {
                     segment: (identifier))))))))
       tail: (expression
         (number)))))
+
+========================================
+init statement
+========================================
+
+fn f (a: uint(8)) -> uint(8) {
+    var v: Vec(2, uint(8));
+    init v = [0, 1];
+    a
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (var_statement
+          name: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              (type_argument
+                (number))
+              (type_argument
+                (type_expression
+                  name: (identifier)
+                  (type_index
+                    (type_argument
+                      (number)))))))))
+      (statement
+        (init_statement
+          left: (expression
+            (path_expression
+              segment: (identifier)))
+          right: (expression
+            (vec_literal
+              (expression
+                (number))
+              (expression
+                (number))))))
+      tail: (expression
+        (path_expression
+          segment: (identifier))))))

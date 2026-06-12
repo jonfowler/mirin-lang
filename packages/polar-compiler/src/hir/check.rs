@@ -340,6 +340,8 @@ fn count_block(body: &Body, block: &Block, counts: &mut HashMap<LocalId, Vec<Vec
             Stmt::Return { value } => count_expr(body, *value, counts),
             Stmt::Expr(e) => count_expr(body, *e, counts),
             Stmt::VarDecl { .. } => {}
+            // `init` is power-on state, not a drive.
+            Stmt::Init { rhs, .. } => count_expr(body, *rhs, counts),
             Stmt::For { iter, body: b, .. } => {
                 count_expr(body, *iter, counts);
                 count_block(body, b, counts);
