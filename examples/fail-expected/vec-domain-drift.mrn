@@ -1,0 +1,7 @@
+// Drift: the Vec is annotated @a but its element is explicitly @b. Now
+// REJECTED — a domain lives on the leaf and an aggregate `@D` may only fill
+// unspecified element slots, so @a meeting an explicit @b is a conflict
+// (planning/aggregate_domains.md Stage 3 + conflict check).
+fn f {dom a: Clock, dom b: Clock} (v: Vec(2, uint(8) @b) @a) -> uint(8) @b {
+    v[0]
+}

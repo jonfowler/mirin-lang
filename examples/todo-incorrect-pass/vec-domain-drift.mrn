@@ -1,8 +1,0 @@
-// Drift: the Vec is annotated @a but its element is explicitly @b — two
-// independent stored domain facts that silently disagree
-// (planning/aggregate_domains.md). MUST be rejected: with domains living on
-// leaves (Stage 3) it is unrepresentable; until then, an aggregate `@a`
-// meeting a conflicting explicit element domain is a DomainMismatch.
-fn f {dom a: Clock, dom b: Clock} (v: Vec(2, uint(8) @b) @a) -> uint(8) @b {
-    v[0]
-}

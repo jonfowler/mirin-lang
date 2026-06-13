@@ -23,15 +23,11 @@ The post-Q7 review worklist (2026-06) has also fully flipped:
   MultipleDrivers). Its passing twin `working/field_drivers.mrn` wires a
   struct field-by-field.
 
-Open worklist — **aggregate domains** (2026-06, planning/aggregate_domains.md).
+The **aggregate domains** worklist (2026-06, planning/aggregate_domains.md)
+has fully flipped to `fail-expected/`: `cdc-launder-vec`, `cdc-launder-tuple`
+(Stage 1 — aggregate `@D` propagates into element slots, so a write meets a
+concrete element domain), and `vec-domain-drift` + `tuple-domain-inert`
+(Stage 3 + the conflict check — domains live on leaves, and an aggregate `@D`
+conflicting with an element's own domain is an error, not a silent no-op).
 
-Flipped at Stage 1 (aggregate `@D` now propagates into element slots at
-lowering, so a write meets a concrete element domain): `cdc-launder-vec`,
-`cdc-launder-tuple` → `fail-expected/` (DomainMismatch).
-
-Still open:
-
-- `vec-domain-drift` — aggregate `@a` and an explicit element `@b` silently
-  disagree (the stamp fills only *unspecified* slots, so a conflicting
-  explicit element domain isn't caught). Flips at Stage 3, when domains live
-  on leaves and the aggregate has no domain to drift from.
+Currently empty.

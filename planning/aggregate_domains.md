@@ -88,15 +88,22 @@ stamp fills only unspecified slots) — that waits for Stage 3.
 iff its element is; a tuple iff every element is. Removes the false rejection
 of an element-annotated `Vec`.
 
-**Stage 3 — drop the stored aggregate domain (representation).** Move `Vec`
-and `Tuple` out of the domain-carrying `Type::Value` wrapper into top-level
-`Type` variants with no domain field (leaves and structs keep theirs). A
-domain then lives only on leaves; an aggregate's is *derived* (a `Vec`'s is
-its element's; a tuple's is the per-element set — none singular). Makes drift
-and the inert `(A@a, B@b) @c` annotation **unrepresentable** rather than
-relying on Stage 1 to keep a redundant field consistent, and is where the
-remaining `vec-domain-drift` case flips. Touches `Type`,
-`Stamp`/`freshen_domains`, and struct/port field handling.
+**Stage 3 — drop the stored aggregate domain (representation). [done]** `Vec`
+and `Tuple` are now top-level `Type` variants with no domain field (leaves
+and structs keep theirs). A domain lives only on leaves; an aggregate's is
+*derived* (a `Vec`'s is its element's; a tuple's is the per-element set —
+none singular). Drift between a stored aggregate domain and its elements is
+**unrepresentable**. Touched `super_fold`/`match_header`,
+`unify`/`subsume`/`merge`/`freshen`/`with_domain`, field/index/literal/
+builtin inference, `lower_type`, completeness, and the backend
+`flatten_leaves`/`sv_type`/`subst_type`.
+
+**Conflict check (error on inert/drift). [done]** A leaf still has a domain,
+so an aggregate `@D` may only *fill* unspecified element slots. An aggregate
+`@D` that meets an element's own explicit clock domain ≠ D (`Vec(2, uint(8)
+@b) @a`, `(uint(8) @a, uint(8) @b) @c`) is a `ConflictingDomain` error, not a
+silent no-op (`@const` stays compatible). Checked syntactically over
+signature types; body-ascription conflicts are a remaining gap.
 
 ## Out of scope
 
@@ -110,10 +117,11 @@ separate question, not a domain-checking one.
 
 - `examples/fail-expected/cdc-launder-vec.mrn`, `cdc-launder-tuple.mrn` —
   the CDC laundry, now rejected (Stage 1).
+- `examples/fail-expected/vec-domain-drift.mrn`, `tuple-domain-inert.mrn` —
+  drift / inert annotation, now `ConflictingDomain` (Stage 3 + conflict
+  check).
 - `examples/working/vec_elem_domain.mrn` — an element-annotated `Vec` with no
-  outer domain, now accepted and emitted (Stage 2).
-- `examples/todo-incorrect-pass/vec-domain-drift.mrn` — still wrongly
-  accepted; flips at Stage 3.
+  outer domain, accepted and emitted (Stage 2).
 
 The element-level (`Vec(N, uint(8) @b)`), struct-field, and direct `@a`→`@b`
 crossings already behave correctly and guard against regressions. (`@` on a

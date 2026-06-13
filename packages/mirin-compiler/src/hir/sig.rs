@@ -76,6 +76,12 @@ pub enum SigDiagnosticKind {
     UnknownWhereParam {
         name: String,
     },
+    /// An aggregate's `@D` annotation conflicts with an element's own explicit
+    /// domain — e.g. `Vec(2, uint(8) @b) @a` or `(uint(8) @a, uint(8) @b) @c`.
+    /// A domain lives on the leaf; an aggregate `@D` may only FILL unspecified
+    /// element slots, never override a conflicting one
+    /// (planning/aggregate_domains.md).
+    ConflictingDomain,
 }
 
 impl SigDiagnostic {
@@ -94,6 +100,11 @@ impl SigDiagnostic {
             }
             SigDiagnosticKind::UnknownWhereParam { name } => {
                 format!("`{name}` is not a type parameter of this signature")
+            }
+            SigDiagnosticKind::ConflictingDomain => {
+                "domain annotation conflicts with an element's own domain: a domain lives on \
+                 the leaf, and `@` on an aggregate may only fill unspecified element slots"
+                    .to_owned()
             }
         }
     }
@@ -845,23 +856,35 @@ fn lower_fn_sig<'db>(
             if name == "self" {
                 continue; // the receiver's domain is its own annotation
             }
-            let annotated = p
-                .child_by_field_name("type")
-                .is_some_and(|ty| type_has_domain(ty, source));
-            if !annotated {
+            let Some(ty) = p.child_by_field_name("type") else {
+                continue;
+            };
+            if !type_has_domain(ty, source) {
                 diagnostics.push(SigDiagnostic {
                     span: rel(p),
                     kind: SigDiagnosticKind::MissingDomainAnnotation,
                 });
             }
+            if let Some(c) = domain_conflict(&ty, source, None) {
+                diagnostics.push(SigDiagnostic {
+                    span: rel(&c),
+                    kind: SigDiagnosticKind::ConflictingDomain,
+                });
+            }
         }
-        if let Some(rt) = node.child_by_field_name("return_type")
-            && !type_has_domain(rt, source)
-        {
-            diagnostics.push(SigDiagnostic {
-                span: rel(&rt),
-                kind: SigDiagnosticKind::MissingDomainAnnotation,
-            });
+        if let Some(rt) = node.child_by_field_name("return_type") {
+            if !type_has_domain(rt, source) {
+                diagnostics.push(SigDiagnostic {
+                    span: rel(&rt),
+                    kind: SigDiagnosticKind::MissingDomainAnnotation,
+                });
+            }
+            if let Some(c) = domain_conflict(&rt, source, None) {
+                diagnostics.push(SigDiagnostic {
+                    span: rel(&c),
+                    kind: SigDiagnosticKind::ConflictingDomain,
+                });
+            }
         }
     } else {
         let dom_index = generic_params.len() as u32;
@@ -913,6 +936,38 @@ fn stamp_domain<'db>(ty: Type<'db>, dom: Domain) -> Type<'db> {
         }
     }
     StampDom { dom }.fold_type(&ty)
+}
+
+/// An aggregate's `@D` may only FILL unspecified element slots, never
+/// override a conflicting one (planning/aggregate_domains.md). Returns the
+/// first element type node whose explicit domain conflicts with one imposed
+/// by an enclosing aggregate. `@const` is compatible with any clock.
+fn domain_conflict<'t>(t: &Node<'t>, source: &str, inherited: Option<&str>) -> Option<Node<'t>> {
+    let own = t
+        .child_by_field_name("domain")
+        .map(|d| node_text(&d, source));
+    if let (Some(d), Some(e)) = (inherited, own.as_deref())
+        && d != e
+        && d != "const"
+        && e != "const"
+    {
+        return Some(*t);
+    }
+    let next = own.as_deref().or(inherited);
+    let elems: Vec<Node> = if t.kind() == "tuple_type" {
+        let mut c = t.walk();
+        t.children(&mut c)
+            .filter(|c| matches!(c.kind(), "type_expression" | "tuple_type"))
+            .collect()
+    } else if matches!(t.kind(), "type_expression" | "return_type_expression")
+        && field_text(t, "name", source) == "Vec"
+    {
+        // `Vec(N, A)` — the element is the second type argument onward.
+        vec_type_args(t).into_iter().skip(1).collect()
+    } else {
+        Vec::new()
+    };
+    elems.iter().find_map(|e| domain_conflict(e, source, next))
 }
 
 /// Is this written type domain-annotated? A domain lives on a *leaf*, so an
