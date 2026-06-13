@@ -1,0 +1,9 @@
+// A pure (unannotated) function lifts every domain slot onto one shared
+// __Dom, so it cannot directly RETURN a mixed-domain aggregate: enumerate's
+// index is @const but the lifted return type wants it clocked, and
+// aggregate elements are invariant (planning/tuples.md). Write explicit
+// domains, or consume enumerate in a `for`/`let`. When dependency-aware
+// lifting lands this will typecheck — the ratchet will say so.
+fn f (v: Vec(3, uint(8))) -> Vec(3, (integer, uint(8))) {
+    v.enumerate()
+}

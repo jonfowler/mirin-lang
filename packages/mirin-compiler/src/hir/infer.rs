@@ -3043,37 +3043,38 @@ mod tests {
     }
 
     #[test]
-    fn enumerate_is_a_real_method_returning_a_tuple_vec() {
+    fn enumerate_yields_index_data_pairs_consumed_by_projection() {
+        // The real value-form usage: bind enumerate's result and project
+        // elements. The index element is `@const` (from enumerate's own
+        // type), the data element keeps the receiver's domain — no special
+        // integer rule is involved.
         let mut db = RootDatabase::default();
         let mut vfs = Vfs::new();
         let krate = load(
             &mut db,
             &mut vfs,
-            "fn f (v: Vec(3, uint(8))) -> Vec(3, (integer, uint(8))) { return v.enumerate(); }",
+            "fn f (v: Vec(3, uint(8))) -> uint(8) {
+                 let e = v.enumerate();
+                 return e[0].1 + e[1].1 + e[2].1;
+             }",
         );
-        assert_eq!(kind_str(&return_ty(&db, krate, "f").unwrap()), "Vec");
+        assert_eq!(kind_str(&return_ty(&db, krate, "f").unwrap()), "uint");
         let inf = infer(&db, krate, def_of(&db, krate, "f"));
         assert!(inf.diagnostics().is_empty(), "{:?}", inf.diagnostics());
     }
 
     #[test]
-    fn integer_defaults_const_but_an_explicit_clock_is_honored() {
-        // Unannotated `integer` is `@const` (so enumerate's index stays
-        // const and is not lifted into the clock), but `integer @clk` is a
-        // legitimate non-const integer (a testbench counter).
+    fn integer_carries_an_explicit_clock_domain() {
+        // `integer` is not pinned to `@const` by the type system — an
+        // explicit `@clk` is a legitimate non-const integer (a testbench
+        // counter). Its domain follows annotation/data flow, like any type.
         let mut db = RootDatabase::default();
         let mut vfs = Vfs::new();
         let krate = load(
             &mut db,
             &mut vfs,
-            "fn idx {dom clk: Clock} (v: Vec(3, uint(8)) @clk)
-                 -> Vec(3, (integer @const, uint(8) @clk)) @clk {
-                 return v.enumerate();
-             }
-             fn tb {dom clk: Clock} (n: integer @clk) -> integer @clk { return n; }",
+            "fn tb {dom clk: Clock} (n: integer @clk) -> integer @clk { return n; }",
         );
-        let idx = infer(&db, krate, def_of(&db, krate, "idx"));
-        assert!(idx.diagnostics().is_empty(), "{:?}", idx.diagnostics());
         let tb = infer(&db, krate, def_of(&db, krate, "tb"));
         assert!(tb.diagnostics().is_empty(), "{:?}", tb.diagnostics());
     }

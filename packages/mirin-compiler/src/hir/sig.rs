@@ -1059,21 +1059,9 @@ impl<'db> TypeLowerer<'_, 'db> {
                 };
             }
             "integer" => {
-                // `integer` is an elaboration-time value, so an UNANNOTATED
-                // slot defaults to `@const` — never lifted into a pure
-                // signature's `__Dom`. (That lift is right for hardware
-                // values but wrong for the genvar-shaped index `enumerate`
-                // produces: `Vec(N, (integer @const, A))` must stay const in
-                // its index, clocked in its data.) An explicit `@clk` is
-                // still honored — a testbench `integer @clk` counter is a
-                // legitimate non-const integer.
                 return Type::Value {
                     kind: ValueKind::Integer,
-                    domain: if domain == Domain::Unspecified {
-                        Domain::Const
-                    } else {
-                        domain
-                    },
+                    domain,
                 };
             }
             "Clock" => return Type::Clock,

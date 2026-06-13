@@ -37,16 +37,41 @@ polymorphic types and the domain machinery.
   special lowering — `i` *is* the genvar (`LocalKind::ForBound`), `x` binds
   `v[i]` — so the generate hierarchy is unchanged. Any other tuple binder
   desugars like `let`: elem local + projection lets in the loop body.
-- **`enumerate` is a real method**: `Vec(N, A).enumerate() -> Vec(N,
-  (integer, A))`, typed as a builtin (like `replace`). Inside a `for` it is
-  also *recognised* so the index reuses the genvar instead of materialising
-  an index vector. Outside a `for` the type is honest but `integer` is
-  const-only, so consuming it as a hardware value fails where any other
-  const-only value would.
+- **`enumerate` is a real method** with a *proper* type:
+  `enumerate : {dom D} (Vec(N, A) @D) -> Vec(N, (integer @const, A @D)) @D`.
+  The index element is `@const` (it is `0..N-1`, structurally independent of
+  the clocked data); the data element keeps the receiver's domain. The
+  const-ness lives in enumerate's signature, NOT in a special rule on the
+  `integer` type — `integer`'s domain follows annotation/data-flow like any
+  type, so a testbench `integer @clk` is perfectly legal. Inside a `for`,
+  enumerate is also *recognised* so the index reuses the genvar.
 - **Flattening**: a tuple leaf is its element index as a name segment —
   `x.0.valid` flattens to `x__0__valid`, a tuple-typed result port to
   `result__0`, `result__1`. Port elements fold direction exactly as port
   fields of structs do today.
+
+## Mixed-domain aggregates and the lift
+
+A *pure* (unannotated) function lifts every domain slot — including the
+elements of a returned tuple/vec — onto its single shared `__Dom`
+(domain_checking_redux.md). So a pure function cannot directly **return** an
+aggregate whose elements live on *different* domains: e.g.
+`fn f(v: Vec(3, uint(8))) -> Vec(3, (integer, uint(8))) { v.enumerate() }`
+is rejected — the lift makes the written index element `@__Dom`, but
+enumerate's index is `@const`, and aggregate elements are invariant (no
+nested coercion). This is consistent with "drop to explicit domains when the
+relationship between domains *is* the point": the index-is-const / data-is-
+clocked split is exactly such a relationship, so write the explicit
+signature. The common usages need none of this — a `for`-loop consumes the
+index as a genvar, and a `let` binding takes enumerate's honest type
+directly (a `let` is not lifted).
+
+The principled general solution (noted, not built): **dependency-aware
+lifting** — split the lifted domains by data dependency, so an output
+independent of every clocked input keeps `@const` while a dependent output
+shares the input's domain. That would let the pure-return form above
+typecheck without explicit annotation. It needs domain flow from the body,
+which the signature firewall (`sig_of`) does not see today.
 
 ## Non-goals (this pass)
 
@@ -54,6 +79,8 @@ polymorphic types and the domain machinery.
 - `_` and literal patterns; match.
 - Tuples as trait `Self` (no operator impls on tuples).
 - Tuple equality — needs derived `Eq`; comes with trait derive work.
+- Dependency-aware domain lifting (above) — pure-return of a mixed-domain
+  aggregate needs explicit domains for now.
 
 ## Returned ports are bidirectional
 
