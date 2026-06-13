@@ -3057,6 +3057,28 @@ mod tests {
     }
 
     #[test]
+    fn integer_defaults_const_but_an_explicit_clock_is_honored() {
+        // Unannotated `integer` is `@const` (so enumerate's index stays
+        // const and is not lifted into the clock), but `integer @clk` is a
+        // legitimate non-const integer (a testbench counter).
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn idx {dom clk: Clock} (v: Vec(3, uint(8)) @clk)
+                 -> Vec(3, (integer @const, uint(8) @clk)) @clk {
+                 return v.enumerate();
+             }
+             fn tb {dom clk: Clock} (n: integer @clk) -> integer @clk { return n; }",
+        );
+        let idx = infer(&db, krate, def_of(&db, krate, "idx"));
+        assert!(idx.diagnostics().is_empty(), "{:?}", idx.diagnostics());
+        let tb = infer(&db, krate, def_of(&db, krate, "tb"));
+        assert!(tb.diagnostics().is_empty(), "{:?}", tb.diagnostics());
+    }
+
+    #[test]
     fn mixed_domain_tuples_keep_per_element_clocks() {
         // The fully-polymorphic case: two clocks in one tuple; projecting
         // each element recovers its own domain, and crossing them into one
