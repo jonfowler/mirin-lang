@@ -1016,17 +1016,14 @@ impl<'db> TypeLowerer<'_, 'db> {
             let mut cursor = node.walk();
             // A trailing `@D` is the constraint "every clock slot is D",
             // propagated into each element's unspecified slots
-            // (planning/aggregate_domains.md) — not a domain stored on the
-            // tuple itself.
+            // (planning/aggregate_domains.md) — a tuple has no domain of its
+            // own.
             let elems = node
                 .children(&mut cursor)
                 .filter(|c| matches!(c.kind(), "type_expression" | "tuple_type"))
                 .map(|c| stamp_domain(self.lower_type(&c, source), domain))
                 .collect();
-            return Type::Value {
-                kind: ValueKind::Tuple(elems),
-                domain,
-            };
+            return Type::Tuple(elems);
         }
         let name = field_text(node, "name", source);
         let domain = self.lower_domain(node, source);
@@ -1074,12 +1071,9 @@ impl<'db> TypeLowerer<'_, 'db> {
                     .get(1)
                     .map(|n| self.lower_type(n, source))
                     .unwrap_or(Type::Error);
-                return Type::Value {
-                    kind: ValueKind::Vec {
-                        len,
-                        elem: Box::new(stamp_domain(elem, domain)),
-                    },
-                    domain,
+                return Type::Vec {
+                    len,
+                    elem: Box::new(stamp_domain(elem, domain)),
                 };
             }
             "bool" => {

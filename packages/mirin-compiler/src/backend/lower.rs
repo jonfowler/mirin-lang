@@ -568,10 +568,7 @@ impl<'db> SvLower<'_, 'db> {
             })
             .unwrap_or(Type::Error);
         let (len, is_bits) = match &it {
-            Type::Value {
-                kind: ValueKind::Vec { len, .. },
-                ..
-            } => (len.clone(), false),
+            Type::Vec { len, .. } => (len.clone(), false),
             Type::Value {
                 kind: ValueKind::Bits { width },
                 ..
@@ -881,10 +878,7 @@ impl<'db> SvLower<'_, 'db> {
             &subst_type(&bt, &self.self_subst),
         );
         let len = match bt {
-            Type::Value {
-                kind: ValueKind::Vec { len, .. },
-                ..
-            } => len,
+            Type::Vec { len, .. } => len,
             Type::Value {
                 kind: ValueKind::Bits { width },
                 ..
@@ -2148,10 +2142,7 @@ fn flatten_leaves(
     match ty {
         // Struct-of-arrays (planning/vectors.md): one unpacked-array leaf
         // per ELEMENT-TYPE leaf — Vec(3, Packet) → v__valid[0:2] + ….
-        Type::Value {
-            kind: ValueKind::Vec { len, elem },
-            ..
-        } => {
+        Type::Vec { len, elem } => {
             let dim = match len {
                 ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
                 ConstArg::Param(i) => match generics.get(*i as usize) {
@@ -2190,10 +2181,7 @@ fn flatten_leaves(
         // A tuple flattens like a struct whose field names are element
         // indices: `x.0.valid` → `x__0__valid` (planning/tuples.md). Port
         // elements fold direction through their own flattening.
-        Type::Value {
-            kind: ValueKind::Tuple(elems),
-            ..
-        } => {
+        Type::Tuple(elems) => {
             let mut out = Vec::new();
             for (i, ety) in elems.iter().enumerate() {
                 for sub in flatten_leaves(db, krate, ety, drives, generics) {
@@ -2507,10 +2495,7 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
             args: subst_args(args, subst),
             domain: *domain,
         },
-        Type::Value {
-            kind: ValueKind::Vec { len, elem },
-            domain,
-        } => {
+        Type::Vec { len, elem } => {
             let len = match len {
                 ConstArg::Param(i) => match arg(*i) {
                     Some(Term::Const(c)) => c.clone(),
@@ -2518,14 +2503,12 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
                 },
                 other => other.clone(),
             };
-            Type::Value {
-                kind: ValueKind::Vec {
-                    len,
-                    elem: Box::new(subst_type(elem, subst)),
-                },
-                domain: *domain,
+            Type::Vec {
+                len,
+                elem: Box::new(subst_type(elem, subst)),
             }
         }
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| subst_type(e, subst)).collect()),
         other => other.clone(),
     }
 }
@@ -2588,10 +2571,7 @@ fn strip_field(suffix: &str, field: &str) -> Option<String> {
 /// still unresolved (arithmetic / out-of-range index) falls back to 1-bit.
 fn sv_type(ty: &Type, generics: &[GenericParam]) -> SvType {
     match ty {
-        Type::Value {
-            kind: ValueKind::Vec { len, elem },
-            ..
-        } => {
+        Type::Vec { len, elem } => {
             let mut t = sv_type(elem, generics);
             let dim = match len {
                 ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),

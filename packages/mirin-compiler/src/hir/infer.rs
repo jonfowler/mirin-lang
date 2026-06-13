@@ -516,15 +516,15 @@ fn describe_kind(ty: &Type<'_>) -> String {
             ValueKind::UInt { .. } => "uint".to_owned(),
             ValueKind::SInt { .. } => "sint".to_owned(),
             ValueKind::Bits { .. } => "bits".to_owned(),
-            ValueKind::Vec { .. } => "a vector".to_owned(),
             ValueKind::Bool => "bool".to_owned(),
             ValueKind::Reset => "Reset".to_owned(),
             ValueKind::Event => "Event".to_owned(),
             ValueKind::Integer => "integer".to_owned(),
             ValueKind::Struct { .. } => "a struct".to_owned(),
-            ValueKind::Tuple(_) => "a tuple".to_owned(),
             ValueKind::Param(_) => "a type parameter".to_owned(),
         },
+        Type::Vec { .. } => "a vector".to_owned(),
+        Type::Tuple(_) => "a tuple".to_owned(),
         Type::Port { .. } => "a port".to_owned(),
         Type::Clock => "Clock".to_owned(),
         _ => "this type".to_owned(),
@@ -1179,12 +1179,22 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn freshen_domains(&mut self, ty: &Type<'db>) -> Type<'db> {
         match ty {
             Type::Value { kind, domain } => Type::Value {
-                // Top-level only: an aggregate's inner `Unspecified` slots are
-                // the aggregate's own domain — stamped at field/record use and
-                // by flatten in the backend, never independent variables.
+                // A struct's `domain` stamps its fields; its own inner slots
+                // are not independent. A leaf's domain is just its domain.
                 kind: kind.clone(),
                 domain: self.freshen_domain(*domain),
             },
+            // An aggregate has no domain of its own — freshen its elements'
+            // (planning/aggregate_domains.md): an un-annotated element domain
+            // is a genuine inference variable now, not stamped from an
+            // aggregate domain that no longer exists.
+            Type::Vec { len, elem } => Type::Vec {
+                len: len.clone(),
+                elem: Box::new(self.freshen_domains(elem)),
+            },
+            Type::Tuple(elems) => {
+                Type::Tuple(elems.iter().map(|e| self.freshen_domains(e)).collect())
+            }
             Type::Port { def, args, domain } => Type::Port {
                 def: *def,
                 args: args.clone(),
@@ -1267,6 +1277,26 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 }
                 self.unify_domain(*dda, *ddb);
             }
+            // Aggregates have no domain of their own — unify element-wise
+            // (planning/aggregate_domains.md).
+            (Type::Vec { len: la, elem: ea }, Type::Vec { len: lb, elem: eb }) => {
+                self.unify_width(la.clone(), lb.clone());
+                let (ea, eb) = ((**ea).clone(), (**eb).clone());
+                self.unify(&ea, &eb);
+            }
+            (Type::Tuple(ea), Type::Tuple(eb)) => {
+                if ea.len() != eb.len() {
+                    self.diag(InferDiagnosticKind::TupleArityMismatch {
+                        expected: eb.len(),
+                        found: ea.len(),
+                    });
+                    return;
+                }
+                let (ea, eb) = (ea.clone(), eb.clone());
+                for (x, y) in ea.iter().zip(&eb) {
+                    self.unify(x, y);
+                }
+            }
             (Type::Clock, Type::Clock) => {}
             _ => self.diag(InferDiagnosticKind::TypeMismatch),
         }
@@ -1287,24 +1317,6 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 if x == y =>
             {
                 self.unify_args(ax, ay)
-            }
-            (ValueKind::Vec { len: la, elem: ea }, ValueKind::Vec { len: lb, elem: eb }) => {
-                self.unify_width(la.clone(), lb.clone());
-                let (ea, eb) = ((**ea).clone(), (**eb).clone());
-                self.unify(&ea, &eb);
-            }
-            (ValueKind::Tuple(ea), ValueKind::Tuple(eb)) => {
-                if ea.len() != eb.len() {
-                    self.diag(InferDiagnosticKind::TupleArityMismatch {
-                        expected: eb.len(),
-                        found: ea.len(),
-                    });
-                    return;
-                }
-                let (ea, eb) = (ea.clone(), eb.clone());
-                for (x, y) in ea.iter().zip(&eb) {
-                    self.unify(x, y);
-                }
             }
             (ValueKind::Param(i), ValueKind::Param(j)) if i == j => {}
             _ => self.diag(InferDiagnosticKind::TypeMismatch),
@@ -1397,26 +1409,20 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             return;
         }
         match (&a, &b) {
-            // Tuples subsume ELEMENT-WISE (covariant along the const edge):
-            // a tuple is a positional composite of independent values, so
-            // each element of a tuple at a coercion site is itself at a
-            // coercion site — `(x, 5)` fits `(uint(8) @a, uint(4) @b)`
-            // (planning/tuples.md).
-            (
-                Type::Value {
-                    kind: ValueKind::Tuple(ea),
-                    domain: da,
-                },
-                Type::Value {
-                    kind: ValueKind::Tuple(eb),
-                    domain: db,
-                },
-            ) if ea.len() == eb.len() => {
-                let (ea, eb, da, db) = (ea.clone(), eb.clone(), *da, *db);
+            // Aggregates subsume ELEMENT-WISE (covariant along the const
+            // edge): each element at a coercion site is itself at a coercion
+            // site, so `(x, 5)` fits `(uint(8) @a, uint(4) @b)` and a const
+            // vec fits a clocked one (planning/aggregate_domains.md).
+            (Type::Tuple(ea), Type::Tuple(eb)) if ea.len() == eb.len() => {
+                let (ea, eb) = (ea.clone(), eb.clone());
                 for (x, y) in ea.iter().zip(&eb) {
                     self.subsume(x, y);
                 }
-                self.subsume_domain(da, db);
+            }
+            (Type::Vec { len: la, elem: ea }, Type::Vec { len: lb, elem: eb }) => {
+                self.unify_width(la.clone(), lb.clone());
+                let (ea, eb) = ((**ea).clone(), (**eb).clone());
+                self.subsume(&ea, &eb);
             }
             (
                 Type::Value {
@@ -1540,19 +1546,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     let it = self.infer_expr(body, *iter);
                     let it = self.resolve_ty(&it);
                     let elem_ty = match &it {
-                        Type::Value {
-                            kind: ValueKind::Vec { elem, .. },
-                            domain,
-                        } => {
-                            let mut t = (**elem).clone();
-                            if let Type::Value { domain: ed, .. } | Type::Port { domain: ed, .. } =
-                                &mut t
-                                && matches!(ed, Domain::Unspecified)
-                            {
-                                *ed = *domain;
-                            }
-                            t
-                        }
+                        // The element carries its own domain (an aggregate has
+                        // none — planning/aggregate_domains.md).
+                        Type::Vec { elem, .. } => (**elem).clone(),
                         Type::Value {
                             kind: ValueKind::Bits { .. },
                             domain,
@@ -1680,12 +1676,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     let t = self.infer_expr(body, *e);
                     self.subsume(&t, &elem_ty);
                 }
-                Type::Value {
-                    kind: ValueKind::Vec {
-                        len: ConstArg::Lit(elems.len() as i128),
-                        elem: Box::new(elem_ty),
-                    },
-                    domain: Domain::Unspecified,
+                Type::Vec {
+                    len: ConstArg::Lit(elems.len() as i128),
+                    elem: Box::new(elem_ty),
                 }
             }
             // `(a, b)`: elements type independently — each keeps its own
@@ -1693,21 +1686,15 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             ExprKind::TupleLit(elems) => {
                 let elems = elems.clone();
                 let tys = elems.iter().map(|e| self.infer_expr(body, *e)).collect();
-                Type::Value {
-                    kind: ValueKind::Tuple(tys),
-                    domain: Domain::Unspecified,
-                }
+                Type::Tuple(tys)
             }
             // `[e; N]`.
             ExprKind::VecRepeat { elem, len } => {
                 let len = len.clone();
                 let t = self.infer_expr(body, *elem);
-                Type::Value {
-                    kind: ValueKind::Vec {
-                        len,
-                        elem: Box::new(t),
-                    },
-                    domain: Domain::Unspecified,
+                Type::Vec {
+                    len,
+                    elem: Box::new(t),
                 }
             }
             // `v[i]`: Vec(N, A) → A; bits(N) → bool. The index is a literal,
@@ -1739,21 +1726,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 }
                 let bt_r = self.resolve_ty(&bt);
                 match &bt_r {
-                    Type::Value {
-                        kind: ValueKind::Vec { len, elem },
-                        domain,
-                    } => {
-                        // Ground-literal index against a ground length:
-                        // bounds-check now.
+                    // `v[i]` is the element type directly — it carries its own
+                    // domain (the Vec has none — planning/aggregate_domains.md).
+                    Type::Vec { len, elem } => {
                         self.check_index_bounds(body, index, len);
-                        let mut t = (**elem).clone();
-                        if let Type::Value { domain: ed, .. } | Type::Port { domain: ed, .. } =
-                            &mut t
-                            && matches!(ed, Domain::Unspecified)
-                        {
-                            *ed = *domain;
-                        }
-                        t
+                        (**elem).clone()
                     }
                     Type::Value {
                         kind: ValueKind::Bits { width },
@@ -1871,15 +1848,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             for a in args {
                 self.infer_expr(body, a.expr);
             }
-            return Type::Value {
-                kind: ValueKind::Vec {
-                    len,
-                    elem: Box::new(Type::Value {
-                        kind: ValueKind::Integer,
-                        domain: Domain::Const,
-                    }),
-                },
-                domain: Domain::Const,
+            return Type::Vec {
+                len,
+                elem: Box::new(Type::Value {
+                    kind: ValueKind::Integer,
+                    domain: Domain::Const,
+                }),
             };
         }
         self.call_def(body, at, def, args, named, None)
@@ -1998,13 +1972,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     fn infer_field(&mut self, body: &Body<'db>, receiver: ExprId, field: &str) -> Type<'db> {
         let recv = self.infer_expr(body, receiver);
         // Tuple projection `p.0` (planning/tuples.md): the numeric field
-        // indexes the element list. The receiver's domain stamps the
-        // element's `Unspecified` slots, exactly as for struct fields.
-        if let Type::Value {
-            kind: ValueKind::Tuple(elems),
-            ..
-        } = self.resolve_ty(&recv)
-        {
+        // indexes the element list. The element carries its own domain — a
+        // tuple has none of its own (planning/aggregate_domains.md).
+        if let Type::Tuple(elems) = self.resolve_ty(&recv) {
             let Ok(i) = field.parse::<usize>() else {
                 self.diag(InferDiagnosticKind::UnknownField {
                     name: field.to_owned(),
@@ -2018,10 +1988,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 });
                 return Type::Error;
             };
-            return match self.domain_of(&recv) {
-                Some(rd) if rd != Domain::Unspecified => Stamp { dom: rd }.fold_type(&elem),
-                _ => elem,
-            };
+            return elem;
         }
         // The field type is declared in terms of the def's generic params; we
         // instantiate it with the receiver's type args (`EarlyBinder::instantiate`).
@@ -2175,13 +2142,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         // i swapped. RAM feedback composes it with the value-form `when`.
         {
             let recv_r = self.resolve_ty(&recv);
-            if let Type::Value {
-                kind: ValueKind::Vec { len, elem },
-                domain,
-            } = &recv_r
+            if let Type::Vec { len, elem } = &recv_r
                 && method == "replace"
             {
-                let (len, elem, domain) = (len.clone(), (**elem).clone(), *domain);
+                let (len, elem) = (len.clone(), (**elem).clone());
                 if let [i, x] = args {
                     let it = self.infer_expr(body, i.expr);
                     if self.is_literal_ty(&it) {
@@ -2192,14 +2156,8 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                         self.unify(&it, &int);
                     }
                     let xt = self.infer_expr(body, x.expr);
-                    let mut want = elem.clone();
-                    if let Type::Value { domain: ed, .. } | Type::Port { domain: ed, .. } =
-                        &mut want
-                        && matches!(ed, Domain::Unspecified)
-                    {
-                        *ed = domain;
-                    }
-                    self.subsume(&xt, &want);
+                    // The element carries its own domain — `x` must fit it.
+                    self.subsume(&xt, &elem);
                 } else {
                     self.diag(InferDiagnosticKind::PositionalArity {
                         callee: "replace".to_owned(),
@@ -2207,26 +2165,18 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                         found: args.len(),
                     });
                 }
-                return Type::Value {
-                    kind: ValueKind::Vec {
-                        len,
-                        elem: Box::new(elem),
-                    },
-                    domain,
+                return Type::Vec {
+                    len,
+                    elem: Box::new(elem),
                 };
             }
-            // Builtin `Vec(N, A).enumerate() -> Vec(N, (integer, A))` — a
-            // REAL method now that tuples exist (planning/tuples.md). Inside
-            // a `for` it is also recognised syntactically so the index
-            // reuses the genvar; elsewhere the type is honest and `integer`
-            // is const-only, failing where any const-only value would.
-            if let Type::Value {
-                kind: ValueKind::Vec { len, elem },
-                domain,
-            } = &recv_r
+            // Builtin `Vec(N, A).enumerate() -> Vec(N, (integer @const, A))` —
+            // a REAL method (planning/tuples.md). Inside a `for` it is also
+            // recognised syntactically so the index reuses the genvar.
+            if let Type::Vec { len, elem } = &recv_r
                 && method == "enumerate"
             {
-                let (len, elem, domain) = (len.clone(), (**elem).clone(), *domain);
+                let (len, elem) = (len.clone(), (**elem).clone());
                 if !args.is_empty() {
                     self.diag(InferDiagnosticKind::PositionalArity {
                         callee: "enumerate".to_owned(),
@@ -2238,15 +2188,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     kind: ValueKind::Integer,
                     domain: Domain::Const,
                 };
-                return Type::Value {
-                    kind: ValueKind::Vec {
-                        len,
-                        elem: Box::new(Type::Value {
-                            kind: ValueKind::Tuple(vec![index_ty, elem]),
-                            domain: Domain::Unspecified,
-                        }),
-                    },
-                    domain,
+                return Type::Vec {
+                    len,
+                    elem: Box::new(Type::Tuple(vec![index_ty, elem])),
                 };
             }
         }
@@ -2494,6 +2438,15 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 args,
                 domain: d,
             },
+            // An aggregate is "on domain d" when every element is — it has no
+            // domain of its own (planning/aggregate_domains.md).
+            Type::Vec { len, elem } => Type::Vec {
+                len,
+                elem: Box::new(self.with_domain(&elem, d)),
+            },
+            Type::Tuple(elems) => {
+                Type::Tuple(elems.iter().map(|e| self.with_domain(e, d)).collect())
+            }
             other => other,
         }
     }
@@ -2662,15 +2615,15 @@ mod tests {
                 ValueKind::UInt { .. } => "uint",
                 ValueKind::SInt { .. } => "sint",
                 ValueKind::Bits { .. } => "bits",
-                ValueKind::Vec { .. } => "Vec",
                 ValueKind::Bool => "bool",
                 ValueKind::Reset => "reset",
                 ValueKind::Event => "event",
                 ValueKind::Integer => "integer",
                 ValueKind::Struct { .. } => "struct",
-                ValueKind::Tuple(_) => "tuple",
                 ValueKind::Param(_) => "param",
             },
+            Type::Vec { .. } => "Vec",
+            Type::Tuple(_) => "tuple",
             Type::Port { .. } => "port",
             Type::Clock => "clock",
             Type::Infer(_) => "infer",

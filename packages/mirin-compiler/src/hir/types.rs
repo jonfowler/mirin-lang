@@ -45,11 +45,25 @@ pub enum Direction {
 /// A type, with its domain component folded in (domains are part of the type).
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub enum Type<'db> {
-    /// A value type: a structural kind plus its clock-domain component.
+    /// A value type: a structural kind plus its clock-domain component. The
+    /// domain belongs here because the kind is a LEAF (`uint`, `bool`, …) or
+    /// a struct (homogeneous — its domain stamps the fields).
     Value {
         kind: ValueKind<'db>,
         domain: Domain,
     },
+    /// `Vec(N, A)` — N elements of A (planning/vectors.md). An aggregate has
+    /// NO domain of its own (planning/aggregate_domains.md): the domain lives
+    /// entirely in the element `A`. Flattens struct-of-arrays — one
+    /// unpacked-array leaf per element-type leaf.
+    Vec {
+        len: ConstArg<'db>,
+        elem: Box<Type<'db>>,
+    },
+    /// `(A, B)` — a structural product (planning/tuples.md). No domain of its
+    /// own; each element is a full type carrying its own domain, so
+    /// mixed-domain tuples are legal. Arity ≥ 2.
+    Tuple(Vec<Type<'db>>),
     /// A port interface type, with the port's generic args and its domain.
     Port {
         def: DefId<'db>,
@@ -81,17 +95,6 @@ pub enum ValueKind<'db> {
     Bits {
         width: ConstArg<'db>,
     },
-    /// `Vec(N, A)` — N elements of A (planning/vectors.md). Flattens
-    /// struct-of-arrays: one unpacked-array leaf per element-type leaf.
-    Vec {
-        len: ConstArg<'db>,
-        elem: Box<Type<'db>>,
-    },
-    /// `(A, B)` — a structural product (planning/tuples.md). Elements are
-    /// FULL types: each carries its own domain, so mixed-domain tuples are
-    /// legal; an element's `Unspecified` slot means "the tuple binding's own
-    /// domain", as for struct fields. Arity ≥ 2.
-    Tuple(Vec<Type<'db>>),
     Bool,
     Reset,
     Event,
@@ -210,13 +213,6 @@ pub fn match_header<'db>(
                 ConstArg::Param(i) => bind(binding, *i, Term::Const(gw.clone())),
                 _ => gw == hw,
             },
-            (ValueKind::Vec { len: gl, elem: ge }, ValueKind::Vec { len: hl, elem: he }) => {
-                let len_ok = match hl {
-                    ConstArg::Param(i) => bind(binding, *i, Term::Const(gl.clone())),
-                    _ => gl == hl,
-                };
-                len_ok && match_header(ge, he, binding)
-            }
             (ValueKind::Bool, ValueKind::Bool)
             | (ValueKind::Reset, ValueKind::Reset)
             | (ValueKind::Event, ValueKind::Event)
@@ -224,11 +220,18 @@ pub fn match_header<'db>(
             (ValueKind::Struct { def: gd, args: ga }, ValueKind::Struct { def: hd, args: ha }) => {
                 gd == hd && match_header_args(ga, ha, binding)
             }
-            (ValueKind::Tuple(ge), ValueKind::Tuple(he)) => {
-                ge.len() == he.len() && ge.iter().zip(he).all(|(g, h)| match_header(g, h, binding))
-            }
             _ => false,
         },
+        (Type::Vec { len: gl, elem: ge }, Type::Vec { len: hl, elem: he }) => {
+            let len_ok = match hl {
+                ConstArg::Param(i) => bind(binding, *i, Term::Const(gl.clone())),
+                _ => gl == hl,
+            };
+            len_ok && match_header(ge, he, binding)
+        }
+        (Type::Tuple(ge), Type::Tuple(he)) => {
+            ge.len() == he.len() && ge.iter().zip(he).all(|(g, h)| match_header(g, h, binding))
+        }
         (
             Type::Port {
                 def: gd, args: ga, ..
@@ -511,6 +514,11 @@ pub fn super_fold_type<'db, F: Folder<'db>>(f: &mut F, t: &Type<'db>) -> Type<'d
             kind: super_fold_kind(f, kind),
             domain: f.fold_domain(*domain),
         },
+        Type::Vec { len, elem } => Type::Vec {
+            len: f.fold_const(len),
+            elem: Box::new(f.fold_type(elem)),
+        },
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| f.fold_type(e)).collect()),
         Type::Port { def, args, domain } => Type::Port {
             def: *def,
             args: super_fold_args(f, args),
@@ -531,11 +539,6 @@ pub fn super_fold_kind<'db, F: Folder<'db>>(f: &mut F, k: &ValueKind<'db>) -> Va
         ValueKind::Bits { width } => ValueKind::Bits {
             width: f.fold_const(width),
         },
-        ValueKind::Vec { len, elem } => ValueKind::Vec {
-            len: f.fold_const(len),
-            elem: Box::new(f.fold_type(elem)),
-        },
-        ValueKind::Tuple(elems) => ValueKind::Tuple(elems.iter().map(|e| f.fold_type(e)).collect()),
         ValueKind::Struct { def, args } => ValueKind::Struct {
             def: *def,
             args: super_fold_args(f, args),
