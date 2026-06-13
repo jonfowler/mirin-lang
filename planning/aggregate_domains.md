@@ -72,40 +72,48 @@ enumerate (Vec(N, A)) -> Vec(N, (integer @const, A))
 
 ## Fix, staged
 
-**Stage 1 — close the laundry (soundness).** When an explicit `@D`
-annotation is lowered onto an aggregate type, propagate `D` into the
-element types' *unspecified* domain slots immediately (a `Stamp{D}`,
-exactly as the pure-function lift already does for `__Dom` via
-`LiftDomains`). The element then carries `@D` from birth, so a write of
-`@a` data unifies `@a` with `@D` and conflicts. This is the doc's "discharge
-`@` by unification for head-known types," applied at lowering rather than
-lazily at projection. Backend is unaffected (domains are erased before SV).
+**Stage 1 — close the laundry (soundness). [done]** When an explicit `@D`
+annotation is lowered onto an aggregate type, propagate `D` into the element
+types' *unspecified* domain slots immediately (`stamp_domain`, exactly as the
+pure-function lift does for `__Dom` via `LiftDomains`). The element then
+carries `@D` from birth, so a write of `@a` data unifies `@a` with `@D` and
+conflicts. This is the doc's "discharge `@` by unification for head-known
+types," at lowering rather than lazily at projection. Backend unaffected
+(domains are erased before SV). Closes the Vec and tuple laundry; does NOT
+yet catch drift (an explicit element domain *conflicting* with `@D` — the
+stamp fills only unspecified slots) — that waits for Stage 3.
 
-**Stage 2 — structural annotation check (completeness).** `type_has_domain`
-(behind "explicit mode requires every param/return annotated") must derive
-"is annotated" structurally: a `Vec` is annotated iff its element is; a
-tuple iff every element is. Removes the false rejection of
-`Vec(N, (integer @const, A @D))`.
+**Stage 2 — structural annotation check (completeness). [done]**
+`type_has_domain` derives "is annotated" structurally: a `Vec` is annotated
+iff its element is; a tuple iff every element is. Removes the false rejection
+of an element-annotated `Vec`.
 
-**Stage 3 — drop the stored aggregate domain (representation).** Remove
-`domain` from the aggregate `ValueKind`s; a domain lives only on leaves, and
-an aggregate's domain is *derived* (a `Vec`'s is its element's; a tuple's is
-the per-element set — there is none singular). This makes drift
-unrepresentable and the inert `(A@a, B@b) @c` annotation impossible to
-write, rather than relying on Stage 1 to keep a redundant field consistent.
-Touches `Type`, `Stamp`/`freshen_domains`, and struct/port field handling —
-a real pass, so it follows the soundness fix rather than blocking it.
+**Stage 3 — drop the stored aggregate domain (representation).** Move `Vec`
+and `Tuple` out of the domain-carrying `Type::Value` wrapper into top-level
+`Type` variants with no domain field (leaves and structs keep theirs). A
+domain then lives only on leaves; an aggregate's is *derived* (a `Vec`'s is
+its element's; a tuple's is the per-element set — none singular). Makes drift
+and the inert `(A@a, B@b) @c` annotation **unrepresentable** rather than
+relying on Stage 1 to keep a redundant field consistent, and is where the
+remaining `vec-domain-drift` case flips. Touches `Type`,
+`Stamp`/`freshen_domains`, and struct/port field handling.
+
+## Out of scope
+
+Emitting a *compile-time integer* (`integer`, the `enumerate` index) at a
+module boundary — e.g. returning `Vec(N, (integer @const, A @D))` from a
+function — has no hardware representation (the integer has no width). The
+*type* is now accepted (Stage 2); turning such a value into ports is a
+separate question, not a domain-checking one.
 
 ## Evidence / regression cases
 
-Live fixtures (currently wrong, flip as each stage lands):
-
-- `examples/todo-incorrect-pass/cdc-launder-vec.mrn`,
-  `cdc-launder-tuple.mrn` — wrongly accepted; → `fail-expected` after Stage 1.
-- `examples/todo-incorrect-pass/vec-domain-drift.mrn` — wrongly accepted; →
-  `fail-expected` after Stage 1/3.
-- `examples/todo/mixed-domain-vec-return.mrn` — wrongly rejected; → `working`
-  after Stage 2.
+- `examples/fail-expected/cdc-launder-vec.mrn`, `cdc-launder-tuple.mrn` —
+  the CDC laundry, now rejected (Stage 1).
+- `examples/working/vec_elem_domain.mrn` — an element-annotated `Vec` with no
+  outer domain, now accepted and emitted (Stage 2).
+- `examples/todo-incorrect-pass/vec-domain-drift.mrn` — still wrongly
+  accepted; flips at Stage 3.
 
 The element-level (`Vec(N, uint(8) @b)`), struct-field, and direct `@a`→`@b`
 crossings already behave correctly and guard against regressions. (`@` on a

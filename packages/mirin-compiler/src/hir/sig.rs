@@ -845,7 +845,9 @@ fn lower_fn_sig<'db>(
             if name == "self" {
                 continue; // the receiver's domain is its own annotation
             }
-            let annotated = p.child_by_field_name("type").is_some_and(type_has_domain);
+            let annotated = p
+                .child_by_field_name("type")
+                .is_some_and(|ty| type_has_domain(ty, source));
             if !annotated {
                 diagnostics.push(SigDiagnostic {
                     span: rel(p),
@@ -854,7 +856,7 @@ fn lower_fn_sig<'db>(
             }
         }
         if let Some(rt) = node.child_by_field_name("return_type")
-            && !type_has_domain(rt)
+            && !type_has_domain(rt, source)
         {
             diagnostics.push(SigDiagnostic {
                 span: rel(&rt),
@@ -891,22 +893,53 @@ fn lower_fn_sig<'db>(
 /// Is this written type domain-annotated? Either an `@domain` suffix, or a
 /// named-section type application (`DF{clk}(…)`) — a port/struct applied to
 /// its domain arguments is fully domain-specified.
-fn type_has_domain(t: Node) -> bool {
+/// Propagate an aggregate annotation `@D` into a type's *unspecified* domain
+/// slots — the `Ty @ D` constraint for a head-known type (fill, don't
+/// override; planning/aggregate_domains.md). A no-op when `D` is Unspecified
+/// (a pure signature; the lift handles those slots instead).
+fn stamp_domain<'db>(ty: Type<'db>, dom: Domain) -> Type<'db> {
+    if dom == Domain::Unspecified {
+        return ty;
+    }
+    struct StampDom {
+        dom: Domain,
+    }
+    impl<'db> Folder<'db> for StampDom {
+        fn fold_domain(&mut self, d: Domain) -> Domain {
+            match d {
+                Domain::Unspecified => self.dom,
+                other => other,
+            }
+        }
+    }
+    StampDom { dom }.fold_type(&ty)
+}
+
+/// Is this written type domain-annotated? A domain lives on a *leaf*, so an
+/// aggregate is annotated when its elements are (planning/aggregate_domains.md):
+/// a tuple iff every element is; a `Vec` iff its element is.
+fn type_has_domain(t: Node, source: &str) -> bool {
     if t.child_by_field_name("domain").is_some()
         || t.children(&mut t.walk())
             .any(|c| c.kind() == "type_named_args")
     {
         return true;
     }
-    // A tuple type is annotated when EVERY element is (each element carries
-    // its own domain — planning/tuples.md).
     if t.kind() == "tuple_type" {
         let mut cursor = t.walk();
         let elems: Vec<Node> = t
             .children(&mut cursor)
             .filter(|c| matches!(c.kind(), "type_expression" | "tuple_type"))
             .collect();
-        return !elems.is_empty() && elems.into_iter().all(type_has_domain);
+        return !elems.is_empty() && elems.into_iter().all(|e| type_has_domain(e, source));
+    }
+    if matches!(t.kind(), "type_expression" | "return_type_expression")
+        && field_text(&t, "name", source) == "Vec"
+    {
+        // `Vec(N, A)` — the element is the second type argument.
+        return vec_type_args(&t)
+            .get(1)
+            .is_some_and(|e| type_has_domain(*e, source));
     }
     false
 }
@@ -981,10 +1014,14 @@ impl<'db> TypeLowerer<'_, 'db> {
         if node.kind() == "tuple_type" {
             let domain = self.lower_domain(node, source);
             let mut cursor = node.walk();
+            // A trailing `@D` is the constraint "every clock slot is D",
+            // propagated into each element's unspecified slots
+            // (planning/aggregate_domains.md) — not a domain stored on the
+            // tuple itself.
             let elems = node
                 .children(&mut cursor)
                 .filter(|c| matches!(c.kind(), "type_expression" | "tuple_type"))
-                .map(|c| self.lower_type(&c, source))
+                .map(|c| stamp_domain(self.lower_type(&c, source), domain))
                 .collect();
             return Type::Value {
                 kind: ValueKind::Tuple(elems),
@@ -1022,7 +1059,12 @@ impl<'db> TypeLowerer<'_, 'db> {
             }
             "Vec" => {
                 // `Vec(N, A)`: first positional arg is the const length,
-                // second the element type.
+                // second the element type. A domain lives on a leaf, never on
+                // an aggregate — so an explicit `@D` here is the *constraint*
+                // "every clock slot in A is D" (planning/aggregate_domains.md):
+                // propagate it into the element's unspecified slots now, so a
+                // later write meets a concrete element domain instead of a
+                // lenient `Unspecified` (which laundered the crossing).
                 let args = vec_type_args(node);
                 let len = args
                     .first()
@@ -1035,7 +1077,7 @@ impl<'db> TypeLowerer<'_, 'db> {
                 return Type::Value {
                     kind: ValueKind::Vec {
                         len,
-                        elem: Box::new(elem),
+                        elem: Box::new(stamp_domain(elem, domain)),
                     },
                     domain,
                 };
