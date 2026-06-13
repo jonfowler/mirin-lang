@@ -141,9 +141,18 @@ fn build_module<'db>(
         && !is_integer(&ground_widths(db, krate, def, &subst_type(rt, self_subst)))
     {
         let rt = ground_widths(db, krate, def, &subst_type(rt, self_subst));
+        // `drives=true`: the module produces the result. A returned PORT's
+        // consumer-side (`in`) fields fold to `drives=false` — they are
+        // inputs to this module (the downstream's backpressure), exactly as
+        // for an `out` port parameter. Respect the per-leaf flag rather than
+        // forcing every result leaf to an output.
         for leaf in flatten_leaves(db, krate, &rt, true, &sig.generic_params) {
             ports.push(SvPort {
-                direction: SvPortDirection::Output,
+                direction: if leaf.drives {
+                    SvPortDirection::Output
+                } else {
+                    SvPortDirection::Input
+                },
                 ty: leaf.ty,
                 name: join("result", &leaf.suffix),
             });
@@ -774,7 +783,17 @@ impl<'db> SvLower<'_, 'db> {
         let value_leaves = self.expr_leaves(value);
         for rl in result_leaves {
             if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == rl.suffix) {
-                self.push_assign(SvExpr::Ident(join("result", &rl.suffix)), v.clone());
+                let result_leaf = SvExpr::Ident(join("result", &rl.suffix));
+                if rl.drives {
+                    // A produced (`out`) field: the result drives the value.
+                    self.push_assign(result_leaf, v.clone());
+                } else {
+                    // A consumer-side (`in`) field of a returned port: the
+                    // module RECEIVES `result__<field>`, and the value's own
+                    // place (e.g. `up__ready`) is driven from it — the reverse
+                    // direction, like a record `field => target` binding.
+                    self.push_assign(v.clone(), result_leaf);
+                }
             }
         }
         for (suf, target) in self.record_out_conns(value) {
@@ -2662,6 +2681,25 @@ endmodule
         assert!(sv.contains("input  logic [3:0] x"), "{sv}");
         assert!(sv.contains("output logic [3:0] result"), "{sv}");
         assert!(sv.contains("assign result = x;"), "{sv}");
+    }
+
+    #[test]
+    fn a_returned_ports_consumer_field_is_an_input() {
+        // A returned PORT is bidirectional: its `out` fields are module
+        // outputs, but its `in` field (ready) is a module INPUT — the
+        // downstream's backpressure — and the value's own place is driven
+        // FROM it (reverse). Regression for the result-emission direction.
+        let sv = emit(
+            "port S = s { out valid: bool, out data: uint(8), in ready: bool }\n\
+             fn tap {dom clk: Clock} (up: S @clk) -> S @clk { up }",
+        );
+        assert!(sv.contains("output logic result__valid"), "{sv}");
+        assert!(sv.contains("output logic [7:0] result__data"), "{sv}");
+        assert!(sv.contains("input  logic result__ready"), "{sv}");
+        // up's consumer-side ready (a module output) is driven from the
+        // returned port's ready input — the reverse direction.
+        assert!(sv.contains("assign up__ready = result__ready;"), "{sv}");
+        assert!(sv.contains("assign result__valid = up__valid;"), "{sv}");
     }
 
     #[test]

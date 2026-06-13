@@ -54,7 +54,14 @@ polymorphic types and the domain machinery.
 - `_` and literal patterns; match.
 - Tuples as trait `Self` (no operator impls on tuples).
 - Tuple equality — needs derived `Eq`; comes with trait derive work.
-- Reverse-direction fields of a RETURNED port (tuple-wrapped or not):
-  a returned port's consumer-side fields emit as outputs today — a
-  pre-existing limit of result emission, not of tuples; `out` params
-  are the directional path.
+
+## Returned ports are bidirectional
+
+A function may RETURN a port (bare, or as a tuple element). A returned
+port's `out` fields are module outputs, but its `in` fields are module
+INPUTS — the downstream's backpressure — folded exactly as for an `out`
+port parameter. `drive_result` drives the `out` leaves forward
+(`result__x = …`) and the `in` leaves in reverse (`… = result__x`), the
+same split as a record `field => target` binding. See
+`examples/working/dataflow_stage.mrn` (a pipeline register returning its
+downstream `Stream`) and `tests/rtl/test_dataflow_stage.py`.
