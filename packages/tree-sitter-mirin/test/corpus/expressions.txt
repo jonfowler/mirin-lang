@@ -1,4 +1,3 @@
-
 ========================================
 literal bases and unary minus
 ========================================
@@ -23,7 +22,7 @@ fn f() -> uint(8) {
     body: (block
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           value: (expression
             (binary_expression
               left: (expression
@@ -32,7 +31,7 @@ fn f() -> uint(8) {
                 (number))))))
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           value: (expression
             (unary_expression
               operand: (expression
@@ -105,7 +104,7 @@ fn f (a: uint(4)) -> uint(4) {
     body: (block
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           type: (type_expression
             name: (identifier)
             (type_index
@@ -128,7 +127,7 @@ fn f (a: uint(4)) -> uint(4) {
                 (number))))))
       (statement
         (let_statement
-          name: (identifier)
+          pattern: (identifier)
           type: (type_expression
             name: (identifier)
             (type_index
@@ -162,7 +161,7 @@ fn f (v: Vec(3, uint(8))) -> uint(8) {
     for x in v {
         let y = x;
     }
-    for i, x in v.enumerate() {
+    for (i, x) in v.enumerate() {
         let y = x;
     }
     0
@@ -195,20 +194,21 @@ fn f (v: Vec(3, uint(8))) -> uint(8) {
     body: (block
       (statement
         (for_statement
-          a: (identifier)
+          pattern: (identifier)
           iter: (path_expression
             segment: (identifier))
           body: (block
             (statement
               (let_statement
-                name: (identifier)
+                pattern: (identifier)
                 value: (expression
                   (path_expression
                     segment: (identifier))))))))
       (statement
         (for_statement
-          a: (identifier)
-          b: (identifier)
+          pattern: (tuple_pattern
+            (identifier)
+            (identifier))
           iter: (postfix_expression
             receiver: (path_expression
               segment: (identifier))
@@ -218,7 +218,7 @@ fn f (v: Vec(3, uint(8))) -> uint(8) {
           body: (block
             (statement
               (let_statement
-                name: (identifier)
+                pattern: (identifier)
                 value: (expression
                   (path_expression
                     segment: (identifier))))))))
@@ -292,3 +292,112 @@ fn f {dom clk: Clock} (a: uint(8)) -> uint(8) {
       tail: (expression
         (path_expression
           segment: (identifier))))))
+
+========================================
+tuple construction, projection, destructuring
+========================================
+
+fn f {dom clk: Clock} (a: uint(8) @clk, b: bool @clk) -> (uint(8), bool) @clk {
+    let p = (a, b);
+    let x = p.0;
+    let (y, z) = p;
+    let (q, (r, s)) = (a, (b, b));
+    (p.0, p.1)
+}
+
+---
+
+(source_file
+  (function_definition
+    (identifier)
+    (named_parameter_section
+      (named_parameter
+        (identifier)
+        (type_expression
+          (identifier))))
+    (parameter_section
+      (parameter
+        (identifier)
+        (type_expression
+          (identifier)
+          (type_index
+            (type_argument
+              (number)))
+          (identifier)))
+      (parameter
+        (identifier)
+        (type_expression
+          (identifier)
+          (identifier))))
+    (tuple_type
+      (type_expression
+        (identifier)
+        (type_index
+          (type_argument
+            (number))))
+      (type_expression
+        (identifier))
+      (identifier))
+    (block
+      (statement
+        (let_statement
+          (identifier)
+          (expression
+            (tuple_expression
+              (expression
+                (path_expression
+                  (identifier)))
+              (expression
+                (path_expression
+                  (identifier)))))))
+      (statement
+        (let_statement
+          (identifier)
+          (expression
+            (postfix_expression
+              (path_expression
+                (identifier))
+              (field_access
+                (number))))))
+      (statement
+        (let_statement
+          (tuple_pattern
+            (identifier)
+            (identifier))
+          (expression
+            (path_expression
+              (identifier)))))
+      (statement
+        (let_statement
+          (tuple_pattern
+            (identifier)
+            (tuple_pattern
+              (identifier)
+              (identifier)))
+          (expression
+            (tuple_expression
+              (expression
+                (path_expression
+                  (identifier)))
+              (expression
+                (tuple_expression
+                  (expression
+                    (path_expression
+                      (identifier)))
+                  (expression
+                    (path_expression
+                      (identifier)))))))))
+      (expression
+        (tuple_expression
+          (expression
+            (postfix_expression
+              (path_expression
+                (identifier))
+              (field_access
+                (number))))
+          (expression
+            (postfix_expression
+              (path_expression
+                (identifier))
+              (field_access
+                (number)))))))))

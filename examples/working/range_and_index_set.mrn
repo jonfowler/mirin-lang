@@ -14,7 +14,7 @@ fn f {dom clk: Clock} (v: Vec(3, Pix) @clk, a: uint(8) @clk, b: uint(8) @clk) ->
     }
     var picked: Vec(3, uint(8)) @clk;
     var whole: Vec(3, Pix) @clk;
-    for i, x in v.enumerate() {
+    for (i, x) in v.enumerate() {
         picked[i] = if x.valid { x.val } else { 0 };
         whole[i] = x;
     }

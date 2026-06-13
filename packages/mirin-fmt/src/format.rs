@@ -180,11 +180,7 @@ impl<'a> Formatter<'a> {
 
             "for_statement" => {
                 let mut parts = vec![text("for ")];
-                parts.push(text(self.text(self.field(n, "a").unwrap())));
-                if let Some(b) = self.field(n, "b") {
-                    parts.push(text(", "));
-                    parts.push(text(self.text(b)));
-                }
+                parts.push(self.doc(self.field(n, "pattern").unwrap()));
                 parts.push(text(" in "));
                 parts.push(self.doc(self.field(n, "iter").unwrap()));
                 parts.push(text(" "));
@@ -214,6 +210,9 @@ impl<'a> Formatter<'a> {
 
             "type_expression" => self.type_expr(n),
             "return_type_expression" => self.return_type_expr(n),
+            "tuple_expression" => self.tuple_like(n, &["expression"]),
+            "tuple_pattern" => self.tuple_like(n, &["identifier", "tuple_pattern"]),
+            "tuple_type" => self.tuple_type(n),
 
             "visibility_modifier" => self.visibility(n),
             "comment" => text(self.text(n).trim_end()),
@@ -643,9 +642,9 @@ impl<'a> Formatter<'a> {
     // resort — a case we don't yet handle (a long unbreakable RHS overflows).
 
     fn let_stmt(&self, n: Node) -> Doc {
-        let name = self.text(self.field(n, "name").unwrap());
+        let pattern = self.doc(self.field(n, "pattern").unwrap());
         let value = self.doc(self.field(n, "value").unwrap());
-        let mut parts = vec![text("let "), text(name)];
+        let mut parts = vec![text("let "), pattern];
         if let Some(ty) = self.field(n, "type") {
             parts.push(concat([text(": "), self.doc(ty)]));
         }
@@ -872,6 +871,40 @@ impl<'a> Formatter<'a> {
 
     /// Dispatcher for comma-separated list elements — kinds that only ever
     /// appear inside a delimited section and so aren't in `doc`'s match.
+    /// `(a, b)` tuple forms — expression and pattern: a parenthesised comma
+    /// list over the given element kinds.
+    fn tuple_like(&self, n: Node, kinds: &[&str]) -> Doc {
+        if self.has_child_kind(n, "comment") {
+            return self.verbatim(n);
+        }
+        let items: Vec<Doc> = self
+            .named_children(n)
+            .into_iter()
+            .filter(|c| kinds.contains(&c.kind()))
+            .map(|c| self.doc(c))
+            .collect();
+        self.delimited_items("(", ")", items, false)
+    }
+
+    /// `(A, B) @clk` — a tuple type with its optional trailing domain.
+    fn tuple_type(&self, n: Node) -> Doc {
+        if self.has_child_kind(n, "comment") {
+            return self.verbatim(n);
+        }
+        let items: Vec<Doc> = self
+            .named_children(n)
+            .into_iter()
+            .filter(|c| matches!(c.kind(), "type_expression" | "tuple_type"))
+            .map(|c| self.doc(c))
+            .collect();
+        let mut parts = vec![self.delimited_items("(", ")", items, false)];
+        if let Some(d) = self.field(n, "domain") {
+            parts.push(text(" @"));
+            parts.push(text(self.text(d)));
+        }
+        concat(parts)
+    }
+
     fn elem(&self, n: Node) -> Doc {
         match n.kind() {
             "named_parameter" => self.named_parameter(n),

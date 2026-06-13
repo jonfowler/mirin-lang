@@ -141,9 +141,18 @@ fn build_module<'db>(
         && !is_integer(&ground_widths(db, krate, def, &subst_type(rt, self_subst)))
     {
         let rt = ground_widths(db, krate, def, &subst_type(rt, self_subst));
+        // `drives=true`: the module produces the result. A returned PORT's
+        // consumer-side (`in`) fields fold to `drives=false` — they are
+        // inputs to this module (the downstream's backpressure), exactly as
+        // for an `out` port parameter. Respect the per-leaf flag rather than
+        // forcing every result leaf to an output.
         for leaf in flatten_leaves(db, krate, &rt, true, &sig.generic_params) {
             ports.push(SvPort {
-                direction: SvPortDirection::Output,
+                direction: if leaf.drives {
+                    SvPortDirection::Output
+                } else {
+                    SvPortDirection::Input
+                },
                 ty: leaf.ty,
                 name: join("result", &leaf.suffix),
             });
@@ -559,10 +568,7 @@ impl<'db> SvLower<'_, 'db> {
             })
             .unwrap_or(Type::Error);
         let (len, is_bits) = match &it {
-            Type::Value {
-                kind: ValueKind::Vec { len, .. },
-                ..
-            } => (len.clone(), false),
+            Type::Vec { len, .. } => (len.clone(), false),
             Type::Value {
                 kind: ValueKind::Bits { width },
                 ..
@@ -774,7 +780,17 @@ impl<'db> SvLower<'_, 'db> {
         let value_leaves = self.expr_leaves(value);
         for rl in result_leaves {
             if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == rl.suffix) {
-                self.push_assign(SvExpr::Ident(join("result", &rl.suffix)), v.clone());
+                let result_leaf = SvExpr::Ident(join("result", &rl.suffix));
+                if rl.drives {
+                    // A produced (`out`) field: the result drives the value.
+                    self.push_assign(result_leaf, v.clone());
+                } else {
+                    // A consumer-side (`in`) field of a returned port: the
+                    // module RECEIVES `result__<field>`, and the value's own
+                    // place (e.g. `up__ready`) is driven from it — the reverse
+                    // direction, like a record `field => target` binding.
+                    self.push_assign(v.clone(), result_leaf);
+                }
             }
         }
         for (suf, target) in self.record_out_conns(value) {
@@ -862,10 +878,7 @@ impl<'db> SvLower<'_, 'db> {
             &subst_type(&bt, &self.self_subst),
         );
         let len = match bt {
-            Type::Value {
-                kind: ValueKind::Vec { len, .. },
-                ..
-            } => len,
+            Type::Vec { len, .. } => len,
             Type::Value {
                 kind: ValueKind::Bits { width },
                 ..
@@ -1373,6 +1386,18 @@ impl<'db> SvLower<'_, 'db> {
                         )
                     })
                     .collect()
+            }
+            // `(a, b)`: element leaves prefixed with their index — the
+            // anonymous-struct shape (planning/tuples.md).
+            ExprKind::TupleLit(elems) => {
+                let elems = elems.clone();
+                let mut out = Vec::new();
+                for (i, e) in elems.iter().enumerate() {
+                    for (suf, v) in self.expr_leaves(*e) {
+                        out.push((join(&i.to_string(), &suf), v));
+                    }
+                }
+                out
             }
             // `[e; N]`: SV replication pattern per leaf.
             ExprKind::VecRepeat { elem, len } => {
@@ -2117,10 +2142,7 @@ fn flatten_leaves(
     match ty {
         // Struct-of-arrays (planning/vectors.md): one unpacked-array leaf
         // per ELEMENT-TYPE leaf — Vec(3, Packet) → v__valid[0:2] + ….
-        Type::Value {
-            kind: ValueKind::Vec { len, elem },
-            ..
-        } => {
+        Type::Vec { len, elem } => {
             let dim = match len {
                 ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
                 ConstArg::Param(i) => match generics.get(*i as usize) {
@@ -2149,6 +2171,22 @@ fn flatten_leaves(
                 for sub in flatten_leaves(db, krate, &fty, drives, generics) {
                     out.push(Leaf {
                         suffix: join(&f.name, &sub.suffix),
+                        ty: sub.ty,
+                        drives: sub.drives,
+                    });
+                }
+            }
+            out
+        }
+        // A tuple flattens like a struct whose field names are element
+        // indices: `x.0.valid` → `x__0__valid` (planning/tuples.md). Port
+        // elements fold direction through their own flattening.
+        Type::Tuple(elems) => {
+            let mut out = Vec::new();
+            for (i, ety) in elems.iter().enumerate() {
+                for sub in flatten_leaves(db, krate, ety, drives, generics) {
+                    out.push(Leaf {
+                        suffix: join(&i.to_string(), &sub.suffix),
                         ty: sub.ty,
                         drives: sub.drives,
                     });
@@ -2457,10 +2495,7 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
             args: subst_args(args, subst),
             domain: *domain,
         },
-        Type::Value {
-            kind: ValueKind::Vec { len, elem },
-            domain,
-        } => {
+        Type::Vec { len, elem } => {
             let len = match len {
                 ConstArg::Param(i) => match arg(*i) {
                     Some(Term::Const(c)) => c.clone(),
@@ -2468,14 +2503,12 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
                 },
                 other => other.clone(),
             };
-            Type::Value {
-                kind: ValueKind::Vec {
-                    len,
-                    elem: Box::new(subst_type(elem, subst)),
-                },
-                domain: *domain,
+            Type::Vec {
+                len,
+                elem: Box::new(subst_type(elem, subst)),
             }
         }
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| subst_type(e, subst)).collect()),
         other => other.clone(),
     }
 }
@@ -2538,10 +2571,7 @@ fn strip_field(suffix: &str, field: &str) -> Option<String> {
 /// still unresolved (arithmetic / out-of-range index) falls back to 1-bit.
 fn sv_type(ty: &Type, generics: &[GenericParam]) -> SvType {
     match ty {
-        Type::Value {
-            kind: ValueKind::Vec { len, elem },
-            ..
-        } => {
+        Type::Vec { len, elem } => {
             let mut t = sv_type(elem, generics);
             let dim = match len {
                 ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
@@ -2631,6 +2661,25 @@ endmodule
         assert!(sv.contains("input  logic [3:0] x"), "{sv}");
         assert!(sv.contains("output logic [3:0] result"), "{sv}");
         assert!(sv.contains("assign result = x;"), "{sv}");
+    }
+
+    #[test]
+    fn a_returned_ports_consumer_field_is_an_input() {
+        // A returned PORT is bidirectional: its `out` fields are module
+        // outputs, but its `in` field (ready) is a module INPUT — the
+        // downstream's backpressure — and the value's own place is driven
+        // FROM it (reverse). Regression for the result-emission direction.
+        let sv = emit(
+            "port S = s { out valid: bool, out data: uint(8), in ready: bool }\n\
+             fn tap {dom clk: Clock} (up: S @clk) -> S @clk { up }",
+        );
+        assert!(sv.contains("output logic result__valid"), "{sv}");
+        assert!(sv.contains("output logic [7:0] result__data"), "{sv}");
+        assert!(sv.contains("input  logic result__ready"), "{sv}");
+        // up's consumer-side ready (a module output) is driven from the
+        // returned port's ready input — the reverse direction.
+        assert!(sv.contains("assign up__ready = result__ready;"), "{sv}");
+        assert!(sv.contains("assign result__valid = up__valid;"), "{sv}");
     }
 
     #[test]

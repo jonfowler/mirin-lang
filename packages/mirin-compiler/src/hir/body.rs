@@ -92,6 +92,9 @@ pub enum ExprKind<'db> {
     },
     /// `[a, b, c]` — vector construction (planning/vectors.md).
     VecLit(Vec<ExprId>),
+    /// `(a, b)` — tuple construction (planning/tuples.md). Arity ≥ 2.
+    /// Projection reuses `Field` with a numeric name (`p.0`).
+    TupleLit(Vec<ExprId>),
     /// `[e; N]` — repeat construction; the length is a const expression.
     VecRepeat { elem: ExprId, len: ConstArg<'db> },
     /// `v[i]` — single-element indexing (Vec → elem; bits → bool).
@@ -276,7 +279,7 @@ impl BodyDiagnostic {
             BodyDiagnosticKind::Unsupported { what } => format!("unsupported syntax: {what}"),
             BodyDiagnosticKind::UnresolvedType { name } => format!("cannot find type `{name}`"),
             BodyDiagnosticKind::ForEnumerateForm => {
-                "`for i, x` takes `.enumerate()`; `for x` takes the vector directly".to_owned()
+                "`.enumerate()` loops bind `for (i, x)` — a 2-tuple whose first element names the index".to_owned()
             }
             BodyDiagnosticKind::NumberTooLarge { text } => {
                 format!("numeric literal `{text}` does not fit in 128 bits")
@@ -744,7 +747,9 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 if let Some(inner) = child.named_child(0) {
                     match inner.kind() {
                         "let_statement" => {
-                            lets.insert(field_text(&inner, "name", source));
+                            if let Some(pat) = inner.child_by_field_name("pattern") {
+                                collect_pattern_names(&pat, source, &mut lets);
+                            }
                         }
                         "var_statement" => {
                             for name in field_texts(&inner, "name", source) {
@@ -783,18 +788,70 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         }
     }
 
+    /// Bind a `let` pattern to a value: a bare name binds directly; a tuple
+    /// pattern binds a synthetic local and recursively desugars each element
+    /// to a `.N` projection let — there is no pattern IR (planning/tuples.md).
+    fn bind_pattern(
+        &mut self,
+        pat: &Node,
+        source: &str,
+        declared_ty: Option<Type<'db>>,
+        value: ExprId,
+        stmts: &mut Vec<Stmt>,
+    ) {
+        let span = self.rel_span(pat);
+        if pat.kind() == "tuple_pattern" {
+            // Destructuring an existing local needs no synthetic copy —
+            // project straight off it (an ascription still pins a synthetic
+            // so the declared type has a carrier).
+            if let ExprKind::Local(l) = self.exprs[value.0 as usize].kind
+                && declared_ty.is_none()
+            {
+                self.destructure_into(pat, source, l, stmts);
+                return;
+            }
+            let synth = format!("__pat{}", self.locals.len());
+            let local = self.alloc_local(&synth, LocalKind::Let, declared_ty, span);
+            stmts.push(Stmt::Let { local, value });
+            self.destructure_into(pat, source, local, stmts);
+            return;
+        }
+        let name = node_text(pat, source);
+        let local = self.alloc_local(&name, LocalKind::Let, declared_ty, span);
+        stmts.push(Stmt::Let { local, value });
+    }
+
+    /// Desugar a tuple pattern against an already-bound local: one projection
+    /// let per element, recursing into nested patterns.
+    fn destructure_into(
+        &mut self,
+        pat: &Node,
+        source: &str,
+        receiver: LocalId,
+        stmts: &mut Vec<Stmt>,
+    ) {
+        let elems = pattern_children(pat);
+        for (i, elem) in elems.iter().enumerate() {
+            let recv = self.alloc(ExprKind::Local(receiver));
+            let proj = self.alloc(ExprKind::Field {
+                receiver: recv,
+                field: i.to_string(),
+            });
+            self.bind_pattern(elem, source, None, proj, stmts);
+        }
+    }
+
     fn lower_stmt(&mut self, node: &Node, source: &str, block: &mut Block) {
         match node.kind() {
             "for_statement" => {
-                let (index_name, elem_name) =
-                    match (node.child_by_field_name("a"), node.child_by_field_name("b")) {
-                        (Some(a), Some(b)) => (Some(node_text(&a, source)), node_text(&b, source)),
-                        (Some(a), None) => (None, node_text(&a, source)),
-                        _ => return,
-                    };
-                // `for i, x` requires `.enumerate()`; `for x` forbids it.
-                // (`enumerate` is recognised here, not a real method — it
-                // becomes one when tuples land.)
+                let Some(pat) = node.child_by_field_name("pattern") else {
+                    return;
+                };
+                // `.enumerate()` is a real method (typed in infer), but a
+                // for-loop also RECOGNISES it so the index binder reuses the
+                // genvar instead of materialising an index vector
+                // (planning/tuples.md): `for (i, x) in v.enumerate()` makes
+                // `i` the genvar and `x` the element of the receiver.
                 let iter_raw = node
                     .child_by_field_name("iter")
                     .map(|i| self.lower_expr(&i, source))
@@ -807,22 +864,6 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     } if method == "enumerate" && args.is_empty() => (*receiver, true),
                     _ => (iter_raw, false),
                 };
-                if enumerated != index_name.is_some() {
-                    self.diag_at(node, BodyDiagnosticKind::ForEnumerateForm);
-                }
-                self.scopes.push(HashMap::new());
-                let index = index_name.map(|n| {
-                    let span = self.rel_span(node);
-                    self.alloc_local(
-                        &n,
-                        LocalKind::ForBound,
-                        Some(Type::Value {
-                            kind: ValueKind::Integer,
-                            domain: Domain::Const,
-                        }),
-                        span,
-                    )
-                });
                 // A `range(n)` loop's element IS the genvar — mark it so
                 // indexed drives through it count as whole-place.
                 let is_range = matches!(
@@ -836,17 +877,83 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                                 .is_some_and(|dd| dd.name == "range")
                         )
                 );
-                let elem_kind = if is_range {
-                    LocalKind::ForBound
-                } else {
-                    LocalKind::Let
+                self.scopes.push(HashMap::new());
+                // Desugared element-pattern lets, prepended to the body.
+                let mut pre: Vec<Stmt> = Vec::new();
+                let (index, elem) = match pat.kind() {
+                    "tuple_pattern" if enumerated => {
+                        // `(i, elem-pattern)` — exactly two elements, the
+                        // first a bare name (it becomes the genvar).
+                        let kids = pattern_children(&pat);
+                        let index_ok = kids.len() == 2 && kids[0].kind() == "identifier";
+                        if !index_ok {
+                            self.diag_at(node, BodyDiagnosticKind::ForEnumerateForm);
+                        }
+                        let span = self.rel_span(&pat);
+                        let index = if index_ok {
+                            let n = node_text(&kids[0], source);
+                            let ispan = self.rel_span(&kids[0]);
+                            Some(self.alloc_local(
+                                &n,
+                                LocalKind::ForBound,
+                                Some(Type::Value {
+                                    kind: ValueKind::Integer,
+                                    domain: Domain::Const,
+                                }),
+                                ispan,
+                            ))
+                        } else {
+                            None
+                        };
+                        let elem = match kids.get(1) {
+                            Some(e) if e.kind() == "identifier" => {
+                                let n = node_text(e, source);
+                                let espan = self.rel_span(e);
+                                self.alloc_local(&n, LocalKind::Let, None, espan)
+                            }
+                            Some(e) => {
+                                let synth = format!("__pat{}", self.locals.len());
+                                let local = self.alloc_local(&synth, LocalKind::Let, None, span);
+                                self.destructure_into(e, source, local, &mut pre);
+                                local
+                            }
+                            None => {
+                                let synth = format!("__pat{}", self.locals.len());
+                                self.alloc_local(&synth, LocalKind::Let, None, span)
+                            }
+                        };
+                        (index, elem)
+                    }
+                    // `for (a, b) in pairs` — the element is a tuple;
+                    // destructure it at the top of the body.
+                    "tuple_pattern" => {
+                        let span = self.rel_span(&pat);
+                        let synth = format!("__pat{}", self.locals.len());
+                        let local = self.alloc_local(&synth, LocalKind::Let, None, span);
+                        self.destructure_into(&pat, source, local, &mut pre);
+                        (None, local)
+                    }
+                    _ => {
+                        // A bare name. `for x in v.enumerate()` drops the
+                        // index on the floor — require the tuple binder.
+                        if enumerated {
+                            self.diag_at(node, BodyDiagnosticKind::ForEnumerateForm);
+                        }
+                        let elem_kind = if is_range {
+                            LocalKind::ForBound
+                        } else {
+                            LocalKind::Let
+                        };
+                        let name = node_text(&pat, source);
+                        let span = self.rel_span(&pat);
+                        (None, self.alloc_local(&name, elem_kind, None, span))
+                    }
                 };
-                let span = self.rel_span(node);
-                let elem = self.alloc_local(&elem_name, elem_kind, None, span);
-                let body = node
+                let mut body = node
                     .child_by_field_name("body")
                     .map(|b| self.lower_block(&b, source))
                     .unwrap_or_default();
+                body.stmts.splice(0..0, pre);
                 self.scopes.pop();
                 block.stmts.push(Stmt::For {
                     index,
@@ -857,7 +964,6 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             }
             "let_statement" => {
                 let value = self.lower_field_expr(node, "value", source);
-                let name = field_text(node, "name", source);
                 let lookup = |n: &str| self.lookup_local(n);
                 let mut unres = Vec::new();
                 let declared_ty = node.child_by_field_name("type").map(|t| {
@@ -872,12 +978,9 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     )
                 });
                 self.diag_unresolved_types(unres);
-                // Span the local at its name identifier, not the whole statement.
-                let span = node
-                    .child_by_field_name("name")
-                    .map_or_else(|| self.rel_span(node), |n| self.rel_span(&n));
-                let local = self.alloc_local(&name, LocalKind::Let, declared_ty, span);
-                block.stmts.push(Stmt::Let { local, value });
+                if let Some(pat) = node.child_by_field_name("pattern") {
+                    self.bind_pattern(&pat, source, declared_ty, value, &mut block.stmts);
+                }
             }
             "var_statement" => {
                 // Locals were pre-scanned (names only); lower the declared
@@ -978,6 +1081,15 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     .map(|c| self.lower_expr(&c, source))
                     .collect();
                 self.alloc(ExprKind::VecLit(elems))
+            }
+            "tuple_expression" => {
+                let mut cursor = node.walk();
+                let elems: Vec<ExprId> = node
+                    .children(&mut cursor)
+                    .filter(|c| c.kind() == "expression")
+                    .map(|c| self.lower_expr(&c, source))
+                    .collect();
+                self.alloc(ExprKind::TupleLit(elems))
             }
             "typed_literal" => {
                 let (value, base) = node
@@ -1509,6 +1621,25 @@ fn path_segments(node: &Node, source: &str) -> Vec<String> {
 }
 
 /// All children under `field` (for `commaSep1(field("name", …))`).
+/// Every name bound by a pattern, recursively.
+fn collect_pattern_names(pat: &Node, source: &str, out: &mut HashSet<String>) {
+    if pat.kind() == "identifier" {
+        out.insert(node_text(pat, source));
+        return;
+    }
+    for child in pattern_children(pat) {
+        collect_pattern_names(&child, source, out);
+    }
+}
+
+/// A tuple pattern's element patterns (names and nested tuples), in order.
+fn pattern_children<'t>(pat: &Node<'t>) -> Vec<Node<'t>> {
+    let mut cursor = pat.walk();
+    pat.children(&mut cursor)
+        .filter(|c| matches!(c.kind(), "identifier" | "tuple_pattern"))
+        .collect()
+}
+
 fn field_texts(node: &Node, field: &str, source: &str) -> Vec<String> {
     let mut out = Vec::new();
     for i in 0..node.child_count() {

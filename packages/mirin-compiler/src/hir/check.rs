@@ -15,7 +15,7 @@ use crate::base::db::SourceRoot;
 use crate::base::diagnostics::Span;
 use crate::hir::body::{Block, Body, ExprId, ExprKind, LocalKind, Stmt, body};
 use crate::hir::sig::sig_of;
-use crate::hir::types::{ConstArg, Direction, LocalId, Type, ValueKind};
+use crate::hir::types::{ConstArg, Direction, LocalId, Type};
 use crate::nameres::def_map::crate_def_map;
 use crate::nameres::ids::{DefId, DefKind};
 
@@ -240,10 +240,7 @@ pub fn completeness<'db>(
         let Some(ty) = ty else { continue };
         // Element-driven vector: every index 0..N must be covered
         // (`v[0] = …; v[1] = …;` — a missing element is an undriven leaf).
-        if let Type::Value {
-            kind: ValueKind::Vec { len, .. },
-            ..
-        } = ty
+        if let Type::Vec { len, .. } = ty
             && paths
                 .iter()
                 .all(|p| p.first().is_some_and(|s| s.starts_with('[')))
@@ -280,8 +277,8 @@ pub fn completeness<'db>(
     out
 }
 
-/// The field paths of a struct type down to non-struct leaves; empty for
-/// non-structs (ports deferred — direction folding decides their owed set).
+/// The field paths of a struct/tuple type down to non-aggregate leaves; empty
+/// for other types (ports deferred — direction folding decides their owed set).
 fn struct_leaf_paths<'db>(
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
@@ -291,6 +288,23 @@ fn struct_leaf_paths<'db>(
     use crate::hir::types::{Type, ValueKind};
     if depth > 16 {
         return Vec::new();
+    }
+    // A tuple's "fields" are its element indices: `r.0 = …` covers leaf "0"
+    // (planning/tuples.md).
+    if let Type::Tuple(elems) = ty {
+        let mut out = Vec::new();
+        for (i, ety) in elems.iter().enumerate() {
+            let subs = struct_leaf_paths(db, krate, ety, depth + 1);
+            if subs.is_empty() {
+                out.push(vec![i.to_string()]);
+            } else {
+                for mut sub in subs {
+                    sub.insert(0, i.to_string());
+                    out.push(sub);
+                }
+            }
+        }
+        return out;
     }
     let Type::Value {
         kind: ValueKind::Struct { def, .. },

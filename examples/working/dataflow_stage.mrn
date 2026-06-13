@@ -1,0 +1,19 @@
+// A dataflow pipeline register that RETURNS its downstream Stream
+// (planning/tuples.md note / returned-port direction). A returned port is
+// bidirectional: its `out` fields (valid, data) are module OUTPUTS, but its
+// `in` field (ready) is a module INPUT — the downstream's backpressure,
+// folded exactly as for an `out` port parameter. valid/data are registered;
+// ready passes combinationally back to the upstream.
+port Stream8 = stream8 {
+    out valid: bool,
+    out data: uint(8),
+    in ready: bool,
+}
+
+fn stage {dom clk: Clock} (up: Stream8 @clk, rstn: Reset @clk) -> Stream8 @clk {
+    let vd = up.valid.reg(rstn, false);
+    let dd = up.data.reg(rstn, 0);
+    var dn_ready: bool @clk;
+    up.ready = dn_ready;
+    stream8 { valid = vd, data = dd, ready => dn_ready }
+}

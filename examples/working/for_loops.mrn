@@ -1,6 +1,6 @@
 fn scale_all {dom clk: Clock} (v: Vec(3, uint(8)) @clk, k: uint(8) @clk) -> uint(8) @clk {
     var out: Vec(3, uint(8)) @clk;
-    for i, x in v.enumerate() {
+    for (i, x) in v.enumerate() {
         out[i] = x * k;
     }
     out[0] + out[1] + out[2]
@@ -8,7 +8,7 @@ fn scale_all {dom clk: Clock} (v: Vec(3, uint(8)) @clk, k: uint(8) @clk) -> uint
 
 fn popcount_ish {dom clk: Clock} (raw: bits(4) @clk) -> uint(4) @clk {
     var hits: Vec(4, uint(4)) @clk;
-    for i, b in raw.enumerate() {
+    for (i, b) in raw.enumerate() {
         hits[i] = if b { 1 } else { 0 };
     }
     hits[0] + hits[1] + hits[2] + hits[3]

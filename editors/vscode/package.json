@@ -7,7 +7,7 @@
   "publisher": "jonfowler",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jonfowler/mirin.git",
+    "url": "https://github.com/jonfowler/mirin-lang.git",
     "directory": "editors/vscode"
   },
   "engines": {
