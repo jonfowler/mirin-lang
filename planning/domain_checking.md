@@ -26,8 +26,18 @@ port, or a type parameter), so most discharge happens at *lowering*:
   This is the `&'a T`-carries-a-region analogue — and unlike Rust, where only
   references carry a region, in hardware *every* signal is intrinsically
   clocked, so a leaf is exactly where a domain belongs.
-- **Nominal** (`Packet @clk`, a struct/port): the domain stamps the type's
-  fields. A struct/port is homogeneous — one domain, applied to every field.
+- **Nominal** (a struct/port): a struct/port carries its domain(s) through
+  its `dom` parameters. With **no** `dom` parameter (the common, elided form),
+  one whole-structure domain is supplied at the use site (`Bus @clk`) and
+  stamps every field. With **explicit** `dom` parameters the fields draw
+  domains from them, so a struct/port can genuinely span *several* domains —
+  e.g. an AXI port with separate read and write clocks. The `@D` constraint
+  form (`Axi @clk`) fills *every* clock slot with `D`, collapsing a
+  multi-domain type to one clock; supplying the parameters separately
+  (`Axi{rclk, wclk}`) keeps them distinct. See `planning/structs_and_ports.md`
+  for the elided-vs-explicit forms. (Implemented for ports today; structs
+  currently support only the elided single-domain form — `dom` params on a
+  struct are a syntax gap, not a design one.)
 - **Aggregate** (`Vec(N, A) @clk`, `(A, B) @clk`): an aggregate has **no
   domain of its own**; `@clk` propagates into the elements' unspecified slots
   and is forgotten. A `Vec`/tuple is domain-bearing only through its elements.
@@ -35,10 +45,11 @@ port, or a type parameter), so most discharge happens at *lowering*:
   **deferred obligation**, discharged after substitution when `T` is concrete
   (Rust's `Component::Param` path).
 
-Because a domain lives only on leaves (and on a struct/port as its single
-stamping domain), an aggregate's domain *is* its elements' — there is no
-separate stored fact to disagree with them, so a clock-domain crossing cannot
-be laundered through a `Vec`/tuple wrapper, and drift is unrepresentable. An
+Because a domain lives only on leaves (and on a struct/port via its `dom`
+parameters / the elided stamping domain), an aggregate's domain *is* its
+elements' — there is no separate stored fact to disagree with them, so a
+clock-domain crossing cannot be laundered through a `Vec`/tuple wrapper, and
+drift is unrepresentable. An
 aggregate `@D` that meets an element's *own* explicit clock ≠ `D`
 (`Vec(2, uint(8) @b) @a`, `(uint(8) @a, uint(8) @b) @c`) is a
 `ConflictingDomain` error — `@` may only *fill* unspecified slots, never
@@ -135,10 +146,13 @@ over signature types.
 
 ## Future work
 
-- **Domain as an arg for structs/ports**, like `Bus{dom D}` — replacing the
-  stored stamping-domain. Unifies nominal types with the leaf/aggregate model
-  and unlocks heterogeneous (per-field-domain) structs. The `Term::Domain`/arg
-  machinery already exists.
+- **Unify the nominal domain representation.** Ports already carry multiple
+  domains through `dom` parameters (in their generic args); the *elided*
+  single-domain form is still a separately-stored stamping domain. Folding the
+  elided form into the same args machinery (and giving **structs** `dom`
+  parameters too, so a struct can span several domains like a port) removes the
+  duplicated `apply_struct_domain`/`apply_port_domain`/`stamp_domain` paths.
+  The `Term::Domain`/arg machinery already exists.
 - **Richer domains**, three separate mechanisms: the *lattice* stays
   `@const`-only (forgetting a reset/delay is an explicit op, never an edge);
   *sorts* gain `ClockReset ⊑ Clock ⊑ Domain` (subsumption at instantiation);
