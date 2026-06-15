@@ -2992,6 +2992,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "return_expression"
+        },
+        {
+          "type": "SYMBOL",
           "name": "number"
         },
         {
@@ -3373,6 +3377,10 @@
                 {
                   "type": "SYMBOL",
                   "name": "path_expression"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "return_expression"
                 },
                 {
                   "type": "SYMBOL",
@@ -4015,6 +4023,10 @@
         }
       ]
     },
+    "return_expression": {
+      "type": "STRING",
+      "value": "return"
+    },
     "parenthesized_expression": {
       "type": "SEQ",
       "members": [
@@ -4127,6 +4139,10 @@
     ],
     [
       "header_postfix"
+    ],
+    [
+      "return_statement",
+      "return_expression"
     ]
   ],
   "precedences": [],

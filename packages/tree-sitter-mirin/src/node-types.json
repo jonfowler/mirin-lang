@@ -429,6 +429,10 @@
           "named": true
         },
         {
+          "type": "return_expression",
+          "named": true
+        },
+        {
           "type": "tuple_expression",
           "named": true
         },
@@ -1434,6 +1438,10 @@
             "named": true
           },
           {
+            "type": "return_expression",
+            "named": true
+          },
+          {
             "type": "tuple_expression",
             "named": true
           }
@@ -1584,6 +1592,11 @@
         }
       ]
     }
+  },
+  {
+    "type": "return_expression",
+    "named": true,
+    "fields": {}
   },
   {
     "type": "return_statement",
