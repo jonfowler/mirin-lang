@@ -486,14 +486,23 @@ impl<'db> Evaluator<'db> {
     }
 
     /// A block's value: its tail expression, or the value of a top-level
-    /// `return` statement. (Lets inside the block are reached by demand.)
+    /// `return` (a unit fn's bare `Stmt::Return`, or — when the fn has a return
+    /// type — the desugared whole-result equation `return = EXPR`). Lets inside
+    /// the block are reached by demand.
     fn eval_block(&mut self, frame: &Frame<'db>, block: &Block, depth: u32) -> Option<Value<'db>> {
         if let Some(tail) = block.tail {
             return self.eval_expr(frame, tail, depth);
         }
         for stmt in &block.stmts {
-            if let Stmt::Return { value } = stmt {
-                return self.eval_expr(frame, *value, depth);
+            match stmt {
+                Stmt::Return { value } => return self.eval_expr(frame, *value, depth),
+                Stmt::Equation { lhs, rhs }
+                    if matches!(&frame.body.expr(*lhs).kind,
+                        ExprKind::Local(l) if frame.body.local(*l).name == "return") =>
+                {
+                    return self.eval_expr(frame, *rhs, depth);
+                }
+                _ => {}
             }
         }
         None

@@ -84,6 +84,12 @@ pub fn check_drivers<'db>(
         return Vec::new();
     }
     let body = body(db, krate, def);
+    // An inline-verilog body has no equations — it's trusted to drive what its
+    // signature declares (like `completeness`). Its synthetic `return` place
+    // is never driven by HIR, so don't demand it.
+    if body.verilog().is_some() {
+        return Vec::new();
+    }
 
     // Collect drive *paths* per local: `x = …` drives the whole var (empty
     // path), `x.f = …` drives the leaf `f`. Per-leaf accounting accepts a var

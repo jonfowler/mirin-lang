@@ -407,7 +407,14 @@ pub fn body<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db
     let Some(node) = tree.root_node().descendant_for_byte_range(start, end) else {
         return Body::default();
     };
-    let mut lowerer = BodyLowerer::new(map, module, start, &sig.generic_params, &sig.params);
+    let mut lowerer = BodyLowerer::new(
+        map,
+        module,
+        start,
+        &sig.generic_params,
+        &sig.params,
+        sig.return_type.as_ref(),
+    );
     lowerer.record_param_spans(&node, source);
 
     // `= verilog { … }`: no HIR block — the raw text becomes a template,
@@ -425,7 +432,19 @@ pub fn body<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db
     let Some(block_node) = node.child_by_field_name("body") else {
         return Body::default();
     };
-    let block = lowerer.lower_block(&block_node, source);
+    let mut block = lowerer.lower_block(&block_node, source);
+    // The function's top-block tail is its result: with a return place, fold
+    // it into a whole-result equation (the same drive as `return EXPR;`), so a
+    // body that mixes a tail with `return.f = …` is one consistent equation
+    // system. Nested-block tails (an `if`/`when` arm's value) are untouched —
+    // `return` is only the *outer* result. A unit fn keeps its tail (a
+    // side-effecting call lowered via `drive_result`).
+    if let Some(local) = lowerer.lookup_local("return")
+        && let Some(tail) = block.tail.take()
+    {
+        let lhs = lowerer.alloc(ExprKind::Local(local));
+        block.stmts.push(Stmt::Equation { lhs, rhs: tail });
+    }
     lowerer.finish(block)
 }
 
@@ -453,6 +472,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         def_start: usize,
         generics: &'a [GenericParam],
         params: &[super::sig::Param<'db>],
+        return_type: Option<&Type<'db>>,
     ) -> Self {
         // Value-param locals come first; their ids match `sig_of`.
         let mut locals = Vec::new();
@@ -480,6 +500,22 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     declared_ty: Some(Type::Clock),
                 });
             }
+        }
+        // The referrable result place: `return` is a var-like signal node of
+        // the return type, driven by the body (whole `return EXPR;`/tail or
+        // per-leaf `return.f = …`) and readable on its `in` leaves
+        // (`return.ready`). Only exists when the fn has a return type; the
+        // name `return` is reserved, so it can never collide with a user
+        // local. The backend emits its leaves as the `result` ports
+        // (planning/return_variable.md).
+        if let Some(rt) = return_type {
+            let id = LocalId(locals.len() as u32);
+            base.insert("return".to_owned(), id);
+            locals.push(LocalData {
+                name: "return".to_owned(),
+                kind: LocalKind::Var,
+                declared_ty: Some(rt.clone()),
+            });
         }
         // Params/`dom` generics have no body declaration site → default span.
         let local_spans = vec![Span::default(); locals.len()];
@@ -1022,7 +1058,18 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             }
             "return_statement" => {
                 let value = self.lower_field_expr(node, "value", source);
-                block.stmts.push(Stmt::Return { value });
+                // With a return type, `return EXPR;` is a whole-result drive —
+                // desugar to an equation on the result place so the driver
+                // checks and the backend treat it uniformly with `return.f = …`
+                // (planning/return_variable.md). A unit fn keeps `Stmt::Return`
+                // (a side-effecting tail call routed through `drive_result`).
+                match self.lookup_local("return") {
+                    Some(local) => {
+                        let lhs = self.alloc(ExprKind::Local(local));
+                        block.stmts.push(Stmt::Equation { lhs, rhs: value });
+                    }
+                    None => block.stmts.push(Stmt::Return { value }),
+                }
             }
             "expression_statement" => {
                 if let Some(e) = node.named_child(0) {
@@ -1139,6 +1186,24 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             }
             "path_expression" => {
                 let kind = self.lower_path(node, source);
+                self.alloc(kind)
+            }
+            // `return` as a place: the function's result binding. Resolves to
+            // the synthetic result local (allocated in `new` when the fn has a
+            // return type). In a unit fn there is none — an undefined name.
+            "return_expression" => {
+                let kind = match self.lookup_local("return") {
+                    Some(local) => ExprKind::Local(local),
+                    None => {
+                        self.diag_at(
+                            node,
+                            BodyDiagnosticKind::UnresolvedName {
+                                name: "return".to_owned(),
+                            },
+                        );
+                        ExprKind::Missing
+                    }
+                };
                 self.alloc(kind)
             }
             "binary_expression" => self.lower_binary(node, source),
@@ -1689,6 +1754,26 @@ mod tests {
         body(db, krate, def)
     }
 
+    /// The value expr of a body's whole-result drive: a unit fn's bare
+    /// `Stmt::Return`, or — when the fn has a return type — the desugared
+    /// whole-result equation `return = EXPR`.
+    fn result_value(b: &Body) -> ExprId {
+        b.block()
+            .stmts
+            .iter()
+            .find_map(|s| match s {
+                Stmt::Return { value } => Some(*value),
+                Stmt::Equation { lhs, rhs }
+                    if matches!(&b.expr(*lhs).kind,
+                        ExprKind::Local(l) if b.local(*l).name == "return") =>
+                {
+                    Some(*rhs)
+                }
+                _ => None,
+            })
+            .expect("a whole-result drive")
+    }
+
     #[test]
     fn a_duplicate_var_is_a_diagnostic() {
         let mut db = RootDatabase::default();
@@ -1739,13 +1824,15 @@ mod tests {
         let b = body_of(&db, krate, "f");
 
         assert_eq!(b.param_count(), 1);
-        // The block: let, var-decl, equation, return.
+        // The block: let, var-decl, equation (`c = b`), and the desugared
+        // whole-result drive `return = c` (also an equation —
+        // planning/return_variable.md).
         let stmts = &b.block().stmts;
         assert_eq!(stmts.len(), 4);
         assert!(matches!(stmts[0], Stmt::Let { .. }));
         assert!(matches!(stmts[1], Stmt::VarDecl { .. }));
         assert!(matches!(stmts[2], Stmt::Equation { .. }));
-        assert!(matches!(stmts[3], Stmt::Return { .. }));
+        assert!(matches!(stmts[3], Stmt::Equation { .. }));
 
         // `let b = a` — the value resolves to the param local `a` (local 0).
         let Stmt::Let { value, .. } = stmts[0] else {
@@ -1777,9 +1864,7 @@ mod tests {
             "fn g (a: uint(8)) -> uint(8) { return a + a; }",
         );
         let b = body_of(&db, krate, "g");
-        let Stmt::Return { value } = b.block().stmts[0] else {
-            unreachable!()
-        };
+        let value = result_value(b);
         let ExprKind::MethodCall {
             receiver,
             method,
@@ -1804,9 +1889,7 @@ mod tests {
             "fn callee () -> uint(8) { return 0; }\nfn caller () -> uint(8) { return callee(); }",
         );
         let b = body_of(&db, krate, "caller");
-        let Stmt::Return { value } = b.block().stmts[0] else {
-            unreachable!()
-        };
+        let value = result_value(b);
         let ExprKind::Call { callee, args, .. } = &b.expr(value).kind else {
             panic!("expected a call");
         };
@@ -1854,9 +1937,7 @@ mod tests {
         let mut vfs = Vfs::new();
         let krate = load(&mut db, &mut vfs, "fn h () -> uint(8) { return zzz; }");
         let b = body_of(&db, krate, "h");
-        let Stmt::Return { value } = b.block().stmts[0] else {
-            unreachable!()
-        };
+        let value = result_value(b);
         assert!(matches!(b.expr(value).kind, ExprKind::Missing));
         assert!(b.diagnostics().iter().any(
             |d| matches!(&d.kind, BodyDiagnosticKind::UnresolvedName { name } if name == "zzz")
@@ -1873,9 +1954,7 @@ mod tests {
             "fn m (a: uint(8)) -> uint(8) { return a.posedge(); }",
         );
         let b = body_of(&db, krate, "m");
-        let Stmt::Return { value } = b.block().stmts[0] else {
-            unreachable!()
-        };
+        let value = result_value(b);
         let ExprKind::MethodCall {
             receiver,
             method,
@@ -1922,9 +2001,7 @@ mod tests {
             "fn c (a: uint(8)) -> uint(8) { return if a { 1 } else { 0 }; }",
         );
         let b = body_of(&db, krate, "c");
-        let Stmt::Return { value } = b.block().stmts[0] else {
-            unreachable!()
-        };
+        let value = result_value(b);
         let ExprKind::If {
             cond,
             then_branch,

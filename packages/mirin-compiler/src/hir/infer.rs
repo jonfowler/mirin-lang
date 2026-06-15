@@ -362,10 +362,23 @@ pub fn infer<'db>(
         let ty = cx.freshen_domains(&p.ty);
         cx.local_types.insert(LocalId(i as u32), ty);
     }
+    // The result place (`return`) has the return type as its declared type, but
+    // it must use the *same* freshened return type the whole-result drive is
+    // checked against, so a returned value's domain and the result port's
+    // domain are one variable. Compute it up front and seed the result local
+    // with it (planning/return_variable.md).
+    let ret = sig.return_type.as_ref().map(|t| cx.freshen_domains(t));
     for (i, local) in body.locals().iter().enumerate() {
         let id = LocalId(i as u32);
         if cx.local_types.contains_key(&id) {
             continue; // a param, already seeded
+        }
+        if local.name == "return"
+            && local.kind == crate::hir::body::LocalKind::Var
+            && let Some(ret) = &ret
+        {
+            cx.local_types.insert(id, ret.clone());
+            continue;
         }
         let var = cx.fresh_type();
         cx.local_types.insert(id, var.clone());
@@ -383,7 +396,6 @@ pub fn infer<'db>(
         }
     }
 
-    let ret = sig.return_type.as_ref().map(|t| cx.freshen_domains(t));
     cx.infer_block(body, body.block(), ret.as_ref());
     cx.finish()
 }
@@ -592,6 +604,15 @@ enum ObligationKind<'db> {
 }
 
 /// The body locals referenced in const (width) position anywhere in `ty`.
+/// Is `expr` the *whole* result place — a bare `return` (the synthetic result
+/// local), as opposed to a per-leaf `return.f`? Such a drive joins against the
+/// declared return type like a return, not a plain equation.
+fn is_whole_result_place(body: &Body<'_>, expr: ExprId) -> bool {
+    matches!(&body.expr(expr).kind, ExprKind::Local(l)
+        if body.local(*l).name == "return"
+            && body.local(*l).kind == crate::hir::body::LocalKind::Var)
+}
+
 fn width_locals(ty: &Type<'_>) -> Vec<LocalId> {
     struct Collect(Vec<LocalId>);
     impl<'db> Folder<'db> for Collect {
@@ -1526,7 +1547,18 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 Stmt::Equation { lhs, rhs } => {
                     let l = self.infer_expr(body, *lhs);
                     let r = self.infer_expr(body, *rhs);
-                    self.subsume(&r, &l);
+                    // A whole-result drive (`return EXPR;`/tail, desugared to
+                    // `return = EXPR`) joins like a return against the declared
+                    // type — domains JOIN, aggregates check invariantly — not
+                    // the element-wise coercion a plain equation gets. Keeps
+                    // tuple/aggregate return checking identical to the old
+                    // `Stmt::Return` path. A per-leaf `return.f = …` is an
+                    // ordinary equation (coerces at the leaf).
+                    if is_whole_result_place(body, *lhs) {
+                        self.merge_branch(&l, &r);
+                    } else {
+                        self.subsume(&r, &l);
+                    }
                 }
                 Stmt::Return { value } => {
                     let v = self.infer_expr(body, *value);
@@ -2598,13 +2630,18 @@ mod tests {
             .expect("def")
     }
 
-    /// The expr typed by the function's first `return` statement.
+    /// The expr typed by the function's whole-result drive — `return EXPR;`
+    /// (a unit fn's bare `Stmt::Return`) or, when the fn has a return type, the
+    /// desugared whole-result equation `return = EXPR`.
     fn return_ty<'db>(db: &'db RootDatabase, krate: SourceRoot, name: &str) -> Option<Type<'db>> {
         let def = def_of(db, krate, name);
         let b = body(db, krate, def);
         let inf = infer(db, krate, def);
         b.block().stmts.iter().find_map(|s| match s {
             Stmt::Return { value } => inf.expr_type(*value).cloned(),
+            Stmt::Equation { lhs, rhs } if is_whole_result_place(b, *lhs) => {
+                inf.expr_type(*rhs).cloned()
+            }
             _ => None,
         })
     }

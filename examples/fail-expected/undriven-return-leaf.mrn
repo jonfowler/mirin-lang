@@ -1,0 +1,13 @@
+// Must FAIL: the result place is a var-like signal node — when driven by leaf
+// (`return.a = …`), every leaf must be covered, exactly like any field-driven
+// struct local (planning/return_variable.md). Here `b` is never driven, so the
+// result is incompletely driven. (A returned *port* is exempt — its owed set
+// depends on direction folding — so this uses a struct return.)
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn split(x: uint(8)) -> Pair {
+    return.a = x;
+}
