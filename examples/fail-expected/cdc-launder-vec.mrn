@@ -1,7 +1,7 @@
 // A clock-domain crossing once laundered through a Vec's top-level domain:
 // `x` is @a, the Vec annotated @b. Now REJECTED as a DomainMismatch — `@b`
 // propagates into the element at lowering, so the write of @a data meets a
-// concrete @b element and conflicts (planning/aggregate_domains.md Stage 1).
+// concrete @b element and conflicts (planning/domain_checking.md).
 fn launder {dom a: Clock, dom b: Clock} (x: uint(8) @a) -> uint(8) @b {
     let v: Vec(2, uint(8)) @b = [x, x];
     v[0]

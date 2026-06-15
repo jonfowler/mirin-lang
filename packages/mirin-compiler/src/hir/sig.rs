@@ -64,7 +64,7 @@ pub struct SigDiagnostic {
 pub enum SigDiagnosticKind {
     /// In explicit mode (the signature introduces a `dom` or uses `@`), every
     /// parameter and the return type must carry a domain annotation
-    /// (`domain_checking_redux.md`: explicit-mode annotation requirement).
+    /// (`domain_checking.md`: explicit-mode annotation requirement).
     MissingDomainAnnotation,
     /// A type name that resolved to nothing (or to a non-type item).
     UnresolvedType {
@@ -80,7 +80,7 @@ pub enum SigDiagnosticKind {
     /// domain — e.g. `Vec(2, uint(8) @b) @a` or `(uint(8) @a, uint(8) @b) @c`.
     /// A domain lives on the leaf; an aggregate `@D` may only FILL unspecified
     /// element slots, never override a conflicting one
-    /// (planning/aggregate_domains.md).
+    /// (planning/domain_checking.md).
     ConflictingDomain,
 }
 
@@ -832,7 +832,7 @@ fn lower_fn_sig<'db>(
     // below moves.
     let unresolved_diags = drain_unresolved(&lowerer, node);
 
-    // Domain mode (`domain_checking_redux.md`): a signature that introduces a
+    // Domain mode (`domain_checking.md`): a signature that introduces a
     // `dom` generic or writes any `@` is EXPLICIT — every value param and the
     // return type must carry a domain annotation. Anything else is PURE and is
     // lifted: one implicit `__Dom` generic (appended LAST, so user `Param(i)`
@@ -918,7 +918,7 @@ fn lower_fn_sig<'db>(
 /// its domain arguments is fully domain-specified.
 /// Propagate an aggregate annotation `@D` into a type's *unspecified* domain
 /// slots — the `Ty @ D` constraint for a head-known type (fill, don't
-/// override; planning/aggregate_domains.md). A no-op when `D` is Unspecified
+/// override; planning/domain_checking.md). A no-op when `D` is Unspecified
 /// (a pure signature; the lift handles those slots instead).
 fn stamp_domain<'db>(ty: Type<'db>, dom: Domain) -> Type<'db> {
     if dom == Domain::Unspecified {
@@ -939,7 +939,7 @@ fn stamp_domain<'db>(ty: Type<'db>, dom: Domain) -> Type<'db> {
 }
 
 /// An aggregate's `@D` may only FILL unspecified element slots, never
-/// override a conflicting one (planning/aggregate_domains.md). Returns the
+/// override a conflicting one (planning/domain_checking.md). Returns the
 /// first element type node whose explicit domain conflicts with one imposed
 /// by an enclosing aggregate. `@const` is compatible with any clock.
 fn domain_conflict<'t>(t: &Node<'t>, source: &str, inherited: Option<&str>) -> Option<Node<'t>> {
@@ -971,7 +971,7 @@ fn domain_conflict<'t>(t: &Node<'t>, source: &str, inherited: Option<&str>) -> O
 }
 
 /// Is this written type domain-annotated? A domain lives on a *leaf*, so an
-/// aggregate is annotated when its elements are (planning/aggregate_domains.md):
+/// aggregate is annotated when its elements are (planning/domain_checking.md):
 /// a tuple iff every element is; a `Vec` iff its element is.
 fn type_has_domain(t: Node, source: &str) -> bool {
     if t.child_by_field_name("domain").is_some()
@@ -1071,7 +1071,7 @@ impl<'db> TypeLowerer<'_, 'db> {
             let mut cursor = node.walk();
             // A trailing `@D` is the constraint "every clock slot is D",
             // propagated into each element's unspecified slots
-            // (planning/aggregate_domains.md) — a tuple has no domain of its
+            // (planning/domain_checking.md) — a tuple has no domain of its
             // own.
             let elems = node
                 .children(&mut cursor)
@@ -1113,7 +1113,7 @@ impl<'db> TypeLowerer<'_, 'db> {
                 // `Vec(N, A)`: first positional arg is the const length,
                 // second the element type. A domain lives on a leaf, never on
                 // an aggregate — so an explicit `@D` here is the *constraint*
-                // "every clock slot in A is D" (planning/aggregate_domains.md):
+                // "every clock slot in A is D" (planning/domain_checking.md):
                 // propagate it into the element's unspecified slots now, so a
                 // later write meets a concrete element domain instead of a
                 // lenient `Unspecified` (which laundered the crossing).

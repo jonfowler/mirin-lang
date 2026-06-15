@@ -1,6 +1,6 @@
 # Q7 — unified terms, then domain checking
 
-The implementation slice that brings `planning/domain_checking_redux.md` into the
+The implementation slice that brings `planning/domain_checking.md` into the
 query-based compiler. It is deliberately two jobs in one doc, in order: first a
 **representation refactor** (collapse the three inference-variable buckets into
 one kinded term language), then **domain checking** built on top of it. The

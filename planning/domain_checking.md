@@ -1,100 +1,157 @@
 # Domain checking
 
-Mirin requires that two signals share a clock domain before they can be connected. This catches a large class of hardware design errors — accidentally feeding a signal from one clock into logic that runs on another — at the type level rather than at simulation or synthesis time.
+Mirin makes a value's **clock domain** part of its type: `uint(8) @clk` is a
+distinct type from `uint(8)`. Connecting two signals requires them to share a
+domain, so feeding logic on one clock from another clock is a *type* error,
+caught at compile time rather than in simulation or synthesis. The embedded
+domain also gives clocked values their clock: a `T @clk` can be passed to
+`.reg(…)`, which clocks the resulting register off `@clk`.
 
-Domain checking also gives clock-associated signals access to their clock for register construction: a value of type `T @clk` can be passed to `.reg(...)`, which uses the embedded `@clk` to clock the resulting register.
+Scope: "domain" means "clock domain", registers update on the rising edge.
+The design leaves room for richer domains (reset-carrying, delay-indexed) —
+see Future work — but only `@const` and clock atoms exist today.
 
-## Scope
+The closest prior art is Rust's lifetime/region system: domains ≈ regions,
+`@const` ≈ `'static`, `T @ D` ≈ the outlives bound `T: 'a`. Where Mirin
+diverges from Rust it says so and why.
 
-For the first pass, "domain" means "clock domain". The current assumption is that registers update on the rising edge of their clock. The system should leave room for future clocking styles (negative edge, dual edge, frequency multiples), but those are out of scope here.
+## `@` is a constraint, not a field
 
-Domain information is part of a value's type — `uint(8) @clk` is a distinct type from `uint(8)`. One useful lens: `@clk` is an applicative wrapper `OnDom clk`, so `uint(8) @clk` is `OnDom clk (uint 8)`. Operations lift into the domain automatically (`add(x, 7)` with `x : uint(8) @clk` is `liftA2 add x (pure 7)`); Mirin never spells the lift operators because SystemVerilog doesn't need them. The applicative's `pure` is the `const` domain below: compile-time constants enter any domain for free. In the implementation it is convenient to treat domain inference as a pass that runs alongside the rest of type checking but with its own constraint set, since domains form a simple lattice rather than participating in the full structural type-equality machinery — but the domain is still a component of the type, not a parallel attribute. For how this generalises to aggregates (one domain on the whole struct or monodomain port), see `planning/structs_and_ports.md`.
+`Ty @ D` is the constraint **"every clock-domain slot in `Ty` is `D`"**, not a
+domain stapled onto every type. It is discharged by the head of `Ty`, and the
+head is always known where `@` is written (`uint`, `Vec`, a tuple, a struct, a
+port, or a type parameter), so most discharge happens at *lowering*:
 
-## The `const` domain
+- **Leaf** (`uint(8) @clk`, `bool @clk`): the domain lives **on the leaf**.
+  This is the `&'a T`-carries-a-region analogue — and unlike Rust, where only
+  references carry a region, in hardware *every* signal is intrinsically
+  clocked, so a leaf is exactly where a domain belongs.
+- **Nominal** (`Packet @clk`, a struct/port): the domain stamps the type's
+  fields. A struct/port is homogeneous — one domain, applied to every field.
+- **Aggregate** (`Vec(N, A) @clk`, `(A, B) @clk`): an aggregate has **no
+  domain of its own**; `@clk` propagates into the elements' unspecified slots
+  and is forgotten. A `Vec`/tuple is domain-bearing only through its elements.
+- **Opaque** (`T @clk`, `T` a type parameter): cannot be decomposed yet → a
+  **deferred obligation**, discharged after substitution when `T` is concrete
+  (Rust's `Component::Param` path).
 
-Every type carries a domain. During resolution, types written without an explicit `@…` annotation are given a fresh domain variable (standard Hindley–Milner style). Literals and other compile-time-constant values are given the special domain `const`.
+Because a domain lives only on leaves (and on a struct/port as its single
+stamping domain), an aggregate's domain *is* its elements' — there is no
+separate stored fact to disagree with them, so a clock-domain crossing cannot
+be laundered through a `Vec`/tuple wrapper, and drift is unrepresentable. An
+aggregate `@D` that meets an element's *own* explicit clock ≠ `D`
+(`Vec(2, uint(8) @b) @a`, `(uint(8) @a, uint(8) @b) @c`) is a
+`ConflictingDomain` error — `@` may only *fill* unspecified slots, never
+override one; `@const` stays compatible.
 
-`const` is a **supertype** of every concrete domain. A value of type `T @const` can be used anywhere a `T @<anyClock>` is expected, and no explicit cast is required. This is genuine subtyping, not unification with a free variable: a single constant may flow into two different clock domains in the same expression, and both uses must be accepted independently. Modelling `const` as a unifiable free variable would force it to pick one domain and reject the second use, which is wrong.
+## Sorts: `Clock` vs `Domain`
 
-## Domain kinds: `Clock` vs `const`
+A separate concern from *where* domains sit is *which* an operation accepts.
+`Domain` is the full sort including `@const`; `Clock` is the sub-sort of
+edge-bearing domains; **`@const` does not inhabit `Clock`** (bounded
+polymorphism, System F-sub; cf. Clash's `KnownDomain`).
 
-The subtyping lattice above governs where domains sit relative to each other in expressions. A separate concern is *which* domains a given operation will accept at all. Mirin handles this with a kind distinction: `Clock` is the kind inhabited by every concrete clock domain (`@clk`, `@clk1`, ...). `@const` does **not** inhabit `Clock`.
-
-This is bounded polymorphism, in the System F-sub tradition. A signature like
-
-```
-fn reg_no_reset{dom clk: Clock}(self @clk) -> uint(N) @clk
-```
-
-requires its domain parameter to inhabit `Clock`, so a fully-`const` call such as `1.reg_no_reset()` is rejected at the type level. `@const` is still a supertype in the value lattice — it just doesn't satisfy the `Clock` kind. Clash uses the same scheme via its `KnownDomain dom` constraint.
-
-For the first-pass `.reg(rst, reset_val)` the kind constraint is implicit: `rst: Reset @clk` already forces `clk` to a concrete clock domain. The kind distinction only becomes load-bearing for register-like operations that would otherwise have no clock anchor.
-
-## Inference
-
-When two signals are connected, their domains must unify (or one must be `const`, in which case it is accepted as a subtype of the other).
-
-Inference from siblings:
-
-```rust
-var a: uint(8) @clk;
-var b: uint(8) @clk;
-var c = a + b;
-// c is inferred to be uint(8) @clk
-```
-
-Inference anchored by a reset:
-
-```rust
-var a: uint(8) @clk;
-var b = 1.reg(rstn, 0);
-var c = a + b;
-// b is inferred to be uint(8) @clk
-```
-
-In the second example, the literal `1` has type `uint(8) @const`. The `.reg` signature is
-
-```
-fn reg{dom clk}(self @clk, rst: Reset @clk, reset_val: uint(N)) -> uint(N) @clk
+```mirin
+fn flipflop{dom D: Clock}(x: T @ D) -> T @ D   // registers need a real edge
+fn add{dom D: Domain}(…)                        // pure logic works at @const too
 ```
 
-so the call's `@clk` is anchored by `rstn: Reset @clk`. The `self` argument (`1`) is `@const`, which is compatible with `@clk` via the subtyping rule. The result is `uint(8) @clk`, which then unifies with `a`'s domain when computing `c`.
+So `1.flipflop()` is rejected (a fully-`const` call has no clock), while
+`add(2, 3)` stays `@const`. Quantifying pure logic over `Domain` (not `Clock`)
+is what keeps constant folding: const arguments don't get coerced up to a
+clock. For `.reg(rst, …)` the kind constraint is implicit — `rst: Reset @clk`
+already pins a concrete clock.
 
-Inference involving a constant on both sides:
+## Subtyping: the `@const` lattice
 
-```rust
-var a: uint(8) @clk;
-var b: uint(8) = 1;
-var c = a + b;
+The lattice has exactly one edge: **`@const <: @D` for every `D`** (≈
+`T: 'static` trivially satisfying any outlives bound). A const value enters any
+domain for free; the coercion is silent because it is always sound and never
+informative. Consequences:
+
+- `add(x, 5)` with `x` on `clk` works — the literal is `@const` and coerces.
+- A struct/tuple mixing const and clocked components needs no special case —
+  `@const` slots satisfy any `T @ D`.
+- A genuinely multi-domain type fails `T @ D` (it cannot be single-stamped)
+  but still passes anywhere a bare `T: Type` is expected.
+
+Coercions are inserted at the usual sites (argument positions, ascribed `let`,
+`return`), with bidirectional checking. Every new lattice edge degrades domain
+inference from unification to ≤-constraints, so `@const` stays the *only* edge;
+richer "forgetting" is an explicit operation, not a subtyping rule.
+
+## Lifting pure signatures
+
+A signature that mentions no domains is **pure** and is lifted onto a single
+shared domain parameter, applied to every value param and the result:
+
+```mirin
+fn add(x: uint(8), y: uint(8)) -> uint(8)
+// lifts to
+fn add{dom __Dom: Domain}(x: uint(8) @__Dom, y: uint(8) @__Dom) -> uint(8) @__Dom
 ```
 
-`b` is `uint(8) @const`. The `+` operator requires both operands to share a domain; `const` is below every concrete domain in the lattice, so this is accepted and `c` is `uint(8) @clk`.
+This diverges from Rust's per-argument lifetime elision deliberately: distinct
+clocks never unify and cross-domain ops are exactly the CDC error the system
+exists to catch, so a per-argument lift would be uninhabitable — one shared
+variable is the only signature that typechecks. Drop to explicit
+`{dom A, dom B}` when the *relationship* between domains is the point
+(synchronisers, dual-clock FIFOs). For a polymorphic pure type the lift imposes
+the constraint form (`where T @ __Dom`) rather than applying `__Dom` to an
+opaque parameter.
 
-### Defaulting
+The lift is over sort `Domain`, not `Clock`, so `add(2, 3)` stays `@const`.
 
-Pure-constant subexpressions type as `@const` directly: `3 + 4` is `@const + @const → @const`, with no inference variable involved. A polymorphic domain variable only arises when a constant flows into a context whose domain isn't yet pinned — and the non-const side of any later use pins it.
+## Elision and defaults
 
-If a domain variable does survive inference with no concrete use forcing it lower, it compacts to its upper bound (`@const`). This follows the MLsub / algebraic-subtyping treatment of inference variables in a subtyping lattice: a variable with no lower-bound constraint simplifies to top. The effect is that obviously-constant expressions stay `@const` without needing an ad-hoc defaulting rule, while operations that demand a real clock (see [Domain kinds](#domain-kinds-clock-vs-const)) still reject `@const` at the kind level.
+A type written with no domain:
 
-## Mismatch errors
+- **In a body** (`let x: uint(8) = …`): a fresh domain variable, solved from
+  the RHS; if still unconstrained at the end of the binding (e.g. the RHS is a
+  literal), it **defaults to `@const`**. So constants come out const and
+  clocked expressions come out clocked without annotation. (MLsub-style: a
+  variable with no lower bound simplifies to the top, `@const`.)
+- **In a pure signature**: lifted to the shared `__Dom` (above).
 
-Domains that are concrete and distinct fail to unify:
+Forcing bare types to mean `@const` everywhere was rejected — it would reject
+`let x: uint(8) = a + b` with `a, b` on `clk`, and contradict signature
+lifting.
 
-```rust
-var a: uint(8) @clk1;
-var b: uint(8) @clk2;
-var c = a + b;  // error: domain mismatch between @clk1 and @clk2
-```
+## Representation (as built)
 
-The error is reported at the connection site (here, the `+`).
+Types, widths, and domains are one **kinded term language** with a single
+inference-variable space (`Term::{Type, Const, Domain}`, one `InferVar`); a
+generic argument list is a `Vec<Term>`, so a domain is just one arg *kind*
+alongside type and const — the same "one arg list, three kinds" shape as
+rustc's `GenericArg` and chalk's `Substitution`. `Domain` is itself a small
+term language (`Const | Param(i) | Clock(local) | Infer | Unspecified`) so that
+reset-carrying and delay-indexed domains are later *constructors*, not a solver
+rewrite.
 
-## Open questions
-
-### Cyclic `var` equations
-
-Inferring the domain of a `var` whose equation references itself (e.g. `var count; count = (count + 1).reg(rstn, 0);`) generally needs a fixpoint pass. In practice the domain can almost always be resolved from an external anchor — most commonly the reset passed to `.reg` — without solving the cycle.
+`Vec` and `Tuple` are top-level `Type` variants with **no domain field**;
+leaves (and structs/ports) carry their domain. `@D` propagation into aggregate
+elements happens at lowering (`stamp_domain`); the conflict check is syntactic
+over signature types.
 
 ## Future work
 
-- Support for additional clocking styles: negative edge, dual edge, mixed-edge designs. These extend the lattice with extra structure, so the unification rules need revisiting.
-- Frequency-related clock relationships. A value valid on a slower clock is also valid to sample on any faster clock that is a multiple of it, so the slower clock can sit above the faster one in the domain lattice — analogous to how `const` sits above every concrete clock today.
+- **Domain as an arg for structs/ports**, like `Bus{dom D}` — replacing the
+  stored stamping-domain. Unifies nominal types with the leaf/aggregate model
+  and unlocks heterogeneous (per-field-domain) structs. The `Term::Domain`/arg
+  machinery already exists.
+- **Richer domains**, three separate mechanisms: the *lattice* stays
+  `@const`-only (forgetting a reset/delay is an explicit op, never an edge);
+  *sorts* gain `ClockReset ⊑ Clock ⊑ Domain` (subsumption at instantiation);
+  *indices* add `Delayed(C, N)` as a domain constructor doing index arithmetic
+  (no subtyping between delays — `Delayed(c,3) ≠ Delayed(c,4)` is the timing
+  error the feature catches; the clock is reached by projection, not
+  subsumption). Cf. Clash's `DSignal dom n a`.
+- **Dependency-aware lifting**: an output independent of every clocked input
+  could keep `@const` instead of joining `__Dom` (lets a pure function return
+  `enumerate`'s `(integer @const, A)` result directly).
+- **The `@_` "clocked, inferred" form + a lint** that a binding whose inferred
+  domain is a real clock must carry at least `@_`, severity scaling with the
+  number of domains in scope.
+- **Gaps**: `@const` as a *written* annotation does not yet lower to
+  `Domain::Const` (falls to `Unspecified`, lenient); the conflict check scans
+  signature types only, not body ascriptions.

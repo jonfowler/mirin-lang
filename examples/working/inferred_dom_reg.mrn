@@ -1,5 +1,5 @@
 // The register's domain is never written. Per the elision rules in
-// planning/domain_checking_redux.md, a bare type in a body gets a fresh
+// planning/domain_checking.md, a bare type in a body gets a fresh
 // domain inference variable (NOT @const): `var count: uint(8)` is solved
 // to `clk` by the `-> uint(8) @clk` return type, and `.reg` instantiates
 // at the same clock. Promoted from todo-incorrect-pass/no-dom-reg.mrn,

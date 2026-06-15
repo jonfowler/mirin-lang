@@ -2,7 +2,7 @@
 
 Status: in implementation (decisions [D1]–[D6] settled 2026-06, recorded at
 the end; staging below). Companion reading:
-`planning/domain_checking_redux.md` (domain bounds share the
+`planning/domain_checking.md` (domain bounds share the
 `where`/obligation infrastructure designed here),
 `proposals/Whos_who_in_the_type_zoo.md` (the built-in type classes that
 eventually become marker traits).
@@ -43,7 +43,7 @@ customers, in rough order of arrival:
    PosType ⊇ …) wants to be a set of built-in, structurally-derived marker
    traits (`Pos`, `Packable`, …) so bounds like "no ports inside" are
    expressible — including the linearity check on `fn dup(x: T) -> (T, T)`.
-6. **Domain bounds.** `domain_checking_redux.md` already commits to
+6. **Domain bounds.** `domain_checking.md` already commits to
    `where T @ D` obligations on opaque type params. That is a
    trait-obligation in all but name; building traits means building the
    `where`-clause and param-env infrastructure both features share.
@@ -134,7 +134,7 @@ fn wide {param T: Add + Bits} (x: T) -> uint(T::width) { x.pack() }
 `+` combines bounds. `param T: Type` stays the unbounded spelling. **[D1]**
 
 Bounds that don't fit the inline form go in a `where` clause after the
-signature — the same clause that `domain_checking_redux.md` needs for
+signature — the same clause that `domain_checking.md` needs for
 `T @ D`:
 
 ```mirin

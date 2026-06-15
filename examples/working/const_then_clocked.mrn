@@ -3,7 +3,7 @@
 // quantifies over the Domain sort (not Clock), so `double(3)` stays @const —
 // constant folding survives — and the @const result then coerces into the
 // clocked addition (`@const <: @clk`, the one subtyping edge). Must stay
-// passing through Q7 phase C; see planning/domain_checking_redux.md.
+// passing through Q7 phase C; see planning/domain_checking.md.
 fn double(v: uint(8)) -> uint(8) {
     v + v
 }

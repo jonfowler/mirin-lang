@@ -1,6 +1,6 @@
 // A `Vec` whose domain is carried by its ELEMENT (`@clk` on the element, none
 // on the aggregate) — a domain lives on the leaf, not the aggregate
-// (planning/aggregate_domains.md). The explicit-mode annotation check accepts
+// (planning/domain_checking.md). The explicit-mode annotation check accepts
 // it because it derives "annotated" structurally: a Vec is annotated iff its
 // element is.
 fn passthrough {dom clk: Clock} (v: Vec(3, uint(8) @clk)) -> Vec(3, uint(8) @clk) {
