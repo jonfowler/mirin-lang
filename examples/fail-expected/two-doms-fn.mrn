@@ -1,4 +1,4 @@
-// Must FAIL once domain checking lands (planning/domain_checking_redux.md).
+// Must FAIL once domain checking lands (planning/domain_checking.md).
 // The pure `adder` lifts to ONE shared domain variable over all arguments
 // and the result — `fn adder{dom D: Domain}(x: uint{D}(8), y: uint{D}(8))
 // -> uint{D}(8)` — deliberately unlike Rust elision's per-argument

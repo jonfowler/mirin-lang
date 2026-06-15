@@ -1,4 +1,4 @@
-// The Vec laundry's tuple twin (planning/aggregate_domains.md Stage 1). Now
+// The Vec laundry's tuple twin (planning/domain_checking.md). Now
 // REJECTED: `@b` propagates into the tuple elements, so writing @a data
 // conflicts.
 fn launder {dom a: Clock, dom b: Clock} (x: uint(8) @a) -> uint(8) @b {

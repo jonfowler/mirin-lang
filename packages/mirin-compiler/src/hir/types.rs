@@ -4,7 +4,7 @@
 //! Three principles:
 //!
 //! - **The domain is a *component* of a value's type, not a parallel attribute**
-//!   (`domain_checking_redux.md`): `uint(8) @clk` is a distinct type from
+//!   (`domain_checking.md`): `uint(8) @clk` is a distinct type from
 //!   `uint(8)`, so [`Type::Value`] pairs a [`ValueKind`] with a [`Domain`].
 //! - **Generic parameters are referenced positionally** by the enclosing def's
 //!   index — [`ValueKind::Param`] in type position, [`ConstArg::Param`] in const
@@ -53,7 +53,7 @@ pub enum Type<'db> {
         domain: Domain,
     },
     /// `Vec(N, A)` — N elements of A (planning/vectors.md). An aggregate has
-    /// NO domain of its own (planning/aggregate_domains.md): the domain lives
+    /// NO domain of its own (planning/domain_checking.md): the domain lives
     /// entirely in the element `A`. Flattens struct-of-arrays — one
     /// unpacked-array leaf per element-type leaf.
     Vec {
@@ -110,7 +110,7 @@ pub enum ValueKind<'db> {
 }
 
 /// The clock-domain component of a type. A subtyping lattice with a single
-/// edge: `@const` is below every concrete clock; see `domain_checking_redux.md`.
+/// edge: `@const` is below every concrete clock; see `domain_checking.md`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, salsa::Update)]
 pub enum Domain {
     /// No `@…` annotation — a fresh domain variable, inferred later.
@@ -426,7 +426,7 @@ pub enum Term<'db> {
 }
 
 /// The reserved name of the **lifted** implicit domain parameter appended to a
-/// pure signature (`domain_checking_redux.md` lifting). Checking-only: the
+/// pure signature (`domain_checking.md` lifting). Checking-only: the
 /// backend emits no clock port for it (a pure fn is combinational).
 pub const LIFTED_DOM: &str = "__Dom";
 

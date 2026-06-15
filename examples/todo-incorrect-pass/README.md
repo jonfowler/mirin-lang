@@ -23,7 +23,7 @@ The post-Q7 review worklist (2026-06) has also fully flipped:
   MultipleDrivers). Its passing twin `working/field_drivers.mrn` wires a
   struct field-by-field.
 
-The **aggregate domains** worklist (2026-06, planning/aggregate_domains.md)
+The **aggregate domains** worklist (2026-06, planning/domain_checking.md)
 has fully flipped to `fail-expected/`: `cdc-launder-vec`, `cdc-launder-tuple`
 (Stage 1 — aggregate `@D` propagates into element slots, so a write meets a
 concrete element domain), and `vec-domain-drift` + `tuple-domain-inert`

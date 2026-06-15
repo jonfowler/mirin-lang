@@ -54,7 +54,7 @@ polymorphic types and the domain machinery.
 
 A *pure* (unannotated) function lifts every domain slot — including the
 elements of a returned tuple/vec — onto its single shared `__Dom`
-(domain_checking_redux.md). So a pure function cannot directly **return** an
+(domain_checking.md). So a pure function cannot directly **return** an
 aggregate whose elements live on *different* domains: e.g.
 `fn f(v: Vec(3, uint(8))) -> Vec(3, (integer, uint(8))) { v.enumerate() }`
 is rejected — the lift makes the written index element `@__Dom`, but

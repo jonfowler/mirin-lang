@@ -7,7 +7,7 @@
 //! callees/structs/ports it touches — **never their bodies**, so a caller
 //! re-infers only when a callee's *signature* changes (the firewall).
 //!
-//! Per `domain_checking_redux.md`, the **domain is a component of the type**,
+//! Per `domain_checking.md`, the **domain is a component of the type**,
 //! inferred by the same walk: `unify` is strict on domains; the lattice's one
 //! edge (`@const` below every clock) applies only through `subsume` at the
 //! coercion sites and through the join in `merge_branch`. Domain variables are
@@ -1185,7 +1185,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 domain: self.freshen_domain(*domain),
             },
             // An aggregate has no domain of its own — freshen its elements'
-            // (planning/aggregate_domains.md): an un-annotated element domain
+            // (planning/domain_checking.md): an un-annotated element domain
             // is a genuine inference variable now, not stamped from an
             // aggregate domain that no longer exists.
             Type::Vec { len, elem } => Type::Vec {
@@ -1278,7 +1278,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 self.unify_domain(*dda, *ddb);
             }
             // Aggregates have no domain of their own — unify element-wise
-            // (planning/aggregate_domains.md).
+            // (planning/domain_checking.md).
             (Type::Vec { len: la, elem: ea }, Type::Vec { len: lb, elem: eb }) => {
                 self.unify_width(la.clone(), lb.clone());
                 let (ea, eb) = ((**ea).clone(), (**eb).clone());
@@ -1412,7 +1412,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             // Aggregates subsume ELEMENT-WISE (covariant along the const
             // edge): each element at a coercion site is itself at a coercion
             // site, so `(x, 5)` fits `(uint(8) @a, uint(4) @b)` and a const
-            // vec fits a clocked one (planning/aggregate_domains.md).
+            // vec fits a clocked one (planning/domain_checking.md).
             (Type::Tuple(ea), Type::Tuple(eb)) if ea.len() == eb.len() => {
                 let (ea, eb) = (ea.clone(), eb.clone());
                 for (x, y) in ea.iter().zip(&eb) {
@@ -1547,7 +1547,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     let it = self.resolve_ty(&it);
                     let elem_ty = match &it {
                         // The element carries its own domain (an aggregate has
-                        // none — planning/aggregate_domains.md).
+                        // none — planning/domain_checking.md).
                         Type::Vec { elem, .. } => (**elem).clone(),
                         Type::Value {
                             kind: ValueKind::Bits { .. },
@@ -1727,7 +1727,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 let bt_r = self.resolve_ty(&bt);
                 match &bt_r {
                     // `v[i]` is the element type directly — it carries its own
-                    // domain (the Vec has none — planning/aggregate_domains.md).
+                    // domain (the Vec has none — planning/domain_checking.md).
                     Type::Vec { len, elem } => {
                         self.check_index_bounds(body, index, len);
                         (**elem).clone()
@@ -1973,7 +1973,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         let recv = self.infer_expr(body, receiver);
         // Tuple projection `p.0` (planning/tuples.md): the numeric field
         // indexes the element list. The element carries its own domain — a
-        // tuple has none of its own (planning/aggregate_domains.md).
+        // tuple has none of its own (planning/domain_checking.md).
         if let Type::Tuple(elems) = self.resolve_ty(&recv) {
             let Ok(i) = field.parse::<usize>() else {
                 self.diag(InferDiagnosticKind::UnknownField {
@@ -2439,7 +2439,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 domain: d,
             },
             // An aggregate is "on domain d" when every element is — it has no
-            // domain of its own (planning/aggregate_domains.md).
+            // domain of its own (planning/domain_checking.md).
             Type::Vec { len, elem } => Type::Vec {
                 len,
                 elem: Box::new(self.with_domain(&elem, d)),

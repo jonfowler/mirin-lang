@@ -1,6 +1,6 @@
 // An aggregate `@c` over a tuple whose elements already carry their own
 // (differing) domains is a conflict, not a silently-ignored no-op
-// (planning/aggregate_domains.md). A mixed tuple takes NO outer domain.
+// (planning/domain_checking.md). A mixed tuple takes NO outer domain.
 fn f {dom a: Clock, dom b: Clock, dom c: Clock}
     (x: uint(8) @a, y: uint(8) @b) -> (uint(8) @a, uint(8) @b) @c {
     (x, y)

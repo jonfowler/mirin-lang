@@ -200,7 +200,7 @@ module.exports = grammar({
     // `where T: Add + Bits, U: Bits` — trait-bound predicates on generic
     // params. Bounds use the restricted form (name + optional positional
     // args): a brace after a bound would open the item's body. Domain
-    // predicates (`T @ clk`) join when planning/domain_checking_redux.md
+    // predicates (`T @ clk`) join when planning/domain_checking.md
     // lands.
     where_clause: ($) =>
       seq("where", commaSep1($.where_predicate), optional(",")),

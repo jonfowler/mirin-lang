@@ -1,4 +1,4 @@
-// Must FAIL once domain checking lands (planning/domain_checking_redux.md).
+// Must FAIL once domain checking lands (planning/domain_checking.md).
 // The signature introduces an explicit domain (`dom clk`), which puts the
 // item in explicit mode: every parameter and the return type must carry a
 // domain annotation (or be const) — `x: uint(8)` and `-> uint(8)` are

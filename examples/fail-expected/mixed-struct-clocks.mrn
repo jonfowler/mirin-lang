@@ -4,7 +4,7 @@
 // `b` on c2 has no valid __Dom: unifying the record against `Pair @c1`
 // (from the return type) forces b's field type to `uint(8) @c1`, and `y`
 // is on c2. Mixed-domain aggregates need a type that is generic over the
-// field types themselves (the Tuple story in domain_checking_redux.md).
+// field types themselves (the Tuple story in domain_checking.md).
 // The legal twin (two separately-stamped Pairs) is working/struct_two_clocks.mrn.
 struct Pair = pair {
     a: uint(8),
