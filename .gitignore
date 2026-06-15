@@ -4,3 +4,4 @@ sv/
 tests/rtl/.venv/
 tests/rtl/build/
 __pycache__/
+node_modules/

@@ -430,6 +430,7 @@ impl<'db> Evaluator<'db> {
                     let a = self.eval_expr(frame, *receiver, depth)?;
                     return match (method.as_str(), a) {
                         ("neg", Value::Int(v)) => Some(Value::Int(-v)),
+                        ("not", Value::Bool(v)) => Some(Value::Bool(!v)),
                         _ => None,
                     };
                 }
@@ -450,6 +451,14 @@ impl<'db> Evaluator<'db> {
                     },
                     "lt" => match (a, b) {
                         (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x < y)),
+                        _ => None,
+                    },
+                    "and" => match (a, b) {
+                        (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x && y)),
+                        _ => None,
+                    },
+                    "or" => match (a, b) {
+                        (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x || y)),
                         _ => None,
                     },
                     _ => None,

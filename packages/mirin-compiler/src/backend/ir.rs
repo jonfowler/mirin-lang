@@ -210,6 +210,8 @@ pub enum SvBinOp {
     Mul,
     Eq,
     Lt,
+    And,
+    Or,
 }
 
 /// `(-x)` — the one unary operator (Neg on sint).
@@ -442,6 +444,8 @@ impl fmt::Display for SvExpr {
                     SvBinOp::Sub => "-",
                     SvBinOp::Eq => "==",
                     SvBinOp::Lt => "<",
+                    SvBinOp::And => "&&",
+                    SvBinOp::Or => "||",
                 };
                 write!(f, "({l} {op} {r})")
             }

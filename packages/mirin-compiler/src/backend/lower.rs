@@ -1285,12 +1285,13 @@ impl<'db> SvLower<'_, 'db> {
                 let r = self.expr_value(args[0].expr);
                 SvExpr::BinOp(op, Box::new(l), Box::new(r))
             }
-            // `-x` (Neg on sint): inline unary minus.
+            // `-x` (Neg on sint) / `!x` (Not on bool): inline unary operator.
             ExprKind::MethodCall { receiver, args, .. }
-                if args.is_empty() && self.prelude_neg(expr) =>
+                if args.is_empty() && self.prelude_unary(expr).is_some() =>
             {
+                let op = self.prelude_unary(expr).unwrap();
                 let x = self.expr_value(*receiver);
-                SvExpr::Lit(format!("(-{x})"))
+                SvExpr::Lit(format!("({op}{x})"))
             }
             // `e.reg(rst, init)` in value position: a register into a fresh local.
             ExprKind::MethodCall { .. } if self.as_reg(expr).is_some() => {
@@ -1744,15 +1745,21 @@ impl<'db> SvLower<'_, 'db> {
             .unwrap_or_else(|| "clk".to_owned())
     }
 
-    /// Did this method call select the prelude `Neg` impl?
-    fn prelude_neg(&self, expr: ExprId) -> bool {
-        let Some(def) = self.inf.method_resolution(expr) else {
-            return false;
-        };
-        self.map
-            .trait_of_method(def)
-            .and_then(|t| self.map.def_data(t))
-            .is_some_and(|d| d.module == self.map.prelude() && d.name == "Neg")
+    /// `Some(prefix)` if this method call selected a prelude UNARY operator
+    /// impl (`Neg` → `-`, `Not` → `!`) — emitted inline as `(-x)` / `(!x)`,
+    /// never as an instance (the unary twin of `prelude_op`).
+    fn prelude_unary(&self, expr: ExprId) -> Option<&'static str> {
+        let def = self.inf.method_resolution(expr)?;
+        let t = self.map.trait_of_method(def)?;
+        let tdata = self.map.def_data(t)?;
+        if tdata.module != self.map.prelude() {
+            return None;
+        }
+        match tdata.name.as_str() {
+            "Neg" => Some("-"),
+            "Not" => Some("!"),
+            _ => None,
+        }
     }
 
     /// `Some(op)` if a method call resolved to a PRELUDE operator-trait impl
@@ -1772,6 +1779,8 @@ impl<'db> SvLower<'_, 'db> {
             "Mul" => Some(SvBinOp::Mul),
             "Eq" => Some(SvBinOp::Eq),
             "Ord" => Some(SvBinOp::Lt),
+            "And" => Some(SvBinOp::And),
+            "Or" => Some(SvBinOp::Or),
             _ => None,
         }
     }
@@ -1808,7 +1817,7 @@ impl<'db> SvLower<'_, 'db> {
             // A prelude operator selection is NOT a user call — it lowers
             // inline (`(a + b)`, `(-x)`), never as an instance.
             ExprKind::MethodCall { .. }
-                if self.prelude_op(expr).is_some() || self.prelude_neg(expr) =>
+                if self.prelude_op(expr).is_some() || self.prelude_unary(expr).is_some() =>
             {
                 None
             }
