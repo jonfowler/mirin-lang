@@ -439,7 +439,25 @@ module.exports = grammar({
     tuple_pattern: ($) =>
       seq("(", $._pattern, ",", commaSep1($._pattern), optional(","), ")"),
 
-    _pattern: ($) => choice($.identifier, $.tuple_pattern),
+    // `pair { valid = vld, data = dat }` in binder position — struct
+    // destructuring (planning/tuples.md). `name = binding` maps a field to a
+    // (possibly nested) sub-pattern; `=` matches the record-literal field form
+    // (`:` always means "type"). Like tuple patterns, this desugars to field
+    // projection lets — no pattern IR. Only structs and positive tuples are
+    // pattern-matchable; ports are not.
+    struct_pattern: ($) =>
+      seq(
+        field("constructor", $.identifier),
+        "{",
+        commaSep1($.struct_pattern_field),
+        optional(","),
+        "}",
+      ),
+
+    struct_pattern_field: ($) =>
+      seq(field("name", $.identifier), "=", field("binding", $._pattern)),
+
+    _pattern: ($) => choice($.identifier, $.tuple_pattern, $.struct_pattern),
 
     return_statement: ($) => seq("return", field("value", $.expression), ";"),
 
