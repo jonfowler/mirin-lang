@@ -172,6 +172,17 @@ fn add3(x: uint(8)) -> uint(8) {
     }
 
     #[test]
+    fn unary_operator_is_preserved() {
+        // Regression: the unary doc once hardcoded `-`, rewriting `!x` to `-x`.
+        // Each prefix operator must round-trip to itself.
+        let src = "fn f(a: bool, x: sint(8)) -> bool { let n = -x; !a }\n";
+        let out = format_str(src).unwrap();
+        assert!(out.contains("let n = -x;"), "got:\n{out}");
+        assert!(out.contains("!a"), "got:\n{out}");
+        assert!(!out.contains("-a"), "`!` must not become `-`:\n{out}");
+    }
+
+    #[test]
     fn single_line_if_else_stays_inline() {
         let src = "fn m(a: uint(8), b: uint(8), c: bool) -> uint(8) { if c { a } else { b } }\n";
         let out = format_str(src).unwrap();

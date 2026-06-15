@@ -160,7 +160,10 @@ impl<'a> Formatter<'a> {
                 text("::"),
                 text(self.text(self.field(n, "value").unwrap())),
             ]),
-            "unary_expression" => concat([text("-"), self.doc(self.field(n, "operand").unwrap())]),
+            "unary_expression" => {
+                let op = self.text(self.field(n, "operator").unwrap());
+                concat([text(op), self.doc(self.field(n, "operand").unwrap())])
+            }
             "const_path" => {
                 let base = self.text(self.field(n, "base").unwrap());
                 let item = self.text(self.field(n, "item").unwrap());
