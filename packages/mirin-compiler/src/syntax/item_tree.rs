@@ -224,16 +224,20 @@ fn impl_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> ImplItem {
             }
         }
     }
-    // `impl Trait for SelfType`: the node's `name` is the trait; the
-    // implementing type is the self type's head name.
+    // The impl's `name` is now a (restricted) TYPE expression: for an inherent
+    // impl it IS the self type (`Bus(A)`); for a trait impl it is the trait and
+    // `for` introduces the self type. The owner is the self type's head ident;
+    // `self_has_args` records whether that self type is applied (`Bus(A)`).
+    let has_args = |n: &Node| n.children(&mut n.walk()).any(|c| c.kind() == "type_index");
+    let head = |n: &Node| field_text(n, "name", source);
+    let name_node = node.child_by_field_name("name");
     let (owner, trait_, self_has_args) = match node.child_by_field_name("self_type") {
-        Some(st) => (
-            field_text(&st, "name", source),
-            Some(name_of(node, source)),
-            st.children(&mut st.walk())
-                .any(|c| c.kind() == "type_index"),
+        Some(st) => (head(&st), name_node.as_ref().map(head), has_args(&st)),
+        None => (
+            name_node.as_ref().map(head).unwrap_or_default(),
+            None,
+            name_node.as_ref().is_some_and(has_args),
         ),
-        None => (name_of(node, source), None, false),
     };
     ImplItem {
         owner,

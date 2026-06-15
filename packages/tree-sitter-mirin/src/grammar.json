@@ -776,7 +776,7 @@
           "name": "name",
           "content": {
             "type": "SYMBOL",
-            "name": "identifier"
+            "name": "return_type_expression"
           }
         },
         {

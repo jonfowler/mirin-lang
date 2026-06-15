@@ -833,8 +833,8 @@ impl<'db> SvLower<'_, 'db> {
     }
 
     /// A local's type: inferred, falling back to declared. A `self` param's
-    /// type comes from the signature (the impl's owner applied at the
-    /// method's auto-bound generics).
+    /// type comes from the signature (the impl's self type, applied at the
+    /// binder's generics).
     fn local_ty(&self, local: LocalId) -> Option<Type<'db>> {
         let base = if let Some(p) = self
             .sig

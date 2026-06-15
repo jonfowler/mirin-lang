@@ -9,8 +9,9 @@ eventually become marker traits).
 
 Prerequisite landed first: **binder-first impls** (`impl {dom clk: Clock}
 Stream8 { … }`) for inherent blocks too, so trait and inherent impls share
-one shape, plus auto-binding of a parametric owner's params into method
-signatures. General syntax rule adopted (also resolves the
+one shape; a generic owner is **applied** in the header (`impl {dom clk: Clock,
+A: Type} Bus(A) { … }`), its params declared in the binder, exactly like a
+trait impl's self type. General syntax rule adopted (also resolves the
 application-braces-vs-body-braces ambiguity): **positional argument sections
 always come after named sections**; records are the one exception and never
 appear in the two problematic positions (fn return type, impl header).

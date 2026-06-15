@@ -152,7 +152,8 @@ impl Reg {
 
 (source_file
   (impl_block
-    name: (identifier)
+    name: (return_type_expression
+      name: (identifier))
     body: (impl_body
       (function_definition
         name: (identifier)
@@ -181,6 +182,45 @@ impl Reg {
           (type_index
             (type_argument
               (number)))
+          domain: (identifier))
+        body: (block)))))
+
+========================================
+applied inherent impl on a generic owner
+========================================
+
+impl {dom clk: Clock, A: Type} Bus(A) {
+  fn first(self @clk) -> bool @clk {
+  }
+}
+
+---
+
+(source_file
+  (impl_block
+    named_parameters: (named_parameter_section
+      (named_parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)))
+      (named_parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    name: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (type_expression
+            name: (identifier)))))
+    body: (impl_body
+      (function_definition
+        name: (identifier)
+        parameters: (parameter_section
+          (parameter
+            domain: (identifier)))
+        return_type: (return_type_expression
+          name: (identifier)
           domain: (identifier))
         body: (block)))))
 
@@ -577,7 +617,8 @@ impl {dom clk: Clock} Stream8 {
         name: (identifier)
         type: (type_expression
           name: (identifier))))
-    name: (identifier)
+    name: (return_type_expression
+      name: (identifier))
     body: (impl_body
       (function_definition
         name: (identifier)

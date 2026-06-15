@@ -167,16 +167,17 @@ module.exports = grammar({
       ),
 
     // Binder-first: `impl {dom clk: Clock} Stream8 { … }` — the braces after
-    // `impl` DECLARE generics; the owner is applied implicitly (via `self @clk`
-    // etc.), never with application braces of its own. A trait impl names the
-    // trait and the implementing type: `impl {param n: integer} Add for
-    // uint(n) { … }`. The self type uses the restricted (no named-args) type
-    // form for the same reason as return types: a trailing `{` opens the body.
+    // `impl` DECLARE generics. A generic owner is APPLIED (`impl {dom clk: Clock,
+    // A: Type} Bus(A) { … }`), the same way a trait impl writes its self type
+    // (`impl {param n: integer} Add for uint(n) { … }`); both use the restricted
+    // (no named-args) type form so a trailing `{` opens the body. For an
+    // inherent impl the subject IS the self type; for a trait impl it is the
+    // trait and `for` introduces the self type.
     impl_block: ($) =>
       seq(
         "impl",
         optional(field("named_parameters", $.named_parameter_section)),
-        field("name", $.identifier),
+        field("name", $.return_type_expression),
         optional(seq("for", field("self_type", $.return_type_expression))),
         optional(field("where", $.where_clause)),
         field("body", $.impl_body),
