@@ -441,3 +441,49 @@ fn f(self @clk) -> DF @clk {
           right: (expression
             (path_expression
               segment: (identifier))))))))
+
+========================================
+struct destructuring patterns (with nesting)
+========================================
+
+fn f(p: Pair) -> uint(8) {
+    let pair { a = x, b = (m, n) } = p;
+    return x;
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (let_statement
+          pattern: (struct_pattern
+            constructor: (identifier)
+            (struct_pattern_field
+              name: (identifier)
+              binding: (identifier))
+            (struct_pattern_field
+              name: (identifier)
+              binding: (tuple_pattern
+                (identifier)
+                (identifier))))
+          value: (expression
+            (path_expression
+              segment: (identifier)))))
+      (statement
+        (return_statement
+          value: (expression
+            (path_expression
+              segment: (identifier))))))))
