@@ -529,15 +529,7 @@ impl<'db> SvLower<'_, 'db> {
                 }
                 // A bare call statement: a (void) submodule instantiation whose
                 // out-arg connections bind callee `out` params to caller places.
-                Stmt::Expr(e) => {
-                    if let Some(uc) = self.as_user_call(*e) {
-                        if self.is_const_only_call(&uc) {
-                            continue; // results reached via const_eval
-                        }
-                        self.declare_out_targets(&uc);
-                        self.emit_instance(uc, Vec::new());
-                    }
-                }
+                Stmt::Expr(e) => self.lower_call_stmt(*e),
             }
         }
     }
@@ -760,9 +752,28 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
+    /// A side-effecting call in statement position (`f();`, or the tail/`return`
+    /// of a unit-returning fn): a (void) submodule instantiation whose out-arg
+    /// connections bind callee `out` params to caller places. A non-call
+    /// statement expression has no effect and is dropped.
+    fn lower_call_stmt(&mut self, e: ExprId) {
+        if let Some(uc) = self.as_user_call(e) {
+            if self.is_const_only_call(&uc) {
+                return; // results reached via const_eval
+            }
+            self.declare_out_targets(&uc);
+            self.emit_instance(uc, Vec::new());
+        }
+    }
+
     /// Drive `result` (the return port) per field from `value`'s leaves.
     fn drive_result(&mut self, value: ExprId) {
         let Some(rt) = self.sig.return_type.clone() else {
+            // No result port: a unit-returning fn whose tail (or `return`) is a
+            // side-effecting call still needs its instance emitted. Without
+            // this the call — and the drives it carries (`self.ready = …`) —
+            // silently vanishes.
+            self.lower_call_stmt(value);
             return;
         };
         let rt = subst_type(&rt, &self.self_subst);
@@ -2689,6 +2700,22 @@ endmodule
         // returned port's ready input — the reverse direction.
         assert!(sv.contains("assign up__ready = result__ready;"), "{sv}");
         assert!(sv.contains("assign result__valid = up__valid;"), "{sv}");
+    }
+
+    #[test]
+    fn a_unit_fn_tail_call_emits_its_instance() {
+        // A unit-returning fn whose TAIL is a side-effecting call (no
+        // semicolon) must still instantiate the callee — otherwise the call,
+        // and the drives it carries (`self.ready = true`), silently vanish.
+        // Regression: the tail routed to drive_result, which bailed with no
+        // return type.
+        let sv = emit(
+            "port S = s { out valid: bool, in ready: bool }\n\
+             impl {dom clk: Clock} S { fn sink(self @clk) { self.ready = true; } }\n\
+             fn top {dom clk: Clock} (up: S @clk) { up.sink() }",
+        );
+        assert!(sv.contains("S__sink"), "callee must be instantiated:\n{sv}");
+        assert!(sv.contains(".self__ready(up__ready)"), "{sv}");
     }
 
     #[test]
