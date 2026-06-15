@@ -1116,18 +1116,24 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 self.alloc(ExprKind::TypedLiteral { value, base, ty })
             }
             "unary_expression" => {
-                // `-x` desugars to the prelude `Neg` trait's method
-                // (planning/numeric_literals.md L5) — EXCEPT applied to a
-                // literal, where it constant-folds into a negative literal
-                // value (`let x: sint(4) = -8;` must fit-check -8, not 8 —
-                // the -128i8 case; the LEXER still has no negative literals).
+                // `-x`/`!x` desugar to the prelude `Neg`/`Not` trait methods
+                // (planning/traits.md T5) — EXCEPT `-literal`, which
+                // constant-folds into a negative literal value (`let x: sint(4)
+                // = -8;` must fit-check -8, not 8 — the -128i8 case; the LEXER
+                // still has no negative literals).
                 let operand = self.lower_field_expr(node, "operand", source);
-                if let ExprKind::Number(v, base) = self.exprs[operand.0 as usize].kind {
+                let method = match field_text(node, "operator", source).as_str() {
+                    "!" => "not",
+                    _ => "neg",
+                };
+                if method == "neg"
+                    && let ExprKind::Number(v, base) = self.exprs[operand.0 as usize].kind
+                {
                     return self.alloc(ExprKind::Number(-v, base));
                 }
                 self.alloc(ExprKind::MethodCall {
                     receiver: operand,
-                    method: "neg".to_owned(),
+                    method: method.to_owned(),
                     args: Vec::new(),
                 })
             }
@@ -1264,6 +1270,8 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             "*" => "mul",
             "==" => "eq",
             "<" => "lt",
+            "&&" => "and",
+            "||" => "or",
             _ => {
                 self.diag_at(node, BodyDiagnosticKind::UnresolvedName { name: op });
                 return self.alloc(ExprKind::Missing);

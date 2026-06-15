@@ -1,10 +1,12 @@
 const PREC = {
   assign: 1,
-  comparison: 2,
-  additive: 3,
-  multiplicative: 4,
-  unary: 5,
-  postfix: 6,
+  logical_or: 2,
+  logical_and: 3,
+  comparison: 4,
+  additive: 5,
+  multiplicative: 6,
+  unary: 7,
+  postfix: 8,
 };
 
 module.exports = grammar({
@@ -611,16 +613,32 @@ module.exports = grammar({
         field("value", $.number),
       ),
 
-    // Prefix minus — `-x` is `Neg::neg(x)`, never a negative literal
+    // Prefix `-` (`Neg::neg`) and `!` (`Not::not`) — never a negative literal
     // (planning/numeric_literals.md L5). Binds tighter than any binary op.
     unary_expression: ($) =>
       prec(
         PREC.unary,
-        seq(field("operator", "-"), field("operand", $.expression)),
+        seq(field("operator", choice("-", "!")), field("operand", $.expression)),
       ),
 
     binary_expression: ($) =>
       choice(
+        prec.left(
+          PREC.logical_or,
+          seq(
+            field("left", $.expression),
+            field("operator", "||"),
+            field("right", $.expression),
+          ),
+        ),
+        prec.left(
+          PREC.logical_and,
+          seq(
+            field("left", $.expression),
+            field("operator", "&&"),
+            field("right", $.expression),
+          ),
+        ),
         prec.left(
           PREC.comparison,
           seq(

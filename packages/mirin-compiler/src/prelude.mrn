@@ -32,6 +32,18 @@ pub trait Ord {
     fn lt(self, other: Self) -> bool;
 }
 
+pub trait Not {
+    fn not(self) -> Self;
+}
+
+pub trait And {
+    fn and(self, other: Self) -> Self;
+}
+
+pub trait Or {
+    fn or(self, other: Self) -> Self;
+}
+
 impl {param n: integer} Add for uint(n) {
     fn add(self, other: Self) -> Self = verilog {
         assign ${result} = ${self} + ${other};
@@ -110,6 +122,24 @@ impl {param n: integer} Eq for bits(n) {
 impl Eq for bool {
     fn eq(self, other: Self) -> bool = verilog {
         assign ${result} = ${self} == ${other};
+    }
+}
+
+impl Not for bool {
+    fn not(self) -> Self = verilog {
+        assign ${result} = !${self};
+    }
+}
+
+impl And for bool {
+    fn and(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} && ${other};
+    }
+}
+
+impl Or for bool {
+    fn or(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} || ${other};
     }
 }
 
