@@ -1,0 +1,26 @@
+// Struct destructuring patterns (planning/tuples.md): `let pair { a = x, b = y }
+// = …` binds each field to a (possibly nested) sub-pattern, desugaring to field
+// projection lets — no pattern IR, the same machinery as tuple patterns. Only
+// structs and positive tuples are pattern-matchable.
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+struct Nested = nested {
+    tag: bool,
+    inner: Pair,
+}
+
+// Flat destructure, with field-to-binder renaming.
+fn add(p: Pair) -> uint(8) {
+    let pair { a = x, b = y } = p;
+    return x + y;
+}
+
+// Nested struct pattern, and a struct pattern as a tuple element.
+fn corner(n: Nested, t: (Pair, bool)) -> uint(8) {
+    let nested { tag = _flag, inner = pair { a = lo, b = hi } } = n;
+    let (pair { a = u, b = v }, _take) = t;
+    return lo + hi + u + v;
+}

@@ -74,6 +74,7 @@ backpressure wire — `return.ready` is read directly).
   base stays `result` (decided with Jon), so a named result is sugar, not a
   port-renaming.
 - **Named tuple-result parts** — `-> (sum: uint(8), carry: bool)`, which is a
-  destructuring of the result and rides on pattern matching (planning/tuples.md
-  desugars patterns at CST→HIR). Only structs and positive tuples are
-  pattern-matchable; ports are not.
+  destructuring of the result and rides on pattern matching. The pattern
+  substrate is in place: tuple and struct destructuring patterns desugar at
+  CST→HIR (planning/tuples.md); only structs and positive tuples are
+  pattern-matchable, ports are not.

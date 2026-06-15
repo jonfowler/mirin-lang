@@ -31,6 +31,15 @@ polymorphic types and the domain machinery.
   element projecting `.0`, `.1`, … recursively (nested patterns allowed).
   HIR keeps single-name `Stmt::Let`; there is no `Pat` IR. Identifiers only —
   no `_`, no literals in patterns (yet).
+- **Struct patterns** destructure the same way, projecting by field name:
+  `let pair { a = x, b = y } = e;` → `let x = e.a; let y = e.b;` (`=` matches
+  the record-literal field form; `:` is always "type"). Bindings nest
+  (`b = (m, n)`, `inner = nested { … }`) and a struct pattern can sit inside a
+  tuple pattern and vice-versa. The constructor is intent only — the field
+  accesses carry the type-checking — except that it must not name a **port**:
+  only structs and positive tuples are pattern-matchable (a port's directional
+  fields don't destructure positively), enforced as
+  `BodyDiagnosticKind::PortNotPatternMatchable`.
 - **`for` binders are patterns** now: `for x in v`, `for (i, x) in
   v.enumerate()`, `for (a, b) in vec_of_pairs`. The old two-identifier
   `for i, x in …` form is removed. `for (i, x) in v.enumerate()` keeps its
