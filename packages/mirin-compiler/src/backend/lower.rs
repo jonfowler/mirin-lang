@@ -811,6 +811,11 @@ impl<'db> SvLower<'_, 'db> {
 
     /// Declare a `logic` for each of a local's leaves, once per local.
     fn declare_local(&mut self, local: LocalId) {
+        // The result place's leaves are the module's result ports, already
+        // declared from the signature — never a fresh net.
+        if self.is_result_local(local) {
+            return;
+        }
         if self.is_integer_local(local) || !self.declared.insert(local) {
             return;
         }
@@ -827,9 +832,22 @@ impl<'db> SvLower<'_, 'db> {
         self.items.push(SvItem::Assign { lhs, rhs });
     }
 
-    /// A local's SV name (uniquified).
+    /// A local's SV name (uniquified). The result place (`return`) emits as the
+    /// `result` ports — its leaves ARE the module's result, declared from the
+    /// signature (planning/return_variable.md). The base name stays `result`
+    /// (not `return`, an SV reserved word) so a scalar return is valid SV.
     fn local_name(&self, local: LocalId) -> String {
+        if self.is_result_local(local) {
+            return "result".to_owned();
+        }
         self.local_names[local.0 as usize].clone()
+    }
+
+    /// The synthetic result place. Identified by its reserved name `return`,
+    /// which no user local can take.
+    fn is_result_local(&self, local: LocalId) -> bool {
+        let l = self.body.local(local);
+        l.name == "return" && l.kind == crate::hir::body::LocalKind::Var
     }
 
     /// A local's type: inferred, falling back to declared. A `self` param's

@@ -1,0 +1,39 @@
+// `return` as a referrable place (planning/return_variable.md): instead of
+// building the whole result in a tail record, drive the result port's leaves
+// directly — `return.valid = …` produces an out-leaf, and `return.ready` reads
+// the returned port's `in` backpressure leaf. This is the same forward register
+// as df_example.mrn, written in the place style; it emits identical `result__*`
+// ports.
+port DF = df {
+    out valid: bool,
+    out data: uint(8),
+    in ready: bool,
+}
+
+impl {dom clk: Clock} DF {
+    fn reg_fwd(self @clk, rst: Reset @clk) -> DF @clk {
+        // Cyclic signals carry explicit types (cf. df_example.mrn).
+        var en: bool @clk;
+        var reg_vld: bool @clk;
+        var reg_data: uint(8) @clk;
+
+        // Load when our register is empty or the downstream is taking it —
+        // the backpressure read straight from the result place.
+        en = !reg_vld || return.ready;
+        reg_vld = when clk.posedge() {
+            if rst {
+                false
+            } else {
+                if en { self.valid } else { reg_vld }
+            }
+        };
+        reg_data = when clk.posedge() {
+            if en { self.data } else { reg_data }
+        };
+        self.ready = en;
+
+        // Drive the result's out-leaves by place (no tail record).
+        return.valid = reg_vld;
+        return.data = reg_data;
+    }
+}
