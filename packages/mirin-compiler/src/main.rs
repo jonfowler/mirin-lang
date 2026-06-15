@@ -226,8 +226,23 @@ fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
                     out.push(render(&path, source, abs(d.span), &d.message()));
                 }
             }
-            Some(DefKind::Struct | DefKind::Port) => {
-                let _ = sig_of(db, krate, def);
+            // Struct/port/impl HEADERS carry only signature diagnostics (no
+            // body) — e.g. a generic owner written un-applied (`impl Bus`).
+            Some(DefKind::Struct | DefKind::Port | DefKind::Impl) => {
+                let file = def.file(db);
+                let path = file.path(db).to_string_lossy().into_owned();
+                let source = file.text(db);
+                let def_start = ast_id_map(db, file)
+                    .range_of(def.ast_id(db))
+                    .map(|(s, _)| s as u32)
+                    .unwrap_or(0);
+                for d in &sig_of(db, krate, def).diagnostics {
+                    let span = Span {
+                        start: def_start + d.span.start,
+                        end: def_start + d.span.end,
+                    };
+                    out.push(render(&path, source, span, &d.message()));
+                }
             }
             _ => {}
         }

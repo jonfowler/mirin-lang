@@ -138,7 +138,9 @@ fn crate_diagnostic_counts(
                 driver_d += completeness(db, krate, def).len();
                 dir_d += directions(db, krate, def).len();
             }
-            Some(DefKind::Struct | DefKind::Port) => {
+            // Struct/port/impl HEADERS carry only signature diagnostics (an
+            // impl header has no body) — e.g. a generic owner written un-applied.
+            Some(DefKind::Struct | DefKind::Port | DefKind::Impl) => {
                 sig_d += sig_of(db, krate, def).diagnostics.len();
             }
             _ => {}

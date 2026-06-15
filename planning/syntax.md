@@ -209,16 +209,18 @@ Methods are introduced via `impl` blocks. Generics are **binder-first** — the
 braces after the `impl` keyword *declare* generic params (Rust's `impl<T>`):
 
 ```rust
-impl Option { … }                       // no generics
-impl {dom clk: Clock} Stream8 { … }     // binder declares clk; self @clk applies it
+impl Option { … }                          // no generics
+impl {dom clk: Clock} Stream8 { … }        // binder declares clk; self @clk applies it
+impl {dom clk: Clock, A: Type} Bus(A) { … }  // generic owner — APPLIED
 ```
 
-The owner is never written with application braces of its own: domains attach
-through `self @clk`, and a type-parametric owner's params **auto-bind** — on
-`struct Bus(A: Type)`, `impl {dom clk: Clock} Bus` behaves as if the binder
-also declared `A`, and each method monomorphises per instantiation of `A` at
-its call sites. (Trait impls — `impl {binders} Trait for SelfType` — share the
-binder-first shape; see `planning/traits.md`.)
+A **generic owner is applied** in the header (`Bus(A)`), with its params
+declared in the binder — the same shape as a trait impl's self type
+(`impl {param n: integer} Add for uint(n)`). The owner is a genuine type, not a
+bare constructor; each method monomorphises per instantiation of `A` at its
+call sites. A non-generic owner needs no application (`Option`, `Stream8`).
+Domains still attach through `self @clk`. (Trait impls — `impl {binders} Trait
+for SelfType` — share the binder-first shape; see `planning/traits.md`.)
 
 Resolver populates `impl_methods: (owner_def, method_name) → method_def`;
 calls dispatch through that table. See the resolver and

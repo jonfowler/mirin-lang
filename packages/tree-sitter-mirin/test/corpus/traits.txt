@@ -60,7 +60,8 @@ impl {param n: integer} Add for uint(n) {
         name: (identifier)
         type: (type_expression
           name: (identifier))))
-    name: (identifier)
+    name: (return_type_expression
+      name: (identifier))
     self_type: (return_type_expression
       name: (identifier)
       (type_index
@@ -135,7 +136,8 @@ impl Bits for bool {
 
 (source_file
   (impl_block
-    name: (identifier)
+    name: (return_type_expression
+      name: (identifier))
     self_type: (return_type_expression
       name: (identifier))
     body: (impl_body

@@ -82,6 +82,14 @@ pub enum SigDiagnosticKind {
     /// element slots, never override a conflicting one
     /// (planning/domain_checking.md).
     ConflictingDomain,
+    /// An `impl` on a generic owner written without its type arguments
+    /// (`impl {dom clk} Bus` on `struct Bus(A: Type)`). A generic owner must be
+    /// applied — `impl {dom clk, A: Type} Bus(A)` — so the owner is a real type,
+    /// not a bare constructor.
+    GenericOwnerNotApplied {
+        name: String,
+        arity: usize,
+    },
 }
 
 impl SigDiagnostic {
@@ -105,6 +113,12 @@ impl SigDiagnostic {
                 "domain annotation conflicts with an element's own domain: a domain lives on \
                  the leaf, and `@` on an aggregate may only fill unspecified element slots"
                     .to_owned()
+            }
+            SigDiagnosticKind::GenericOwnerNotApplied { name, arity } => {
+                format!(
+                    "generic type `{name}` must be applied here: write `{name}(…)` with its \
+                     {arity} type argument(s), declared in the impl binder"
+                )
             }
         }
     }
@@ -163,7 +177,7 @@ pub fn sig_of<'db>(
     };
 
     match kind {
-        DefKind::Fn | DefKind::Method => lower_fn_sig(db, krate, map, module, &node, source),
+        DefKind::Fn | DefKind::Method => lower_fn_sig(map, module, &node, source),
         DefKind::Struct => lower_adt_sig(map, module, &node, source, false),
         DefKind::Port => lower_adt_sig(map, module, &node, source, true),
         // A trait impl's HEADER: binder generics, self type (in return_type),
@@ -189,30 +203,14 @@ fn lower_impl_header<'db>(
     node: &Node,
     source: &str,
 ) -> Signature<'db> {
-    let owner = {
-        let name_node = node
-            .child_by_field_name("self_type")
-            .and_then(|st| st.child_by_field_name("name"))
-            .or_else(|| node.child_by_field_name("name"));
-        name_node.and_then(|n| {
-            let name = node_text(&n, source);
-            let def = map.resolve_in_scope(module, &name, Namespace::Item)?;
-            let kind = map.def_data(def)?.kind;
-            matches!(kind, DefKind::Struct | DefKind::Port).then_some((def, kind))
-        })
-    };
-    let explicit_self_args = node.child_by_field_name("self_type").is_some_and(|st| {
-        let mut c = st.walk();
-        st.children(&mut c).any(|n| n.kind() == "type_index")
-    });
+    // The self-type node: the `for` self type for a trait impl, otherwise the
+    // impl subject itself (an inherent impl's `name` IS its self type, applied
+    // if the owner is generic — `impl {A: Type} Bus(A)`). A generic owner is
+    // applied explicitly, so its params come from the binder (no auto-binding).
+    let self_type_node = node
+        .child_by_field_name("self_type")
+        .or_else(|| node.child_by_field_name("name"));
     let mut generic_params = Vec::new();
-    if let Some((owner_def, _)) = owner
-        && !explicit_self_args
-    {
-        let owner_sig = sig_of(db, krate, owner_def);
-        generic_params.extend(owner_sig.generic_params.iter().cloned());
-    }
-    let owner_generic_count = generic_params.len();
     let is_trait_name = |n: &str| {
         map.resolve_in_scope(module, n, Namespace::Item)
             .and_then(|d| map.def_data(d))
@@ -241,10 +239,9 @@ fn lower_impl_header<'db>(
         assoc_self: RefCell::new(None),
         bounds: RefCell::new(Vec::new()),
     };
-    let self_ty = match node.child_by_field_name("self_type") {
-        Some(st) if explicit_self_args || owner.is_none() => lowerer.lower_type(&st, source),
-        _ => owner_base_type(owner, &generic_params[..owner_generic_count]),
-    };
+    let self_ty = self_type_node
+        .map(|st| lowerer.lower_type(&st, source))
+        .unwrap_or(Type::Error);
     // Binder bounds (`impl {param T: Bits} Bits for Pair(T)`) become the
     // impl's predicates — the solver's NESTED obligations on selection.
     let mut predicates = Vec::new();
@@ -286,6 +283,41 @@ fn lower_impl_header<'db>(
     }
     let mut diagnostics = drain_unresolved(&lowerer, node);
     diagnostics.extend(pred_diags);
+    // A generic owner must be APPLIED: `impl {dom clk, A: Type} Bus(A)`, never
+    // bare `impl {dom clk} Bus`. Resolve the owner and compare its positional
+    // (non-binder) arity against the args written on the self type.
+    if let Some(st) = self_type_node
+        && let Some(owner_def) = st
+            .child_by_field_name("name")
+            .map(|n| node_text(&n, source))
+            .and_then(|name| map.resolve_in_scope(module, &name, Namespace::Item))
+            .filter(|d| {
+                matches!(
+                    map.def_data(*d).map(|x| x.kind),
+                    Some(DefKind::Struct | DefKind::Port)
+                )
+            })
+    {
+        let arity = sig_of(db, krate, owner_def)
+            .generic_params
+            .iter()
+            .filter(|g| !g.from_named_section)
+            .count();
+        let written = type_index(&st).is_some_and(|idx| {
+            idx.children(&mut idx.walk())
+                .any(|c| c.kind() == "type_argument")
+        });
+        if arity > 0 && !written {
+            let name = field_text(&st, "name", source);
+            diagnostics.push(SigDiagnostic {
+                span: Span {
+                    start: (st.start_byte() - def_start) as u32,
+                    end: (st.end_byte() - def_start) as u32,
+                },
+                kind: SigDiagnosticKind::GenericOwnerNotApplied { name, arity },
+            });
+        }
+    }
     Signature {
         generic_params,
         params: Vec::new(),
@@ -518,8 +550,6 @@ fn drain_unresolved(lowerer: &TypeLowerer<'_, '_>, def_node: &Node) -> Vec<SigDi
 
 /// Lower a `function_definition` node's signature.
 fn lower_fn_sig<'db>(
-    db: &'db dyn salsa::Database,
-    krate: SourceRoot,
     map: &CrateDefMap<'db>,
     module: ModuleId,
     node: &Node,
@@ -529,11 +559,10 @@ fn lower_fn_sig<'db>(
     // params vs value params, so type lowering can resolve `Param(i)` refs.
     let mut generic_params = Vec::new();
     let mut value_param_nodes: Vec<(Node, bool)> = Vec::new();
-    // A method's generics lead with the impl OWNER's own generic params
-    // (auto-bound: `impl {dom clk: Clock} Bus` on `struct Bus(A: Type)`
-    // behaves as if the binder declared `A` too), then the impl block's
-    // declared generics (`impl {dom clk: Clock} Stream8 { … }` — Rust's
-    // `impl<T>` shape), then the fn's own.
+    // A method's generics lead with the impl block's declared generics
+    // (`impl {dom clk: Clock, A: Type} Bus(A) { … }` — Rust's `impl<T>` shape;
+    // a generic owner is APPLIED, its params declared in the binder), then the
+    // fn's own.
     // A trait METHOD DECL (`fn add(self, other: Self) -> Self;` inside a
     // `trait`) gets an implicit leading Type-kind generic named `Self` —
     // rustc's Self-as-param-0. `Self` in type positions and the bare `self`
@@ -546,36 +575,16 @@ fn lower_fn_sig<'db>(
             from_named_section: true,
         });
     }
-    // The implementing type: the impl's `name` for an inherent block, the
-    // `for` self type's head for a trait impl.
-    let owner = enclosing_impl(node).and_then(|impl_node| {
-        let name_node = impl_node
+    // The impl's self-type node: the `for` self type for a trait impl,
+    // otherwise the inherent subject itself (applied if the owner is generic —
+    // `impl {A: Type} Bus(A)`). A generic owner is applied explicitly, so its
+    // params come from the binder (no auto-binding).
+    let impl_self_type_node = enclosing_impl(node).and_then(|impl_node| {
+        impl_node
             .child_by_field_name("self_type")
-            .and_then(|st| st.child_by_field_name("name"))
-            .or_else(|| impl_node.child_by_field_name("name"))?;
-        let name = node_text(&name_node, source);
-        let def = map.resolve_in_scope(module, &name, Namespace::Item)?;
-        let kind = map.def_data(def)?.kind;
-        matches!(kind, DefKind::Struct | DefKind::Port).then_some((def, kind))
+            .or_else(|| impl_node.child_by_field_name("name"))
     });
-    // A trait impl whose self type carries explicit args (`impl {param n:
-    // integer} Add for uint(n)`) declares its own binder — auto-binding the
-    // owner's params on top would duplicate them.
-    let explicit_self_args = enclosing_impl(node)
-        .and_then(|i| i.child_by_field_name("self_type"))
-        .is_some_and(|st| {
-            let mut c = st.walk();
-            st.children(&mut c).any(|n| n.kind() == "type_index")
-        });
-    if let Some((owner_def, _)) = owner
-        && !explicit_self_args
-    {
-        let owner_sig = sig_of(db, krate, owner_def);
-        generic_params.extend(owner_sig.generic_params.iter().cloned());
-    }
-    let owner_generic_count = generic_params.len();
-    // CST node per written generic param (auto-bound owner params have none)
-    // — the source of its bounds.
+    // CST node per written generic param — the source of its bounds.
     let mut generic_param_nodes: Vec<(usize, Node)> = Vec::new();
     let is_trait_name = |n: &str| {
         map.resolve_in_scope(module, n, Namespace::Item)
@@ -722,28 +731,11 @@ fn lower_fn_sig<'db>(
         bounds: RefCell::new(Vec::new()),
     };
     // What `Self` (and the bare `self` receiver) mean in an impl method: the
-    // `for` self type when written with explicit args or naming a builtin
-    // (`impl Bits for uint(8)`), otherwise the owner ADT applied at its
-    // auto-bound params (`impl Scale for Bus` on `struct Bus(A: Type)`).
-    let impl_self_base: Option<Type> = enclosing_impl(node).and_then(|impl_node| {
-        match impl_node.child_by_field_name("self_type") {
-            Some(st) => {
-                let has_args = {
-                    let mut c = st.walk();
-                    st.children(&mut c).any(|n| n.kind() == "type_index")
-                };
-                if has_args || owner.is_none() {
-                    Some(lowerer.lower_type(&st, source))
-                } else {
-                    Some(owner_base_type(
-                        owner,
-                        &generic_params[..owner_generic_count],
-                    ))
-                }
-            }
-            None => owner.map(|_| owner_base_type(owner, &generic_params[..owner_generic_count])),
-        }
-    });
+    // impl's self type, lowered against the binder (`impl {A: Type} Bus(A)`
+    // gives `Bus(A)`; a builtin self like `impl Bits for uint(8)` gives
+    // `uint(8)`).
+    let impl_self_base: Option<Type> =
+        impl_self_type_node.map(|st| lowerer.lower_type(&st, source));
     lowerer.self_ty.replace(impl_self_base.clone());
     // Associated-const context: bare const names (`uint(width)`) resolve
     // against the enclosing trait (decl scope: Self = Param(0)) or the
@@ -779,6 +771,8 @@ fn lower_fn_sig<'db>(
         enclosing_impl(node)
             .filter(|i| i.child_by_field_name("self_type").is_some())
             .and_then(|i| i.child_by_field_name("name"))
+            // The trait name is the head ident of the impl's subject type expr.
+            .and_then(|n| n.child_by_field_name("name"))
             .map(|n| node_text(&n, source))
             .and_then(|n| map.resolve_in_scope(module, &n, Namespace::Item))
             .zip(impl_self_base)
@@ -1451,48 +1445,6 @@ pub(crate) fn lower_type_expr<'db>(
         sink.append(&mut lowerer.unresolved.borrow_mut());
     }
     ty
-}
-
-/// The structural type of a method's `self`: the enclosing impl's owner
-/// struct/port, with `self`'s `@domain` annotation lowered against the
-/// method's generics. `Error` when the owner doesn't resolve (diagnosed by
-/// nameres) — generic owners' type args are future work (impl `Bus(A)`).
-fn owner_base_type<'db>(
-    owner: Option<(DefId<'db>, DefKind)>,
-    owner_generics: &[GenericParam],
-) -> Type<'db> {
-    let Some((def, kind)) = owner else {
-        return Type::Error;
-    };
-    // The owner applied at its own (auto-bound) params: positions 0..k of
-    // the method's generic list, kind-matched. Domain `Unspecified`; the
-    // receiver's `@` annotation stamps it.
-    let args = GenericArgs(
-        owner_generics
-            .iter()
-            .enumerate()
-            .map(|(i, g)| match g.kind {
-                TermKind::Type => Term::Type(Type::Value {
-                    kind: ValueKind::Param(i as u32),
-                    domain: Domain::Unspecified,
-                }),
-                TermKind::Const => Term::Const(ConstArg::Param(i as u32)),
-                TermKind::Domain(_) => Term::Domain(Domain::Param(i as u32)),
-            })
-            .collect(),
-    );
-    match kind {
-        DefKind::Struct => Type::Value {
-            kind: ValueKind::Struct { def, args },
-            domain: Domain::Unspecified,
-        },
-        DefKind::Port => Type::Port {
-            def,
-            args,
-            domain: Domain::Unspecified,
-        },
-        _ => Type::Error,
-    }
 }
 
 /// The `impl_block` enclosing a method's fn node, if any.

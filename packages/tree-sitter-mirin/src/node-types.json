@@ -735,7 +735,7 @@
         "required": true,
         "types": [
           {
-            "type": "identifier",
+            "type": "return_type_expression",
             "named": true
           }
         ]
