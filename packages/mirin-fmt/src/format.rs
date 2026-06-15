@@ -214,7 +214,10 @@ impl<'a> Formatter<'a> {
             "type_expression" => self.type_expr(n),
             "return_type_expression" => self.return_type_expr(n),
             "tuple_expression" => self.tuple_like(n, &["expression"]),
-            "tuple_pattern" => self.tuple_like(n, &["identifier", "tuple_pattern"]),
+            "tuple_pattern" => {
+                self.tuple_like(n, &["identifier", "tuple_pattern", "struct_pattern"])
+            }
+            "struct_pattern" => self.struct_pattern(n),
             "tuple_type" => self.tuple_type(n),
 
             "visibility_modifier" => self.visibility(n),
@@ -787,6 +790,20 @@ impl<'a> Formatter<'a> {
         self.delimited(n, "{", "}", "record_field_value", true)
     }
 
+    /// `pair { a = x, b = y }` — a struct destructuring pattern.
+    fn struct_pattern(&self, n: Node) -> Doc {
+        let ctor = self.text(self.field(n, "constructor").unwrap());
+        let body = self.delimited(n, "{", "}", "struct_pattern_field", true);
+        concat([text(ctor), text(" "), body])
+    }
+
+    /// `name = binding` — one field of a struct pattern.
+    fn struct_pattern_field(&self, n: Node) -> Doc {
+        let name = self.text(self.field(n, "name").unwrap());
+        let binding = self.doc(self.field(n, "binding").unwrap());
+        concat([text(name), text(" = "), binding])
+    }
+
     fn path(&self, n: Node) -> Doc {
         let segs: Vec<&str> = self
             .fields(n, "segment")
@@ -914,6 +931,7 @@ impl<'a> Formatter<'a> {
             "parameter" => self.parameter(n),
             "record_field_type" => self.record_field_type(n),
             "record_field_value" => self.record_field_value(n),
+            "struct_pattern_field" => self.struct_pattern_field(n),
             "port_field" => self.port_field(n),
             "named_or_shorthand_argument" => self.named_or_shorthand(n),
             "use_tree" => self.use_tree(n),

@@ -183,6 +183,23 @@ fn add3(x: uint(8)) -> uint(8) {
     }
 
     #[test]
+    fn struct_pattern_is_preserved() {
+        // Regression: a struct pattern nested in a tuple pattern was dropped
+        // (its kind wasn't in the tuple-pattern child list), so
+        // `(pair { a = u, b = v }, t)` collapsed to `(t)`.
+        let src = "fn f(p: Pair, q: (Pair, bool)) -> uint(8) { let pair { a = x, b = y } = p; let (pair { a = u, b = v }, t) = q; return x; }\n";
+        let out = format_str(src).unwrap();
+        assert!(
+            out.contains("let pair { a = x, b = y } = p;"),
+            "got:\n{out}"
+        );
+        assert!(
+            out.contains("let (pair { a = u, b = v }, t) = q;"),
+            "struct pattern in a tuple pattern must survive:\n{out}"
+        );
+    }
+
+    #[test]
     fn single_line_if_else_stays_inline() {
         let src = "fn m(a: uint(8), b: uint(8), c: bool) -> uint(8) { if c { a } else { b } }\n";
         let out = format_str(src).unwrap();

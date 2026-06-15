@@ -269,6 +269,12 @@ pub enum BodyDiagnosticKind {
     DirectionPrefixMismatch {
         direction: String,
     },
+    /// A struct destructuring pattern (`p { … }`) whose constructor is a port.
+    /// Only structs and positive tuples are pattern-matchable (a port's
+    /// directional fields don't destructure positively).
+    PortNotPatternMatchable {
+        name: String,
+    },
 }
 
 impl BodyDiagnostic {
@@ -290,6 +296,9 @@ impl BodyDiagnostic {
                 }
                 _ => "`in` argument supplies a value: `in name = value`, not `=>`".to_owned(),
             },
+            BodyDiagnosticKind::PortNotPatternMatchable { name } => format!(
+                "`{name}` is a port — only structs and positive tuples can be destructured"
+            ),
             BodyDiagnosticKind::DuplicateVar { name } => {
                 format!("`{name}` is declared more than once as `var` in this block")
             }
@@ -824,9 +833,10 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         }
     }
 
-    /// Bind a `let` pattern to a value: a bare name binds directly; a tuple
-    /// pattern binds a synthetic local and recursively desugars each element
-    /// to a `.N` projection let — there is no pattern IR (planning/tuples.md).
+    /// Bind a `let` pattern to a value: a bare name binds directly; a tuple or
+    /// struct pattern binds a synthetic local and recursively desugars each
+    /// element to a projection let — there is no pattern IR
+    /// (planning/tuples.md).
     fn bind_pattern(
         &mut self,
         pat: &Node,
@@ -836,7 +846,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         stmts: &mut Vec<Stmt>,
     ) {
         let span = self.rel_span(pat);
-        if pat.kind() == "tuple_pattern" {
+        if matches!(pat.kind(), "tuple_pattern" | "struct_pattern") {
             // Destructuring an existing local needs no synthetic copy —
             // project straight off it (an ascription still pins a synthetic
             // so the declared type has a carrier).
@@ -857,8 +867,11 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         stmts.push(Stmt::Let { local, value });
     }
 
-    /// Desugar a tuple pattern against an already-bound local: one projection
-    /// let per element, recursing into nested patterns.
+    /// Desugar a tuple/struct pattern against an already-bound local: one
+    /// projection let per element, recursing into nested patterns. A tuple
+    /// projects by index (`.0`); a struct by field name (`.valid`) — the
+    /// constructor is intent only (the field accesses are type-checked against
+    /// the value's type in infer).
     fn destructure_into(
         &mut self,
         pat: &Node,
@@ -866,6 +879,45 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         receiver: LocalId,
         stmts: &mut Vec<Stmt>,
     ) {
+        if pat.kind() == "struct_pattern" {
+            // Only structs and positive tuples are pattern-matchable. A
+            // constructor that resolves to a port is rejected (its directional
+            // fields don't destructure positively). The constructor is
+            // otherwise intent only — the field accesses carry the checking.
+            if let Some(ctor) = pat.child_by_field_name("constructor") {
+                let name = node_text(&ctor, source);
+                if let Some(def) = self
+                    .map
+                    .resolve_in_scope(self.module, &name, Namespace::Item)
+                {
+                    // The pattern names a constructor (`df`); follow it to its
+                    // owner type (`DF`) to learn struct-vs-port.
+                    let owner = self
+                        .map
+                        .def_data(def)
+                        .filter(|d| d.kind == DefKind::Ctor)
+                        .and_then(|d| d.owner)
+                        .unwrap_or(def);
+                    if self
+                        .map
+                        .def_data(owner)
+                        .is_some_and(|d| d.kind == DefKind::Port)
+                    {
+                        self.diag_at(&ctor, BodyDiagnosticKind::PortNotPatternMatchable { name });
+                    }
+                }
+            }
+            for (name_node, binding) in struct_pattern_field_bindings(pat) {
+                let field = node_text(&name_node, source);
+                let recv = self.alloc(ExprKind::Local(receiver));
+                let proj = self.alloc(ExprKind::Field {
+                    receiver: recv,
+                    field,
+                });
+                self.bind_pattern(&binding, source, None, proj, stmts);
+            }
+            return;
+        }
         let elems = pattern_children(pat);
         for (i, elem) in elems.iter().enumerate() {
             let recv = self.alloc(ExprKind::Local(receiver));
@@ -1694,22 +1746,45 @@ fn path_segments(node: &Node, source: &str) -> Vec<String> {
 }
 
 /// All children under `field` (for `commaSep1(field("name", …))`).
-/// Every name bound by a pattern, recursively.
+/// Every name bound by a pattern, recursively. A struct pattern binds the
+/// names in its field *bindings*, never the constructor.
 fn collect_pattern_names(pat: &Node, source: &str, out: &mut HashSet<String>) {
-    if pat.kind() == "identifier" {
-        out.insert(node_text(pat, source));
-        return;
-    }
-    for child in pattern_children(pat) {
-        collect_pattern_names(&child, source, out);
+    match pat.kind() {
+        "identifier" => {
+            out.insert(node_text(pat, source));
+        }
+        "struct_pattern" => {
+            for (_, binding) in struct_pattern_field_bindings(pat) {
+                collect_pattern_names(&binding, source, out);
+            }
+        }
+        _ => {
+            for child in pattern_children(pat) {
+                collect_pattern_names(&child, source, out);
+            }
+        }
     }
 }
 
-/// A tuple pattern's element patterns (names and nested tuples), in order.
+/// A tuple pattern's element patterns (names, nested tuples, nested structs),
+/// in order.
 fn pattern_children<'t>(pat: &Node<'t>) -> Vec<Node<'t>> {
     let mut cursor = pat.walk();
     pat.children(&mut cursor)
-        .filter(|c| matches!(c.kind(), "identifier" | "tuple_pattern"))
+        .filter(|c| matches!(c.kind(), "identifier" | "tuple_pattern" | "struct_pattern"))
+        .collect()
+}
+
+/// A struct pattern's `(field-name, binding-pattern)` pairs, in order.
+fn struct_pattern_field_bindings<'t>(pat: &Node<'t>) -> Vec<(Node<'t>, Node<'t>)> {
+    let mut cursor = pat.walk();
+    pat.children(&mut cursor)
+        .filter(|c| c.kind() == "struct_pattern_field")
+        .filter_map(|f| {
+            let name = f.child_by_field_name("name")?;
+            let binding = f.child_by_field_name("binding")?;
+            Some((name, binding))
+        })
         .collect()
 }
 
@@ -1989,6 +2064,56 @@ mod tests {
         assert!(ctor.is_some(), "the `packet` ctor resolves");
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].name, "valid");
+    }
+
+    #[test]
+    fn struct_pattern_desugars_to_field_projection_lets() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "struct Pair = pair { a: uint(8), b: uint(8) }\n\
+             fn f(p: Pair) -> uint(8) { let pair { a = x, b = y } = p; return x; }",
+        );
+        let b = body_of(&db, krate, "f");
+        // Destructuring a param local projects straight off it — no synthetic
+        // copy: `let x = p.a; let y = p.b;`.
+        let projected: Vec<String> = b
+            .block()
+            .stmts
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Let { value, .. } => match &b.expr(*value).kind {
+                    ExprKind::Field { field, .. } => Some(field.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(projected, vec!["a".to_owned(), "b".to_owned()]);
+        assert!(b.diagnostics().is_empty(), "{:?}", b.diagnostics());
+    }
+
+    #[test]
+    fn destructuring_a_port_is_a_diagnostic() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "port DF = df { out valid: bool, in ready: bool }\n\
+             fn f(d: DF) -> bool { let df { valid = v, ready = r } = d; return v; }",
+        );
+        let b = body_of(&db, krate, "f");
+        assert!(
+            b.diagnostics().iter().any(|d| matches!(
+                &d.kind,
+                BodyDiagnosticKind::PortNotPatternMatchable { name } if name == "df"
+            )),
+            "{:?}",
+            b.diagnostics()
+        );
     }
 
     #[test]

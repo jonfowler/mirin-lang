@@ -1,0 +1,13 @@
+// Must FAIL: only structs and positive tuples are pattern-matchable. A struct
+// destructuring pattern whose constructor is a *port* is rejected — a port's
+// directional fields don't destructure positively (planning/tuples.md,
+// planning/return_variable.md). Its struct twin is working/struct_pattern.mrn.
+port DF = df {
+    out valid: bool,
+    in ready: bool,
+}
+
+fn split(d: DF) -> bool {
+    let df { valid = v, ready = r } = d;
+    return v;
+}
