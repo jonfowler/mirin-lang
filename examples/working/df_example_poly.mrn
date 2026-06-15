@@ -1,0 +1,41 @@
+// Polymorphic over the payload type `A`. The port takes a positional type
+// param; the domain stays elided (the impl supplies `clk`, which stamps every
+// field — see impl_parametric_owner.mrn). The owner is named bare in the impl
+// (`DF`), and `A` auto-binds into each method's generics; the receiver's `A`
+// is inferred at the call site and the method monomorphises per payload
+// (`DF__reg_fwd__uint8`, …). The one subtlety: a returned generic port needs
+// its type argument written out — `-> DF(A) @clk`, NOT bare `DF` — or the
+// result leaves can't recover `A`'s width.
+//
+port DF(A: Type) = df {
+    out valid: bool,
+    out data: A,
+    in ready: bool,
+}
+
+impl {dom clk: Clock} DF {
+    fn reg_fwd(self @clk, rst: Reset @clk) -> DF(A) @clk {
+        var en: bool @clk;
+        var reg_vld: bool @clk;
+        var reg_data: A @clk;
+        var out_rdy: bool @clk;
+
+        en = !reg_vld || out_rdy;
+        reg_vld = when clk.posedge() {
+            if rst {
+                false
+            } else {
+                if en { self.valid } else { reg_vld }
+            }
+        };
+        reg_data = when clk.posedge() {
+            if en { self.data } else { reg_data }
+        };
+        self.ready = en;
+        df { valid = reg_vld, data = reg_data, ready => out_rdy }
+    }
+}
+
+fn reg_fwd_uint {dom clk: Clock} (inp: DF(uint(8)) @clk, rst: Reset @clk) -> DF(uint(8)) @clk {
+    inp.reg_fwd(rst)
+}
