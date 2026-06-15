@@ -401,3 +401,43 @@ fn f {dom clk: Clock} (a: uint(8) @clk, b: bool @clk) -> (uint(8), bool) @clk {
                 (identifier))
               (field_access
                 (number)))))))))
+
+========================================
+return as a referrable place
+========================================
+
+fn f(self @clk) -> DF @clk {
+    let en = return.ready;
+    return.valid = en;
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        domain: (identifier)))
+    return_type: (return_type_expression
+      name: (identifier)
+      domain: (identifier))
+    body: (block
+      (statement
+        (let_statement
+          pattern: (identifier)
+          value: (expression
+            (postfix_expression
+              receiver: (return_expression)
+              (field_access
+                field: (identifier))))))
+      (statement
+        (assignment_statement
+          left: (expression
+            (postfix_expression
+              receiver: (return_expression)
+              (field_access
+                field: (identifier))))
+          right: (expression
+            (path_expression
+              segment: (identifier))))))))

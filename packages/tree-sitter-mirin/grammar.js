@@ -37,6 +37,11 @@ module.exports = grammar({
     // alive; the named-args fork dies at body content or the missing parens.
     [$._header_expression, $.header_postfix],
     [$.header_postfix],
+    // `return …`: the bare `return` (a referrable place — return_expression)
+    // and the `return EXPR;` statement both start with `return`. GLR keeps
+    // both alive and resolves at the next token (`.`/`=`/`[` → place; an
+    // expression start → the whole-result statement).
+    [$.return_statement, $.return_expression],
   ],
 
   rules: {
@@ -550,6 +555,7 @@ module.exports = grammar({
         $.postfix_expression,
         $.record_constructor_expression,
         $.path_expression,
+        $.return_expression,
         $.number,
         $.parenthesized_expression,
         $.tuple_expression,
@@ -670,6 +676,7 @@ module.exports = grammar({
             "receiver",
             choice(
             $.path_expression,
+            $.return_expression,
             $.number,
             $.parenthesized_expression,
             $.tuple_expression,
@@ -773,6 +780,13 @@ module.exports = grammar({
         field("segment", $.identifier),
         repeat(seq("::", field("segment", $.identifier))),
       ),
+
+    // `return` as a referrable place: the function's result binding (a
+    // var-like signal node of the return type). `return.valid = …` drives an
+    // out-leaf; `return.ready` reads an in-leaf (a returned port's
+    // backpressure). Distinct from `return EXPR;` (return_statement), which is
+    // the whole-result drive. See planning/return_variable.md.
+    return_expression: ($) => "return",
 
     parenthesized_expression: ($) => seq("(", $.expression, ")"),
 
