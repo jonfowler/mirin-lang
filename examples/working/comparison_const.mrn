@@ -1,0 +1,16 @@
+// O1: comparison operators const-evaluate on `integer` (planning/operators.md).
+// The width below is chosen by a const fn that uses every new comparison —
+// `>=`, `<=`, `>`, `!=`; if any failed to fold, `uint(w)` would not resolve to
+// uint(16) and this would not type-check.
+fn pick_width(n: integer) -> integer {
+    let a: integer = if n >= 16 { n } else { 16 };
+    let b: integer = if n <= 100 { a } else { 8 };
+    let c: integer = if n > 0 { b } else { 4 };
+    if n != 99 { c } else { 2 }
+}
+
+fn top() -> uint(16) {
+    let w: integer = pick_width(16);
+    let x: uint(w) = 0;
+    x
+}

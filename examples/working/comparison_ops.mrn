@@ -1,0 +1,20 @@
+// O1: the full comparison operator set — `!=`, `<=`, `>`, `>=` join the
+// `==`/`<` that landed with T5. Each desugars to an `Eq`/`Ord` trait method
+// (`a != b` → `a.ne(b)`, `a >= b` → `a.ge(b)`) and the backend emits the
+// direct SV operator, never an instance (planning/operators.md O1).
+fn ne_op {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> bool @clk {
+    a != b
+}
+
+fn le_op {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> bool @clk {
+    a <= b
+}
+
+fn gt_op {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> bool @clk {
+    a > b
+}
+
+// Ordering on a signed type emits a signed comparison (sint is `logic signed`).
+fn ge_op {dom clk: Clock} (a: sint(8) @clk, b: sint(8) @clk) -> bool @clk {
+    a >= b
+}

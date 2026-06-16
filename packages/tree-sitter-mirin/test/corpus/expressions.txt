@@ -487,3 +487,79 @@ fn f(p: Pair) -> uint(8) {
           value: (expression
             (path_expression
               segment: (identifier))))))))
+
+========================================
+comparison operators (full set)
+========================================
+
+fn f(a: uint(8), b: uint(8)) -> bool {
+    let p = a != b;
+    let q = a <= b;
+    let r = a > b;
+    a >= b
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number)))))
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    return_type: (return_type_expression
+      name: (identifier))
+    body: (block
+      (statement
+        (let_statement
+          pattern: (identifier)
+          value: (expression
+            (binary_expression
+              left: (expression
+                (path_expression
+                  segment: (identifier)))
+              right: (expression
+                (path_expression
+                  segment: (identifier)))))))
+      (statement
+        (let_statement
+          pattern: (identifier)
+          value: (expression
+            (binary_expression
+              left: (expression
+                (path_expression
+                  segment: (identifier)))
+              right: (expression
+                (path_expression
+                  segment: (identifier)))))))
+      (statement
+        (let_statement
+          pattern: (identifier)
+          value: (expression
+            (binary_expression
+              left: (expression
+                (path_expression
+                  segment: (identifier)))
+              right: (expression
+                (path_expression
+                  segment: (identifier)))))))
+      tail: (expression
+        (binary_expression
+          left: (expression
+            (path_expression
+              segment: (identifier)))
+          right: (expression
+            (path_expression
+              segment: (identifier))))))))

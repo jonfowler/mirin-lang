@@ -449,8 +449,25 @@ impl<'db> Evaluator<'db> {
                         (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x == y)),
                         _ => None,
                     },
+                    "ne" => match (a, b) {
+                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x != y)),
+                        (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x != y)),
+                        _ => None,
+                    },
                     "lt" => match (a, b) {
                         (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x < y)),
+                        _ => None,
+                    },
+                    "le" => match (a, b) {
+                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x <= y)),
+                        _ => None,
+                    },
+                    "gt" => match (a, b) {
+                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x > y)),
+                        _ => None,
+                    },
+                    "ge" => match (a, b) {
+                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x >= y)),
                         _ => None,
                     },
                     "and" => match (a, b) {

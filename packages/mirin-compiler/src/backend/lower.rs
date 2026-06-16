@@ -1807,14 +1807,20 @@ impl<'db> SvLower<'_, 'db> {
         if tdata.module != self.map.prelude() {
             return None;
         }
-        match tdata.name.as_str() {
-            "Add" => Some(SvBinOp::Add),
-            "Sub" => Some(SvBinOp::Sub),
-            "Mul" => Some(SvBinOp::Mul),
-            "Eq" => Some(SvBinOp::Eq),
-            "Ord" => Some(SvBinOp::Lt),
-            "And" => Some(SvBinOp::And),
-            "Or" => Some(SvBinOp::Or),
+        // Key on the resolved METHOD name, not the trait: one trait (`Ord`)
+        // backs four ordering operators, `Eq` backs `eq`/`ne`.
+        match self.map.def_data(def)?.name.as_str() {
+            "add" => Some(SvBinOp::Add),
+            "sub" => Some(SvBinOp::Sub),
+            "mul" => Some(SvBinOp::Mul),
+            "eq" => Some(SvBinOp::Eq),
+            "ne" => Some(SvBinOp::Ne),
+            "lt" => Some(SvBinOp::Lt),
+            "le" => Some(SvBinOp::Le),
+            "gt" => Some(SvBinOp::Gt),
+            "ge" => Some(SvBinOp::Ge),
+            "and" => Some(SvBinOp::And),
+            "or" => Some(SvBinOp::Or),
             _ => None,
         }
     }
