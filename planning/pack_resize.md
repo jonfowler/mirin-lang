@@ -373,8 +373,16 @@ Minimal — in contrast to the operator workstream's precedence levels.
 3. **Endianness — settled: little-endian** — index 0 / first field at the LSB
    (rightmost), so SV concatenation lists leaves in reverse. Governs the derive
    and the round-trip law.
-4. **Amount naming — settled: `by` (delta) for the four strict ops, `to`
-   (target) for the two resize ops**; both inferable from the expected type.
+4. **Amount is the target width `to` (settled during impl), inferred from
+   context.** The generic is the *target width*, not the delta `by`: `-> uint(to)`
+   unifies trivially with the expected type (`uint(to) ~ uint(12)` → `to=12`),
+   whereas a delta would need `n + by = 12` solved by algebraic inversion, which
+   the const solver does not do. Each body computes its own fill/slice from
+   `to - n`. v1 is **inference-only**: `a.extend()` with `to` solved from the
+   LHS/callee context. An explicit amount (`a.extend{to=12}()`) needs named
+   generic args on *method* calls (a named section currently lowers a method call
+   to a `Call{callee: Field}`, which infer rejects) — deferred with that
+   machinery.
 5. **Resize is per-type inherent impls in the prelude — settled** (not a
    builtin type rule, not a trait). Each impl writes its own concrete return
    type (`uint(n + by)` …), so the const-indexed-associated-type wall never

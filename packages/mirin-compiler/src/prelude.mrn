@@ -451,3 +451,44 @@ impl BitPack for bool {
         assign ${return} = ${self};
     }
 }
+
+// ----- Resizing (planning/pack_resize.md) -----
+// Per-type inherent impls on the width-carrying primitives. The generic is the
+// TARGET width `to` (it unifies trivially with the context; the delta `to - n`
+// is computed in the body). v1 is inference-only — `a.extend()` solves `to`
+// from the expected type. Bodies are explicit full-width expressions (not
+// `assign return = self`): `#[inline]` splices the raw expression, so its
+// actual width must equal its type for downstream slices/concats to be correct.
+// extend grows on the MSB side (zero/sign fill); truncate drops the MSB side.
+
+#[inline]
+impl {param n: integer} uint(n) {
+    fn extend {param to: integer} (self) -> uint(to) = verilog {
+        assign ${return} = {{(${to} - ${n}){1'b0}}, ${self}};
+    }
+    fn truncate {param to: integer} (self) -> uint(to) = verilog {
+        assign ${return} = ${self}[${to} - 1 : 0];
+    }
+}
+
+#[inline]
+impl {param n: integer} sint(n) {
+    // Sign-extend by replicating the sign bit; `$signed` keeps the spliced
+    // concat/part-select signed for any surrounding signed arithmetic.
+    fn extend {param to: integer} (self) -> sint(to) = verilog {
+        assign ${return} = $signed({{(${to} - ${n}){${self}[${n} - 1]}}, ${self}});
+    }
+    fn truncate {param to: integer} (self) -> sint(to) = verilog {
+        assign ${return} = $signed(${self}[${to} - 1 : 0]);
+    }
+}
+
+#[inline]
+impl {param n: integer} bits(n) {
+    fn extend {param to: integer} (self) -> bits(to) = verilog {
+        assign ${return} = {{(${to} - ${n}){1'b0}}, ${self}};
+    }
+    fn truncate {param to: integer} (self) -> bits(to) = verilog {
+        assign ${return} = ${self}[${to} - 1 : 0];
+    }
+}

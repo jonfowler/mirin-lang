@@ -1,0 +1,15 @@
+// Resizing (planning/pack_resize.md): `extend` grows on the MSB side (zero-fill
+// for uint/bits, sign-extend for sint); `truncate` drops the MSB side. v1 is
+// inference-only — the target width comes from the surrounding context.
+// `#[inline]` splices each as an explicit, composition-safe expression.
+fn widen {dom clk: Clock} (a: uint(8) @clk) -> uint(16) @clk {
+    a.extend()
+}
+
+fn narrow {dom clk: Clock} (a: uint(8) @clk) -> uint(4) @clk {
+    a.truncate()
+}
+
+fn sign_widen {dom clk: Clock} (a: sint(8) @clk, b: sint(16) @clk) -> sint(16) @clk {
+    a.extend() + b
+}

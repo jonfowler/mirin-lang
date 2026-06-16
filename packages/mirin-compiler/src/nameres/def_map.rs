@@ -1258,14 +1258,15 @@ impl<'db> Collector<'db> {
     fn resolve_impls(&mut self) {
         let impls = std::mem::take(&mut self.impls);
         for (module, file, item) in impls {
-            let is_trait_impl = item.trait_.is_some();
             let owner = self
                 .map
                 .resolve_in_scope(module, &item.owner, Namespace::Item);
             let owner = match owner.and_then(|o| self.map.def_data(o).map(|d| (o, d.kind))) {
                 Some((o, DefKind::Struct | DefKind::Port)) => o,
-                // A trait impl may implement for a builtin (`impl Bits for bool`).
-                Some((o, DefKind::BuiltinType)) if is_trait_impl => o,
+                // A builtin owner is allowed for a trait impl (`impl Bits for
+                // bool`) and an inherent impl (`impl uint(n) { fn extend … }`,
+                // the resize family — planning/pack_resize.md).
+                Some((o, DefKind::BuiltinType)) => o,
                 _ => {
                     self.map.diagnostics.push(DefDiagnostic {
                         anchor: Some((file, item.ast_id)),
