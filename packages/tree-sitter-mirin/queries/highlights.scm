@@ -75,6 +75,10 @@
 (named_parameter name: (identifier) @variable.parameter)
 (parameter name: (identifier) @variable.parameter)
 
+; Named results in the return signature (`-> (output: DF)`) bind a result
+; place — declared names, like parameters.
+(named_result name: (identifier) @variable.parameter)
+
 ; Local binding names (let/for binders are patterns: bare or tuple)
 (let_statement pattern: (identifier) @variable)
 (for_statement pattern: (identifier) @variable)

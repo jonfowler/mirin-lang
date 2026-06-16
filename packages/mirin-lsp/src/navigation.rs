@@ -59,6 +59,14 @@ pub fn definition_range(
         // `let`/`var` carry a real declaration span; params don't yet (their
         // span is degenerate), so we don't offer a misleading jump for those.
         ExprKind::Local(local) => {
+            let ld = b.local(*local);
+            // A result place (`return`, or a named result/tuple part) has no
+            // body declaration site — jump into the signature instead: a named
+            // result to its name, an unnamed `return` to the return type
+            // (planning/return_variable.md).
+            if ld.result_base.is_some() {
+                return result_place_range(db, def, cur_file, &ld.name, &src, rope, enc);
+            }
             let span = b.local_span(*local);
             (span.start != span.end).then(|| {
                 range_of(
@@ -91,6 +99,41 @@ fn def_range<'db>(
     let (s, e) = ast_id_map(db, cur_file).range_of(target.ast_id(db))?;
     let (ns, ne) = name_range(src, s, e).unwrap_or((s, e));
     Some(range_of(rope, ns, ne, enc))
+}
+
+/// The signature declaration of a result place. A named result jumps to its
+/// `name` in the `-> (name: T, …)` list; an unnamed `return` jumps to the
+/// return type (the closest declaration of the result's shape). Rides the CST
+/// directly — result places have no body span (planning/return_variable.md).
+fn result_place_range<'db>(
+    db: &'db RootDatabase,
+    def: DefId<'db>,
+    cur_file: SourceFile,
+    local_name: &str,
+    src: &str,
+    rope: &Rope,
+    enc: Encoding,
+) -> Option<Range> {
+    let (s, e) = ast_id_map(db, cur_file).range_of(def.ast_id(db))?;
+    let tree = parse_text(src);
+    let fn_node = tree.root_node().descendant_for_byte_range(s, e)?;
+    let rt = fn_node.child_by_field_name("return_type")?;
+    if rt.kind() == "named_return" {
+        // The matching named result's `name` identifier.
+        let mut cursor = rt.walk();
+        for nr in rt
+            .children(&mut cursor)
+            .filter(|c| c.kind() == "named_result")
+        {
+            if let Some(name) = nr.child_by_field_name("name")
+                && src.get(name.start_byte()..name.end_byte()) == Some(local_name)
+            {
+                return Some(range_of(rope, name.start_byte(), name.end_byte(), enc));
+            }
+        }
+    }
+    // An unnamed `return` (or a name not found): the return type itself.
+    Some(range_of(rope, rt.start_byte(), rt.end_byte(), enc))
 }
 
 /// The byte range of a definition's `name` identifier, given the def's range.
@@ -149,6 +192,49 @@ mod tests {
         let r = goto(LET_SRC, Position::new(6, 4)).expect("goto on `x`");
         assert_eq!(r.start, Position::new(5, 8));
         assert_eq!(r.end, Position::new(5, 9));
+    }
+
+    // line 2 = "    return.a = p.a;"; the return type `Pair` is on line 1.
+    const RETURN_SRC: &str = "struct Pair = pair { a: uint(8), b: uint(8) }\nfn f(p: Pair) -> Pair {\n    return.a = p.a;\n}\n";
+
+    #[test]
+    fn goto_return_jumps_to_the_return_type() {
+        // Cursor on `return` (line 2, col 4) → the return type `Pair` (line 1).
+        let r = goto(RETURN_SRC, Position::new(2, 4)).expect("goto on `return`");
+        assert_eq!(
+            r.start,
+            Position::new(1, 17),
+            "expected the return type: {r:?}"
+        );
+        assert_eq!(r.end, Position::new(1, 21));
+    }
+
+    // line 2 = "    output.a = p.a;"; `output` is named on line 1.
+    const NAMED_SRC: &str = "struct Pair = pair { a: uint(8), b: uint(8) }\nfn f(p: Pair) -> (output: Pair) {\n    output.a = p.a;\n}\n";
+
+    #[test]
+    fn goto_named_result_jumps_to_its_signature_name() {
+        // Cursor on `output` (line 2, col 4) → its name in `-> (output: …)`
+        // (line 1, col 18).
+        let r = goto(NAMED_SRC, Position::new(2, 4)).expect("goto on `output`");
+        assert_eq!(
+            r.start,
+            Position::new(1, 18),
+            "expected the named result: {r:?}"
+        );
+        assert_eq!(r.end, Position::new(1, 24));
+    }
+
+    // line 1 = "    carry = false;"; `carry` is the 2nd named tuple part on line 0.
+    const TUPLE_SRC: &str =
+        "fn g(x: uint(8)) -> (sum: uint(8), carry: bool) {\n    carry = false;\n    sum = x;\n}\n";
+
+    #[test]
+    fn goto_named_tuple_part_jumps_to_its_signature_name() {
+        // Cursor on `carry` (line 1, col 4) → the `carry` part name (line 0).
+        let r = goto(TUPLE_SRC, Position::new(1, 4)).expect("goto on `carry`");
+        assert_eq!(r.start.line, 0, "expected the `carry` part name: {r:?}");
+        assert_eq!(r.start.character, 35);
     }
 
     #[test]
