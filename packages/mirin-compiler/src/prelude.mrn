@@ -469,6 +469,14 @@ impl {param n: integer} uint(n) {
     fn truncate {param to: integer} (self) -> uint(to) = verilog {
         assign ${return} = ${self}[${to} - 1 : 0];
     }
+    // LSB side: extend_lsb appends low zeros (scale up); truncate_lsb drops the
+    // low bits (scale down), keeping the high `to` bits.
+    fn extend_lsb {param to: integer} (self) -> uint(to) = verilog {
+        assign ${return} = {${self}, {(${to} - ${n}){1'b0}}};
+    }
+    fn truncate_lsb {param to: integer} (self) -> uint(to) = verilog {
+        assign ${return} = ${self}[${n} - 1 : ${n} - ${to}];
+    }
 }
 
 #[inline]
@@ -481,6 +489,12 @@ impl {param n: integer} sint(n) {
     fn truncate {param to: integer} (self) -> sint(to) = verilog {
         assign ${return} = $signed(${self}[${to} - 1 : 0]);
     }
+    fn extend_lsb {param to: integer} (self) -> sint(to) = verilog {
+        assign ${return} = $signed({${self}, {(${to} - ${n}){1'b0}}});
+    }
+    fn truncate_lsb {param to: integer} (self) -> sint(to) = verilog {
+        assign ${return} = $signed(${self}[${n} - 1 : ${n} - ${to}]);
+    }
 }
 
 #[inline]
@@ -490,5 +504,11 @@ impl {param n: integer} bits(n) {
     }
     fn truncate {param to: integer} (self) -> bits(to) = verilog {
         assign ${return} = ${self}[${to} - 1 : 0];
+    }
+    fn extend_lsb {param to: integer} (self) -> bits(to) = verilog {
+        assign ${return} = {${self}, {(${to} - ${n}){1'b0}}};
+    }
+    fn truncate_lsb {param to: integer} (self) -> bits(to) = verilog {
+        assign ${return} = ${self}[${n} - 1 : ${n} - ${to}];
     }
 }

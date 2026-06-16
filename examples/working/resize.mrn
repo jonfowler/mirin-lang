@@ -13,3 +13,13 @@ fn narrow {dom clk: Clock} (a: uint(8) @clk) -> uint(4) @clk {
 fn sign_widen {dom clk: Clock} (a: sint(8) @clk, b: sint(16) @clk) -> sint(16) @clk {
     a.extend() + b
 }
+
+// `_lsb` variants change the low end: extend_lsb appends low zeros (scale up),
+// truncate_lsb drops the low bits (scale down), keeping the high bits.
+fn scale_up {dom clk: Clock} (a: uint(8) @clk) -> uint(12) @clk {
+    a.extend_lsb()
+}
+
+fn scale_down {dom clk: Clock} (a: uint(8) @clk) -> uint(4) @clk {
+    a.truncate_lsb()
+}
