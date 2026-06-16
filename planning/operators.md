@@ -251,6 +251,10 @@ T5 foundation. **O1–O4 landed 2026-06-16.**
   `uint/sint/bits`; three bitwise precedence levels + unary `~`.
 - **Later.** Dynamic shift by any uint (the `Unsigned` marker + generic count);
   const bitwise/shift on `integer` (own `ConstOp` variants); a widening
-  multiply method; diagnosing an unevaluable const width (e.g. divide-by-zero
-  in a width currently falls back silently — a general const-width-error gap,
-  not specific to `/`).
+  multiply method.
+
+An unevaluable *closed* const width (divide-by-zero, overflow) is now a hard
+error — `infer`'s `check_widths` evaluates each width through
+`const_eval::eval_width`, which distinguishes a still-symbolic tree (a generic
+param / inference var — defers to monomorphisation) from a closed tree with no
+value (`UnevaluableWidth`). See `planning/const_eval.md`.

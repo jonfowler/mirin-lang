@@ -1,0 +1,9 @@
+// A closed width expression that has no value is a hard error: divide-by-zero
+// in `uint(8 / 0)` const-evaluates to nothing, so the width can never resolve
+// (planning/operators.md, planning/const_eval.md). Contrast a *symbolic* width
+// like `uint(n / 2)` over a generic param, which legitimately defers to
+// monomorphisation.
+fn t() -> uint(1) {
+    let x: uint(8 / 0) = 0;
+    x
+}

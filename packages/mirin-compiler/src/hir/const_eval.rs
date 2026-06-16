@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 
 use crate::base::db::SourceRoot;
-use crate::hir::body::{Block, Body, ConnArg, ExprId, ExprKind, Stmt, body};
+use crate::hir::body::{Block, Body, ConnArg, ExprId, ExprKind, LocalKind, Stmt, body};
 use crate::hir::sig::{Param, sig_of};
 use crate::hir::types::{
     ConstArg, ConstOp, Direction, LocalId, Type, ValueKind, match_header, subst_const_opt,
@@ -51,16 +51,45 @@ pub fn eval_const<'db>(
     def: DefId<'db>,
     c: &ConstArg<'db>,
 ) -> Option<i128> {
+    match eval_width(db, krate, def, c) {
+        WidthEval::Value(v) => Some(v),
+        WidthEval::Symbolic | WidthEval::Failed => None,
+    }
+}
+
+/// The outcome of const-evaluating a width tree, distinguishing a clean
+/// integer from the two reasons it can fail: still **symbolic** (a generic
+/// `Param`, an inference var, or a deferred call — resolved later, at
+/// monomorphisation) versus genuinely **failed** (a *closed* expression that
+/// still has no value — divide-by-zero, overflow). The first defers; the
+/// second is a hard error (`check_widths` in `infer`).
+pub enum WidthEval {
+    Value(i128),
+    Symbolic,
+    Failed,
+}
+
+pub fn eval_width<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+    c: &ConstArg<'db>,
+) -> WidthEval {
     let mut ev = Evaluator {
         db,
         krate,
         map: crate_def_map(db, krate),
         steps: 0,
+        symbolic: false,
     };
     let frame = Frame::root(db, krate, def);
-    match ev.eval_const_arg(&frame, c, 0)? {
-        Value::Int(v) => Some(v),
-        _ => None,
+    match ev.eval_const_arg(&frame, c, 0) {
+        Some(Value::Int(v)) => WidthEval::Value(v),
+        // No value: a symbolic leaf anywhere (even through a `Local`'s
+        // definition) means defer; otherwise the closed expression truly has
+        // no value.
+        _ if ev.symbolic => WidthEval::Symbolic,
+        _ => WidthEval::Failed,
     }
 }
 
@@ -69,6 +98,10 @@ struct Evaluator<'db> {
     krate: SourceRoot,
     map: &'db CrateDefMap<'db>,
     steps: u32,
+    /// Set when evaluation gets stuck on a symbolic leaf (`Param`/`Infer`/
+    /// `Deferred`/`Error`, or a symbolic associated-const self type). Lets
+    /// [`eval_width`] tell "defer" from "genuinely failed".
+    symbolic: bool,
 }
 
 /// One activation: a def's body plus the call-site bindings for its value
@@ -125,8 +158,11 @@ impl<'db> Evaluator<'db> {
             // recurse (rustc: Instance::resolve + CTFE on the impl's const).
             ConstArg::Assoc { item, self_ty } => self.eval_assoc(frame, *item, self_ty, depth),
             // Params stay symbolic at the root; Infer/Deferred/Error are
-            // not evaluable.
-            _ => None,
+            // not evaluable — all "stuck on symbolic", not "failed".
+            _ => {
+                self.symbolic = true;
+                None
+            }
         }
     }
 
@@ -146,6 +182,7 @@ impl<'db> Evaluator<'db> {
                 }
             )
         {
+            self.symbolic = true;
             return None; // still symbolic
         }
         let owner = self.map.def_data(item)?.owner?;
@@ -215,6 +252,13 @@ impl<'db> Evaluator<'db> {
         }
         frame.slots.borrow_mut().insert(local, Slot::Evaluating);
         let v = self.demand_uncached(frame, local, depth);
+        // A `Param` the body never drives (and the caller never bound) is an
+        // unbound input — symbolic, deferred to instantiation, not a failed
+        // eval. An OUT param is a `Param` too but IS driven, so the search
+        // above returns `Some` and we don't reach here.
+        if v.is_none() && frame.body.local(local).kind == LocalKind::Param {
+            self.symbolic = true;
+        }
         frame
             .slots
             .borrow_mut()

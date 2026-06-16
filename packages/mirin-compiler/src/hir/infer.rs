@@ -114,6 +114,9 @@ pub enum InferDiagnosticKind {
     NegativeWidth {
         value: i128,
     },
+    /// A *closed* width (no generic params / inference vars left) that still has
+    /// no value — e.g. divide-by-zero or overflow in the width expression.
+    UnevaluableWidth,
     /// A record-constructor connector that disagrees with the field's
     /// declared direction (`=` for supplied fields, `=>` for `in` fields).
     RecordConnector {
@@ -231,6 +234,11 @@ impl InferDiagnostic {
             }
             InferDiagnosticKind::NegativeWidth { value } => {
                 format!("uint width evaluates to {value}, but a width must be non-negative")
+            }
+            InferDiagnosticKind::UnevaluableWidth => {
+                "this width is not a constant (its expression has no value, \
+                 e.g. divide-by-zero or overflow)"
+                    .to_owned()
             }
             InferDiagnosticKind::RecordConnector { name, needs_arrow } => {
                 if *needs_arrow {
@@ -676,6 +684,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c)
     }
 
+    /// Const-evaluate a width tree, distinguishing "still symbolic, defer" from
+    /// "closed but has no value" (the latter is a hard error in `check_widths`).
+    fn eval_width(&self, c: &ConstArg<'db>) -> crate::hir::const_eval::WidthEval {
+        crate::hir::const_eval::eval_width(self.db, self.krate, self.def, c)
+    }
+
     fn finish(mut self) -> Inference<'db> {
         let const_residuals = self.discharge_obligations();
         // Deep-resolve every recorded type: bind out inference vars, default
@@ -743,8 +757,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     /// hard error (`integer` maths may go negative in intermediates, a uint
     /// width may not come out negative). One diagnostic per distinct tree.
     fn check_widths(&mut self) {
+        use crate::hir::const_eval::WidthEval;
         let mut seen: std::collections::HashSet<ConstArg> = Default::default();
-        let mut bad: Vec<(Span, i128)> = Vec::new();
+        // A closed width with no value (divide-by-zero, overflow) or a negative
+        // one — both at the local's span. Symbolic widths defer to mono.
+        let mut bad: Vec<(Span, InferDiagnosticKind)> = Vec::new();
         let locals: Vec<(LocalId, Type<'db>)> = self
             .local_types
             .iter()
@@ -752,17 +769,24 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             .collect();
         for (l, t) in locals {
             for w in collect_widths(&t) {
-                if seen.insert(w.clone())
-                    && let Some(v) = self.try_eval(&w)
-                    && v < 0
-                {
-                    bad.push((self.body.local_span(l), v));
+                if !seen.insert(w.clone()) {
+                    continue;
+                }
+                let span = self.body.local_span(l);
+                match self.eval_width(&w) {
+                    WidthEval::Value(v) if v < 0 => {
+                        bad.push((span, InferDiagnosticKind::NegativeWidth { value: v }));
+                    }
+                    WidthEval::Failed => {
+                        bad.push((span, InferDiagnosticKind::UnevaluableWidth));
+                    }
+                    WidthEval::Value(_) | WidthEval::Symbolic => {}
                 }
             }
         }
-        for (span, value) in bad {
+        for (span, kind) in bad {
             self.current_span = span;
-            self.diag(InferDiagnosticKind::NegativeWidth { value });
+            self.diag(kind);
         }
     }
 
@@ -2775,6 +2799,35 @@ mod tests {
                 .diagnostics()
                 .is_empty(),
             "n ~ m is a residual, not a width mismatch"
+        );
+    }
+
+    #[test]
+    fn closed_unevaluable_width_errors_symbolic_one_defers() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // `uint(8 / 0)` is closed but has no value → UnevaluableWidth. The
+        // parametric `uint(n / 2)` is symbolic → defers, no error
+        // (planning/operators.md, planning/const_eval.md).
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn bad () -> uint(1) { let x: uint(8 / 0) = 0; return x; }\n\
+             fn sym { param n: integer } (x: uint(n)) -> uint(n / 2) { return x; }",
+        );
+        assert!(
+            infer(&db, krate, def_of(&db, krate, "bad"))
+                .diagnostics()
+                .iter()
+                .any(|d| matches!(&d.kind, InferDiagnosticKind::UnevaluableWidth)),
+            "expected UnevaluableWidth for uint(8 / 0)"
+        );
+        assert!(
+            !infer(&db, krate, def_of(&db, krate, "sym"))
+                .diagnostics()
+                .iter()
+                .any(|d| matches!(&d.kind, InferDiagnosticKind::UnevaluableWidth)),
+            "a symbolic width uint(n / 2) must defer, not error"
         );
     }
 

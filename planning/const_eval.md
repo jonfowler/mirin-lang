@@ -81,7 +81,14 @@ Pure-value code keeps full laziness.
 - **infer**: `ConstEq` obligations at the end-of-body fixpoint try the
   evaluator (no symbolic `Param`s bound). Both ground → equal discharges,
   unequal is a `WidthMismatch`. Anything symbolic stays a residual exactly as
-  today. A ground negative width → `NegativeWidth` diagnostic.
+  today. A ground negative width → `NegativeWidth` diagnostic. `check_widths`
+  also evaluates each width through `eval_width`, which returns a three-way
+  `WidthEval { Value | Symbolic | Failed }`: a `Failed` (a *closed* tree — no
+  generic `Param`/`Infer`/`Deferred` leaf anywhere, even through a `Local`'s
+  definition or an unbound input param — that still has no value, e.g.
+  divide-by-zero or overflow) → `UnevaluableWidth`; a `Symbolic` tree defers.
+  The evaluator sets a `symbolic` flag on any stuck-on-symbolic leaf, which is
+  what separates "defer" from "genuinely failed".
 - **backend**: `sv_type` grounds width trees through the evaluator; a still-
   symbolic tree over generic `Param`s renders as an SV parameter expression
   (`[(N+1)-1:0]`). Monomorphisation is untouched: const params stay symbolic

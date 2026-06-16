@@ -365,9 +365,14 @@ impl<'db> Body<'db> {
         best.map(|(id, _)| id)
     }
 
-    /// The def-relative span of a local's declaration.
+    /// The def-relative span of a local's declaration. Synthetic locals
+    /// (result places, pattern/block temporaries) may have no recorded span —
+    /// fall back to the def start rather than panic.
     pub fn local_span(&self, id: LocalId) -> Span {
-        self.local_spans[id.0 as usize]
+        self.local_spans
+            .get(id.0 as usize)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// All expressions in the body's arena (for whole-body walks like the
