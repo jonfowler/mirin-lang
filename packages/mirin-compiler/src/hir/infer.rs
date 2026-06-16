@@ -362,23 +362,14 @@ pub fn infer<'db>(
         let ty = cx.freshen_domains(&p.ty);
         cx.local_types.insert(LocalId(i as u32), ty);
     }
-    // The result place (`return`) has the return type as its declared type, but
-    // it must use the *same* freshened return type the whole-result drive is
-    // checked against, so a returned value's domain and the result port's
-    // domain are one variable. Compute it up front and seed the result local
-    // with it (planning/return_variable.md).
+    // A result place (`return`, a named result, or a tuple part) carries its
+    // type as `declared_ty`, so the normal declared-type seeding below freshens
+    // and unifies it like any `var` — no special case (planning/return_variable.md).
     let ret = sig.return_type.as_ref().map(|t| cx.freshen_domains(t));
     for (i, local) in body.locals().iter().enumerate() {
         let id = LocalId(i as u32);
         if cx.local_types.contains_key(&id) {
             continue; // a param, already seeded
-        }
-        if local.name == "return"
-            && local.kind == crate::hir::body::LocalKind::Var
-            && let Some(ret) = &ret
-        {
-            cx.local_types.insert(id, ret.clone());
-            continue;
         }
         let var = cx.fresh_type();
         cx.local_types.insert(id, var.clone());
@@ -604,13 +595,12 @@ enum ObligationKind<'db> {
 }
 
 /// The body locals referenced in const (width) position anywhere in `ty`.
-/// Is `expr` the *whole* result place — a bare `return` (the synthetic result
-/// local), as opposed to a per-leaf `return.f`? Such a drive joins against the
-/// declared return type like a return, not a plain equation.
+/// Is `expr` a *whole* result-place binding — a bare result local (`return`, a
+/// named result, or a tuple part), as opposed to a per-leaf `name.f`? Such a
+/// drive joins against the declared type like a return, not a plain equation.
 fn is_whole_result_place(body: &Body<'_>, expr: ExprId) -> bool {
     matches!(&body.expr(expr).kind, ExprKind::Local(l)
-        if body.local(*l).name == "return"
-            && body.local(*l).kind == crate::hir::body::LocalKind::Var)
+        if body.local(*l).result_base.is_some())
 }
 
 fn width_locals(ty: &Type<'_>) -> Vec<LocalId> {

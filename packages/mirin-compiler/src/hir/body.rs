@@ -60,6 +60,10 @@ pub struct LocalData<'db> {
     /// The declared type, if written (`var x: T`, or a param's type). `None` for
     /// `let`/`var` left to inference.
     pub declared_ty: Option<Type<'db>>,
+    /// For a result place (`return`, or a named result/tuple part), the
+    /// SystemVerilog port base its leaves emit under (`result`, `result__0`,
+    /// …). `None` for an ordinary local (planning/return_variable.md).
+    pub result_base: Option<String>,
 }
 
 /// A lowered expression. (Spans land with the diagnostics infra, Q6.)
@@ -422,7 +426,7 @@ pub fn body<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db
         start,
         &sig.generic_params,
         &sig.params,
-        sig.return_type.as_ref(),
+        &sig.result_places,
     );
     lowerer.record_param_spans(&node, source);
 
@@ -448,7 +452,7 @@ pub fn body<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db
     // system. Nested-block tails (an `if`/`when` arm's value) are untouched —
     // `return` is only the *outer* result. A unit fn keeps its tail (a
     // side-effecting call lowered via `drive_result`).
-    if let Some(local) = lowerer.lookup_local("return")
+    if let Some(local) = lowerer.whole_result_local()
         && let Some(tail) = block.tail.take()
     {
         let lhs = lowerer.alloc(ExprKind::Local(local));
@@ -481,7 +485,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         def_start: usize,
         generics: &'a [GenericParam],
         params: &[super::sig::Param<'db>],
-        return_type: Option<&Type<'db>>,
+        result_places: &[super::sig::ResultPlace<'db>],
     ) -> Self {
         // Value-param locals come first; their ids match `sig_of`.
         let mut locals = Vec::new();
@@ -493,6 +497,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 name: p.name.clone(),
                 kind: LocalKind::Param,
                 declared_ty: Some(p.ty.clone()),
+                result_base: None,
             });
         }
         // A `dom clk` generic param is referenced in the body as a `Clock` value
@@ -507,23 +512,25 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     name: g.name.clone(),
                     kind: LocalKind::Param,
                     declared_ty: Some(Type::Clock),
+                    result_base: None,
                 });
             }
         }
-        // The referrable result place: `return` is a var-like signal node of
-        // the return type, driven by the body (whole `return EXPR;`/tail or
-        // per-leaf `return.f = …`) and readable on its `in` leaves
-        // (`return.ready`). Only exists when the fn has a return type; the
-        // name `return` is reserved, so it can never collide with a user
-        // local. The backend emits its leaves as the `result` ports
-        // (planning/return_variable.md).
-        if let Some(rt) = return_type {
+        // The referrable result place(s): a var-like signal node per result.
+        // For a normal return it is `return` (whole result, SV base `result`);
+        // for a named return the user's name(s) (a tuple splits into
+        // `result__0`/`result__1`/…). The body drives them (whole `name = …`,
+        // per-leaf `name.f = …`) and reads their `in` leaves (`name.ready`);
+        // the names bind block-wide. `return` is reserved, so the unnamed place
+        // never collides with a user local (planning/return_variable.md).
+        for place in result_places {
             let id = LocalId(locals.len() as u32);
-            base.insert("return".to_owned(), id);
+            base.insert(place.name.clone(), id);
             locals.push(LocalData {
-                name: "return".to_owned(),
+                name: place.name.clone(),
                 kind: LocalKind::Var,
-                declared_ty: Some(rt.clone()),
+                declared_ty: Some(place.ty.clone()),
+                result_base: Some(place.sv_base.clone()),
             });
         }
         // Params/`dom` generics have no body declaration site → default span.
@@ -744,6 +751,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             name: name.to_owned(),
             kind,
             declared_ty,
+            result_base: None,
         });
         self.local_spans.push(span);
         self.define(name, id);
@@ -756,6 +764,17 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
 
     fn lookup_local(&self, name: &str) -> Option<LocalId> {
         self.scopes.iter().rev().find_map(|s| s.get(name).copied())
+    }
+
+    /// The whole-result place (SV base `result`): the unnamed `return` local, or
+    /// a single named result. `None` for a unit fn, or a multi-part named return
+    /// whose parts (`result__0`, …) are driven individually
+    /// (planning/return_variable.md).
+    fn whole_result_local(&self) -> Option<LocalId> {
+        self.locals
+            .iter()
+            .position(|l| l.result_base.as_deref() == Some("result"))
+            .map(|i| LocalId(i as u32))
     }
 
     // ----- blocks / statements -----
@@ -1113,9 +1132,10 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 // With a return type, `return EXPR;` is a whole-result drive —
                 // desugar to an equation on the result place so the driver
                 // checks and the backend treat it uniformly with `return.f = …`
-                // (planning/return_variable.md). A unit fn keeps `Stmt::Return`
+                // (planning/return_variable.md). A unit fn — or a multi-part
+                // named return (no whole-result place) — keeps `Stmt::Return`
                 // (a side-effecting tail call routed through `drive_result`).
-                match self.lookup_local("return") {
+                match self.whole_result_local() {
                     Some(local) => {
                         let lhs = self.alloc(ExprKind::Local(local));
                         block.stmts.push(Stmt::Equation { lhs, rhs: value });
