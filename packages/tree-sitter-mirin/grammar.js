@@ -390,7 +390,7 @@ module.exports = grammar({
           PREC.comparison,
           seq(
             field("left", $._header_expression),
-            field("operator", choice("==", "<")),
+            field("operator", choice("==", "!=", "<", "<=", ">", ">=")),
             field("right", $._header_expression),
           ),
         ),
@@ -686,7 +686,7 @@ module.exports = grammar({
           PREC.comparison,
           seq(
             field("left", $.expression),
-            field("operator", choice("==", "<")),
+            field("operator", choice("==", "!=", "<", "<=", ">", ">=")),
             field("right", $.expression),
           ),
         ),

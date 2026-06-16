@@ -1,0 +1,6 @@
+// bits is a representation, not a number: it implements `Eq` (==, !=) but no
+// `Ord` — ordering a bag of bits is almost always a bug (planning/bits.md,
+// planning/operators.md). `==`/`!=` are fine; `<` `<=` `>` `>=` are not.
+fn g(a: bits(8), b: bits(8)) -> bool {
+    a < b
+}

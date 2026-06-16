@@ -1413,7 +1413,11 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             "-" => "sub",
             "*" => "mul",
             "==" => "eq",
+            "!=" => "ne",
             "<" => "lt",
+            "<=" => "le",
+            ">" => "gt",
+            ">=" => "ge",
             "&&" => "and",
             "||" => "or",
             _ => {
@@ -1979,6 +1983,31 @@ mod tests {
         assert!(matches!(b.expr(*receiver).kind, ExprKind::Local(_)));
         assert_eq!(args.len(), 1);
         assert!(!args[0].out && matches!(b.expr(args[0].expr).kind, ExprKind::Local(_)));
+    }
+
+    #[test]
+    fn comparison_operators_desugar_to_eq_ord_methods() {
+        // The full set: `!=`/`<=`/`>`/`>=` join `==`/`<` (planning/operators.md
+        // O1), each desugaring to its `Eq`/`Ord` trait method.
+        for (op, want) in [
+            ("==", "eq"),
+            ("!=", "ne"),
+            ("<", "lt"),
+            ("<=", "le"),
+            (">", "gt"),
+            (">=", "ge"),
+        ] {
+            let mut db = RootDatabase::default();
+            let mut vfs = Vfs::new();
+            let src = format!("fn g (a: uint(8), b: uint(8)) -> bool {{ return a {op} b; }}");
+            let krate = load(&mut db, &mut vfs, &src);
+            let b = body_of(&db, krate, "g");
+            let value = result_value(b);
+            let ExprKind::MethodCall { method, .. } = &b.expr(value).kind else {
+                panic!("expected a method call for `{op}`");
+            };
+            assert_eq!(method, want, "operator `{op}` should desugar to `{want}`");
+        }
     }
 
     #[test]

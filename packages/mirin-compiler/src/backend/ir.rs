@@ -209,7 +209,11 @@ pub enum SvBinOp {
     Sub,
     Mul,
     Eq,
+    Ne,
     Lt,
+    Le,
+    Gt,
+    Ge,
     And,
     Or,
 }
@@ -443,7 +447,11 @@ impl fmt::Display for SvExpr {
                     SvBinOp::Mul => "*",
                     SvBinOp::Sub => "-",
                     SvBinOp::Eq => "==",
+                    SvBinOp::Ne => "!=",
                     SvBinOp::Lt => "<",
+                    SvBinOp::Le => "<=",
+                    SvBinOp::Gt => ">",
+                    SvBinOp::Ge => ">=",
                     SvBinOp::And => "&&",
                     SvBinOp::Or => "||",
                 };
