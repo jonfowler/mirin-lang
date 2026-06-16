@@ -137,16 +137,21 @@ fn build_module<'db>(
             });
         }
     }
-    if let Some(rt) = &sig.return_type
-        && !is_integer(&ground_widths(db, krate, def, &subst_type(rt, self_subst)))
-    {
-        let rt = ground_widths(db, krate, def, &subst_type(rt, self_subst));
+    // Result ports, one group per result place: an unnamed `return` is
+    // `result__…`, a named result/tuple part uses its bound name as the base
+    // (`output__valid`, `sum`) — planning/return_variable.md.
+    for place in &sig.result_places {
+        let pty = ground_widths(db, krate, def, &subst_type(&place.ty, self_subst));
+        // A compile-time integer result is not a port.
+        if is_integer(&pty) {
+            continue;
+        }
         // `drives=true`: the module produces the result. A returned PORT's
         // consumer-side (`in`) fields fold to `drives=false` — they are
         // inputs to this module (the downstream's backpressure), exactly as
         // for an `out` port parameter. Respect the per-leaf flag rather than
         // forcing every result leaf to an output.
-        for leaf in flatten_leaves(db, krate, &rt, true, &sig.generic_params) {
+        for leaf in flatten_leaves(db, krate, &pty, true, &sig.generic_params) {
             ports.push(SvPort {
                 direction: if leaf.drives {
                     SvPortDirection::Output
@@ -154,7 +159,7 @@ fn build_module<'db>(
                     SvPortDirection::Input
                 },
                 ty: leaf.ty,
-                name: join("result", &leaf.suffix),
+                name: join(&place.sv_base, &leaf.suffix),
             });
         }
     }
@@ -1887,7 +1892,6 @@ impl<'db> SvLower<'_, 'db> {
             .filter(|g| matches!(g.kind, TermKind::Domain(_)) && !g.is_lifted_dom())
             .map(|g| g.name.clone())
             .collect();
-        let return_type = csig.return_type.clone();
 
         // The callee's Const-kind generics bind as SV parameters, from the
         // call's recorded instantiation (`#(.n(8))`; a still-symbolic value
@@ -2019,14 +2023,20 @@ impl<'db> SvLower<'_, 'db> {
                 connections.push((join(pname, &cl.suffix), cv));
             }
         }
-        // 3. return → the result target.
-        if let Some(rt) = return_type {
-            let rt = subst_type(&rt, &subst);
-            let ret_leaves =
-                flatten_leaves(self.db, self.krate, &rt, true, &self.sig.generic_params);
-            for (rl, (_, tv)) in ret_leaves.into_iter().zip(result_target) {
-                connections.push((join("result", &rl.suffix), tv));
+        // 3. return → the result target, by the CALLEE's result places: an
+        //    unnamed `return` is `result__…`, named results use their bound
+        //    port names (`output__valid`, `sum`). Leaf order matches the return
+        //    type's flattening, so the positional zip with `result_target`
+        //    holds (planning/return_variable.md).
+        let mut callee_result_ports: Vec<String> = Vec::new();
+        for place in &csig.result_places {
+            let pty = subst_type(&place.ty, &subst);
+            for leaf in flatten_leaves(self.db, self.krate, &pty, true, &self.sig.generic_params) {
+                callee_result_ports.push(join(&place.sv_base, &leaf.suffix));
             }
+        }
+        for (port, (_, tv)) in callee_result_ports.into_iter().zip(result_target) {
+            connections.push((port, tv));
         }
         // Name after building connections, so a nested call (emitted while
         // resolving an argument) takes the earlier instance number.
