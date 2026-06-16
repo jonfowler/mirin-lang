@@ -1,0 +1,21 @@
+// O3: shift operators `<<` and `>>` (planning/operators.md). The count is a
+// compile-time `integer` (no annotation on the `2`), so each desugars to the
+// prelude `Shl`/`Shr` and emits the direct SV operator. `>>` is logical on
+// uint/bits and arithmetic (`>>>`, sign-extending) on sint.
+fn shl_u {dom clk: Clock} (a: uint(8) @clk) -> uint(8) @clk {
+    a << 2
+}
+
+fn shr_u {dom clk: Clock} (a: uint(8) @clk) -> uint(8) @clk {
+    a >> 3
+}
+
+// Logical shift on a raw bit-bag.
+fn shr_bits {dom clk: Clock} (a: bits(8) @clk) -> bits(8) @clk {
+    a >> 1
+}
+
+// Arithmetic shift right on a signed value: emits `>>>`.
+fn shr_s {dom clk: Clock} (a: sint(8) @clk) -> sint(8) @clk {
+    a >> 2
+}

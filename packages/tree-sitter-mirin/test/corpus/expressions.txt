@@ -618,3 +618,49 @@ fn f(a: uint(8), b: uint(8)) -> uint(8) {
           right: (expression
             (path_expression
               segment: (identifier))))))))
+
+========================================
+shift operators
+========================================
+
+fn f(a: uint(8)) -> uint(8) {
+    let s = a << 2;
+    a >> 3
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (let_statement
+          pattern: (identifier)
+          value: (expression
+            (binary_expression
+              left: (expression
+                (path_expression
+                  segment: (identifier)))
+              right: (expression
+                (number))))))
+      tail: (expression
+        (binary_expression
+          left: (expression
+            (path_expression
+              segment: (identifier)))
+          right: (expression
+            (number)))))))

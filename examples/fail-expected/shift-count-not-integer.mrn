@@ -1,0 +1,7 @@
+// The shift count is a compile-time `integer` (planning/operators.md O3): a
+// constant shift like `a << 2` is fine, but shifting by a runtime `uint`
+// signal is a type error. A dynamic shift by any uint is the future
+// `Unsigned`-marker generalization, not yet expressible by the operator.
+fn f(a: uint(8), b: uint(8)) -> uint(8) {
+    a << b
+}

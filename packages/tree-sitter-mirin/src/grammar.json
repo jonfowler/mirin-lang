@@ -2143,7 +2143,7 @@
         },
         {
           "type": "PREC_LEFT",
-          "value": 5,
+          "value": 9,
           "content": {
             "type": "SEQ",
             "members": [
@@ -2185,7 +2185,7 @@
         },
         {
           "type": "PREC_LEFT",
-          "value": 6,
+          "value": 10,
           "content": {
             "type": "SEQ",
             "members": [
@@ -2233,7 +2233,7 @@
     },
     "header_unary": {
       "type": "PREC",
-      "value": 7,
+      "value": 11,
       "content": {
         "type": "SEQ",
         "members": [
@@ -3041,7 +3041,7 @@
       "members": [
         {
           "type": "PREC_LEFT",
-          "value": 6,
+          "value": 10,
           "content": {
             "type": "SEQ",
             "members": [
@@ -3087,7 +3087,7 @@
         },
         {
           "type": "PREC_LEFT",
-          "value": 5,
+          "value": 9,
           "content": {
             "type": "SEQ",
             "members": [
@@ -3354,7 +3354,7 @@
     },
     "unary_expression": {
       "type": "PREC",
-      "value": 7,
+      "value": 11,
       "content": {
         "type": "SEQ",
         "members": [
@@ -3515,7 +3515,7 @@
         },
         {
           "type": "PREC_LEFT",
-          "value": 6,
+          "value": 10,
           "content": {
             "type": "SEQ",
             "members": [
@@ -3561,7 +3561,7 @@
         },
         {
           "type": "PREC_LEFT",
-          "value": 5,
+          "value": 9,
           "content": {
             "type": "SEQ",
             "members": [
@@ -3600,12 +3600,54 @@
               }
             ]
           }
+        },
+        {
+          "type": "PREC_LEFT",
+          "value": 8,
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "FIELD",
+                "name": "left",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "expression"
+                }
+              },
+              {
+                "type": "FIELD",
+                "name": "operator",
+                "content": {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "<<"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": ">>"
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "FIELD",
+                "name": "right",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "expression"
+                }
+              }
+            ]
+          }
         }
       ]
     },
     "postfix_expression": {
       "type": "PREC_LEFT",
-      "value": 8,
+      "value": 12,
       "content": {
         "type": "SEQ",
         "members": [

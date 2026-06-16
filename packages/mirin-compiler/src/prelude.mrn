@@ -32,6 +32,17 @@ pub trait Neg {
     fn neg(self) -> Self;
 }
 
+// Shift: the count is a widthless compile-time `integer` (planning/operators.md),
+// so `x << 2` needs no annotation. `>>` is logical for uint/bits and
+// arithmetic (sign-extending) for sint.
+pub trait Shl {
+    fn shl(self, other: integer) -> Self;
+}
+
+pub trait Shr {
+    fn shr(self, other: integer) -> Self;
+}
+
 pub trait Eq {
     fn eq(self, other: Self) -> bool;
     fn ne(self, other: Self) -> bool;
@@ -83,6 +94,18 @@ impl {param n: integer} Div for uint(n) {
 impl {param n: integer} Rem for uint(n) {
     fn rem(self, other: Self) -> Self = verilog {
         assign ${result} = ${self} % ${other};
+    }
+}
+
+impl {param n: integer} Shl for uint(n) {
+    fn shl(self, other: integer) -> Self = verilog {
+        assign ${result} = ${self} << ${other};
+    }
+}
+
+impl {param n: integer} Shr for uint(n) {
+    fn shr(self, other: integer) -> Self = verilog {
+        assign ${result} = ${self} >> ${other};
     }
 }
 
@@ -142,6 +165,19 @@ impl {param n: integer} Rem for sint(n) {
     }
 }
 
+impl {param n: integer} Shl for sint(n) {
+    fn shl(self, other: integer) -> Self = verilog {
+        assign ${result} = ${self} << ${other};
+    }
+}
+
+// Arithmetic shift right: `>>>` sign-extends (sint is `logic signed`).
+impl {param n: integer} Shr for sint(n) {
+    fn shr(self, other: integer) -> Self = verilog {
+        assign ${result} = ${self} >>> ${other};
+    }
+}
+
 impl {param n: integer} Neg for sint(n) {
     fn neg(self) -> Self = verilog {
         assign ${result} = -${self};
@@ -181,6 +217,20 @@ impl {param n: integer} Eq for bits(n) {
     }
     fn ne(self, other: Self) -> bool = verilog {
         assign ${result} = ${self} != ${other};
+    }
+}
+
+// bits supports shifting (and bitwise) but not arithmetic/ordering: a shifted
+// bag of bits is still a bag of bits. `>>` is logical.
+impl {param n: integer} Shl for bits(n) {
+    fn shl(self, other: integer) -> Self = verilog {
+        assign ${result} = ${self} << ${other};
+    }
+}
+
+impl {param n: integer} Shr for bits(n) {
+    fn shr(self, other: integer) -> Self = verilog {
+        assign ${result} = ${self} >> ${other};
     }
 }
 

@@ -218,6 +218,11 @@ pub enum SvBinOp {
     Ge,
     And,
     Or,
+    Shl,
+    /// Logical shift right (`>>`) — uint, bits.
+    Shr,
+    /// Arithmetic shift right (`>>>`) — sint (sign-extending).
+    AShr,
 }
 
 /// `(-x)` — the one unary operator (Neg on sint).
@@ -458,6 +463,9 @@ impl fmt::Display for SvExpr {
                     SvBinOp::Ge => ">=",
                     SvBinOp::And => "&&",
                     SvBinOp::Or => "||",
+                    SvBinOp::Shl => "<<",
+                    SvBinOp::Shr => ">>",
+                    SvBinOp::AShr => ">>>",
                 };
                 write!(f, "({l} {op} {r})")
             }

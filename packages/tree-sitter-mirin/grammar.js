@@ -3,10 +3,14 @@ const PREC = {
   logical_or: 2,
   logical_and: 3,
   comparison: 4,
-  additive: 5,
-  multiplicative: 6,
-  unary: 7,
-  postfix: 8,
+  bitwise_or: 5,
+  bitwise_xor: 6,
+  bitwise_and: 7,
+  shift: 8,
+  additive: 9,
+  multiplicative: 10,
+  unary: 11,
+  postfix: 12,
 };
 
 module.exports = grammar({
@@ -699,6 +703,14 @@ module.exports = grammar({
           seq(
             field("left", $.expression),
             field("operator", choice("+", "-")),
+            field("right", $.expression),
+          ),
+        ),
+        prec.left(
+          PREC.shift,
+          seq(
+            field("left", $.expression),
+            field("operator", choice("<<", ">>")),
             field("right", $.expression),
           ),
         ),

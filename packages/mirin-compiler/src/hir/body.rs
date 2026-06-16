@@ -1414,6 +1414,8 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             "*" => "mul",
             "/" => "div",
             "%" => "rem",
+            "<<" => "shl",
+            ">>" => "shr",
             "==" => "eq",
             "!=" => "ne",
             "<" => "lt",
@@ -1995,8 +1997,8 @@ mod tests {
 
     #[test]
     fn arithmetic_operators_desugar_to_their_trait_methods() {
-        // `/`→div and `%`→rem join `+ - *` (planning/operators.md O2).
-        for (op, want) in [("/", "div"), ("%", "rem")] {
+        // `/`→div, `%`→rem (O2) and `<<`→shl, `>>`→shr (O3) join `+ - *`.
+        for (op, want) in [("/", "div"), ("%", "rem"), ("<<", "shl"), (">>", "shr")] {
             let mut db = RootDatabase::default();
             let mut vfs = Vfs::new();
             let src = format!("fn g (a: uint(8), b: uint(8)) -> uint(8) {{ return a {op} b; }}");

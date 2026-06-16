@@ -1823,8 +1823,30 @@ impl<'db> SvLower<'_, 'db> {
             "ge" => Some(SvBinOp::Ge),
             "and" => Some(SvBinOp::And),
             "or" => Some(SvBinOp::Or),
+            "shl" => Some(SvBinOp::Shl),
+            // `>>` is arithmetic (sign-extending) on a sint receiver, logical
+            // on uint/bits (planning/operators.md O3).
+            "shr" => Some(if self.receiver_is_signed(expr) {
+                SvBinOp::AShr
+            } else {
+                SvBinOp::Shr
+            }),
             _ => None,
         }
+    }
+
+    /// True if a method call's receiver has a signed integer type.
+    fn receiver_is_signed(&self, expr: ExprId) -> bool {
+        let ExprKind::MethodCall { receiver, .. } = &self.body.expr(expr).kind else {
+            return false;
+        };
+        matches!(
+            self.inf.expr_type(*receiver),
+            Some(Type::Value {
+                kind: ValueKind::SInt { .. },
+                ..
+            })
+        )
     }
 
     // ----- instantiation (user calls / methods → submodules) -----
