@@ -156,7 +156,10 @@ module.exports = grammar({
         optional(
           seq(
             "->",
-            field("return_type", choice($.return_type_expression, $.tuple_type)),
+            field(
+              "return_type",
+              choice($.return_type_expression, $.tuple_type, $.named_return),
+            ),
           ),
         ),
         ";",
@@ -234,7 +237,10 @@ module.exports = grammar({
         optional(
           seq(
             "->",
-            field("return_type", choice($.return_type_expression, $.tuple_type)),
+            field(
+              "return_type",
+              choice($.return_type_expression, $.tuple_type, $.named_return),
+            ),
           ),
         ),
         optional(field("where", $.where_clause)),
@@ -260,6 +266,18 @@ module.exports = grammar({
           optional(seq("@", field("domain", $.identifier))),
         ),
       ),
+
+    // Named result(s): `-> (output: DF @clk)` names the whole result;
+    // `-> (sum: uint(8), carry: bool)` names the parts of a tuple result. The
+    // names become referrable result places in the body (the `return` keyword
+    // doesn't exist when results are named). A single element is the result
+    // type itself; two or more form a tuple (planning/return_variable.md). The
+    // `:` distinguishes this from a bare tuple_type return `(A, B)`.
+    named_return: ($) =>
+      seq("(", commaSep1($.named_result), optional(","), ")"),
+
+    named_result: ($) =>
+      seq(field("name", $.identifier), ":", field("type", $._type)),
 
     named_parameter_section: ($) => seq("{", commaSep($.named_parameter), optional(","), "}"),
 
