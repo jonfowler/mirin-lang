@@ -237,18 +237,20 @@ they are runtime SV.
 ## Staging
 
 Each slice is independently committable with examples + fail-examples, on the
-T5 foundation:
+T5 foundation. **O1–O4 landed 2026-06-16.**
 
-- **O1 — comparison completion.** `!= <= > >=` + `eq/ne/lt/le/gt/ge` methods on
-  `uint/sint/integer` (and `ne` on `bits`/`bool`). Grammar keeps one comparison
-  level. const_eval for `integer`. Smallest slice, no new precedence.
-- **O2 — div/mod.** `/ %` as `Div`/`Rem` on `uint/sint/integer`; `* / %` at the
-  multiplicative level; `ConstOp::Div/Rem` via `checked_div`/`checked_rem`.
-  Small (no new precedence level), high const-eval value.
-- **O3 — shift.** `<< >>` with `Shl/Shr`, count `integer`; sint `>>`
-  arithmetic; new shift precedence level.
-- **O4 — bitwise.** `& | ^ ~` with `BitAnd/BitOr/BitXor/BitNot` on
+- **O1 — comparison completion** ✅. `!= <= > >=` + `eq/ne/lt/le/gt/ge` methods
+  on `uint/sint/integer` (and `ne` on `bits`/`bool`). One comparison level.
+  const_eval for `integer`.
+- **O2 — div/mod** ✅. `/ %` as `Div`/`Rem` on `uint/sint/integer`; `* / %` at
+  the multiplicative level (runtime, type-width const exprs, and the `${…}`
+  splice); `ConstOp::Div/Rem` via `checked_div`/`checked_rem`.
+- **O3 — shift** ✅. `<< >>` with `Shl/Shr`, count `integer`; sint `>>`
+  arithmetic (`SvBinOp::AShr`); new shift precedence level.
+- **O4 — bitwise** ✅. `& | ^ ~` with `BitAnd/BitOr/BitXor/BitNot` on
   `uint/sint/bits`; three bitwise precedence levels + unary `~`.
 - **Later.** Dynamic shift by any uint (the `Unsigned` marker + generic count);
   const bitwise/shift on `integer` (own `ConstOp` variants); a widening
-  multiply method.
+  multiply method; diagnosing an unevaluable const width (e.g. divide-by-zero
+  in a width currently falls back silently — a general const-width-error gap,
+  not specific to `/`).
