@@ -47,6 +47,7 @@ fn examples() -> Vec<(String, String)> {
 /// direction checks). The entire working corpus is now clean — a fully
 /// functional type checker over it.
 const CLEAN: &[&str] = &[
+    "inline_attr.mrn",
     "ram.mrn",
     "vec_elem_domain.mrn",
     "dataflow_stage.mrn",
@@ -204,6 +205,7 @@ fn dump_verilog() {
 /// a `// verilator: -G…=N` directive (a parameter value for elaboration), which
 /// this harness reads and forwards.
 const VERILATOR_CLEAN: &[&str] = &[
+    "inline_attr.mrn",
     "ram.mrn",
     "vec_elem_domain.mrn",
     "dataflow_stage.mrn",

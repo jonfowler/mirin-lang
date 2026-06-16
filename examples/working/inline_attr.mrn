@@ -1,0 +1,11 @@
+// `#[inline]` (planning/attributes.md): the fn's combinational body is spliced
+// at each call site instead of emitting a module instance. The spliced RHS is
+// parenthesised, so it composes safely inside a larger expression.
+#[inline]
+fn double(x: uint(8)) -> uint(8) = verilog {
+    assign ${result} = ${x} + ${x};
+}
+
+fn top {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> uint(8) @clk {
+    double(a) + b
+}

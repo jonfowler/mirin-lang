@@ -42,13 +42,14 @@ use crate::backend::ir::{
 };
 use crate::base::db::SourceRoot;
 use crate::hir::body::{
-    Block, Body, ConnArg, ExprId, ExprKind, LocalKind, NamedArg, RecordField, Stmt, body,
+    Block, Body, ConnArg, ExprId, ExprKind, LocalKind, NamedArg, RecordField, Stmt, VerilogSegment,
+    body,
 };
 use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::{Signature, sig_of};
 use crate::hir::types::{
     ConstArg, ConstOp, Direction, Domain, Folder, GenericArgs, GenericParam, LocalId, Term,
-    TermKind, Type, ValueKind,
+    TermKind, Type, ValueKind, subst_const_opt,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -425,6 +426,8 @@ pub fn sv_file(db: &dyn salsa::Database, krate: SourceRoot) -> SvFile {
         .filter(|(_, data)| {
             matches!(data.kind, DefKind::Fn | DefKind::Method) && data.module != prelude
         })
+        // `#[inline]` fns are spliced at call sites, never emitted as modules.
+        .filter(|(_, data)| !data.inline)
         // A trait's method DECLS have no bodies — only impls emit modules.
         .filter(|(d, _)| !map.is_trait_method_decl(*d))
         .filter(|(d, _)| !is_type_generic(sig_of(db, krate, *d)))
@@ -1277,6 +1280,10 @@ impl<'db> SvLower<'_, 'db> {
     /// Lower an expression to its SV value, emitting any items its evaluation
     /// requires (registers / combinational blocks for `reg`/`when`/`if`).
     fn expr_value(&mut self, expr: ExprId) -> SvExpr {
+        // An `#[inline]` call splices its body in place (planning/attributes.md).
+        if let Some(uc) = self.inline_call(expr) {
+            return self.render_inline(uc);
+        }
         // A user call in scalar value position: instantiate, take the one leaf.
         if let Some(uc) = self.as_user_call(expr) {
             return self
@@ -1379,6 +1386,11 @@ impl<'db> SvLower<'_, 'db> {
     /// projects, a record literal rebuilds); scalars are a single empty-suffix
     /// leaf via [`Self::expr_value`].
     fn expr_leaves(&mut self, expr: ExprId) -> Vec<(String, SvExpr)> {
+        // An `#[inline]` call splices its (scalar) body in place. Aggregate
+        // inline results are future work (planning/attributes.md).
+        if let Some(uc) = self.inline_call(expr) {
+            return vec![(String::new(), self.render_inline(uc))];
+        }
         // A user call in value position instantiates into a fresh `__call_N`.
         if let Some(uc) = self.as_user_call(expr) {
             return self.call_value_leaves(uc);
@@ -1853,6 +1865,132 @@ impl<'db> SvLower<'_, 'db> {
         )
     }
 
+    // ----- #[inline] body splicing (planning/attributes.md) -----
+
+    /// `Some(call)` if `expr` is a call to an `#[inline]` fn/method (prelude or
+    /// user) — the body is spliced at the call site instead of instantiating a
+    /// module. Operators and `.reg` are handled by their own inline paths.
+    fn inline_call(&self, expr: ExprId) -> Option<UserCall<'db>> {
+        match &self.body.expr(expr).kind {
+            ExprKind::Call {
+                callee,
+                args,
+                named,
+            } => {
+                let ExprKind::Def(def) = self.body.expr(*callee).kind else {
+                    return None;
+                };
+                if !self.map.def_data(def)?.inline {
+                    return None;
+                }
+                Some(UserCall {
+                    def,
+                    expr,
+                    subst_override: None,
+                    receiver: None,
+                    args: args.clone(),
+                    named: named.clone(),
+                })
+            }
+            ExprKind::MethodCall { receiver, args, .. }
+                if self.prelude_op(expr).is_none()
+                    && self.prelude_unary(expr).is_none()
+                    && self.as_reg(expr).is_none() =>
+            {
+                let decl = self.inf.method_resolution(expr)?;
+                let (def, subst_override) = match self.resolve_trait_instance(expr, decl) {
+                    Some((m, ov)) => (m, Some(ov)),
+                    None => (decl, None),
+                };
+                if !self.map.def_data(def)?.inline {
+                    return None;
+                }
+                Some(UserCall {
+                    def,
+                    expr,
+                    subst_override,
+                    receiver: Some(*receiver),
+                    args: args.clone(),
+                    named: Vec::new(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Splice an `#[inline]` call's body as an SV expression. v1 supports a
+    /// verilog body of the single-assign shape `assign ${result} = EXPR;`: the
+    /// callee's value params resolve to the call's argument expressions, its
+    /// const generics to the call's instantiation, and `EXPR` is returned
+    /// (parenthesised) for the caller to use in place.
+    fn render_inline(&mut self, uc: UserCall<'db>) -> SvExpr {
+        let csig = sig_of(self.db, self.krate, uc.def);
+        let Some(template) = body(self.db, self.krate, uc.def).verilog().cloned() else {
+            // Non-verilog #[inline] bodies are not supported in v1.
+            return SvExpr::Lit("0".to_owned());
+        };
+
+        // Value params → the caller's argument expressions (positional zip with
+        // `[receiver?] ++ args`, named by name), keyed by the param's local.
+        let mut positional: Vec<ExprId> = uc.receiver.into_iter().collect();
+        positional.extend(uc.args.iter().map(|a| a.expr));
+        let mut pos_i = 0;
+        let mut val_map: HashMap<LocalId, String> = HashMap::new();
+        for p in &csig.params {
+            let caller_expr = if p.from_named_section {
+                uc.named.iter().find(|n| n.name == p.name).map(|n| n.expr)
+            } else {
+                let e = positional.get(pos_i).copied();
+                pos_i += 1;
+                e
+            };
+            let rendered = match caller_expr {
+                Some(e) => self.expr_value(e).to_string(),
+                None => match &p.default {
+                    Some(d) => default_value(d).to_string(),
+                    None => continue,
+                },
+            };
+            val_map.insert(p.local, rendered);
+        }
+
+        // Const generics bind from the call's recorded instantiation, rendered
+        // in the caller's terms (a ground value evaluates, a symbolic one
+        // renders against the caller's SV parameters) — as `emit_instance` does.
+        let node_subst: Vec<Option<Term<'db>>> = match &uc.subst_override {
+            Some(ov) => ov.clone(),
+            None => self
+                .inf
+                .call_subst(uc.expr)
+                .map(|ts| ts.iter().cloned().map(Some).collect())
+                .unwrap_or_default(),
+        };
+
+        let mut out = String::new();
+        for seg in &template.segments {
+            match seg {
+                VerilogSegment::Text(t) => out.push_str(t),
+                // The LHS `${result}` is dropped when we extract the RHS.
+                VerilogSegment::ResultPort => out.push_str("result"),
+                VerilogSegment::Param(l) => {
+                    out.push_str(val_map.get(l).map(String::as_str).unwrap_or("0"));
+                }
+                VerilogSegment::Dom(_) => out.push_str(&self.first_clock()),
+                VerilogSegment::Const(c) => {
+                    let c = subst_const_opt(c, &node_subst);
+                    let s =
+                        match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &c)
+                        {
+                            Some(v) => v.to_string(),
+                            None => render_const_sv(&c, self.sig),
+                        };
+                    out.push_str(&s);
+                }
+            }
+        }
+        SvExpr::Lit(format!("({})", extract_assign_rhs(&out)))
+    }
+
     // ----- instantiation (user calls / methods → submodules) -----
 
     /// `Some(call)` if `expr` is a user `fn` call or a resolved user method call
@@ -1869,6 +2007,7 @@ impl<'db> SvLower<'_, 'db> {
                 };
                 let data = self.map.def_data(def)?;
                 if data.module == self.map.prelude()
+                    || data.inline
                     || !matches!(data.kind, DefKind::Fn | DefKind::Method)
                 {
                     return None;
@@ -1899,6 +2038,10 @@ impl<'db> SvLower<'_, 'db> {
                         Some((m, ov)) => (m, Some(ov)),
                         None => (decl, None),
                     };
+                    // `#[inline]` methods splice their body; never an instance.
+                    if self.map.def_data(def)?.inline {
+                        return None;
+                    }
                     Some(UserCall {
                         def,
                         expr,
@@ -2370,8 +2513,21 @@ fn ground_widths<'db>(
 
 /// Render an inline-verilog template: splices become the emitted port /
 /// parameter names; const trees render as SV constant expressions.
+/// Extract `EXPR` from a rendered `assign <lhs> = EXPR;` body (an `#[inline]`
+/// fn's single-assign verilog). The LHS up to the first `=` is dropped; the
+/// trailing `;` is stripped. `=` only appears as the assignment operator here
+/// (SV `==`/`<=`/`>=` come after it, inside EXPR).
+fn extract_assign_rhs(s: &str) -> String {
+    let s = s.trim();
+    let s = s.strip_prefix("assign").map(str::trim_start).unwrap_or(s);
+    let rhs = match s.find('=') {
+        Some(i) => &s[i + 1..],
+        None => s,
+    };
+    rhs.trim().trim_end_matches(';').trim().to_owned()
+}
+
 fn render_verilog(template: &crate::hir::body::VerilogTemplate, sig: &Signature<'_>) -> String {
-    use crate::hir::body::VerilogSegment;
     let mut out = String::new();
     for seg in &template.segments {
         match seg {
