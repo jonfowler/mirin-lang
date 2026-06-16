@@ -48,7 +48,7 @@ Tree-sitter owns concrete syntax; Rust owns CST-to-AST lowering, elaboration, an
 - **Ports** are first-class. They define module boundaries, support per-field input/output direction, and can carry embedded parameters. Do not collapse them with structs.
 - **Structs** use similar syntax but are strictly positive and carry no direction annotations.
 - **Arrays** are fixed-size and strictly positive; **vecs** are fixed-size but may contain ports. These are intentionally different.
-- **Domains/clocks**: only clock domains are in scope for the current pass. Clocked values are written `T @clk`; resets as `Reset @clk`. `#` marks inferable arguments (clocks are the primary use case).
+- **Domains/clocks**: only clock domains are in scope for the current pass. Clocked values are written `T @clk`; resets as `Reset @clk`. `param`/`dom` arguments (consts and clocks) are inferable by default — usually solved from context rather than passed explicitly.
 - **`fn`** introduces a component; named argument sections use braces `{ }`, positional sections use parens `( )`.
 - **`let` vs `var`**: `let x = expr` is a sequential lexical binding (forward-only scope, supports shadowing for pipeline style). `var x: T` declares a block-scoped signal node that can participate in cyclic equations — used for register feedback and mutual structural wiring. See `planning/cycles_and_scoping.md`.
 - Testing is expected to be integrated into the language itself, not only external tooling.
