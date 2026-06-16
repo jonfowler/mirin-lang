@@ -954,28 +954,30 @@ fn build_result_places<'db>(
         return Vec::new();
     };
     match names {
-        // A normal return: the whole result is the `return` place.
+        // A normal return: the whole result is the `return` place. `return` is
+        // an SV reserved word, so its port base is escaped to `result`.
         [] => vec![ResultPlace {
             name: "return".to_owned(),
             ty: rt.clone(),
             sv_base: "result".to_owned(),
         }],
-        // A single named result names the whole result.
+        // A single named result names the whole result — its bound name is the
+        // SV port base (`output` → `output__valid`).
         [name] => vec![ResultPlace {
             name: name.clone(),
             ty: rt.clone(),
-            sv_base: "result".to_owned(),
+            sv_base: name.clone(),
         }],
-        // Two or more name the parts of a tuple result.
+        // Two or more name the parts of a tuple result, each its own port base
+        // (`sum` → `sum`, `carry` → `carry`).
         _ => match rt {
             Type::Tuple(elems) => names
                 .iter()
                 .zip(elems)
-                .enumerate()
-                .map(|(i, (name, ety))| ResultPlace {
+                .map(|(name, ety)| ResultPlace {
                     name: name.clone(),
                     ty: ety.clone(),
-                    sv_base: format!("result__{i}"),
+                    sv_base: name.clone(),
                 })
                 .collect(),
             _ => Vec::new(),
@@ -1764,19 +1766,20 @@ mod tests {
         assert_eq!(r.result_places.len(), 1);
         assert_eq!(r.result_places[0].name, "return");
         assert_eq!(r.result_places[0].sv_base, "result");
-        // Single named: the whole result, SV base still `result`.
+        // Single named: the whole result; the bound name is the SV port base.
         let s = sig_of(&db, krate, fn_def(&db, krate, "s"));
         assert_eq!(s.result_places.len(), 1);
         assert_eq!(s.result_places[0].name, "out");
-        assert_eq!(s.result_places[0].sv_base, "result");
-        // Named tuple parts split into result__0 / result__1; return type is a tuple.
+        assert_eq!(s.result_places[0].sv_base, "out");
+        // Named tuple parts each use their bound name as the port base; the
+        // return type is a tuple.
         let t = sig_of(&db, krate, fn_def(&db, krate, "t"));
         let bases: Vec<(&str, &str)> = t
             .result_places
             .iter()
             .map(|p| (p.name.as_str(), p.sv_base.as_str()))
             .collect();
-        assert_eq!(bases, vec![("sum", "result__0"), ("carry", "result__1")]);
+        assert_eq!(bases, vec![("sum", "sum"), ("carry", "carry")]);
         assert!(matches!(t.return_type, Some(Type::Tuple(_))));
         // A unit fn has no result place.
         let u = sig_of(&db, krate, fn_def(&db, krate, "u"));

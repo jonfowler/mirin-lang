@@ -766,15 +766,22 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         self.scopes.iter().rev().find_map(|s| s.get(name).copied())
     }
 
-    /// The whole-result place (SV base `result`): the unnamed `return` local, or
-    /// a single named result. `None` for a unit fn, or a multi-part named return
-    /// whose parts (`result__0`, …) are driven individually
+    /// The whole-result place: the unnamed `return` local, or a single named
+    /// result — i.e. the sole result place. `None` for a unit fn, or a
+    /// multi-part named return whose parts are driven individually
     /// (planning/return_variable.md).
     fn whole_result_local(&self) -> Option<LocalId> {
-        self.locals
+        let mut places = self
+            .locals
             .iter()
-            .position(|l| l.result_base.as_deref() == Some("result"))
-            .map(|i| LocalId(i as u32))
+            .enumerate()
+            .filter(|(_, l)| l.result_base.is_some());
+        let (i, _) = places.next()?;
+        // A multi-part named return has several result places — no single whole.
+        if places.next().is_some() {
+            return None;
+        }
+        Some(LocalId(i as u32))
     }
 
     // ----- blocks / statements -----
