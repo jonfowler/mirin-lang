@@ -87,85 +87,85 @@ pub trait BitNot {
 
 impl {param n: integer} Add for uint(n) {
     fn add(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} + ${other};
+        assign ${return} = ${self} + ${other};
     }
 }
 
 impl {param n: integer} Sub for uint(n) {
     fn sub(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} - ${other};
+        assign ${return} = ${self} - ${other};
     }
 }
 
 impl {param n: integer} Mul for uint(n) {
     fn mul(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} * ${other};
+        assign ${return} = ${self} * ${other};
     }
 }
 
 impl {param n: integer} Div for uint(n) {
     fn div(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} / ${other};
+        assign ${return} = ${self} / ${other};
     }
 }
 
 impl {param n: integer} Rem for uint(n) {
     fn rem(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} % ${other};
+        assign ${return} = ${self} % ${other};
     }
 }
 
 impl {param n: integer} Shl for uint(n) {
     fn shl(self, other: integer) -> Self = verilog {
-        assign ${result} = ${self} << ${other};
+        assign ${return} = ${self} << ${other};
     }
 }
 
 impl {param n: integer} Shr for uint(n) {
     fn shr(self, other: integer) -> Self = verilog {
-        assign ${result} = ${self} >> ${other};
+        assign ${return} = ${self} >> ${other};
     }
 }
 
 impl {param n: integer} Eq for uint(n) {
     fn eq(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} == ${other};
+        assign ${return} = ${self} == ${other};
     }
     fn ne(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} != ${other};
+        assign ${return} = ${self} != ${other};
     }
 }
 
 impl {param n: integer} Ord for uint(n) {
     fn lt(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} < ${other};
+        assign ${return} = ${self} < ${other};
     }
     fn le(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} <= ${other};
+        assign ${return} = ${self} <= ${other};
     }
     fn gt(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} > ${other};
+        assign ${return} = ${self} > ${other};
     }
     fn ge(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} >= ${other};
+        assign ${return} = ${self} >= ${other};
     }
 }
 
 impl {param n: integer} Add for sint(n) {
     fn add(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} + ${other};
+        assign ${return} = ${self} + ${other};
     }
 }
 
 impl {param n: integer} Sub for sint(n) {
     fn sub(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} - ${other};
+        assign ${return} = ${self} - ${other};
     }
 }
 
 impl {param n: integer} Mul for sint(n) {
     fn mul(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} * ${other};
+        assign ${return} = ${self} * ${other};
     }
 }
 
@@ -173,56 +173,56 @@ impl {param n: integer} Mul for sint(n) {
 // zero and `%` takes the dividend's sign — matching const-eval's i128.
 impl {param n: integer} Div for sint(n) {
     fn div(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} / ${other};
+        assign ${return} = ${self} / ${other};
     }
 }
 
 impl {param n: integer} Rem for sint(n) {
     fn rem(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} % ${other};
+        assign ${return} = ${self} % ${other};
     }
 }
 
 impl {param n: integer} Shl for sint(n) {
     fn shl(self, other: integer) -> Self = verilog {
-        assign ${result} = ${self} << ${other};
+        assign ${return} = ${self} << ${other};
     }
 }
 
 // Arithmetic shift right: `>>>` sign-extends (sint is `logic signed`).
 impl {param n: integer} Shr for sint(n) {
     fn shr(self, other: integer) -> Self = verilog {
-        assign ${result} = ${self} >>> ${other};
+        assign ${return} = ${self} >>> ${other};
     }
 }
 
 impl {param n: integer} Neg for sint(n) {
     fn neg(self) -> Self = verilog {
-        assign ${result} = -${self};
+        assign ${return} = -${self};
     }
 }
 
 impl {param n: integer} Eq for sint(n) {
     fn eq(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} == ${other};
+        assign ${return} = ${self} == ${other};
     }
     fn ne(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} != ${other};
+        assign ${return} = ${self} != ${other};
     }
 }
 
 impl {param n: integer} Ord for sint(n) {
     fn lt(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} < ${other};
+        assign ${return} = ${self} < ${other};
     }
     fn le(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} <= ${other};
+        assign ${return} = ${self} <= ${other};
     }
     fn gt(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} > ${other};
+        assign ${return} = ${self} > ${other};
     }
     fn ge(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} >= ${other};
+        assign ${return} = ${self} >= ${other};
     }
 }
 
@@ -231,10 +231,10 @@ impl {param n: integer} Ord for sint(n) {
 // a bug; convert deliberately (pack/unpack, when they land).
 impl {param n: integer} Eq for bits(n) {
     fn eq(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} == ${other};
+        assign ${return} = ${self} == ${other};
     }
     fn ne(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} != ${other};
+        assign ${return} = ${self} != ${other};
     }
 }
 
@@ -242,104 +242,104 @@ impl {param n: integer} Eq for bits(n) {
 // bag of bits is still a bag of bits. `>>` is logical.
 impl {param n: integer} Shl for bits(n) {
     fn shl(self, other: integer) -> Self = verilog {
-        assign ${result} = ${self} << ${other};
+        assign ${return} = ${self} << ${other};
     }
 }
 
 impl {param n: integer} Shr for bits(n) {
     fn shr(self, other: integer) -> Self = verilog {
-        assign ${result} = ${self} >> ${other};
+        assign ${return} = ${self} >> ${other};
     }
 }
 
 // Bitwise `& | ^ ~` for uint, sint, and bits.
 impl {param n: integer} BitAnd for uint(n) {
     fn bitand(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} & ${other};
+        assign ${return} = ${self} & ${other};
     }
 }
 impl {param n: integer} BitOr for uint(n) {
     fn bitor(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} | ${other};
+        assign ${return} = ${self} | ${other};
     }
 }
 impl {param n: integer} BitXor for uint(n) {
     fn bitxor(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} ^ ${other};
+        assign ${return} = ${self} ^ ${other};
     }
 }
 impl {param n: integer} BitNot for uint(n) {
     fn bitnot(self) -> Self = verilog {
-        assign ${result} = ~${self};
+        assign ${return} = ~${self};
     }
 }
 
 impl {param n: integer} BitAnd for sint(n) {
     fn bitand(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} & ${other};
+        assign ${return} = ${self} & ${other};
     }
 }
 impl {param n: integer} BitOr for sint(n) {
     fn bitor(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} | ${other};
+        assign ${return} = ${self} | ${other};
     }
 }
 impl {param n: integer} BitXor for sint(n) {
     fn bitxor(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} ^ ${other};
+        assign ${return} = ${self} ^ ${other};
     }
 }
 impl {param n: integer} BitNot for sint(n) {
     fn bitnot(self) -> Self = verilog {
-        assign ${result} = ~${self};
+        assign ${return} = ~${self};
     }
 }
 
 impl {param n: integer} BitAnd for bits(n) {
     fn bitand(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} & ${other};
+        assign ${return} = ${self} & ${other};
     }
 }
 impl {param n: integer} BitOr for bits(n) {
     fn bitor(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} | ${other};
+        assign ${return} = ${self} | ${other};
     }
 }
 impl {param n: integer} BitXor for bits(n) {
     fn bitxor(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} ^ ${other};
+        assign ${return} = ${self} ^ ${other};
     }
 }
 impl {param n: integer} BitNot for bits(n) {
     fn bitnot(self) -> Self = verilog {
-        assign ${result} = ~${self};
+        assign ${return} = ~${self};
     }
 }
 
 impl Eq for bool {
     fn eq(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} == ${other};
+        assign ${return} = ${self} == ${other};
     }
     fn ne(self, other: Self) -> bool = verilog {
-        assign ${result} = ${self} != ${other};
+        assign ${return} = ${self} != ${other};
     }
 }
 
 impl Not for bool {
     fn not(self) -> Self = verilog {
-        assign ${result} = !${self};
+        assign ${return} = !${self};
     }
 }
 
 impl And for bool {
     fn and(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} && ${other};
+        assign ${return} = ${self} && ${other};
     }
 }
 
 impl Or for bool {
     fn or(self, other: Self) -> Self = verilog {
-        assign ${result} = ${self} || ${other};
+        assign ${return} = ${self} || ${other};
     }
 }
 

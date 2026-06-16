@@ -33,9 +33,10 @@ ordinary module.
 `$signed`, `$display` need no escaping (the rejected alternative, bare
 `$name` splices, collides with exactly those).
 
-- `${p}` where `p` is a **scalar value param** (or `result`) → the port's
-  emitted SV name. Splices exist because emitted names aren't always source
-  names (reserved-word renames; flattening). Aggregate params may be
+- `${p}` where `p` is a **scalar value param** (or `${return}`, the result
+  place — `${result}` is a kept alias) → the port's emitted SV name. Splices
+  exist because emitted names aren't always source names (reserved-word
+  renames; flattening). Aggregate params may be
   *declared* (their flattened ports exist) but not *spliced* — error,
   lifted when a field-projection splice (`${s.valid}`) is worth designing.
 - `${clk}` where `clk` is a **dom generic** → the clock port's name.
@@ -69,7 +70,7 @@ splits the raw text during body lowering, which keeps the scanner trivial.
 
 ## As built
 
-- Splices resolve in order: `result`, dom generics (they're also seeded as
+- Splices resolve in order: `return`/`result` (the result place), dom generics (they're also seeded as
   body locals for `posedge`, but in a template they mean the clock port),
   scalar value params, then the const fragment.
 - Const splices render *symbolically* (`${n + 1}` → `(n + 1)` against the

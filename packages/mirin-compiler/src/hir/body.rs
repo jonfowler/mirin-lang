@@ -617,7 +617,10 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
             && inner.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         if is_ident {
-            if inner == "result" {
+            // `${return}` is the function's result place (the referrable
+            // result binding; planning/return_variable.md). `${result}` is
+            // kept as an alias for the SV port name it lowers to.
+            if inner == "return" || inner == "result" {
                 return VerilogSegment::ResultPort;
             }
             // Dom generics first: they are also seeded as body locals (for
