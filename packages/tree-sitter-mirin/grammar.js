@@ -185,8 +185,23 @@ module.exports = grammar({
     // (no named-args) type form so a trailing `{` opens the body. For an
     // inherent impl the subject IS the self type; for a trait impl it is the
     // trait and `for` introduces the self type.
+    // Outer attributes (`#[inline]`, `#[derive(BitPack)]`) on an item, Rust
+    // shape. v1 carries them on `fn` and `impl` items (planning/attributes.md);
+    // semantics are attached by later passes (`#[inline]` emission).
+    attribute: ($) =>
+      seq(
+        "#",
+        "[",
+        field("name", $.identifier),
+        optional(field("arguments", $.attribute_arguments)),
+        "]",
+      ),
+
+    attribute_arguments: ($) => seq("(", commaSep1($.identifier), optional(","), ")"),
+
     impl_block: ($) =>
       seq(
+        repeat(field("attribute", $.attribute)),
         "impl",
         optional(field("named_parameters", $.named_parameter_section)),
         field("name", $.return_type_expression),
@@ -233,6 +248,7 @@ module.exports = grammar({
 
     function_definition: ($) =>
       seq(
+        repeat(field("attribute", $.attribute)),
         optional(field("visibility", $.visibility_modifier)),
         "fn",
         field("name", $.identifier),

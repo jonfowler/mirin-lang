@@ -269,6 +269,10 @@ pub struct DefData<'db> {
     pub visibility: Visibility,
     /// The type a `Ctor`/`Method` belongs to (`None` for everything else).
     pub owner: Option<DefId<'db>>,
+    /// Carries `#[inline]` (planning/attributes.md): the backend splices this
+    /// fn/method's body at call sites instead of instantiating a module. Only
+    /// ever true for `Fn`/`Method` defs.
+    pub inline: bool,
 }
 
 /// The crate's name-resolution map: the module tree, per-def metadata, and the
@@ -652,6 +656,7 @@ impl<'db> Collector<'db> {
                     module: prelude,
                     visibility: Visibility::Public,
                     owner: None,
+                    inline: false,
                 },
             );
             self.map.modules[prelude.0 as usize].items.insert(
@@ -672,7 +677,7 @@ impl<'db> Collector<'db> {
         for item in items {
             match item {
                 Item::Fn(f) => {
-                    self.declare(
+                    let def = self.declare(
                         file,
                         f.ast_id,
                         DefRole::Item,
@@ -682,6 +687,11 @@ impl<'db> Collector<'db> {
                         &f.visibility,
                         None,
                     );
+                    if f.inline
+                        && let Some(d) = self.map.defs.get_mut(&def)
+                    {
+                        d.inline = true;
+                    }
                 }
                 Item::Struct(s) => self.declare_adt(file, s, DefKind::Struct, module),
                 Item::Port(p) => self.declare_adt(file, p, DefKind::Port, module),
@@ -727,6 +737,7 @@ impl<'db> Collector<'db> {
                     module,
                     visibility: vis,
                     owner: Some(trait_def),
+                    inline: false,
                 },
             );
             self.def_order.push(def);
@@ -744,6 +755,7 @@ impl<'db> Collector<'db> {
                     module,
                     visibility: Visibility::Public,
                     owner: Some(trait_def),
+                    inline: false,
                 },
             );
             self.def_order.push(def);
@@ -822,6 +834,7 @@ impl<'db> Collector<'db> {
                 module,
                 visibility: vis,
                 owner,
+                inline: false,
             },
         );
         self.def_order.push(def);
@@ -1294,6 +1307,7 @@ impl<'db> Collector<'db> {
                             module,
                             visibility: Visibility::Public,
                             owner: Some(owner),
+                            inline: false,
                         },
                     );
                     self.def_order.push(def);
@@ -1313,6 +1327,7 @@ impl<'db> Collector<'db> {
                         module,
                         visibility: vis,
                         owner: Some(owner),
+                        inline: method.inline,
                     },
                 );
                 self.def_order.push(def);
@@ -1347,6 +1362,7 @@ impl<'db> Collector<'db> {
                     module,
                     visibility: Visibility::Restricted(module),
                     owner: Some(owner),
+                    inline: false,
                 },
             );
             self.def_order.push(impl_def);

@@ -40,6 +40,11 @@
 "@" @punctuation.special
 "::" @punctuation.delimiter
 
+; Attributes — `#[inline]`, `#[derive(BitPack)]`
+(attribute "#" @punctuation.special)
+(attribute name: (identifier) @attribute)
+(attribute_arguments (identifier) @attribute)
+
 ; Top-level declaration names
 (function_definition name: (identifier) @type)
 (struct_definition name: (identifier) @type)

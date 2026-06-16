@@ -193,3 +193,51 @@ fn packer {param T: Bits} (x: T) -> uint(T::width) {
       tail: (expression
         (path_expression
           segment: (identifier))))))
+
+========================================
+inline attribute on a fn
+========================================
+
+#[inline]
+fn helper() = verilog { assign ${result} = 0; }
+
+---
+
+(source_file
+  (function_definition
+    attribute: (attribute
+      name: (identifier))
+    name: (identifier)
+    parameters: (parameter_section)
+    verilog_body: (verilog_block
+      content: (verilog_content))))
+
+========================================
+attribute with arguments on an impl
+========================================
+
+#[derive(BitPack, Eq)]
+impl Foo {
+  fn g(self) -> bool = verilog { assign ${result} = 0; }
+}
+
+---
+
+(source_file
+  (impl_block
+    attribute: (attribute
+      name: (identifier)
+      arguments: (attribute_arguments
+        (identifier)
+        (identifier)))
+    name: (return_type_expression
+      name: (identifier))
+    body: (impl_body
+      (function_definition
+        name: (identifier)
+        parameters: (parameter_section
+          (parameter))
+        return_type: (return_type_expression
+          name: (identifier))
+        verilog_body: (verilog_block
+          content: (verilog_content))))))

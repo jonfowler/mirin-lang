@@ -355,6 +355,37 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// Outer attributes (`#[inline]`, …), each on its own line before the item.
+    fn attrs_prefix(&self, n: Node) -> Doc {
+        let attrs = self.fields(n, "attribute");
+        concat(
+            attrs
+                .iter()
+                .flat_map(|a| [self.attr(*a), Doc::HardLine])
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn attr(&self, n: Node) -> Doc {
+        let name = self.text(self.field(n, "name").unwrap());
+        let args = match self.field(n, "arguments") {
+            Some(a) => {
+                let ids = self.children_of_kind(a, "identifier");
+                let mut parts = vec![text("(")];
+                for (i, c) in ids.iter().enumerate() {
+                    if i > 0 {
+                        parts.push(text(", "));
+                    }
+                    parts.push(text(self.text(*c)));
+                }
+                parts.push(text(")"));
+                concat(parts)
+            }
+            None => NIL,
+        };
+        concat([text("#["), text(name), args, text("]")])
+    }
+
     fn fn_def(&self, n: Node) -> Doc {
         let vis = self.vis_prefix(n);
         let name = self.text(self.field(n, "name").unwrap());
@@ -397,6 +428,7 @@ impl<'a> Formatter<'a> {
             None => NIL,
         };
         concat([
+            self.attrs_prefix(n),
             sig,
             where_doc,
             text(" "),
@@ -457,7 +489,7 @@ impl<'a> Formatter<'a> {
         let name = self.text(self.field(n, "name").unwrap());
         // Binder-first: `impl {dom clk: Clock} Stream8 { … }`; a trait impl
         // adds `for SelfType`.
-        let mut parts = vec![text("impl ")];
+        let mut parts = vec![self.attrs_prefix(n), text("impl ")];
         if let Some(named) = self.field(n, "named_parameters") {
             parts.push(self.named_section(named));
             parts.push(text(" "));

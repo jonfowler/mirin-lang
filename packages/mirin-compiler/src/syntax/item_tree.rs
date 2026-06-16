@@ -40,6 +40,10 @@ pub struct FnItem {
     pub name: String,
     pub visibility: Visibility,
     pub ast_id: FileAstId,
+    /// Carries `#[inline]` (planning/attributes.md) — the fn's body is spliced
+    /// at each call site instead of emitting a module. For an impl method, also
+    /// set when the enclosing `impl` carries `#[inline]`.
+    pub inline: bool,
 }
 
 /// A struct or port: its type name, its mandatory constructor name (`struct
@@ -196,7 +200,19 @@ fn fn_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> FnItem {
         name: name_of(node, source),
         visibility: visibility(node, source),
         ast_id: ast_id(node, ast_ids),
+        inline: has_attr(node, source, "inline"),
     }
+}
+
+/// True if `node` carries a direct `#[name]` outer attribute.
+fn has_attr(node: &Node, source: &str, name: &str) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor).any(|c| {
+        c.kind() == "attribute"
+            && c.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                == Some(name)
+    })
 }
 
 fn named_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> NamedItem {
@@ -211,11 +227,17 @@ fn named_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> NamedItem {
 fn impl_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> ImplItem {
     let mut methods = Vec::new();
     let mut consts = Vec::new();
+    // An `#[inline]` on the impl block applies to all its methods.
+    let impl_inline = has_attr(node, source, "inline");
     if let Some(body) = node.child_by_field_name("body") {
         let mut cursor = body.walk();
         for c in body.children(&mut cursor) {
             match c.kind() {
-                "function_definition" => methods.push(fn_item(&c, source, ast_ids)),
+                "function_definition" => {
+                    let mut m = fn_item(&c, source, ast_ids);
+                    m.inline |= impl_inline;
+                    methods.push(m);
+                }
                 "impl_const" => consts.push(AssocConstItem {
                     name: name_of(&c, source),
                     ast_id: ast_id(&c, ast_ids),
