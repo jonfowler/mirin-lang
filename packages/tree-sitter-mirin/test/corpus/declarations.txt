@@ -757,3 +757,46 @@ fn g {dom a: Clock, dom b: Clock} (x: uint(8) @a, y: uint(4) @b, v: Vec(3, (bool
       (expression
         (path_expression
           (identifier))))))
+
+========================================
+named results in the return signature
+========================================
+
+fn f(x: uint(8)) -> (sum: uint(8), carry: bool) {
+    sum = x;
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    return_type: (named_return
+      (named_result
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number)))))
+      (named_result
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    body: (block
+      (statement
+        (assignment_statement
+          left: (expression
+            (path_expression
+              segment: (identifier)))
+          right: (expression
+            (path_expression
+              segment: (identifier))))))))
