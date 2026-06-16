@@ -1,0 +1,6 @@
+// bool has the logical operators `&& || !` (traits And/Or/Not) but NOT the
+// bitwise `& | ^ ~` (BitAnd/BitOr/BitXor/BitNot) — the `&`/`&&` split is real
+// (planning/operators.md O4). Use `&&` for bool; `&` is for uint/sint/bits.
+fn f(a: bool, b: bool) -> bool {
+    a & b
+}

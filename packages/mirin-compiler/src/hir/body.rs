@@ -1250,6 +1250,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 let operand = self.lower_field_expr(node, "operand", source);
                 let method = match field_text(node, "operator", source).as_str() {
                     "!" => "not",
+                    "~" => "bitnot",
                     _ => "neg",
                 };
                 if method == "neg"
@@ -1416,6 +1417,9 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             "%" => "rem",
             "<<" => "shl",
             ">>" => "shr",
+            "&" => "bitand",
+            "|" => "bitor",
+            "^" => "bitxor",
             "==" => "eq",
             "!=" => "ne",
             "<" => "lt",
@@ -1997,8 +2001,17 @@ mod tests {
 
     #[test]
     fn arithmetic_operators_desugar_to_their_trait_methods() {
-        // `/`→div, `%`→rem (O2) and `<<`→shl, `>>`→shr (O3) join `+ - *`.
-        for (op, want) in [("/", "div"), ("%", "rem"), ("<<", "shl"), (">>", "shr")] {
+        // `/`→div, `%`→rem (O2), `<<`→shl, `>>`→shr (O3), and `& | ^`→
+        // bitand/bitor/bitxor (O4) join `+ - *`.
+        for (op, want) in [
+            ("/", "div"),
+            ("%", "rem"),
+            ("<<", "shl"),
+            (">>", "shr"),
+            ("&", "bitand"),
+            ("|", "bitor"),
+            ("^", "bitxor"),
+        ] {
             let mut db = RootDatabase::default();
             let mut vfs = Vfs::new();
             let src = format!("fn g (a: uint(8), b: uint(8)) -> uint(8) {{ return a {op} b; }}");
@@ -2009,6 +2022,24 @@ mod tests {
                 panic!("expected a method call for `{op}`");
             };
             assert_eq!(method, want, "operator `{op}` should desugar to `{want}`");
+        }
+    }
+
+    #[test]
+    fn unary_operators_desugar_to_their_trait_methods() {
+        // `-`→neg, `!`→not, `~`→bitnot (planning/operators.md O4).
+        for (op, want) in [("-", "neg"), ("!", "not"), ("~", "bitnot")] {
+            let mut db = RootDatabase::default();
+            let mut vfs = Vfs::new();
+            let src = format!("fn g (a: uint(8)) -> uint(8) {{ return {op}a; }}");
+            let krate = load(&mut db, &mut vfs, &src);
+            let b = body_of(&db, krate, "g");
+            let value = result_value(b);
+            let ExprKind::MethodCall { method, args, .. } = &b.expr(value).kind else {
+                panic!("expected a method call for unary `{op}`");
+            };
+            assert!(args.is_empty(), "unary `{op}` takes no args");
+            assert_eq!(method, want, "unary `{op}` should desugar to `{want}`");
         }
     }
 

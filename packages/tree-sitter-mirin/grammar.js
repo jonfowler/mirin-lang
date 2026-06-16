@@ -660,12 +660,13 @@ module.exports = grammar({
         field("value", $.number),
       ),
 
-    // Prefix `-` (`Neg::neg`) and `!` (`Not::not`) — never a negative literal
-    // (planning/numeric_literals.md L5). Binds tighter than any binary op.
+    // Prefix `-` (`Neg::neg`), `!` (`Not::not`, logical), and `~` (`BitNot::
+    // bitnot`, bitwise) — never a negative literal (planning/numeric_literals.md
+    // L5). Binds tighter than any binary op.
     unary_expression: ($) =>
       prec(
         PREC.unary,
-        seq(field("operator", choice("-", "!")), field("operand", $.expression)),
+        seq(field("operator", choice("-", "!", "~")), field("operand", $.expression)),
       ),
 
     binary_expression: ($) =>
@@ -711,6 +712,30 @@ module.exports = grammar({
           seq(
             field("left", $.expression),
             field("operator", choice("<<", ">>")),
+            field("right", $.expression),
+          ),
+        ),
+        prec.left(
+          PREC.bitwise_and,
+          seq(
+            field("left", $.expression),
+            field("operator", "&"),
+            field("right", $.expression),
+          ),
+        ),
+        prec.left(
+          PREC.bitwise_xor,
+          seq(
+            field("left", $.expression),
+            field("operator", "^"),
+            field("right", $.expression),
+          ),
+        ),
+        prec.left(
+          PREC.bitwise_or,
+          seq(
+            field("left", $.expression),
+            field("operator", "|"),
             field("right", $.expression),
           ),
         ),

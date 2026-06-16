@@ -1792,6 +1792,7 @@ impl<'db> SvLower<'_, 'db> {
         match tdata.name.as_str() {
             "Neg" => Some("-"),
             "Not" => Some("!"),
+            "BitNot" => Some("~"),
             _ => None,
         }
     }
@@ -1823,6 +1824,9 @@ impl<'db> SvLower<'_, 'db> {
             "ge" => Some(SvBinOp::Ge),
             "and" => Some(SvBinOp::And),
             "or" => Some(SvBinOp::Or),
+            "bitand" => Some(SvBinOp::BitAnd),
+            "bitor" => Some(SvBinOp::BitOr),
+            "bitxor" => Some(SvBinOp::BitXor),
             "shl" => Some(SvBinOp::Shl),
             // `>>` is arithmetic (sign-extending) on a sint receiver, logical
             // on uint/bits (planning/operators.md O3).

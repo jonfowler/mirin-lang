@@ -1,0 +1,20 @@
+// O4: bitwise operators `& | ^ ~` (planning/operators.md), distinct from the
+// bool logicals `&& || !`. They desugar to the prelude `BitAnd`/`BitOr`/
+// `BitXor`/`BitNot` traits and emit the direct SV operator. For uint/sint/bits.
+fn band {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> uint(8) @clk {
+    a & b
+}
+
+fn bxor {dom clk: Clock} (a: bits(8) @clk, b: bits(8) @clk) -> bits(8) @clk {
+    a ^ b
+}
+
+fn bnot {dom clk: Clock} (a: uint(8) @clk) -> uint(8) @clk {
+    ~a
+}
+
+// Precedence: `&` binds tighter than `|`, both looser than `<<` — so this is
+// `(a & (b << 1)) | a`.
+fn mixed {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> uint(8) @clk {
+    a & b << 1 | a
+}

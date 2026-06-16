@@ -67,6 +67,24 @@ pub trait Or {
     fn or(self, other: Self) -> Self;
 }
 
+// Bitwise operators (`& | ^ ~`), distinct from the bool logicals `&& || !`
+// above (planning/operators.md). For uint/sint/bits.
+pub trait BitAnd {
+    fn bitand(self, other: Self) -> Self;
+}
+
+pub trait BitOr {
+    fn bitor(self, other: Self) -> Self;
+}
+
+pub trait BitXor {
+    fn bitxor(self, other: Self) -> Self;
+}
+
+pub trait BitNot {
+    fn bitnot(self) -> Self;
+}
+
 impl {param n: integer} Add for uint(n) {
     fn add(self, other: Self) -> Self = verilog {
         assign ${result} = ${self} + ${other};
@@ -231,6 +249,70 @@ impl {param n: integer} Shl for bits(n) {
 impl {param n: integer} Shr for bits(n) {
     fn shr(self, other: integer) -> Self = verilog {
         assign ${result} = ${self} >> ${other};
+    }
+}
+
+// Bitwise `& | ^ ~` for uint, sint, and bits.
+impl {param n: integer} BitAnd for uint(n) {
+    fn bitand(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} & ${other};
+    }
+}
+impl {param n: integer} BitOr for uint(n) {
+    fn bitor(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} | ${other};
+    }
+}
+impl {param n: integer} BitXor for uint(n) {
+    fn bitxor(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} ^ ${other};
+    }
+}
+impl {param n: integer} BitNot for uint(n) {
+    fn bitnot(self) -> Self = verilog {
+        assign ${result} = ~${self};
+    }
+}
+
+impl {param n: integer} BitAnd for sint(n) {
+    fn bitand(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} & ${other};
+    }
+}
+impl {param n: integer} BitOr for sint(n) {
+    fn bitor(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} | ${other};
+    }
+}
+impl {param n: integer} BitXor for sint(n) {
+    fn bitxor(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} ^ ${other};
+    }
+}
+impl {param n: integer} BitNot for sint(n) {
+    fn bitnot(self) -> Self = verilog {
+        assign ${result} = ~${self};
+    }
+}
+
+impl {param n: integer} BitAnd for bits(n) {
+    fn bitand(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} & ${other};
+    }
+}
+impl {param n: integer} BitOr for bits(n) {
+    fn bitor(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} | ${other};
+    }
+}
+impl {param n: integer} BitXor for bits(n) {
+    fn bitxor(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} ^ ${other};
+    }
+}
+impl {param n: integer} BitNot for bits(n) {
+    fn bitnot(self) -> Self = verilog {
+        assign ${result} = ~${self};
     }
 }
 

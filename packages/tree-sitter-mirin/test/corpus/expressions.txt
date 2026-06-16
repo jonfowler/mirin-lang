@@ -664,3 +664,65 @@ fn f(a: uint(8)) -> uint(8) {
               segment: (identifier)))
           right: (expression
             (number)))))))
+
+========================================
+bitwise operators and prefix complement
+========================================
+
+fn f(a: uint(8), b: uint(8)) -> uint(8) {
+    let m = a & b | ~a;
+    a ^ b
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number)))))
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (let_statement
+          pattern: (identifier)
+          value: (expression
+            (binary_expression
+              left: (expression
+                (binary_expression
+                  left: (expression
+                    (path_expression
+                      segment: (identifier)))
+                  right: (expression
+                    (path_expression
+                      segment: (identifier)))))
+              right: (expression
+                (unary_expression
+                  operand: (expression
+                    (path_expression
+                      segment: (identifier)))))))))
+      tail: (expression
+        (binary_expression
+          left: (expression
+            (path_expression
+              segment: (identifier)))
+          right: (expression
+            (path_expression
+              segment: (identifier))))))))
