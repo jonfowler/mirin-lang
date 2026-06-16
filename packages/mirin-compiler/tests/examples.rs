@@ -48,6 +48,7 @@ fn examples() -> Vec<(String, String)> {
 /// functional type checker over it.
 const CLEAN: &[&str] = &[
     "inline_attr.mrn",
+    "pack.mrn",
     "ram.mrn",
     "vec_elem_domain.mrn",
     "dataflow_stage.mrn",
@@ -206,6 +207,7 @@ fn dump_verilog() {
 /// this harness reads and forwards.
 const VERILATOR_CLEAN: &[&str] = &[
     "inline_attr.mrn",
+    "pack.mrn",
     "ram.mrn",
     "vec_elem_domain.mrn",
     "dataflow_stage.mrn",

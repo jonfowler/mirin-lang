@@ -1,0 +1,15 @@
+// BitPack (planning/pack_resize.md): `pack` flattens a value to its raw `bits`
+// representation. For the primitives a packed value occupies the same bits as
+// its source, so `pack` is a wire — and `#[inline]` splices it at the call
+// site rather than emitting a module.
+fn pack_byte {dom clk: Clock} (a: uint(8) @clk) -> bits(8) @clk {
+    a.pack()
+}
+
+fn pack_signed {dom clk: Clock} (a: sint(8) @clk) -> bits(8) @clk {
+    a.pack()
+}
+
+fn pack_flag {dom clk: Clock} (f: bool @clk) -> bits(1) @clk {
+    f.pack()
+}
