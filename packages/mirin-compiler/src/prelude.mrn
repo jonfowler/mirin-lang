@@ -477,6 +477,13 @@ impl {param n: integer} uint(n) {
     fn truncate_lsb {param to: integer} (self) -> uint(to) = verilog {
         assign ${return} = ${self}[${n} - 1 : ${n} - ${to}];
     }
+    // resize is bidirectional (extend OR truncate, MSB side). SV's width-cast
+    // `to'(self)` does both in one composition-safe expression (zero-extends an
+    // unsigned value, truncates the high bits). resize_lsb (LSB-aligned
+    // bidirectional) needs direction-aware lowering and is deferred.
+    fn resize {param to: integer} (self) -> uint(to) = verilog {
+        assign ${return} = ${to}'(${self});
+    }
 }
 
 #[inline]
@@ -495,6 +502,10 @@ impl {param n: integer} sint(n) {
     fn truncate_lsb {param to: integer} (self) -> sint(to) = verilog {
         assign ${return} = $signed(${self}[${n} - 1 : ${n} - ${to}]);
     }
+    // The width-cast sign-extends a signed operand and stays signed.
+    fn resize {param to: integer} (self) -> sint(to) = verilog {
+        assign ${return} = ${to}'(${self});
+    }
 }
 
 #[inline]
@@ -510,5 +521,8 @@ impl {param n: integer} bits(n) {
     }
     fn truncate_lsb {param to: integer} (self) -> bits(to) = verilog {
         assign ${return} = ${self}[${n} - 1 : ${n} - ${to}];
+    }
+    fn resize {param to: integer} (self) -> bits(to) = verilog {
+        assign ${return} = ${to}'(${self});
     }
 }

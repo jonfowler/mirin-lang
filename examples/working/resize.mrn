@@ -23,3 +23,13 @@ fn scale_up {dom clk: Clock} (a: uint(8) @clk) -> uint(12) @clk {
 fn scale_down {dom clk: Clock} (a: uint(8) @clk) -> uint(4) @clk {
     a.truncate_lsb()
 }
+
+// `resize` is the bidirectional escape hatch — it extends or truncates on the
+// MSB side to reach the target width, whichever the context demands.
+fn resize_up {dom clk: Clock} (a: uint(8) @clk) -> uint(12) @clk {
+    a.resize()
+}
+
+fn resize_down {dom clk: Clock} (a: sint(8) @clk) -> sint(4) @clk {
+    a.resize()
+}

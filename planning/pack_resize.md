@@ -420,8 +420,11 @@ T4/T5 foundation:
   (`planning/attributes.md`, stage A2) so they emit inline, not as instances.
 - **PK3 — `_lsb` variants.** `extend_lsb` / `truncate_lsb` (explicit shift
   bodies).
-- **PK4 — resize / resize_lsb.** The non-strict bidirectional forms (MSB
-  `resize` is `assign result = self`; `resize_lsb` needs a direction-aware body).
+- **PK4 — resize.** The non-strict bidirectional MSB form, `#[inline]` via SV's
+  width-cast `to'(self)` (one composition-safe expression: zero/sign-extends or
+  truncates the high bits, preserving signedness). **resize_lsb deferred** — an
+  LSB-aligned bidirectional resize can't be a single width-cast (the cast is
+  MSB-aligned) and needs direction-aware lowering.
 - **Later.** `derive(BitPack)` for struct / vec / tuple (little-endian
   concatenation, per-leaf `BitPack` bounds, ConstEq `bit_size` folding) — this is
   what introduces `SvExpr::Concat`/`Slice`/`Replicate`; generic packers / FIFOs
