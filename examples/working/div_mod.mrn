@@ -1,0 +1,15 @@
+// O2: division and remainder — `/` and `%` desugar to the prelude `Div`/`Rem`
+// traits and emit the direct SV operator (planning/operators.md). uint is
+// unsigned; sint emits signed `/`/`%` (truncate toward zero, dividend-signed
+// remainder) since sint is `logic signed`.
+fn udiv {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> uint(8) @clk {
+    a / b
+}
+
+fn urem {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> uint(8) @clk {
+    a % b
+}
+
+fn sdiv {dom clk: Clock} (a: sint(8) @clk, b: sint(8) @clk) -> sint(8) @clk {
+    a / b
+}

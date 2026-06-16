@@ -1412,6 +1412,8 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             "+" => "add",
             "-" => "sub",
             "*" => "mul",
+            "/" => "div",
+            "%" => "rem",
             "==" => "eq",
             "!=" => "ne",
             "<" => "lt",
@@ -1725,10 +1727,16 @@ fn parse_const_splice<'db>(
         lookup: &dyn Fn(&str) -> Option<ConstArg<'db>>,
     ) -> Result<ConstArg<'db>, String> {
         let mut a = factor(p, lookup)?;
-        while p.peek() == Some(b'*') {
+        loop {
+            let op = match p.peek() {
+                Some(b'*') => ConstOp::Mul,
+                Some(b'/') => ConstOp::Div,
+                Some(b'%') => ConstOp::Rem,
+                _ => break,
+            };
             p.i += 1;
             let b = factor(p, lookup)?;
-            a = ConstArg::Op(ConstOp::Mul, Box::new(a), Box::new(b));
+            a = ConstArg::Op(op, Box::new(a), Box::new(b));
         }
         Ok(a)
     }
@@ -1983,6 +1991,23 @@ mod tests {
         assert!(matches!(b.expr(*receiver).kind, ExprKind::Local(_)));
         assert_eq!(args.len(), 1);
         assert!(!args[0].out && matches!(b.expr(args[0].expr).kind, ExprKind::Local(_)));
+    }
+
+    #[test]
+    fn arithmetic_operators_desugar_to_their_trait_methods() {
+        // `/`→div and `%`→rem join `+ - *` (planning/operators.md O2).
+        for (op, want) in [("/", "div"), ("%", "rem")] {
+            let mut db = RootDatabase::default();
+            let mut vfs = Vfs::new();
+            let src = format!("fn g (a: uint(8), b: uint(8)) -> uint(8) {{ return a {op} b; }}");
+            let krate = load(&mut db, &mut vfs, &src);
+            let b = body_of(&db, krate, "g");
+            let value = result_value(b);
+            let ExprKind::MethodCall { method, .. } = &b.expr(value).kind else {
+                panic!("expected a method call for `{op}`");
+            };
+            assert_eq!(method, want, "operator `{op}` should desugar to `{want}`");
+        }
     }
 
     #[test]

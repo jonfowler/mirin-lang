@@ -1813,6 +1813,8 @@ impl<'db> SvLower<'_, 'db> {
             "add" => Some(SvBinOp::Add),
             "sub" => Some(SvBinOp::Sub),
             "mul" => Some(SvBinOp::Mul),
+            "div" => Some(SvBinOp::Div),
+            "rem" => Some(SvBinOp::Rem),
             "eq" => Some(SvBinOp::Eq),
             "ne" => Some(SvBinOp::Ne),
             "lt" => Some(SvBinOp::Lt),
@@ -2387,6 +2389,8 @@ fn render_const_sv(c: &ConstArg<'_>, sig: &Signature<'_>) -> String {
                 ConstOp::Add => "+",
                 ConstOp::Sub => "-",
                 ConstOp::Mul => "*",
+                ConstOp::Div => "/",
+                ConstOp::Rem => "%",
             };
             format!(
                 "({} {} {})",

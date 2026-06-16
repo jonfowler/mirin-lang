@@ -132,6 +132,8 @@ pub enum ConstOp {
     Add,
     Sub,
     Mul,
+    Div,
+    Rem,
 }
 
 /// A compile-time constant in const position (a `uint(W)` width): the

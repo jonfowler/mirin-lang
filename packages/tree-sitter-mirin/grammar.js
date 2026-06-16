@@ -406,7 +406,7 @@ module.exports = grammar({
           PREC.multiplicative,
           seq(
             field("left", $._header_expression),
-            field("operator", "*"),
+            field("operator", choice("*", "/", "%")),
             field("right", $._header_expression),
           ),
         ),
@@ -563,7 +563,7 @@ module.exports = grammar({
           PREC.multiplicative,
           seq(
             field("left", $._const_operand),
-            field("operator", "*"),
+            field("operator", choice("*", "/", "%")),
             field("right", $._const_operand),
           ),
         ),
@@ -692,7 +692,7 @@ module.exports = grammar({
         ),
         prec.left(
           PREC.multiplicative,
-          seq(field("left", $.expression), field("operator", "*"), field("right", $.expression)),
+          seq(field("left", $.expression), field("operator", choice("*", "/", "%")), field("right", $.expression)),
         ),
         prec.left(
           PREC.additive,

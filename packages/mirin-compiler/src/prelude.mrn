@@ -20,6 +20,14 @@ pub trait Mul {
     fn mul(self, other: Self) -> Self;
 }
 
+pub trait Div {
+    fn div(self, other: Self) -> Self;
+}
+
+pub trait Rem {
+    fn rem(self, other: Self) -> Self;
+}
+
 pub trait Neg {
     fn neg(self) -> Self;
 }
@@ -66,6 +74,18 @@ impl {param n: integer} Mul for uint(n) {
     }
 }
 
+impl {param n: integer} Div for uint(n) {
+    fn div(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} / ${other};
+    }
+}
+
+impl {param n: integer} Rem for uint(n) {
+    fn rem(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} % ${other};
+    }
+}
+
 impl {param n: integer} Eq for uint(n) {
     fn eq(self, other: Self) -> bool = verilog {
         assign ${result} = ${self} == ${other};
@@ -105,6 +125,20 @@ impl {param n: integer} Sub for sint(n) {
 impl {param n: integer} Mul for sint(n) {
     fn mul(self, other: Self) -> Self = verilog {
         assign ${result} = ${self} * ${other};
+    }
+}
+
+// Signed `/` and `%`: sint emits as `logic signed`, so SV `/` truncates toward
+// zero and `%` takes the dividend's sign — matching const-eval's i128.
+impl {param n: integer} Div for sint(n) {
+    fn div(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} / ${other};
+    }
+}
+
+impl {param n: integer} Rem for sint(n) {
+    fn rem(self, other: Self) -> Self = verilog {
+        assign ${result} = ${self} % ${other};
     }
 }
 
@@ -193,6 +227,18 @@ impl Sub for integer {
 
 impl Mul for integer {
     fn mul(self, other: Self) -> Self = verilog {
+        // compile-time only
+    }
+}
+
+impl Div for integer {
+    fn div(self, other: Self) -> Self = verilog {
+        // compile-time only
+    }
+}
+
+impl Rem for integer {
+    fn rem(self, other: Self) -> Self = verilog {
         // compile-time only
     }
 }

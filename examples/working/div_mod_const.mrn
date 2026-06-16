@@ -1,0 +1,16 @@
+// O2: `/` and `%` fold at compile time on `integer` (planning/operators.md),
+// both through an ordinary const fn and directly in a type's width position.
+fn pick(n: integer) -> integer {
+    (n / 3) + (n % 3)
+}
+
+fn from_fn() -> uint(7) {
+    let w: integer = pick(17); // 17/3 + 17%3 = 5 + 2 = 7
+    let x: uint(w) = 0;
+    x
+}
+
+fn in_width_position() -> uint(4) {
+    let x: uint(8 / 2) = 0; // `/` in a width position → uint(4)
+    x
+}

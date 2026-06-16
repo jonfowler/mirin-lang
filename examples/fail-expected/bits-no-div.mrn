@@ -1,0 +1,6 @@
+// bits is a representation, not a number: no arithmetic, including `/` and `%`
+// (planning/bits.md, planning/operators.md). Its arithmetic twin that DOES
+// work is uint/sint in working/div_mod.mrn.
+fn g(a: bits(8), b: bits(8)) -> bits(8) {
+    a / b
+}

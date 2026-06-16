@@ -518,6 +518,8 @@ fn lower_const_value<'db>(
                 "+" => ConstOp::Add,
                 "-" => ConstOp::Sub,
                 "*" => ConstOp::Mul,
+                "/" => ConstOp::Div,
+                "%" => ConstOp::Rem,
                 _ => return ConstArg::Deferred,
             };
             let (Some(l), Some(r)) = (
@@ -1372,6 +1374,8 @@ impl<'db> TypeLowerer<'_, 'db> {
                     "+" => ConstOp::Add,
                     "-" => ConstOp::Sub,
                     "*" => ConstOp::Mul,
+                    "/" => ConstOp::Div,
+                    "%" => ConstOp::Rem,
                     _ => return ConstArg::Deferred,
                 };
                 let lhs = match node.child_by_field_name("left") {

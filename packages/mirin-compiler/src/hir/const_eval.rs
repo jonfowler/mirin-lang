@@ -444,6 +444,8 @@ impl<'db> Evaluator<'db> {
                     "add" => arith(ConstOp::Add, &a, &b),
                     "sub" => arith(ConstOp::Sub, &a, &b),
                     "mul" => arith(ConstOp::Mul, &a, &b),
+                    "div" => arith(ConstOp::Div, &a, &b),
+                    "rem" => arith(ConstOp::Rem, &a, &b),
                     "eq" => match (a, b) {
                         (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x == y)),
                         (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x == y)),
@@ -534,6 +536,10 @@ fn arith<'db>(op: ConstOp, a: &Value<'db>, b: &Value<'db>) -> Option<Value<'db>>
         ConstOp::Add => a.checked_add(*b)?,
         ConstOp::Sub => a.checked_sub(*b)?,
         ConstOp::Mul => a.checked_mul(*b)?,
+        // `checked_div`/`checked_rem` yield None on divide-by-zero and on the
+        // `i128::MIN / -1` overflow — both surface as a non-const result.
+        ConstOp::Div => a.checked_div(*b)?,
+        ConstOp::Rem => a.checked_rem(*b)?,
     };
     Some(Value::Int(v))
 }
