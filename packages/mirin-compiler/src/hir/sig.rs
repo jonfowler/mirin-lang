@@ -41,6 +41,10 @@ pub struct Signature<'db> {
     pub generic_params: Vec<GenericParam>,
     pub params: Vec<Param<'db>>,
     pub return_type: Option<Type<'db>>,
+    /// The referrable result place(s): one `return` place for a normal return,
+    /// the named part(s) for a `-> (name: T, …)` signature, empty for a unit fn
+    /// (planning/return_variable.md).
+    pub result_places: Vec<ResultPlace<'db>>,
     pub fields: Vec<Field<'db>>,
     /// Written bounds (`param T: Add + Bits`, `where T: Bits`) plus, on a
     /// trait method decl, the implicit `Self: Trait`. Instantiated into
@@ -140,6 +144,18 @@ pub struct Param<'db> {
     /// The raw source of a `= default` value, if any (`high`, `0`) — a call that
     /// omits this param wires the default at the instance.
     pub default: Option<String>,
+}
+
+/// A referrable result place — the `return` variable, or a named result/named
+/// tuple part (planning/return_variable.md). `name` is the source binding
+/// (`return` when unnamed); `sv_base` is the SystemVerilog port base its leaves
+/// emit under (`result`, or `result__0`/`result__1`/… for tuple parts). Empty
+/// for a unit fn (no return type).
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
+pub struct ResultPlace<'db> {
+    pub name: String,
+    pub ty: Type<'db>,
+    pub sv_base: String,
 }
 
 /// A struct/port field: its name, type, and (ports only) direction.
@@ -322,6 +338,7 @@ fn lower_impl_header<'db>(
         generic_params,
         params: Vec::new(),
         return_type: Some(self_ty),
+        result_places: Vec::new(),
         fields: Vec::new(),
         predicates,
         const_value: None,
@@ -410,6 +427,7 @@ fn lower_adt_sig<'db>(
         generic_params,
         params: Vec::new(),
         return_type: None,
+        result_places: Vec::new(),
         fields,
         predicates: Vec::new(),
         const_value: None,
@@ -819,9 +837,16 @@ fn lower_fn_sig<'db>(
         });
     }
 
-    let return_type = node
-        .child_by_field_name("return_type")
-        .map(|t| lowerer.lower_type(&t, source));
+    let return_node = node.child_by_field_name("return_type");
+    // Named result(s) (`-> (output: DF)`, `-> (sum: T, carry: U)`): capture the
+    // names; the underlying type is the element (1) or a tuple (≥2). For a
+    // normal return the name list is empty and the `return` place is synthesised
+    // below (planning/return_variable.md).
+    let result_names: Vec<String> = return_node
+        .filter(|n| n.kind() == "named_return")
+        .map(|n| named_result_names(&n, source))
+        .unwrap_or_default();
+    let return_type = return_node.map(|t| lower_return_type(&lowerer, &t, source));
     // Drain now: `lowerer` borrows `generic_params`, which the lifting branch
     // below moves.
     let unresolved_diags = drain_unresolved(&lowerer, node);
@@ -867,17 +892,26 @@ fn lower_fn_sig<'db>(
             }
         }
         if let Some(rt) = node.child_by_field_name("return_type") {
-            if !type_has_domain(rt, source) {
-                diagnostics.push(SigDiagnostic {
-                    span: rel(&rt),
-                    kind: SigDiagnosticKind::MissingDomainAnnotation,
-                });
-            }
-            if let Some(c) = domain_conflict(&rt, source, None) {
-                diagnostics.push(SigDiagnostic {
-                    span: rel(&c),
-                    kind: SigDiagnosticKind::ConflictingDomain,
-                });
+            // A named return checks each named result's type; a normal return
+            // checks the type node itself.
+            let checked: Vec<Node> = if rt.kind() == "named_return" {
+                named_result_type_nodes(&rt)
+            } else {
+                vec![rt]
+            };
+            for ty in checked {
+                if !type_has_domain(ty, source) {
+                    diagnostics.push(SigDiagnostic {
+                        span: rel(&ty),
+                        kind: SigDiagnosticKind::MissingDomainAnnotation,
+                    });
+                }
+                if let Some(c) = domain_conflict(&ty, source, None) {
+                    diagnostics.push(SigDiagnostic {
+                        span: rel(&c),
+                        kind: SigDiagnosticKind::ConflictingDomain,
+                    });
+                }
             }
         }
     } else {
@@ -896,14 +930,93 @@ fn lower_fn_sig<'db>(
 
     diagnostics.extend(unresolved_diags);
     diagnostics.extend(pred_diags);
+    let result_places = build_result_places(&return_type, &result_names);
     Signature {
         generic_params,
         params,
         return_type,
+        result_places,
         fields: Vec::new(),
         predicates,
         const_value: None,
         diagnostics,
+    }
+}
+
+/// The result place(s) for a fn's (already lifted) return type: one `return`
+/// place for a normal return, the named part(s) for a named return. A tuple of
+/// named parts splits into `result__0`/`result__1`/… (planning/return_variable.md).
+fn build_result_places<'db>(
+    return_type: &Option<Type<'db>>,
+    names: &[String],
+) -> Vec<ResultPlace<'db>> {
+    let Some(rt) = return_type else {
+        return Vec::new();
+    };
+    match names {
+        // A normal return: the whole result is the `return` place.
+        [] => vec![ResultPlace {
+            name: "return".to_owned(),
+            ty: rt.clone(),
+            sv_base: "result".to_owned(),
+        }],
+        // A single named result names the whole result.
+        [name] => vec![ResultPlace {
+            name: name.clone(),
+            ty: rt.clone(),
+            sv_base: "result".to_owned(),
+        }],
+        // Two or more name the parts of a tuple result.
+        _ => match rt {
+            Type::Tuple(elems) => names
+                .iter()
+                .zip(elems)
+                .enumerate()
+                .map(|(i, (name, ety))| ResultPlace {
+                    name: name.clone(),
+                    ty: ety.clone(),
+                    sv_base: format!("result__{i}"),
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+    }
+}
+
+/// `-> (a: T, b: U)` → `["a", "b"]`, in order.
+fn named_result_names(node: &Node, source: &str) -> Vec<String> {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|c| c.kind() == "named_result")
+        .filter_map(|c| c.child_by_field_name("name").map(|n| node_text(&n, source)))
+        .collect()
+}
+
+/// `-> (a: T, b: U)` → the `T`, `U` type nodes, in order.
+fn named_result_type_nodes<'t>(node: &Node<'t>) -> Vec<Node<'t>> {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|c| c.kind() == "named_result")
+        .filter_map(|c| c.child_by_field_name("type"))
+        .collect()
+}
+
+/// Lower a fn's return-type node to its [`Type`]: a `named_return` becomes its
+/// single element's type, or a tuple of the parts' types (≥2); any other node
+/// lowers as an ordinary type.
+fn lower_return_type<'db>(lowerer: &TypeLowerer<'_, 'db>, node: &Node, source: &str) -> Type<'db> {
+    if node.kind() == "named_return" {
+        let mut types: Vec<Type<'db>> = named_result_type_nodes(node)
+            .iter()
+            .map(|t| lowerer.lower_type(t, source))
+            .collect();
+        if types.len() == 1 {
+            types.pop().unwrap()
+        } else {
+            Type::Tuple(types)
+        }
+    } else {
+        lowerer.lower_type(node, source)
     }
 }
 
@@ -1632,6 +1745,42 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn result_places_name_the_return() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn r() -> uint(8) { return 0; }\n\
+             fn s() -> (out: uint(8)) { out = 0; }\n\
+             fn t() -> (sum: uint(8), carry: bool) { sum = 0; carry = false; }\n\
+             fn u() { }",
+        );
+        // Unnamed: one whole-result place named `return`, SV base `result`.
+        let r = sig_of(&db, krate, fn_def(&db, krate, "r"));
+        assert_eq!(r.result_places.len(), 1);
+        assert_eq!(r.result_places[0].name, "return");
+        assert_eq!(r.result_places[0].sv_base, "result");
+        // Single named: the whole result, SV base still `result`.
+        let s = sig_of(&db, krate, fn_def(&db, krate, "s"));
+        assert_eq!(s.result_places.len(), 1);
+        assert_eq!(s.result_places[0].name, "out");
+        assert_eq!(s.result_places[0].sv_base, "result");
+        // Named tuple parts split into result__0 / result__1; return type is a tuple.
+        let t = sig_of(&db, krate, fn_def(&db, krate, "t"));
+        let bases: Vec<(&str, &str)> = t
+            .result_places
+            .iter()
+            .map(|p| (p.name.as_str(), p.sv_base.as_str()))
+            .collect();
+        assert_eq!(bases, vec![("sum", "result__0"), ("carry", "result__1")]);
+        assert!(matches!(t.return_type, Some(Type::Tuple(_))));
+        // A unit fn has no result place.
+        let u = sig_of(&db, krate, fn_def(&db, krate, "u"));
+        assert!(u.result_places.is_empty());
     }
 
     #[test]

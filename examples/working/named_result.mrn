@@ -1,0 +1,29 @@
+// Named results (planning/return_variable.md): the result(s) can be named in
+// the signature, and the name(s) become referrable result places in the body
+// (the `return` keyword doesn't exist then). The SV result ports are unchanged
+// — a single named result is the whole `result`; named tuple parts split into
+// `result__0`, `result__1`, ….
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+// A single named result names the whole result: `swapped.a = …` drives
+// `result__a`. Driven by leaf here.
+fn swap(p: Pair) -> (swapped: Pair) {
+    swapped.a = p.b;
+    swapped.b = p.a;
+}
+
+// A single named result driven by a tail expression (desugars to the
+// whole-result drive `built = pair { … }`).
+fn build(x: uint(8)) -> (built: Pair) {
+    pair { a = x, b = x }
+}
+
+// Named tuple parts: `sum`/`carry` name the parts of a `(uint(8), bool)`
+// result, emitted as `result__0` / `result__1`.
+fn add_flag(x: uint(8), y: uint(8)) -> (sum: uint(8), carry: bool) {
+    sum = x + y;
+    carry = x == y;
+}

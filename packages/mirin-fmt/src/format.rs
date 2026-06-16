@@ -219,6 +219,7 @@ impl<'a> Formatter<'a> {
             }
             "struct_pattern" => self.struct_pattern(n),
             "tuple_type" => self.tuple_type(n),
+            "named_return" => self.named_return(n),
 
             "visibility_modifier" => self.visibility(n),
             "comment" => text(self.text(n).trim_end()),
@@ -904,6 +905,23 @@ impl<'a> Formatter<'a> {
             .map(|c| self.doc(c))
             .collect();
         self.delimited_items("(", ")", items, false)
+    }
+
+    /// `(output: DF @clk)` / `(sum: uint(8), carry: bool)` — named result(s).
+    fn named_return(&self, n: Node) -> Doc {
+        let items: Vec<Doc> = self
+            .children_of_kind(n, "named_result")
+            .into_iter()
+            .map(|c| self.named_result(c))
+            .collect();
+        self.delimited_items("(", ")", items, false)
+    }
+
+    /// `name: T` — one named result.
+    fn named_result(&self, n: Node) -> Doc {
+        let name = self.text(self.field(n, "name").unwrap());
+        let ty = self.doc(self.field(n, "type").unwrap());
+        concat([text(name), text(": "), ty])
     }
 
     /// `(A, B) @clk` — a tuple type with its optional trailing domain.

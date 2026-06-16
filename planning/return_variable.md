@@ -1,7 +1,7 @@
 # The `return` place (referrable result variable)
 
-Status: landed (slice 1). Naming the result in the signature (`-> (output:
-DF)`) and naming tuple-result parts are future slices — see the end.
+Status: landed — the `return` place, named single results (`-> (output: DF)`),
+and named tuple-result parts (`-> (sum: T, carry: U)`). See "Named results".
 
 ## What it is
 
@@ -67,14 +67,37 @@ The result port names are unchanged (`result__valid`, `result__ready`, … / bar
 place style and emits the identical module (it even drops the intermediate
 backpressure wire — `return.ready` is read directly).
 
-## Future slices
+## Named results
 
-- **Named result in the signature** — `-> (output: DF @clk)`, where `output`
-  replaces `return`. Naming was deliberately kept source-only for now: the SV
-  base stays `result` (decided with Jon), so a named result is sugar, not a
-  port-renaming.
-- **Named tuple-result parts** — `-> (sum: uint(8), carry: bool)`, which is a
-  destructuring of the result and rides on pattern matching. The pattern
-  substrate is in place: tuple and struct destructuring patterns desugar at
-  CST→HIR (planning/tuples.md); only structs and positive tuples are
-  pattern-matchable, ports are not.
+The result(s) can be named in the signature; the name(s) become the referrable
+result place(s), and the `return` keyword does not exist then.
+
+```mirin
+fn reg_fwd(self @clk, rst: Reset @clk) -> (output: DF @clk) {
+    output.valid = reg_vld;            // drive a part by leaf
+    let en = !reg_vld || output.ready; // read an in-leaf
+}
+fn add_flag(x: uint(8), y: uint(8)) -> (sum: uint(8), carry: bool) {
+    sum = x + y;                       // → result__0
+    carry = x == y;                    // → result__1
+}
+```
+
+- **One model, via `Signature.result_places`.** `sig_of` always produces a
+  list of result places: `[{name:"return", ty, sv_base:"result"}]` for a normal
+  return, the named place(s) for a named return. A single named result names
+  the whole result (`sv_base = "result"`); two or more name the parts of a
+  tuple result, splitting into `result__0`/`result__1`/… and a `Type::Tuple`
+  return type. `body.rs` allocates one var-like local per place; the unnamed
+  one is literally named `return`, so the keyword resolves only when unnamed.
+- **The SV base is never the source name.** `output` / `sum` emit as `result` /
+  `result__0` (decided with Jon — naming is sugar, not a port rename; `return`
+  is also an SV reserved word). A `LocalData.result_base` carries the base; the
+  backend keys on it (`local_name`, `is_result_local`), not on the name.
+- **The whole-result drive** (`return EXPR;`/tail, or `output = EXPR`) targets
+  the single whole-result place (`sv_base == "result"`) — present for an
+  unnamed or single-named result, absent for a multi-part named return (drive
+  the parts). `return` itself is undefined under a named result
+  (`fail-expected/return-when-named.mrn`).
+
+`examples/working/named_result.mrn` covers all three forms.

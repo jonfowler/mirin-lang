@@ -832,22 +832,22 @@ impl<'db> SvLower<'_, 'db> {
         self.items.push(SvItem::Assign { lhs, rhs });
     }
 
-    /// A local's SV name (uniquified). The result place (`return`) emits as the
-    /// `result` ports — its leaves ARE the module's result, declared from the
-    /// signature (planning/return_variable.md). The base name stays `result`
-    /// (not `return`, an SV reserved word) so a scalar return is valid SV.
+    /// A local's SV name (uniquified). A result place (`return`, a named result,
+    /// or a named tuple part) emits as its result ports — leaves that ARE the
+    /// module's result, declared from the signature. Its base is `result` (or
+    /// `result__0`/… for a tuple part), never the source name (`return` is an SV
+    /// reserved word; a user name shouldn't rename the port) — see
+    /// planning/return_variable.md.
     fn local_name(&self, local: LocalId) -> String {
-        if self.is_result_local(local) {
-            return "result".to_owned();
+        if let Some(base) = &self.body.local(local).result_base {
+            return base.clone();
         }
         self.local_names[local.0 as usize].clone()
     }
 
-    /// The synthetic result place. Identified by its reserved name `return`,
-    /// which no user local can take.
+    /// A result place — carries an SV result base.
     fn is_result_local(&self, local: LocalId) -> bool {
-        let l = self.body.local(local);
-        l.name == "return" && l.kind == crate::hir::body::LocalKind::Var
+        self.body.local(local).result_base.is_some()
     }
 
     /// A local's type: inferred, falling back to declared. A `self` param's

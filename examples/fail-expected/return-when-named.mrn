@@ -1,0 +1,13 @@
+// Must FAIL: when the result is named, the `return` keyword doesn't exist —
+// you drive the named place (planning/return_variable.md). Here the result is
+// named `output`, so `return.a` is an undefined name. Its working twin is
+// working/named_result.mrn (`output.a = …`).
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+fn swap(p: Pair) -> (output: Pair) {
+    return.a = p.b;
+    return.b = p.a;
+}

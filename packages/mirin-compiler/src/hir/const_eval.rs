@@ -498,7 +498,7 @@ impl<'db> Evaluator<'db> {
                 Stmt::Return { value } => return self.eval_expr(frame, *value, depth),
                 Stmt::Equation { lhs, rhs }
                     if matches!(&frame.body.expr(*lhs).kind,
-                        ExprKind::Local(l) if frame.body.local(*l).name == "return") =>
+                        ExprKind::Local(l) if frame.body.local(*l).result_base.is_some()) =>
                 {
                     return self.eval_expr(frame, *rhs, depth);
                 }
