@@ -3,9 +3,9 @@ fn stage {dom clk: Clock} (x: uint(8) @clk, k: uint(8) @clk) -> uint(8) @clk {
 }
 
 fn pipeline {dom clk: Clock} (v: Vec(3, uint(8)) @clk, k: uint(8) @clk) -> uint(8) @clk {
-    var out: Vec(3, uint(8)) @clk;
+    var outs: Vec(3, uint(8)) @clk;
     for (i, x) in v.enumerate() {
-        out[i] = stage(x, k);
+        outs[i] = stage(x, k);
     }
-    out[2]
+    outs[2]
 }

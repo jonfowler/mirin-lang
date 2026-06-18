@@ -1,0 +1,11 @@
+// Must FAIL: `out` is a reserved keyword (the port-field direction), so it
+// cannot be used as a binding name — here a `var`. Following Rust, the strict
+// keywords (`in`, `out`, `dom`, `param`, `as`, `verilog`, `crate`, `self`) are
+// rejected as names; their keyword uses (port `out`, `for…in`, the `self`
+// receiver, `crate::` paths) still work. Builtin TYPE names (`Clock`, `uint`,
+// …) stay shadowable, like Rust's primitive types.
+fn f {dom clk: Clock} (x: uint(8) @clk) -> uint(8) @clk {
+    var out: uint(8) @clk;
+    out = x;
+    out
+}

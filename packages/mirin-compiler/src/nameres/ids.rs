@@ -120,6 +120,25 @@ impl DefKind {
     }
 }
 
+/// Mirin's reserved words — keywords that may not be used as a user-introduced
+/// binding name (def, parameter, result, field, local). Following Rust, these
+/// are the *strict* keywords (pure syntax and path anchors); builtin TYPE names
+/// (`Type`, `Clock`, `uint`, …) are NOT here — they live in the type namespace
+/// and are shadowable, like Rust's primitive types (`let u32 = 5;`).
+///
+/// Hard keywords the grammar already rejects everywhere (`fn`, `let`, `when`,
+/// `else`, `super`, …) need no entry; only the words that otherwise *leak* into
+/// identifier position are listed. `self` is reserved as a binding name but
+/// stays legal as the method receiver (handled at the receiver site).
+pub const RESERVED_WORDS: &[&str] = &[
+    "in", "out", "dom", "param", "as", "verilog", "crate", "self",
+];
+
+/// Is `name` a reserved word that cannot be a user binding name?
+pub fn is_reserved_word(name: &str) -> bool {
+    RESERVED_WORDS.contains(&name)
+}
+
 /// A crate's stable, content-independent identity — the high half of a
 /// [`DefPathHash`], so paths in different crates never collide. One local crate
 /// for now (§3.5); `root()` is its id. Mirrors rustc's `StableCrateId`.

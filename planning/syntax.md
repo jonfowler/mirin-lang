@@ -36,6 +36,10 @@ This document defines the small Mirin surface syntax subset that current example
 - Use the `param` keyword for compile-time parameters and `dom` for clock-domain bindings; both place the name into the type environment as well as the value environment
 - A named `param`/`dom` without a default is inferred from the call site; with a default, the default is the single fallback (no inference). Positional `param`/`dom` must always be supplied explicitly.
 
+## Reserved words
+
+Following Rust, the keywords are reserved: they may not be used as a binding name (def, parameter, result, field, local). The set that would otherwise *leak* into identifier position — and is rejected by a check in `syntax_errors` — is `in`, `out`, `dom`, `param`, `as`, `verilog`, `crate`, `self`. Their keyword uses (a port `out` field, `for x in v`, the `{dom}`/`(param)` sections, the method receiver `self`, a `crate::`/`self.` path) are not binding names and stay legal. Builtin *type* names (`Type`, `Clock`, `uint`, …) are NOT reserved — they live in the type namespace and are shadowable, exactly like Rust's primitive types (`let u32 = 5;`). (The grammar already rejects the hard keywords — `fn`, `let`, `when`, `else`, `super`, … — everywhere; tree-sitter's native `reserved` word-sets need CLI ≥ 0.25, but we pin 0.24.7, so the leaking contextual keywords are caught semantically instead.)
+
 ## Domains
 
 - For now, only clock domains are in scope as part of the type system
