@@ -42,3 +42,25 @@ fields on **different clocks** or mix `@const` with clocked values — the thing
 the old single-lifted-`__Dom` model rejected (see the former
 `fail-expected/mixed-struct-clocks`). A struct written with no `dom` section
 still lifts to one shared `__Dom` and stamps every field, exactly as before.
+
+### Returning a mixed-domain record
+
+A *bare* return type `-> Pair{c1, c2}` is not writable: a `{` immediately after
+the return-type name collides with the fn-body brace, and a type application's
+argument content (bare identifiers, `a * b` width arithmetic, nested types) is
+too close to body-expression content for the parser to back off — the spurious
+named-args fork consumes the body and only fails at the very end. This is
+unlike `if`/`for` headers, whose named-arg lists use the distinctive `name =
+value` form. Requiring a trailing `()` (so an application ends in `)`) is sound
+at the language level but does not survive tree-sitter's greedy resolution.
+
+The **named-result** form sidesteps it entirely — the type sits inside the
+result-place parens, away from the body boundary:
+
+```
+fn mk {dom c1: Clock, dom c2: Clock} (…) -> (out: Pair{c1, c2}) {
+    out = pair { a = x, b = y };
+}
+```
+
+See `examples/working/struct_mixed_return.mrn`.
