@@ -14,10 +14,26 @@ impl Bits for bool {
     }
 }
 
+impl Bits for uint(8) {
+    const width: integer = 8;
+    fn pack(self) -> uint(width) {
+        self
+    }
+}
+
 fn packer {param T: Bits} (x: T) -> uint(T::width) {
     x.pack()
 }
 
 fn top {dom clk: Clock} (b: bool @clk) -> uint(1) @clk {
     packer(b)
+}
+
+// Regression guard: a projected associated-const WIDTH must survive
+// monomorphisation. `packer(w)` instantiates `packer__uint8`, whose return
+// `uint(T::width)` must ground to `uint(8)` — emit `logic [7:0]`, not the old
+// silently-defaulted 1-bit (which a width-1 example like `top` could not
+// catch). A wrong width here is a verilator port-width mismatch.
+fn top_wide {dom clk: Clock} (w: uint(8) @clk) -> uint(8) @clk {
+    packer(w)
 }

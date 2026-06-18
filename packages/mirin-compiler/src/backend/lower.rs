@@ -126,7 +126,7 @@ fn build_module<'db>(
             continue; // compile-time only — no port
         }
         let drives = p.direction == Some(Direction::Out);
-        for leaf in flatten_leaves(db, krate, &ty, drives, &sig.generic_params) {
+        for leaf in flatten_leaves(db, krate, def, &ty, drives, &sig.generic_params) {
             ports.push(SvPort {
                 direction: if leaf.drives {
                     SvPortDirection::Output
@@ -152,7 +152,7 @@ fn build_module<'db>(
         // inputs to this module (the downstream's backpressure), exactly as
         // for an `out` port parameter. Respect the per-leaf flag rather than
         // forcing every result leaf to an output.
-        for leaf in flatten_leaves(db, krate, &pty, true, &sig.generic_params) {
+        for leaf in flatten_leaves(db, krate, def, &pty, true, &sig.generic_params) {
             ports.push(SvPort {
                 direction: if leaf.drives {
                     SvPortDirection::Output
@@ -785,8 +785,14 @@ impl<'db> SvLower<'_, 'db> {
             return;
         };
         let rt = subst_type(&rt, &self.self_subst);
-        let result_leaves =
-            flatten_leaves(self.db, self.krate, &rt, true, &self.sig.generic_params);
+        let result_leaves = flatten_leaves(
+            self.db,
+            self.krate,
+            self.def,
+            &rt,
+            true,
+            &self.sig.generic_params,
+        );
         // `return f(args)` — connect the callee's result straight to `result`.
         if let Some(uc) = self.as_user_call(value) {
             let target = result_leaves
@@ -1078,6 +1084,7 @@ impl<'db> SvLower<'_, 'db> {
                     Some(owner) => flatten_leaves(
                         self.db,
                         self.krate,
+                        self.def,
                         &Type::Value {
                             kind: ValueKind::Struct {
                                 def: owner,
@@ -1106,7 +1113,14 @@ impl<'db> SvLower<'_, 'db> {
     /// The scalar leaves of a local's type (scalar → one bit-typed leaf).
     fn local_type_leaves(&self, local: LocalId) -> Vec<Leaf> {
         match self.local_ty(local) {
-            Some(t) => flatten_leaves(self.db, self.krate, &t, true, &self.sig.generic_params),
+            Some(t) => flatten_leaves(
+                self.db,
+                self.krate,
+                self.def,
+                &t,
+                true,
+                &self.sig.generic_params,
+            ),
             None => vec![Leaf {
                 suffix: String::new(),
                 ty: SvType::bit(),
@@ -1136,10 +1150,17 @@ impl<'db> SvLower<'_, 'db> {
         let base = self.local_name(local);
         let drives = self.local_base_drives(local);
         match self.local_ty(local) {
-            Some(t) => flatten_leaves(self.db, self.krate, &t, drives, &self.sig.generic_params)
-                .into_iter()
-                .map(|leaf| (SvExpr::Ident(join(&base, &leaf.suffix)), leaf.drives))
-                .collect(),
+            Some(t) => flatten_leaves(
+                self.db,
+                self.krate,
+                self.def,
+                &t,
+                drives,
+                &self.sig.generic_params,
+            )
+            .into_iter()
+            .map(|leaf| (SvExpr::Ident(join(&base, &leaf.suffix)), leaf.drives))
+            .collect(),
             None => vec![(SvExpr::Ident(base), drives)],
         }
     }
@@ -1738,10 +1759,17 @@ impl<'db> SvLower<'_, 'db> {
             self.def,
             &subst_type(&t, &self.self_subst),
         );
-        flatten_leaves(self.db, self.krate, &t, true, &self.sig.generic_params)
-            .into_iter()
-            .map(|l| l.ty)
-            .collect()
+        flatten_leaves(
+            self.db,
+            self.krate,
+            self.def,
+            &t,
+            true,
+            &self.sig.generic_params,
+        )
+        .into_iter()
+        .map(|l| l.ty)
+        .collect()
     }
 
     fn block_value(&mut self, block: &Block) -> SvExpr {
@@ -2182,8 +2210,14 @@ impl<'db> SvLower<'_, 'db> {
         //    to its caller expression's leaves.
         for (pname, pty, caller_expr, default) in &slots {
             let pty = subst_type(pty, &subst);
-            let callee_leaves =
-                flatten_leaves(self.db, self.krate, &pty, true, &self.sig.generic_params);
+            let callee_leaves = flatten_leaves(
+                self.db,
+                self.krate,
+                self.def,
+                &pty,
+                true,
+                &self.sig.generic_params,
+            );
             // A supplied arg flattens to its leaves; an omitted param with a
             // default wires that default to each callee leaf.
             let caller_leaves: Vec<(String, SvExpr)> = match caller_expr {
@@ -2208,7 +2242,14 @@ impl<'db> SvLower<'_, 'db> {
         let mut callee_result_ports: Vec<String> = Vec::new();
         for place in &csig.result_places {
             let pty = subst_type(&place.ty, &subst);
-            for leaf in flatten_leaves(self.db, self.krate, &pty, true, &self.sig.generic_params) {
+            for leaf in flatten_leaves(
+                self.db,
+                self.krate,
+                self.def,
+                &pty,
+                true,
+                &self.sig.generic_params,
+            ) {
                 callee_result_ports.push(join(&place.sv_base, &leaf.suffix));
             }
         }
@@ -2258,18 +2299,24 @@ impl<'db> SvLower<'_, 'db> {
             },
         };
         let base = self.fresh_call();
-        let target: Vec<(String, SvExpr)> =
-            flatten_leaves(self.db, self.krate, &rt, true, &self.sig.generic_params)
-                .into_iter()
-                .map(|l| {
-                    let name = join(&base, &l.suffix);
-                    self.items.push(SvItem::Logic(SvLogicDecl {
-                        ty: l.ty,
-                        name: name.clone(),
-                    }));
-                    (l.suffix, SvExpr::Ident(name))
-                })
-                .collect();
+        let target: Vec<(String, SvExpr)> = flatten_leaves(
+            self.db,
+            self.krate,
+            self.def,
+            &rt,
+            true,
+            &self.sig.generic_params,
+        )
+        .into_iter()
+        .map(|l| {
+            let name = join(&base, &l.suffix);
+            self.items.push(SvItem::Logic(SvLogicDecl {
+                ty: l.ty,
+                name: name.clone(),
+            }));
+            (l.suffix, SvExpr::Ident(name))
+        })
+        .collect();
         self.emit_instance(uc, target.clone());
         target
     }
@@ -2357,7 +2404,26 @@ struct Leaf {
 /// args are substituted into the field types (a parametric `Bus(uint(8))` field
 /// `data: A` becomes `uint(8)`), so the leaves are concrete or in terms of the
 /// enclosing def's own params.
-fn flatten_leaves(
+/// Flatten a type to its SV leaves, **grounding every width first** (a
+/// `uint(T::width)` associated const, a `uint(n + 1)` expression → a literal
+/// via `const_eval`). Grounding here, at the single entry, guarantees `sv_type`
+/// only ever sees a literal or a generic `Param` width — so it can panic on
+/// anything else rather than silently emit a 1-bit logic (which masked an
+/// ungrounded-width bug). `def` is the body context const_eval resolves in.
+fn flatten_leaves<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+    ty: &Type<'db>,
+    drives: bool,
+    generics: &[GenericParam],
+) -> Vec<Leaf> {
+    let ty = ground_widths(db, krate, def, ty);
+    flatten_leaves_inner(db, krate, &ty, drives, generics)
+}
+
+/// The recursion of [`flatten_leaves`], over an already-grounded type.
+fn flatten_leaves_inner(
     db: &dyn salsa::Database,
     krate: SourceRoot,
     ty: &Type<'_>,
@@ -2376,7 +2442,7 @@ fn flatten_leaves(
                 },
                 _ => SvExpr::Lit("1".to_owned()),
             };
-            flatten_leaves(db, krate, elem, drives, generics)
+            flatten_leaves_inner(db, krate, elem, drives, generics)
                 .into_iter()
                 .map(|mut leaf| {
                     leaf.ty.unpacked.insert(0, dim.clone());
@@ -2393,7 +2459,7 @@ fn flatten_leaves(
             let mut out = Vec::new();
             for f in &sig.fields {
                 let fty = subst_type(&f.ty, &subst);
-                for sub in flatten_leaves(db, krate, &fty, drives, generics) {
+                for sub in flatten_leaves_inner(db, krate, &fty, drives, generics) {
                     out.push(Leaf {
                         suffix: join(&f.name, &sub.suffix),
                         ty: sub.ty,
@@ -2409,7 +2475,7 @@ fn flatten_leaves(
         Type::Tuple(elems) => {
             let mut out = Vec::new();
             for (i, ety) in elems.iter().enumerate() {
-                for sub in flatten_leaves(db, krate, ety, drives, generics) {
+                for sub in flatten_leaves_inner(db, krate, ety, drives, generics) {
                     out.push(Leaf {
                         suffix: join(&i.to_string(), &sub.suffix),
                         ty: sub.ty,
@@ -2429,7 +2495,7 @@ fn flatten_leaves(
                 // `in` field of an `in` port).
                 let child = drives == (f.direction == Some(Direction::Out));
                 let fty = subst_type(&f.ty, &subst);
-                for sub in flatten_leaves(db, krate, &fty, child, generics) {
+                for sub in flatten_leaves_inner(db, krate, &fty, child, generics) {
                     out.push(Leaf {
                         suffix: join(&f.name, &sub.suffix),
                         ty: sub.ty,
@@ -2684,41 +2750,38 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
             Some(Term::Type(t)) => t.clone(),
             _ => ty.clone(),
         },
+        // Substitute the width through `subst_const_opt`, which recurses into
+        // nested `Param`s — not just a bare `width: Param(i)`, but the `Param`
+        // inside an associated-const projection (`uint(T::width)` =
+        // `uint(Assoc{ self_ty: Param(i) })`) or a const expression
+        // (`uint(n + 1)`). Matching only the bare-`Param` form silently dropped
+        // those substitutions and left a symbolic width that defaulted to 1 bit.
         Type::Value {
+            kind: ValueKind::SInt { width },
+            domain,
+        } => Type::Value {
             kind: ValueKind::SInt {
-                width: ConstArg::Param(i),
+                width: subst_const_opt(width, subst),
             },
-            domain,
-        } => match arg(*i) {
-            Some(Term::Const(c)) => Type::Value {
-                kind: ValueKind::SInt { width: c.clone() },
-                domain: *domain,
-            },
-            _ => ty.clone(),
+            domain: *domain,
         },
         Type::Value {
+            kind: ValueKind::Bits { width },
+            domain,
+        } => Type::Value {
             kind: ValueKind::Bits {
-                width: ConstArg::Param(i),
+                width: subst_const_opt(width, subst),
             },
-            domain,
-        } => match arg(*i) {
-            Some(Term::Const(c)) => Type::Value {
-                kind: ValueKind::Bits { width: c.clone() },
-                domain: *domain,
-            },
-            _ => ty.clone(),
+            domain: *domain,
         },
         Type::Value {
-            kind: ValueKind::UInt {
-                width: ConstArg::Param(i),
-            },
+            kind: ValueKind::UInt { width },
             domain,
-        } => match arg(*i) {
-            Some(Term::Const(c)) => Type::Value {
-                kind: ValueKind::UInt { width: c.clone() },
-                domain: *domain,
+        } => Type::Value {
+            kind: ValueKind::UInt {
+                width: subst_const_opt(width, subst),
             },
-            _ => ty.clone(),
+            domain: *domain,
         },
         Type::Value {
             kind: ValueKind::Struct { def, args },
@@ -2735,19 +2798,10 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
             args: subst_args(args, subst),
             domain: *domain,
         },
-        Type::Vec { len, elem } => {
-            let len = match len {
-                ConstArg::Param(i) => match arg(*i) {
-                    Some(Term::Const(c)) => c.clone(),
-                    _ => len.clone(),
-                },
-                other => other.clone(),
-            };
-            Type::Vec {
-                len,
-                elem: Box::new(subst_type(elem, subst)),
-            }
-        }
+        Type::Vec { len, elem } => Type::Vec {
+            len: subst_const_opt(len, subst),
+            elem: Box::new(subst_type(elem, subst)),
+        },
         Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| subst_type(e, subst)).collect()),
         other => other.clone(),
     }
@@ -2813,51 +2867,72 @@ fn sv_type(ty: &Type, generics: &[GenericParam]) -> SvType {
     match ty {
         Type::Vec { len, elem } => {
             let mut t = sv_type(elem, generics);
-            let dim = match len {
-                ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
-                ConstArg::Param(i) => match generics.get(*i as usize) {
-                    Some(g) => SvExpr::Ident(g.name.clone()),
-                    None => SvExpr::Lit("1".to_owned()),
-                },
-                _ => SvExpr::Lit("1".to_owned()),
-            };
-            t.unpacked.insert(0, dim);
+            t.unpacked.insert(0, width_expr(len, generics));
             t
         }
         Type::Value {
             kind: ValueKind::Bits { width },
             ..
-        } => match width {
-            ConstArg::Lit(w) => SvType::uint(SvExpr::Lit(w.to_string())),
-            ConstArg::Param(i) => match generics.get(*i as usize) {
-                Some(g) => SvType::uint(SvExpr::Ident(g.name.clone())),
-                None => SvType::bit(),
-            },
-            _ => SvType::bit(),
-        },
+        } => SvType::uint(width_expr(width, generics)),
         Type::Value {
             kind: ValueKind::SInt { width },
             ..
-        } => match width {
-            ConstArg::Lit(w) => SvType::sint(SvExpr::Lit(w.to_string())),
-            ConstArg::Param(i) => match generics.get(*i as usize) {
-                Some(g) => SvType::sint(SvExpr::Ident(g.name.clone())),
-                None => SvType::bit(),
-            },
-            _ => SvType::bit(),
-        },
+        } => SvType::sint(width_expr(width, generics)),
         Type::Value {
             kind: ValueKind::UInt { width },
             ..
-        } => match width {
-            ConstArg::Lit(w) => SvType::uint(SvExpr::Lit(w.to_string())),
-            ConstArg::Param(i) => match generics.get(*i as usize) {
-                Some(g) => SvType::uint(SvExpr::Ident(g.name.clone())),
-                None => SvType::bit(),
-            },
-            _ => SvType::bit(),
-        },
+        } => SvType::uint(width_expr(width, generics)),
+        // Genuinely 1-bit signals.
+        Type::Value {
+            kind: ValueKind::Bool | ValueKind::Reset | ValueKind::Event,
+            ..
+        } => SvType::bit(),
+        // A 1-bit fallback for everything else. For WELL-TYPED code this is
+        // unreachable: aggregates are decomposed by `flatten_leaves`, type
+        // params are substituted at monomorphisation, and `integer` values are
+        // filtered before emission. It is reached only on ALREADY-DIAGNOSED code
+        // — and emission DOES run on erroring crates (`reserved_words` forces
+        // `sv_file`; the LSP renders incomplete code), so the backend must stay
+        // panic-free here. We would prefer to assert (this default once masked a
+        // `uint(T::width)` → 1-bit substitution bug — fixed by grounding widths
+        // in `flatten_leaves`), but an assert is only sound once emission is
+        // gated on a diagnostic-free crate. TODO: gate emission on a clean crate,
+        // then make this branch (and `width_expr`'s) a hard error.
         _ => SvType::bit(),
+    }
+}
+
+/// The SV bit-width (or vector-length) expression for a const, or a panic. A
+/// width is either a **literal** (concrete — `ground_widths` evaluates const
+/// expressions and associated consts to a literal) or a bare generic **`Param`**
+/// (a parametric module's own SV parameter, e.g. `[n-1:0]`). Anything else is a
+/// bug or an unimplemented case and must NOT silently become a 1-bit type: that
+/// default masked an associated-const substitution bug (`uint(T::width)` left
+/// ungrounded — planning/pack_resize.md).
+fn width_expr(c: &ConstArg, generics: &[GenericParam]) -> SvExpr {
+    match c {
+        ConstArg::Lit(w) => SvExpr::Lit(w.to_string()),
+        // A `Param` that indexes one of the emitted module's own generics is a
+        // symbolic SV parameter (`[n-1:0]`). An OUT-OF-RANGE index is benign and
+        // expected in exactly one place: `emit_instance` flattens a *callee's*
+        // type against the *caller's* generics only to derive connection
+        // suffixes — the leaf width there is never emitted (the real port width
+        // is the callee module's own decl + its `#(...)` params). So this is not
+        // a masked output width; fall back without ceremony.
+        ConstArg::Param(i) => match generics.get(*i as usize) {
+            Some(g) => SvExpr::Ident(g.name.clone()),
+            None => SvExpr::Lit("1".to_owned()),
+        },
+        // A non-literal, non-`Param` width (associated const, const expression).
+        // For WELL-TYPED code `flatten_leaves` has already grounded these to a
+        // literal via const_eval (that grounding is what fixed the
+        // `uint(T::width)` → 1-bit bug). One reaching here therefore means EITHER
+        // already-diagnosed code (emission runs on erroring crates — e.g.
+        // `reserved_words` forces `sv_file` — so the backend must not panic) OR a
+        // symbolic compound width in a parametric module, which is not rendered
+        // yet. TODO: render symbolic compound widths (`uint(n + 1)` → `[(n+1)-1:0]`)
+        // via `render_const_sv` instead of this 1-bit fallback.
+        _ => SvExpr::Lit("1".to_owned()),
     }
 }
 
