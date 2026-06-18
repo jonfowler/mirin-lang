@@ -357,14 +357,14 @@ fn lower_adt_sig<'db>(
     source: &str,
     is_port: bool,
 ) -> Signature<'db> {
-    let sections: &[(&str, &str, bool)] = if is_port {
-        &[
-            ("named_parameters", "named_parameter", true),
-            ("parameters", "parameter", false),
-        ]
-    } else {
-        &[("parameters", "parameter", false)]
-    };
+    // Both structs and ports may declare a named (`{ dom clk, param N }`) and a
+    // positional section. A struct without a named section simply has none —
+    // `section_params` finds nothing. Declaring `dom` params lets a struct's
+    // fields sit on distinct clocks (planning/structs_as_ports.md).
+    let sections: &[(&str, &str, bool)] = &[
+        ("named_parameters", "named_parameter", true),
+        ("parameters", "parameter", false),
+    ];
     let is_trait_name = |n: &str| {
         map.resolve_in_scope(module, n, Namespace::Item)
             .and_then(|d| map.def_data(d))

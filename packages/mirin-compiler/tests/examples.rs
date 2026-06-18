@@ -111,6 +111,8 @@ const CLEAN: &[&str] = &[
     "parameterized_port.mrn",
     "parametric_struct.mrn",
     "parametric_struct_extended.mrn",
+    "struct_mixed_domains.mrn",
+    "parametric_struct_domain.mrn",
     "reg_const_input.mrn",
     "struct_two_clocks.mrn",
     "parametric_width_fn.mrn",

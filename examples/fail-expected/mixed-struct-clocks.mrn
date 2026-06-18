@@ -1,11 +1,13 @@
-// Must FAIL once domain checking lands (Q7 phase C3). `Pair` is a pure
-// struct, so it lifts to ONE shared domain parameter (`Pair{dom __Dom}`)
-// stamped over every field. Constructing a single Pair with `a` on c1 and
-// `b` on c2 has no valid __Dom: unifying the record against `Pair @c1`
-// (from the return type) forces b's field type to `uint(8) @c1`, and `y`
-// is on c2. Mixed-domain aggregates need a type that is generic over the
-// field types themselves (the Tuple story in domain_checking.md).
-// The legal twin (two separately-stamped Pairs) is working/struct_two_clocks.mrn.
+// Must FAIL. This `Pair` declares NO domain section, so it lifts to ONE shared
+// domain parameter (`Pair{dom __Dom}`) stamped over every field. Constructing a
+// single Pair with `a` on c1 and `b` on c2 has no valid __Dom: unifying the
+// record against `Pair @c1` (from the return type) forces b's field type to
+// `uint(8) @c1`, and `y` is on c2.
+//
+// The FIX is to make the struct generic over its field domains, exactly as a
+// port does — declare `{dom c1, dom c2}` and annotate the fields. That legal
+// form is working/struct_mixed_domains.mrn (planning/structs_as_ports.md). The
+// other legal twin (two separately-stamped Pairs) is working/struct_two_clocks.mrn.
 struct Pair = pair {
     a: uint(8),
     b: uint(8),

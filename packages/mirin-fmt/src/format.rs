@@ -439,22 +439,31 @@ impl<'a> Formatter<'a> {
     fn struct_def(&self, n: Node) -> Doc {
         let vis = self.vis_prefix(n);
         let name = self.text(self.field(n, "name").unwrap());
-        let params = self
-            .field(n, "parameters")
-            .map(|p| self.params_section(p))
-            .unwrap_or(NIL);
+        let named = self.field(n, "named_parameters");
+        let params = self.field(n, "parameters");
         let ctor = self.text(self.field(n, "constructor").unwrap());
         let body = self.def_body(self.field(n, "body").unwrap(), "record_field_type");
-        concat([
-            vis,
-            text("struct "),
-            text(name),
-            params,
-            text(" = "),
-            text(ctor),
-            text(" "),
-            body,
-        ])
+
+        // A struct may declare a named (`{ dom clk, param N }`) section like a
+        // port (planning/structs_as_ports.md); lay it out the same way.
+        let header = if let Some(named) = named {
+            let mut sections = vec![Line, self.named_section(named)];
+            if let Some(p) = params {
+                sections.push(Line);
+                sections.push(self.params_section(p));
+            }
+            group(concat([
+                vis,
+                text("struct "),
+                text(name),
+                indent(concat(sections)),
+            ]))
+        } else {
+            let params_doc = params.map(|p| self.params_section(p)).unwrap_or(NIL);
+            concat([vis, text("struct "), text(name), params_doc])
+        };
+
+        concat([header, text(" = "), text(ctor), text(" "), body])
     }
 
     fn port_def(&self, n: Node) -> Doc {

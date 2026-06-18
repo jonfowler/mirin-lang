@@ -1929,6 +1929,16 @@
           }
         ]
       },
+      "named_parameters": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "named_parameter_section",
+            "named": true
+          }
+        ]
+      },
       "parameters": {
         "multiple": false,
         "required": false,

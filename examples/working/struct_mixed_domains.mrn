@@ -1,0 +1,21 @@
+// A struct with fields on DIFFERENT clock domains. Now that a struct shares the
+// port representation (planning/structs_as_ports.md), it may declare a named
+// `{ dom … }` section exactly like a port, so each field can name its own clock.
+// `Pair{c1, c2}` binds the two domain parameters at the use site; the fields
+// flatten to ports on their respective clocks (`p__a` on c1, `p__b` on c2).
+//
+// The legal-only-with-dom-params point: the no-dom-param twin
+// (fail-expected/mixed-struct-clocks.mrn) still fails — a struct written with
+// no domain section lifts to ONE shared domain and cannot hold two clocks.
+struct Pair {dom c1: Clock, dom c2: Clock} = pair {
+    a: uint(8) @c1,
+    b: uint(8) @c2,
+}
+
+fn first {dom c1: Clock, dom c2: Clock} (p: Pair{c1, c2}) -> uint(8) @c1 {
+    p.a
+}
+
+fn second {dom c1: Clock, dom c2: Clock} (p: Pair{c1, c2}) -> uint(8) @c2 {
+    p.b
+}

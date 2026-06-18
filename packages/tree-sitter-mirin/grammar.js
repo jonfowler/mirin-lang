@@ -119,6 +119,7 @@ module.exports = grammar({
         optional(field("visibility", $.visibility_modifier)),
         "struct",
         field("name", $.identifier),
+        optional(field("named_parameters", $.named_parameter_section)),
         optional(field("parameters", $.parameter_section)),
         "=",
         field("constructor", $.identifier),

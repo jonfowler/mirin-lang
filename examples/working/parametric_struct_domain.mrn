@@ -1,0 +1,13 @@
+// A struct parameterized by BOTH a domain and a const, with clocked fields —
+// the "a param/const and some clocked values" shape. A struct may now declare a
+// named `{ dom clk }` section and a positional `(param N)` section, just like a
+// port (planning/structs_as_ports.md). `Buf{clk}(4)` binds the clock and the
+// width; both fields flatten to `uint(4)` ports on `clk`.
+struct Buf {dom clk: Clock} (param N: integer) = buf {
+    lo: uint(N) @clk,
+    hi: uint(N) @clk,
+}
+
+fn lo_of {dom clk: Clock} (b: Buf{clk}(4)) -> uint(4) @clk {
+    b.lo
+}
