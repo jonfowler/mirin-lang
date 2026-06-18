@@ -45,6 +45,7 @@ use crate::hir::body::{
     Block, Body, ConnArg, ExprId, ExprKind, LocalKind, NamedArg, RecordField, Stmt, VerilogSegment,
     body,
 };
+use crate::hir::check::{check_drivers, completeness, directions};
 use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::{Signature, sig_of};
 use crate::hir::types::{
@@ -54,6 +55,7 @@ use crate::hir::types::{
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
 use crate::syntax::ast_id::ast_id_map;
+use crate::syntax::syntax_errors::syntax_errors;
 
 /// QUERY: lower one fn/method to a SystemVerilog module (combinational scalar
 /// subset). Non-fn defs yield an empty module. (A type-generic fn lowers with no
@@ -416,6 +418,15 @@ pub fn verilog(db: &dyn salsa::Database, krate: SourceRoot) -> String {
 /// path, within a file by byte position) to match the reference compiler.
 #[salsa::tracked(returns(ref))]
 pub fn sv_file(db: &dyn salsa::Database, krate: SourceRoot) -> SvFile {
+    // Emission ASSUMES a well-typed crate: every type is concrete and
+    // flattenable, every width grounds to a literal or a generic param. So a
+    // crate that still has front-end diagnostics emits NOTHING — the diagnostics
+    // are the report, and the unrenderable-type/width cases in `sv_type` /
+    // `width_expr` become genuine invariant violations (hard errors) rather than
+    // states reachable from bad input.
+    if !crate_emittable(db, krate) {
+        return SvFile::default();
+    }
     let map = crate_def_map(db, krate);
     let prelude = map.prelude();
     // Concrete fns/methods in source order; a type-generic fn is *not* emitted
@@ -469,6 +480,48 @@ pub fn sv_file(db: &dyn salsa::Database, krate: SourceRoot) -> SvFile {
     mono.sort_by(|a, b| a.name.cmp(&b.name));
     modules.extend(mono);
     SvFile { modules }
+}
+
+/// Is the crate free of front-end diagnostics, so emission may proceed? Covers
+/// syntax, name resolution, signatures, bodies, inference, drivers, completeness
+/// and directions — the same set the CLI reports before it would emit. It does
+/// NOT include `reserved_words`, which is itself computed from the emitted SV
+/// (`sv_file`) and so cannot gate it. The gate is what lets the SV-rendering
+/// helpers treat an unrenderable type/width as a hard error: on a clean crate
+/// they cannot occur.
+fn crate_emittable(db: &dyn salsa::Database, krate: SourceRoot) -> bool {
+    for &file in krate.files(db) {
+        if !syntax_errors(db, file).is_empty() {
+            return false;
+        }
+    }
+    let map = crate_def_map(db, krate);
+    if !map.diagnostics().is_empty() {
+        return false;
+    }
+    for def in map.defs().collect::<Vec<_>>() {
+        match map.def_data(def).map(|d| d.kind) {
+            Some(DefKind::Fn | DefKind::Method) => {
+                if !sig_of(db, krate, def).diagnostics.is_empty()
+                    || !body(db, krate, def).diagnostics().is_empty()
+                    || !infer(db, krate, def).diagnostics().is_empty()
+                    || !check_drivers(db, krate, def).is_empty()
+                    || !completeness(db, krate, def).is_empty()
+                    || !directions(db, krate, def).is_empty()
+                {
+                    return false;
+                }
+            }
+            // Struct/port/impl HEADERS carry only signature diagnostics.
+            Some(DefKind::Struct | DefKind::Port | DefKind::Impl) => {
+                if !sig_of(db, krate, def).diagnostics.is_empty() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 struct SvLower<'a, 'db> {
@@ -2200,6 +2253,23 @@ impl<'db> SvLower<'_, 'db> {
             module_name(self.map, uc.def)
         };
 
+        // To flatten the callee's types to connection leaves, substitute BOTH
+        // its type params (the mono `subst`) AND its const params (`node_subst`,
+        // the `#(...)` bindings). A const width like `ff_gen`'s `uint(n)` is a
+        // `Param` in the CALLEE's index space; without the const binding it would
+        // survive into the caller's generics and render as an out-of-range width.
+        // (The leaf `.ty` is only used for suffixes here, but it must still
+        // resolve — emission no longer tolerates an unrenderable width.)
+        let flatten_subst: Vec<Option<Term<'db>>> = (0..csig.generic_params.len())
+            .map(|i| {
+                subst
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .or_else(|| node_subst.get(i).cloned().flatten())
+            })
+            .collect();
+
         let mut connections = Vec::new();
         // 1. `dom` generics → the caller's clock.
         let clk = self.first_clock();
@@ -2209,7 +2279,7 @@ impl<'db> SvLower<'_, 'db> {
         // 2. value/out params (flattened through the mono subst), each connected
         //    to its caller expression's leaves.
         for (pname, pty, caller_expr, default) in &slots {
-            let pty = subst_type(pty, &subst);
+            let pty = subst_type(pty, &flatten_subst);
             let callee_leaves = flatten_leaves(
                 self.db,
                 self.krate,
@@ -2241,7 +2311,7 @@ impl<'db> SvLower<'_, 'db> {
         //    holds (planning/return_variable.md).
         let mut callee_result_ports: Vec<String> = Vec::new();
         for place in &csig.result_places {
-            let pty = subst_type(&place.ty, &subst);
+            let pty = subst_type(&place.ty, &flatten_subst);
             for leaf in flatten_leaves(
                 self.db,
                 self.krate,
@@ -2887,18 +2957,45 @@ fn sv_type(ty: &Type, generics: &[GenericParam]) -> SvType {
             kind: ValueKind::Bool | ValueKind::Reset | ValueKind::Event,
             ..
         } => SvType::bit(),
-        // A 1-bit fallback for everything else. For WELL-TYPED code this is
-        // unreachable: aggregates are decomposed by `flatten_leaves`, type
-        // params are substituted at monomorphisation, and `integer` values are
-        // filtered before emission. It is reached only on ALREADY-DIAGNOSED code
-        // — and emission DOES run on erroring crates (`reserved_words` forces
-        // `sv_file`; the LSP renders incomplete code), so the backend must stay
-        // panic-free here. We would prefer to assert (this default once masked a
-        // `uint(T::width)` → 1-bit substitution bug — fixed by grounding widths
-        // in `flatten_leaves`), but an assert is only sound once emission is
-        // gated on a diagnostic-free crate. TODO: gate emission on a clean crate,
-        // then make this branch (and `width_expr`'s) a hard error.
-        _ => SvType::bit(),
+        // Everything else is unreachable for a WELL-TYPED crate: aggregates are
+        // decomposed by `flatten_leaves`, type params are substituted at
+        // monomorphisation, and compile-time `integer` is filtered before
+        // emission. Emission only runs on a diagnostic-free crate (`sv_file`'s
+        // `crate_emittable` gate), so reaching here is an internal invariant
+        // violation, not bad input — surface it instead of silently emitting a
+        // 1-bit logic (that default once masked a `uint(T::width)` → 1-bit
+        // substitution bug).
+        other => panic!(
+            "sv_type cannot render `{}` on a clean crate; aggregates flatten via \
+             flatten_leaves, type params substitute at monomorphisation, and \
+             `integer` is compile-time only. This is an internal invariant \
+             violation — handle the form explicitly, do not default to 1 bit.",
+            describe_type(other),
+        ),
+    }
+}
+
+/// A label for a `Type` in a panic message (`Type` has no `Debug` — it holds
+/// `DefId`s that need the db).
+fn describe_type(ty: &Type) -> &'static str {
+    match ty {
+        Type::Value { kind, .. } => match kind {
+            ValueKind::UInt { .. } => "uint",
+            ValueKind::SInt { .. } => "sint",
+            ValueKind::Bits { .. } => "bits",
+            ValueKind::Bool => "bool",
+            ValueKind::Reset => "reset",
+            ValueKind::Event => "event",
+            ValueKind::Integer => "integer (compile-time only)",
+            ValueKind::Struct { .. } => "a struct (should be flattened)",
+            ValueKind::Param(_) => "a type param (should be substituted at mono)",
+        },
+        Type::Vec { .. } => "Vec",
+        Type::Tuple(_) => "a tuple (should be flattened)",
+        Type::Port { .. } => "a port (should be flattened)",
+        Type::Clock => "Clock (a domain witness, not a value)",
+        Type::Infer(_) => "an unresolved inference variable",
+        Type::Error => "Error (unresolved type)",
     }
 }
 
@@ -2912,27 +3009,35 @@ fn sv_type(ty: &Type, generics: &[GenericParam]) -> SvType {
 fn width_expr(c: &ConstArg, generics: &[GenericParam]) -> SvExpr {
     match c {
         ConstArg::Lit(w) => SvExpr::Lit(w.to_string()),
-        // A `Param` that indexes one of the emitted module's own generics is a
-        // symbolic SV parameter (`[n-1:0]`). An OUT-OF-RANGE index is benign and
-        // expected in exactly one place: `emit_instance` flattens a *callee's*
-        // type against the *caller's* generics only to derive connection
-        // suffixes — the leaf width there is never emitted (the real port width
-        // is the callee module's own decl + its `#(...)` params). So this is not
-        // a masked output width; fall back without ceremony.
+        // A `Param` indexes one of the emitted module's own generics — a
+        // symbolic SV parameter (`[n-1:0]`). An OUT-OF-RANGE index means a
+        // foreign type's param leaked into this module's rendering (e.g.
+        // `emit_instance` flattening a callee type against the caller's
+        // generics). `emit_instance` now substitutes the callee's params first,
+        // so on a clean crate this cannot happen.
         ConstArg::Param(i) => match generics.get(*i as usize) {
             Some(g) => SvExpr::Ident(g.name.clone()),
-            None => SvExpr::Lit("1".to_owned()),
+            None => panic!(
+                "width/length Param({i}) indexes no generic of the emitted module \
+                 (it has {} generic params) on a clean crate — a foreign param \
+                 leaked into rendering. Substitute it before flattening; do not \
+                 default to 1 bit.",
+                generics.len(),
+            ),
         },
         // A non-literal, non-`Param` width (associated const, const expression).
-        // For WELL-TYPED code `flatten_leaves` has already grounded these to a
-        // literal via const_eval (that grounding is what fixed the
-        // `uint(T::width)` → 1-bit bug). One reaching here therefore means EITHER
-        // already-diagnosed code (emission runs on erroring crates — e.g.
-        // `reserved_words` forces `sv_file` — so the backend must not panic) OR a
-        // symbolic compound width in a parametric module, which is not rendered
-        // yet. TODO: render symbolic compound widths (`uint(n + 1)` → `[(n+1)-1:0]`)
-        // via `render_const_sv` instead of this 1-bit fallback.
-        _ => SvExpr::Lit("1".to_owned()),
+        // `flatten_leaves` grounds these to a literal via const_eval before
+        // rendering (that grounding fixed the `uint(T::width)` → 1-bit bug), so on
+        // a clean crate one surviving here is an internal invariant violation.
+        // The exception worth building: a symbolic COMPOUND width in a parametric
+        // module (`uint(n + 1)`) — TODO: render those via `render_const_sv`
+        // (`[(n+1)-1:0]`) rather than this hard error.
+        other => panic!(
+            "width/length `{other:?}` is neither a literal nor a generic param on \
+             a clean crate. A concrete width must be grounded to a literal by \
+             const_eval before emission; symbolic compound widths are not \
+             rendered yet (TODO: render via render_const_sv). Not a 1-bit default.",
+        ),
     }
 }
 
@@ -3184,7 +3289,7 @@ endmodule
              impl Option {\n\
                fn reg { dom clk: Clock } (self @clk, rstn: Reset @clk) -> Option @clk {\n\
                  let payloadd = self.payload.reg(rstn, 0);\n\
-                 return option { valid: self.valid, payload: payloadd };\n\
+                 option { valid = self.valid, payload = payloadd }\n\
                }\n\
              }\n\
              fn use_it { dom clk: Clock, rstn: Reset @clk } ( in upstream: Option @clk, out downstream: Option @clk ) {\n\
