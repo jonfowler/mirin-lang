@@ -638,10 +638,6 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 let aggregate = matches!(
                     self.locals[local.0 as usize].declared_ty,
                     Some(Type::Port { .. })
-                        | Some(Type::Value {
-                            kind: crate::hir::types::ValueKind::Struct { .. },
-                            ..
-                        })
                 );
                 if aggregate {
                     self.diag_verilog(

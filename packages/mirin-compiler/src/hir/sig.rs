@@ -1304,14 +1304,9 @@ impl<'db> TypeLowerer<'_, 'db> {
             .resolve_in_scope(self.module, &name, Namespace::Item)
             .and_then(|d| self.map.def_data(d).map(|data| (d, data.kind)))
         {
-            Some((def, DefKind::Struct)) => Type::Value {
-                kind: ValueKind::Struct {
-                    def,
-                    args: self.lower_args(node, source),
-                },
-                domain,
-            },
-            Some((def, DefKind::Port)) => Type::Port {
+            // A struct and a port share one type representation; the def's
+            // `DefKind` records which it was declared as (structs_as_ports.md).
+            Some((def, DefKind::Struct | DefKind::Port)) => Type::Port {
                 def,
                 args: self.lower_args(node, source),
                 domain,
@@ -1854,10 +1849,7 @@ mod tests {
         let sig = sig_of(&db, krate, def);
 
         match &sig.params[0].ty {
-            Type::Value {
-                kind: ValueKind::Struct { def, args },
-                ..
-            } => {
+            Type::Port { def, args, .. } => {
                 assert!(*def == bus, "param type resolves to the Bus def");
                 assert!(args.0.is_empty());
             }
@@ -1877,10 +1869,7 @@ mod tests {
         let def = fn_def(&db, krate, "h");
         let sig = sig_of(&db, krate, def);
         match &sig.params[0].ty {
-            Type::Value {
-                kind: ValueKind::Struct { args, .. },
-                ..
-            } => {
+            Type::Port { args, .. } => {
                 assert_eq!(args.0.len(), 1);
                 assert!(matches!(
                     &args.0[0],

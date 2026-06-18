@@ -291,7 +291,7 @@ fn struct_leaf_paths<'db>(
     ty: &crate::hir::types::Type<'db>,
     depth: u32,
 ) -> Vec<Vec<String>> {
-    use crate::hir::types::{Type, ValueKind};
+    use crate::hir::types::Type;
     if depth > 16 {
         return Vec::new();
     }
@@ -312,13 +312,15 @@ fn struct_leaf_paths<'db>(
         }
         return out;
     }
-    let Type::Value {
-        kind: ValueKind::Struct { def, .. },
-        ..
-    } = ty
-    else {
+    // Only a *struct* record contributes positive leaf paths; a `port`'s owed
+    // set is decided by direction folding (deferred). Both are `Type::Port`
+    // now, so distinguish by the def's `DefKind` (structs_as_ports.md).
+    let Type::Port { def, .. } = ty else {
         return Vec::new();
     };
+    if crate_def_map(db, krate).def_data(*def).map(|d| d.kind) != Some(DefKind::Struct) {
+        return Vec::new();
+    }
     let sig = sig_of(db, krate, *def);
     let mut out = Vec::new();
     for f in &sig.fields {

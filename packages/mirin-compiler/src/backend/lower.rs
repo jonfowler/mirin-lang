@@ -276,13 +276,6 @@ fn mono_name<'db>(
 /// A short name for a concrete type arg, for the monomorphised module name.
 fn type_arg_name<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> String {
     match ty {
-        Type::Value {
-            kind: ValueKind::Struct { def, .. },
-            ..
-        } => map
-            .def_data(*def)
-            .map(|d| d.name.clone())
-            .unwrap_or_default(),
         Type::Port { def, .. } => map
             .def_data(*def)
             .map(|d| d.name.clone())
@@ -329,16 +322,6 @@ fn match_type<'db>(callee: &Type<'db>, actual: &Type<'db>, subst: &mut [Option<T
                 *slot = Some(Term::Type(actual.clone()));
             }
         }
-        (
-            Type::Value {
-                kind: ValueKind::Struct { def: cd, args: ca },
-                ..
-            },
-            Type::Value {
-                kind: ValueKind::Struct { def: ad, args: aa },
-                ..
-            },
-        ) if cd == ad => match_args(ca, aa, subst),
         (
             Type::Port {
                 def: cd, args: ca, ..
@@ -1104,10 +1087,12 @@ impl<'db> SvLower<'_, 'db> {
                 kind: ValueKind::Integer,
                 ..
             } => true,
-            Type::Value {
-                kind: ValueKind::Struct { def, .. },
-                ..
-            } => {
+            // A `struct` whose every field is const-only is a config record. A
+            // `port` is always a hardware boundary, so it is never const-only —
+            // gate on the def's `DefKind` (structs_as_ports.md).
+            Type::Port { def, .. }
+                if self.map.def_data(*def).map(|d| d.kind) == Some(DefKind::Struct) =>
+            {
                 let sig = sig_of(self.db, self.krate, *def);
                 !sig.fields.is_empty() && sig.fields.iter().all(|f| self.is_const_only_ty(&f.ty))
             }
@@ -1138,11 +1123,9 @@ impl<'db> SvLower<'_, 'db> {
                         self.db,
                         self.krate,
                         self.def,
-                        &Type::Value {
-                            kind: ValueKind::Struct {
-                                def: owner,
-                                args: GenericArgs(Vec::new()),
-                            },
+                        &Type::Port {
+                            def: owner,
+                            args: GenericArgs(Vec::new()),
                             domain: Domain::Unspecified,
                         },
                         true,
@@ -2520,25 +2503,6 @@ fn flatten_leaves_inner(
                 })
                 .collect()
         }
-        Type::Value {
-            kind: ValueKind::Struct { def, args },
-            ..
-        } => {
-            let sig = sig_of(db, krate, *def);
-            let subst = build_subst(&sig.generic_params, args);
-            let mut out = Vec::new();
-            for f in &sig.fields {
-                let fty = subst_type(&f.ty, &subst);
-                for sub in flatten_leaves_inner(db, krate, &fty, drives, generics) {
-                    out.push(Leaf {
-                        suffix: join(&f.name, &sub.suffix),
-                        ty: sub.ty,
-                        drives: sub.drives,
-                    });
-                }
-            }
-            out
-        }
         // A tuple flattens like a struct whose field names are element
         // indices: `x.0.valid` → `x__0__valid` (planning/tuples.md). Port
         // elements fold direction through their own flattening.
@@ -2562,8 +2526,10 @@ fn flatten_leaves_inner(
             for f in &sig.fields {
                 // The module drives a port field iff its own drive matches the
                 // field's producer direction (`out` field of an `out` port, or
-                // `in` field of an `in` port).
-                let child = drives == (f.direction == Some(Direction::Out));
+                // `in` field of an `in` port). A struct field has no direction
+                // (`None`) — it is positive, flowing with the parent, exactly
+                // like an `out` field (structs_as_ports.md).
+                let child = drives == (f.direction != Some(Direction::In));
                 let fty = subst_type(&f.ty, &subst);
                 for sub in flatten_leaves_inner(db, krate, &fty, child, generics) {
                     out.push(Leaf {
@@ -2764,10 +2730,6 @@ fn type_head_def<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> Option<DefId<'d
     let prelude = |name: &str| map.resolve_local(map.prelude(), name, Namespace::Item);
     match ty {
         Type::Value {
-            kind: ValueKind::Struct { def, .. },
-            ..
-        } => Some(*def),
-        Type::Value {
             kind: ValueKind::UInt { .. },
             ..
         } => prelude("uint"),
@@ -2850,16 +2812,6 @@ fn subst_type<'db>(ty: &Type<'db>, subst: &[Option<Term<'db>>]) -> Type<'db> {
         } => Type::Value {
             kind: ValueKind::UInt {
                 width: subst_const_opt(width, subst),
-            },
-            domain: *domain,
-        },
-        Type::Value {
-            kind: ValueKind::Struct { def, args },
-            domain,
-        } => Type::Value {
-            kind: ValueKind::Struct {
-                def: *def,
-                args: subst_args(args, subst),
             },
             domain: *domain,
         },
@@ -2987,12 +2939,11 @@ fn describe_type(ty: &Type) -> &'static str {
             ValueKind::Reset => "reset",
             ValueKind::Event => "event",
             ValueKind::Integer => "integer (compile-time only)",
-            ValueKind::Struct { .. } => "a struct (should be flattened)",
             ValueKind::Param(_) => "a type param (should be substituted at mono)",
         },
         Type::Vec { .. } => "Vec",
         Type::Tuple(_) => "a tuple (should be flattened)",
-        Type::Port { .. } => "a port (should be flattened)",
+        Type::Port { .. } => "a record (should be flattened)",
         Type::Clock => "Clock (a domain witness, not a value)",
         Type::Infer(_) => "an unresolved inference variable",
         Type::Error => "Error (unresolved type)",

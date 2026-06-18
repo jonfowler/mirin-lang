@@ -64,7 +64,12 @@ pub enum Type<'db> {
     /// own; each element is a full type carrying its own domain, so
     /// mixed-domain tuples are legal. Arity ≥ 2.
     Tuple(Vec<Type<'db>>),
-    /// A port interface type, with the port's generic args and its domain.
+    /// A nominal record type — a `port` interface OR a `struct` value, with
+    /// the def's generic args and its domain. The two share one representation
+    /// (`planning/structs_as_ports.md`); the def's `DefKind` (`Struct` vs
+    /// `Port`) records which it was declared as. A struct is the special case
+    /// whose fields carry no `in`/`out` direction (all positive); a port folds
+    /// per-field direction when flattened.
     Port {
         def: DefId<'db>,
         args: GenericArgs<'db>,
@@ -99,11 +104,6 @@ pub enum ValueKind<'db> {
     Reset,
     Event,
     Integer,
-    /// A user struct, with its generic args.
-    Struct {
-        def: DefId<'db>,
-        args: GenericArgs<'db>,
-    },
     /// The enclosing def's i-th generic parameter, in **type** position
     /// (`data: A`). Substituted out by monomorphise/flatten downstream.
     Param(u32),
@@ -219,9 +219,6 @@ pub fn match_header<'db>(
             | (ValueKind::Reset, ValueKind::Reset)
             | (ValueKind::Event, ValueKind::Event)
             | (ValueKind::Integer, ValueKind::Integer) => true,
-            (ValueKind::Struct { def: gd, args: ga }, ValueKind::Struct { def: hd, args: ha }) => {
-                gd == hd && match_header_args(ga, ha, binding)
-            }
             _ => false,
         },
         (Type::Vec { len: gl, elem: ge }, Type::Vec { len: hl, elem: he }) => {
@@ -540,10 +537,6 @@ pub fn super_fold_kind<'db, F: Folder<'db>>(f: &mut F, k: &ValueKind<'db>) -> Va
         },
         ValueKind::Bits { width } => ValueKind::Bits {
             width: f.fold_const(width),
-        },
-        ValueKind::Struct { def, args } => ValueKind::Struct {
-            def: *def,
-            args: super_fold_args(f, args),
         },
         other => other.clone(),
     }

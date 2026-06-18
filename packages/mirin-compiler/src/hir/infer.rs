@@ -531,12 +531,11 @@ fn describe_kind(ty: &Type<'_>) -> String {
             ValueKind::Reset => "Reset".to_owned(),
             ValueKind::Event => "Event".to_owned(),
             ValueKind::Integer => "integer".to_owned(),
-            ValueKind::Struct { .. } => "a struct".to_owned(),
             ValueKind::Param(_) => "a type parameter".to_owned(),
         },
         Type::Vec { .. } => "a vector".to_owned(),
         Type::Tuple(_) => "a tuple".to_owned(),
-        Type::Port { .. } => "a port".to_owned(),
+        Type::Port { .. } => "a record".to_owned(),
         Type::Clock => "Clock".to_owned(),
         _ => "this type".to_owned(),
     }
@@ -1348,11 +1347,6 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             | (ValueKind::Reset, ValueKind::Reset)
             | (ValueKind::Event, ValueKind::Event)
             | (ValueKind::Integer, ValueKind::Integer) => {}
-            (ValueKind::Struct { def: x, args: ax }, ValueKind::Struct { def: y, args: ay })
-                if x == y =>
-            {
-                self.unify_args(ax, ay)
-            }
             (ValueKind::Param(i), ValueKind::Param(j)) if i == j => {}
             _ => self.diag(InferDiagnosticKind::TypeMismatch),
         }
@@ -2039,10 +2033,6 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         // The field type is declared in terms of the def's generic params; we
         // instantiate it with the receiver's type args (`EarlyBinder::instantiate`).
         let (def, args) = match self.resolve_ty(&recv) {
-            Type::Value {
-                kind: ValueKind::Struct { def, args },
-                ..
-            } => (def, args),
             Type::Port { def, args, .. } => (def, args),
             // An Error receiver is already diagnosed; an unbound var receiver
             // is legal mid-equation-system (cyclic `var` wiring) — projecting
@@ -2361,24 +2351,13 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
         }
         match owner {
-            Some(def) => {
-                // A port constructor yields a port value; a struct ctor a struct.
-                if self.map.def_data(def).map(|d| d.kind) == Some(DefKind::Port) {
-                    Type::Port {
-                        def,
-                        args: GenericArgs(args),
-                        domain: rd,
-                    }
-                } else {
-                    Type::Value {
-                        kind: ValueKind::Struct {
-                            def,
-                            args: GenericArgs(args),
-                        },
-                        domain: rd,
-                    }
-                }
-            }
+            // A struct ctor and a port ctor yield the same record type; the
+            // def's `DefKind` records which (structs_as_ports.md).
+            Some(def) => Type::Port {
+                def,
+                args: GenericArgs(args),
+                domain: rd,
+            },
             None => Type::Error,
         }
     }
@@ -2387,10 +2366,6 @@ impl<'a, 'db> InferCtx<'a, 'db> {
 
     fn owner_of(&mut self, ty: &Type<'db>) -> Option<DefId<'db>> {
         match self.resolve_ty(ty) {
-            Type::Value {
-                kind: ValueKind::Struct { def, .. },
-                ..
-            } => Some(def),
             Type::Value {
                 kind: ValueKind::UInt { .. },
                 ..
@@ -2670,7 +2645,6 @@ mod tests {
                 ValueKind::Reset => "reset",
                 ValueKind::Event => "event",
                 ValueKind::Integer => "integer",
-                ValueKind::Struct { .. } => "struct",
                 ValueKind::Param(_) => "param",
             },
             Type::Vec { .. } => "Vec",
