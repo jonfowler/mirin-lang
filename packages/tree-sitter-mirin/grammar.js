@@ -163,7 +163,7 @@ module.exports = grammar({
             "->",
             field(
               "return_type",
-              choice($.return_type_expression, $.tuple_type, $.named_return),
+              choice($.return_type_expression, $.tuple_type, $.named_return, $.parenthesized_return_type),
             ),
           ),
         ),
@@ -260,7 +260,7 @@ module.exports = grammar({
             "->",
             field(
               "return_type",
-              choice($.return_type_expression, $.tuple_type, $.named_return),
+              choice($.return_type_expression, $.tuple_type, $.named_return, $.parenthesized_return_type),
             ),
           ),
         ),
@@ -277,8 +277,9 @@ module.exports = grammar({
 
     // Return-position type. Excludes `type_named_args` because a trailing
     // `{` in return position opens the fn body, not a named-arg-application.
-    // Use parentheses to write a parametric return type (`-> DF(uint(8))`)
-    // and call sites supply the named bindings positionally elsewhere.
+    // To return a named-args type (`DF{clk}(A)`), wrap it in parens —
+    // `parenthesized_return_type` — so the closing `)` ends the type before
+    // the body `{`.
     return_type_expression: ($) =>
       prec.right(
         seq(
@@ -299,6 +300,13 @@ module.exports = grammar({
 
     named_result: ($) =>
       seq(field("name", $.identifier), ":", field("type", $._type)),
+
+    // A parenthesised return type — a result with NO name (`-> (DF{clk}(A))`).
+    // The parens are a hard delimiter, so a named-args type (`{ … }( … )`) is
+    // isolated from the body `{`; behaves like a normal return otherwise (the
+    // `return` place is synthesised). A `:` makes it a `named_result` instead;
+    // a `,` a `tuple_type`.
+    parenthesized_return_type: ($) => seq("(", field("type", $._type), ")"),
 
     named_parameter_section: ($) => seq("{", commaSep($.named_parameter), optional(","), "}"),
 

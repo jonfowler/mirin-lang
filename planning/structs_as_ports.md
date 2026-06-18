@@ -54,13 +54,17 @@ unlike `if`/`for` headers, whose named-arg lists use the distinctive `name =
 value` form. Requiring a trailing `()` (so an application ends in `)`) is sound
 at the language level but does not survive tree-sitter's greedy resolution.
 
-The **named-result** form sidesteps it entirely — the type sits inside the
-result-place parens, away from the body boundary:
+Wrapping the type in parens sidesteps it — the closing `)` ends the return
+type before the body `{`, so the named-arg `{…}` is no longer at the boundary.
+A `parenthesized_return_type` with no name behaves like a normal return (the
+`return` place is synthesised); a `:` inside would make it a named result, a
+`,` a tuple.
 
 ```
-fn mk {dom c1: Clock, dom c2: Clock} (…) -> (out: Pair{c1, c2}) {
-    out = pair { a = x, b = y };
+fn mk {dom c1: Clock, dom c2: Clock} (…) -> (Pair{c1, c2}) {
+    pair { a = x, b = y }
 }
 ```
 
-See `examples/working/struct_mixed_return.mrn`.
+See `examples/working/struct_mixed_return.mrn`. (The named-result form
+`-> (out: Pair{c1, c2})` works too, when you want to name the result.)

@@ -800,3 +800,43 @@ fn f(x: uint(8)) -> (sum: uint(8), carry: bool) {
           right: (expression
             (path_expression
               segment: (identifier))))))))
+
+========================================
+parenthesized return type (unnamed)
+========================================
+
+fn f(x: uint(8)) -> (DF{clk}(uint(8))) {
+    x
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    return_type: (parenthesized_return_type
+      type: (type_expression
+        name: (identifier)
+        (type_named_args
+          (type_argument
+            (type_expression
+              name: (identifier))))
+        (type_index
+          (type_argument
+            (type_expression
+              name: (identifier)
+              (type_index
+                (type_argument
+                  (number))))))))
+    body: (block
+      tail: (expression
+        (path_expression
+          segment: (identifier))))))

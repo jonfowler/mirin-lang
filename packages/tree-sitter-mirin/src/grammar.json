@@ -718,6 +718,10 @@
                       {
                         "type": "SYMBOL",
                         "name": "named_return"
+                      },
+                      {
+                        "type": "SYMBOL",
+                        "name": "parenthesized_return_type"
                       }
                     ]
                   }
@@ -1239,6 +1243,10 @@
                       {
                         "type": "SYMBOL",
                         "name": "named_return"
+                      },
+                      {
+                        "type": "SYMBOL",
+                        "name": "parenthesized_return_type"
                       }
                     ]
                   }
@@ -1449,6 +1457,27 @@
             "type": "SYMBOL",
             "name": "_type"
           }
+        }
+      ]
+    },
+    "parenthesized_return_type": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "("
+        },
+        {
+          "type": "FIELD",
+          "name": "type",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_type"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": ")"
         }
       ]
     },

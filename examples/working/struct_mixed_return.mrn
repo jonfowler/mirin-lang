@@ -3,15 +3,16 @@
 // brace, and type-argument content (identifiers, `a * b`, …) is too close to
 // body-expression content for the parser to back off (planning/structs_as_ports.md).
 //
-// The named-result form sidesteps it: the type sits inside the result-place
-// parens `-> (out: …)`, so the `{c1, c2}` is no longer at the body boundary.
-// `out` is the referrable result place; each field drives its own output port
-// on its own clock (`out__a` on c1, `out__b` on c2).
+// Wrapping the type in parens fixes it — `-> (Pair{c1, c2})`. The closing `)`
+// ends the return type before the body `{`, so the named-arg `{c1, c2}` is no
+// longer at the body boundary. A parenthesised return with no name behaves like
+// any normal return (the `return` place is synthesised); each field drives its
+// own output port on its own clock (`result__a` on c1, `result__b` on c2).
 struct Pair {dom c1: Clock, dom c2: Clock} = pair {
     a: uint(8) @c1,
     b: uint(8) @c2,
 }
 
-fn mk {dom c1: Clock, dom c2: Clock} (x: uint(8) @c1, y: uint(8) @c2) -> (out: Pair{c1, c2}) {
-    out = pair { a = x, b = y };
+fn mk {dom c1: Clock, dom c2: Clock} (x: uint(8) @c1, y: uint(8) @c2) -> (Pair{c1, c2}) {
+    pair { a = x, b = y }
 }

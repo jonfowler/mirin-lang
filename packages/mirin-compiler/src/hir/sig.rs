@@ -894,10 +894,12 @@ fn lower_fn_sig<'db>(
             }
         }
         if let Some(rt) = node.child_by_field_name("return_type") {
-            // A named return checks each named result's type; a normal return
-            // checks the type node itself.
+            // A named return checks each named result's type; a parenthesized
+            // return checks its inner type; a normal return the node itself.
             let checked: Vec<Node> = if rt.kind() == "named_return" {
                 named_result_type_nodes(&rt)
+            } else if let Some(inner) = paren_return_inner(&rt) {
+                vec![inner]
             } else {
                 vec![rt]
             };
@@ -1006,8 +1008,9 @@ fn named_result_type_nodes<'t>(node: &Node<'t>) -> Vec<Node<'t>> {
 }
 
 /// Lower a fn's return-type node to its [`Type`]: a `named_return` becomes its
-/// single element's type, or a tuple of the parts' types (≥2); any other node
-/// lowers as an ordinary type.
+/// single element's type, or a tuple of the parts' types (≥2); a
+/// `parenthesized_return_type` unwraps to its inner type (parens are pure
+/// disambiguation — see grammar); any other node lowers as an ordinary type.
 fn lower_return_type<'db>(lowerer: &TypeLowerer<'_, 'db>, node: &Node, source: &str) -> Type<'db> {
     if node.kind() == "named_return" {
         let mut types: Vec<Type<'db>> = named_result_type_nodes(node)
@@ -1019,9 +1022,17 @@ fn lower_return_type<'db>(lowerer: &TypeLowerer<'_, 'db>, node: &Node, source: &
         } else {
             Type::Tuple(types)
         }
+    } else if let Some(inner) = paren_return_inner(node) {
+        lowerer.lower_type(&inner, source)
     } else {
         lowerer.lower_type(node, source)
     }
+}
+
+/// The inner `_type` of a `parenthesized_return_type` (`-> (DF{clk}(A))`), or
+/// `None` for any other node.
+fn paren_return_inner<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+    (node.kind() == "parenthesized_return_type").then(|| node.child_by_field_name("type"))?
 }
 
 /// Is this written type domain-annotated? Either an `@domain` suffix, or a

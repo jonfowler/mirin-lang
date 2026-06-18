@@ -220,6 +220,9 @@ impl<'a> Formatter<'a> {
             "struct_pattern" => self.struct_pattern(n),
             "tuple_type" => self.tuple_type(n),
             "named_return" => self.named_return(n),
+            "parenthesized_return_type" => {
+                concat([text("("), self.doc(self.field(n, "type").unwrap()), text(")")])
+            }
 
             "visibility_modifier" => self.visibility(n),
             "comment" => text(self.text(n).trim_end()),
