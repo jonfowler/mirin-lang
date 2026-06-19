@@ -2,7 +2,7 @@
 // the whole-port connection demands c1 = c2 (DomainMismatch). Named type
 // args (`DF{c1}`) lower to real Domain::Param args, so the two ports'
 // generic args unify strictly. Passing twin: working/parameterized_port.mrn.
-port DF {dom clk: Clock} (A: Type) = df {
+port DF {dom clk: Clock} (type A) = df {
     in ready: bool @clk,
     out valid: bool @clk,
     out data: A @clk,

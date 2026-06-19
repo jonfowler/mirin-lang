@@ -3306,10 +3306,10 @@ endmodule
 
     #[test]
     fn const_generic_becomes_an_sv_parameter() {
-        // `param n: integer` → `#(parameter int n)`, and `uint(n)` → `[n-1:0]`.
+        // `const n: integer` → `#(parameter int n)`, and `uint(n)` → `[n-1:0]`.
         // Byte-parity with mirin-compiler on the `add_n` shape.
         let sv = emit(
-            "fn add_n { dom clk: Clock } ( param n: integer, a: uint(n) @clk, b: uint(n) @clk ) -> uint(n) @clk {\n  return a + b;\n}",
+            "fn add_n { dom clk: Clock } ( const n: integer, a: uint(n) @clk, b: uint(n) @clk ) -> uint(n) @clk {\n  return a + b;\n}",
         );
         let expected = "\
 module add_n #(parameter int n) (
@@ -3329,7 +3329,7 @@ endmodule
         // `Bus(uint(8))` substitutes `A := uint(8)` into the `data: A` field, so
         // the port flattens to `b__data` of width [7:0] (not 1-bit).
         let sv = emit(
-            "struct Bus(A: Type) = bus { valid: bool, data: A }\n\
+            "struct Bus(type A) = bus { valid: bool, data: A }\n\
              fn pipeline { dom clk: Clock } ( b: Bus(uint(8)) @clk ) -> Bus(uint(8)) @clk {\n  return b;\n}",
         );
         assert!(sv.contains("input  logic b__valid,"), "{sv}");
@@ -3345,7 +3345,7 @@ endmodule
         // `a: uint(n)`, `b: uint(m)`, `a + b` forces `n == m` — an undecidable
         // width equality discharged as an `initial assert`. Byte-parity.
         let sv = emit(
-            "fn pair_add { dom clk: Clock } ( param n: integer, param m: integer, a: uint(n) @clk, b: uint(m) @clk ) -> uint(n) @clk {\n  return a + b;\n}",
+            "fn pair_add { dom clk: Clock } ( const n: integer, const m: integer, a: uint(n) @clk, b: uint(m) @clk ) -> uint(n) @clk {\n  return a + b;\n}",
         );
         let expected = "\
 module pair_add #(parameter int n, parameter int m) (
@@ -3365,14 +3365,14 @@ endmodule
 
     #[test]
     fn type_generic_fn_is_monomorphised_per_concrete_type() {
-        // A type-generic `fn pass{ param A: Type }(w: Bus(A))` is not emitted
+        // A type-generic `fn pass{ type A }(w: Bus(A))` is not emitted
         // directly; a call at `Bus(Write)` emits a specialised `pass__Write`
         // module (struct args substituted) and instantiates it. A defaulted,
         // unsupplied param wires its default at the instance.
         let sv = emit(
-            "struct Bus(A: Type) = bus { valid: bool, data: A }\n\
+            "struct Bus(type A) = bus { valid: bool, data: A }\n\
              struct Write = write { addr: uint(8), data: uint(8) }\n\
-             fn pass { dom clk: Clock, rstn: Reset @clk = high, param A: Type } ( w: Bus(A) @clk ) -> Bus(A) @clk { w }\n\
+             fn pass { dom clk: Clock, rstn: Reset @clk = high, type A } ( w: Bus(A) @clk ) -> Bus(A) @clk { w }\n\
              fn top { dom clk: Clock } ( w: Bus(Write) @clk ) -> Bus(Write) @clk { pass(w) }",
         );
         // The generic `pass` is not emitted; its `Write` specialisation is.
@@ -3392,7 +3392,7 @@ endmodule
         // `Buf{clk}(8)` binds the port's `param N` to 8, so `data: uint(N)`
         // flattens to width [7:0] — no parameter on the using module.
         let sv = emit(
-            "port Buf { dom clk: Clock } ( param N: integer ) = buf { in ready: bool @clk, out data: uint(N) @clk }\n\
+            "port Buf { dom clk: Clock } ( const N: integer ) = buf { in ready: bool @clk, out data: uint(N) @clk }\n\
              fn pipe { dom clk: Clock } ( upstream: Buf{clk}(8), out downstream: Buf{clk}(8) ) {\n  downstream = upstream;\n}",
         );
         assert!(sv.contains("input  logic [7:0] upstream__data,"), "{sv}");

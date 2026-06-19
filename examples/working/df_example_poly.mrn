@@ -1,19 +1,19 @@
 // Polymorphic over the payload type `A`. The port takes a positional type
 // param; the domain stays elided (the impl supplies `clk`, which stamps every
 // field — see impl_parametric_owner.mrn). A generic owner is APPLIED in the
-// impl header (`impl {dom clk: Clock, A: Type} DF(A)`, like a trait impl's
+// impl header (`impl {dom clk: Clock, type A} DF(A)`, like a trait impl's
 // `for` self type), with `A` declared in the binder; the receiver's `A` is
 // inferred at the call site and the method monomorphises per payload
 // (`DF__reg_fwd__uint8`, …). A returned generic port also needs its type
 // argument written out — `-> DF(A) @clk`, never bare `DF`.
 //
-port DF(A: Type) = df {
+port DF(type A) = df {
     out valid: bool,
     out data: A,
     in ready: bool,
 }
 
-impl {dom clk: Clock, A: Type} DF(A) {
+impl {dom clk: Clock, type A} DF(A) {
     fn reg_fwd(self @clk, rst: Reset @clk) -> DF(A) @clk {
         var en: bool @clk;
         var reg_vld: bool @clk;
@@ -47,7 +47,7 @@ fn df_sink_uint {dom clk: Clock} (inp: DF(uint(8)) @clk) {
     inp.df_sink()
 }
 
-impl {A: Type} DF(A) {
+impl {type A} DF(A) {
     fn reg_fwd_2 {dom clk: Clock} (self @clk, rst: Reset @clk) -> DF(A) @clk {
         var en: bool @clk;
         var reg_vld: bool @clk;

@@ -1,10 +1,10 @@
 // Must FAIL: a generic owner must be APPLIED in the impl header — write
-// `impl {A: Type} Bus(A)`, declaring `A` in the binder (planning/syntax.md).
+// `impl {type A} Bus(A)`, declaring `A` in the binder (planning/syntax.md).
 // Bare `impl Bus` uses a type CONSTRUCTOR where a type belongs; the head ident
 // is now a real type expression, and an un-applied generic owner is a
 // SigDiagnosticKind::GenericOwnerNotApplied. Its applied twin is
 // working/impl_parametric_owner.mrn.
-struct Bus(A: Type) = bus {
+struct Bus(type A) = bus {
     valid: bool,
     data: A,
 }

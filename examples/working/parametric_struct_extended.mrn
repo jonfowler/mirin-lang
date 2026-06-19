@@ -5,7 +5,7 @@
 // `data: A` field, args-aware substitution at field access, and flatten
 // expanding the struct through the substituted args into per-field
 // leaves (`b__valid`, `b__data`).
-struct Bus(A: Type) = bus {
+struct Bus(type A) = bus {
     valid: bool,
     data: A,
 }
@@ -16,17 +16,14 @@ struct Write = write {
 }
 
 fn pipeline
-    {dom clk: Clock, rstn: Reset @clk, param N: integer}
+    {dom clk: Clock, rstn: Reset @clk, const N: integer}
     (b: Bus(uint(N)) @clk)
     -> Bus(uint(N)) @clk {
     let held = b.reg(rstn, bus { valid = false, data = 0 });
     return held;
 }
 
-fn pipeline_para
-    {dom clk: Clock, rstn: Reset @clk = high, param A: Type}
-    (w: Bus(A) @clk)
-    -> Bus(A) @clk {
+fn pipeline_para {dom clk: Clock, rstn: Reset @clk = high, type A} (w: Bus(A) @clk) -> Bus(A) @clk {
     w // todo, require constraint on A so we can reg
 }
 

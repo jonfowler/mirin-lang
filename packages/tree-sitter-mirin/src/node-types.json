@@ -1211,11 +1211,15 @@
         "required": false,
         "types": [
           {
+            "type": "const",
+            "named": false
+          },
+          {
             "type": "dom",
             "named": false
           },
           {
-            "type": "param",
+            "type": "type",
             "named": false
           }
         ]
@@ -1385,11 +1389,15 @@
         "required": false,
         "types": [
           {
+            "type": "const",
+            "named": false
+          },
+          {
             "type": "dom",
             "named": false
           },
           {
-            "type": "param",
+            "type": "type",
             "named": false
           }
         ]
@@ -3058,10 +3066,6 @@
     "named": false
   },
   {
-    "type": "param",
-    "named": false
-  },
-  {
     "type": "port",
     "named": false
   },
@@ -3087,6 +3091,10 @@
   },
   {
     "type": "trait",
+    "named": false
+  },
+  {
+    "type": "type",
     "named": false
   },
   {

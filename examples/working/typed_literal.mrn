@@ -8,6 +8,6 @@ fn f {dom clk: Clock} (x: uint(8) @clk) -> uint(8) @clk {
     m + uint(8)::255
 }
 
-fn g {param n: integer} (x: uint(n)) -> uint(n) {
+fn g {const n: integer} (x: uint(n)) -> uint(n) {
     x + uint(n)::1
 }

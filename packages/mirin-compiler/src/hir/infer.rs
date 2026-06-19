@@ -2909,7 +2909,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "fn ok (a: uint(8), b: uint(8)) -> uint(8) { return a + b; }\nfn sym { param n: integer, param m: integer } (a: uint(n), b: uint(m)) -> uint(n) { return a + b; }",
+            "fn ok (a: uint(8), b: uint(8)) -> uint(8) { return a + b; }\nfn sym { const n: integer, const m: integer } (a: uint(n), b: uint(m)) -> uint(n) { return a + b; }",
         );
         assert!(
             infer(&db, krate, def_of(&db, krate, "ok"))
@@ -2935,7 +2935,7 @@ mod tests {
             &mut db,
             &mut vfs,
             "fn bad () -> uint(1) { let x: uint(8 / 0) = 0; return x; }\n\
-             fn sym { param n: integer } (x: uint(n)) -> uint(n / 2) { return x; }",
+             fn sym { const n: integer } (x: uint(n)) -> uint(n / 2) { return x; }",
         );
         assert!(
             infer(&db, krate, def_of(&db, krate, "bad"))
@@ -3023,7 +3023,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "struct Bus(A: Type) = bus { valid: bool, data: A }\nfn f (b: Bus(uint(8))) -> uint(8) { return b.data; }",
+            "struct Bus(type A) = bus { valid: bool, data: A }\nfn f (b: Bus(uint(8))) -> uint(8) { return b.data; }",
         );
         assert_eq!(kind_str(&return_ty(&db, krate, "f").unwrap()), "uint");
         assert!(
@@ -3041,7 +3041,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "struct Bus(A: Type) = bus { valid: bool, data: A }\nfn f (b: Bus(bool)) -> uint(8) { return b.data; }",
+            "struct Bus(type A) = bus { valid: bool, data: A }\nfn f (b: Bus(bool)) -> uint(8) { return b.data; }",
         );
         assert!(
             infer(&db, krate, def_of(&db, krate, "f"))
@@ -3061,7 +3061,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "struct Bus(A: Type) = bus { valid: bool, data: A }\nfn f () -> Bus(uint(8)) { return bus { valid = true, data = 0 }; }",
+            "struct Bus(type A) = bus { valid: bool, data: A }\nfn f () -> Bus(uint(8)) { return bus { valid = true, data = 0 }; }",
         );
         assert!(
             infer(&db, krate, def_of(&db, krate, "f"))

@@ -160,7 +160,7 @@ mod tests {
     fn clean_example_has_no_semantic_diagnostics() {
         // Valid counter.mrn — should type-check clean.
         let src = "fn counter\n  { dom clk: Clock, rstn: Reset @clk = high }\n  \
-            ( param bits: usize )\n  -> uint(bits) @clk\n  {\n    \
+            ( const bits: usize )\n  -> uint(bits) @clk\n  {\n    \
             var count: uint(bits) @clk;\n    count = (count + 1).reg(rstn, 0);\n    \
             return count;\n  }\n";
         let diags = run(src);

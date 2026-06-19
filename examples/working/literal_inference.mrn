@@ -12,6 +12,6 @@ fn lits {dom clk: Clock, rstn: Reset @clk} (x: uint(8) @clk) -> uint(8) @clk {
     w
 }
 
-fn fill {param n: integer} (x: uint(n)) -> uint(n) {
+fn fill {const n: integer} (x: uint(n)) -> uint(n) {
     x + 200
 }

@@ -1349,7 +1349,7 @@ impl<'db> Collector<'db> {
             // The impl block's own def — for BOTH inherent and trait impls. Its
             // sig is the impl HEADER (binder generics + self type + binder
             // bounds), which carries header diagnostics like a generic owner
-            // written un-applied (`impl Bus` on `struct Bus(A: Type)`).
+            // written un-applied (`impl Bus` on `struct Bus(type A)`).
             let impl_def = DefId::new(self.db, file, item.ast_id, DefRole::Item);
             self.map.defs.insert(
                 impl_def,

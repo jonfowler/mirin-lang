@@ -46,7 +46,7 @@ trait Bits {
 trait impl with binder and for
 ========================================
 
-impl {param n: integer} Add for uint(n) {
+impl {const n: integer} Add for uint(n) {
   fn add(self, other: Self) -> Self {
   }
 }
@@ -85,7 +85,7 @@ impl {param n: integer} Add for uint(n) {
 bounded type param and where clause
 ========================================
 
-fn sum {param T: Add + Bits} (a: T, b: T) -> T where T: Bits {
+fn sum {type T: Add + Bits} (a: T, b: T) -> T where T: Bits {
   a
 }
 
@@ -162,7 +162,7 @@ impl Bits for bool {
 associated const projection in width position
 ========================================
 
-fn packer {param T: Bits} (x: T) -> uint(T::width) {
+fn packer {type T: Bits} (x: T) -> uint(T::width) {
   x
 }
 

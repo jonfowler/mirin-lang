@@ -1,14 +1,14 @@
 // An impl on a type-parametric owner: the owner is APPLIED in the header
-// (`impl {A: Type} Bus(A)`, the param declared in the binder — like a trait
+// (`impl {type A} Bus(A)`, the param declared in the binder — like a trait
 // impl's `for` self type), the receiver's type argument is inferred at the
 // call site, and the method monomorphises per instantiation
 // (`Bus__first__uint8`, `Bus__first__bool`).
-struct Bus(A: Type) = bus {
+struct Bus(type A) = bus {
     valid: bool,
     data: A,
 }
 
-impl {dom clk: Clock, A: Type} Bus(A) {
+impl {dom clk: Clock, type A} Bus(A) {
     fn first(self @clk) -> bool @clk {
         return self.valid;
     }

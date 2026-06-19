@@ -4,7 +4,7 @@
 // `data: A` field, args-aware substitution at field access, and flatten
 // expanding the struct through the substituted args into per-field
 // leaves (`b__valid`, `b__data`).
-struct Bus(A: Type) = bus {
+struct Bus(type A) = bus {
     valid: bool,
     data: A,
 }

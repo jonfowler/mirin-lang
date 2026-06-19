@@ -4,7 +4,7 @@
 // `DF{clk}(uint(8))` binds `clk` and `A=uint(8)`. The fields' `@clk`
 // references the `dom` parameter; at flatten time the use-site clock
 // is substituted into each field's domain slot.
-port DF {dom clk: Clock} (A: Type) = df {
+port DF {dom clk: Clock} (type A) = df {
     in ready: bool @clk,
     out valid: bool @clk,
     out data: A @clk,

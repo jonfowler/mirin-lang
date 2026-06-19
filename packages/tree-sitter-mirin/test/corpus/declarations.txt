@@ -189,7 +189,7 @@ impl Reg {
 applied inherent impl on a generic owner
 ========================================
 
-impl {dom clk: Clock, A: Type} Bus(A) {
+impl {dom clk: Clock, type A} Bus(A) {
   fn first(self @clk) -> bool @clk {
   }
 }

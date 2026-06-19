@@ -3,13 +3,13 @@ trait Amp {
     fn amp(self) -> Self;
 }
 
-impl {param n: integer} Amp for uint(n) {
+impl {const n: integer} Amp for uint(n) {
     fn amp(self) -> Self {
         return self + self;
     }
 }
 
-fn boost {param T: Amp} (x: T) -> T {
+fn boost {type T: Amp} (x: T) -> T {
     x.amp()
 }
 

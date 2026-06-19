@@ -8,7 +8,7 @@
 // sites with concrete n/m discharge it; mismatched ones error.
 fn pair_add
     {dom clk: Clock}
-    (param n: integer, param m: integer, a: uint(n) @clk, b: uint(m) @clk)
+    (const n: integer, const m: integer, a: uint(n) @clk, b: uint(m) @clk)
     -> uint(n) @clk {
     return a + b;
 }

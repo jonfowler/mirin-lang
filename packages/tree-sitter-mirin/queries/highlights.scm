@@ -27,7 +27,7 @@
   "super"
   "in"
   "out"
-  "param"
+  "type"
   "dom"
 ] @keyword.modifier
 

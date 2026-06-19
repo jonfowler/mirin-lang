@@ -369,7 +369,7 @@ pub struct TraitRef<'db> {
     pub self_ty: Type<'db>,
 }
 
-/// A predicate on a signature: written bounds (`param T: Add`, `where T:
+/// A predicate on a signature: written bounds (`type T: Add`, `where T:
 /// Bits`) and, on trait method decls, the implicit `Self: Trait`. Instantiated
 /// into obligations at every call; assumed (the param env) inside the body.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]

@@ -3,15 +3,15 @@
 // argument (uint(8) → n = 8) and bound at the instance as `#(.n(8))`;
 // `wrap` passes its OWN parameter through symbolically (`#(.n(n))`).
 // `ff_gen` shows the same for an inline-verilog primitive.
-fn scale {param n: integer} (x: uint(n)) -> uint(n) {
+fn scale {const n: integer} (x: uint(n)) -> uint(n) {
     x + 1
 }
 
-fn ff_gen {dom clk: Clock, param n: integer} (d: uint(n) @clk, out q: uint(n) @clk) = verilog {
+fn ff_gen {dom clk: Clock, const n: integer} (d: uint(n) @clk, out q: uint(n) @clk) = verilog {
     always_ff @(posedge ${clk}) ${q} <= ${d};
 }
 
-fn wrap {param n: integer} (x: uint(n)) -> uint(n) {
+fn wrap {const n: integer} (x: uint(n)) -> uint(n) {
     scale(x)
 }
 

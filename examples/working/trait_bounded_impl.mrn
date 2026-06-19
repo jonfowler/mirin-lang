@@ -5,7 +5,7 @@ trait Big {
     fn big(self) -> bool;
 }
 
-struct Pair(A: Type) = pair {
+struct Pair(type A) = pair {
     a: A,
     b: A,
 }
@@ -16,7 +16,7 @@ impl Big for bool {
     }
 }
 
-impl {param T: Big} Big for Pair(T) {
+impl {type T: Big} Big for Pair(T) {
     fn big(self) -> bool {
         return self.a.big();
     }

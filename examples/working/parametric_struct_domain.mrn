@@ -3,7 +3,7 @@
 // named `{ dom clk }` section and a positional `(param N)` section, just like a
 // port (planning/structs_as_ports.md). `Buf{clk}(4)` binds the clock and the
 // width; both fields flatten to `uint(4)` ports on `clk`.
-struct Buf {dom clk: Clock} (param N: integer) = buf {
+struct Buf {dom clk: Clock} (const N: integer) = buf {
     lo: uint(N) @clk,
     hi: uint(N) @clk,
 }

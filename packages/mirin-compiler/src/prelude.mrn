@@ -97,49 +97,49 @@ pub trait BitNot {
     fn bitnot(self) -> Self;
 }
 
-impl {param n: integer} Add for uint(n) {
+impl {const n: integer} Add for uint(n) {
     fn add(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} + ${other};
     }
 }
 
-impl {param n: integer} Sub for uint(n) {
+impl {const n: integer} Sub for uint(n) {
     fn sub(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} - ${other};
     }
 }
 
-impl {param n: integer} Mul for uint(n) {
+impl {const n: integer} Mul for uint(n) {
     fn mul(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} * ${other};
     }
 }
 
-impl {param n: integer} Div for uint(n) {
+impl {const n: integer} Div for uint(n) {
     fn div(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} / ${other};
     }
 }
 
-impl {param n: integer} Rem for uint(n) {
+impl {const n: integer} Rem for uint(n) {
     fn rem(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} % ${other};
     }
 }
 
-impl {param n: integer} Shl for uint(n) {
+impl {const n: integer} Shl for uint(n) {
     fn shl(self, other: integer) -> Self = verilog {
         assign ${return} = ${self} << ${other};
     }
 }
 
-impl {param n: integer} Shr for uint(n) {
+impl {const n: integer} Shr for uint(n) {
     fn shr(self, other: integer) -> Self = verilog {
         assign ${return} = ${self} >> ${other};
     }
 }
 
-impl {param n: integer} Eq for uint(n) {
+impl {const n: integer} Eq for uint(n) {
     fn eq(self, other: Self) -> bool = verilog {
         assign ${return} = ${self} == ${other};
     }
@@ -148,7 +148,7 @@ impl {param n: integer} Eq for uint(n) {
     }
 }
 
-impl {param n: integer} Ord for uint(n) {
+impl {const n: integer} Ord for uint(n) {
     fn lt(self, other: Self) -> bool = verilog {
         assign ${return} = ${self} < ${other};
     }
@@ -163,19 +163,19 @@ impl {param n: integer} Ord for uint(n) {
     }
 }
 
-impl {param n: integer} Add for sint(n) {
+impl {const n: integer} Add for sint(n) {
     fn add(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} + ${other};
     }
 }
 
-impl {param n: integer} Sub for sint(n) {
+impl {const n: integer} Sub for sint(n) {
     fn sub(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} - ${other};
     }
 }
 
-impl {param n: integer} Mul for sint(n) {
+impl {const n: integer} Mul for sint(n) {
     fn mul(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} * ${other};
     }
@@ -183,38 +183,38 @@ impl {param n: integer} Mul for sint(n) {
 
 // Signed `/` and `%`: sint emits as `logic signed`, so SV `/` truncates toward
 // zero and `%` takes the dividend's sign — matching const-eval's i128.
-impl {param n: integer} Div for sint(n) {
+impl {const n: integer} Div for sint(n) {
     fn div(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} / ${other};
     }
 }
 
-impl {param n: integer} Rem for sint(n) {
+impl {const n: integer} Rem for sint(n) {
     fn rem(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} % ${other};
     }
 }
 
-impl {param n: integer} Shl for sint(n) {
+impl {const n: integer} Shl for sint(n) {
     fn shl(self, other: integer) -> Self = verilog {
         assign ${return} = ${self} << ${other};
     }
 }
 
 // Arithmetic shift right: `>>>` sign-extends (sint is `logic signed`).
-impl {param n: integer} Shr for sint(n) {
+impl {const n: integer} Shr for sint(n) {
     fn shr(self, other: integer) -> Self = verilog {
         assign ${return} = ${self} >>> ${other};
     }
 }
 
-impl {param n: integer} Neg for sint(n) {
+impl {const n: integer} Neg for sint(n) {
     fn neg(self) -> Self = verilog {
         assign ${return} = -${self};
     }
 }
 
-impl {param n: integer} Eq for sint(n) {
+impl {const n: integer} Eq for sint(n) {
     fn eq(self, other: Self) -> bool = verilog {
         assign ${return} = ${self} == ${other};
     }
@@ -223,7 +223,7 @@ impl {param n: integer} Eq for sint(n) {
     }
 }
 
-impl {param n: integer} Ord for sint(n) {
+impl {const n: integer} Ord for sint(n) {
     fn lt(self, other: Self) -> bool = verilog {
         assign ${return} = ${self} < ${other};
     }
@@ -241,7 +241,7 @@ impl {param n: integer} Ord for sint(n) {
 // bits(n) is a raw vector, not a number: Eq is its ONLY operator
 // (planning/bits.md) — arithmetic on a representation is almost always
 // a bug; convert deliberately (pack/unpack, when they land).
-impl {param n: integer} Eq for bits(n) {
+impl {const n: integer} Eq for bits(n) {
     fn eq(self, other: Self) -> bool = verilog {
         assign ${return} = ${self} == ${other};
     }
@@ -252,77 +252,77 @@ impl {param n: integer} Eq for bits(n) {
 
 // bits supports shifting (and bitwise) but not arithmetic/ordering: a shifted
 // bag of bits is still a bag of bits. `>>` is logical.
-impl {param n: integer} Shl for bits(n) {
+impl {const n: integer} Shl for bits(n) {
     fn shl(self, other: integer) -> Self = verilog {
         assign ${return} = ${self} << ${other};
     }
 }
 
-impl {param n: integer} Shr for bits(n) {
+impl {const n: integer} Shr for bits(n) {
     fn shr(self, other: integer) -> Self = verilog {
         assign ${return} = ${self} >> ${other};
     }
 }
 
 // Bitwise `& | ^ ~` for uint, sint, and bits.
-impl {param n: integer} BitAnd for uint(n) {
+impl {const n: integer} BitAnd for uint(n) {
     fn bitand(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} & ${other};
     }
 }
-impl {param n: integer} BitOr for uint(n) {
+impl {const n: integer} BitOr for uint(n) {
     fn bitor(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} | ${other};
     }
 }
-impl {param n: integer} BitXor for uint(n) {
+impl {const n: integer} BitXor for uint(n) {
     fn bitxor(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} ^ ${other};
     }
 }
-impl {param n: integer} BitNot for uint(n) {
+impl {const n: integer} BitNot for uint(n) {
     fn bitnot(self) -> Self = verilog {
         assign ${return} = ~${self};
     }
 }
 
-impl {param n: integer} BitAnd for sint(n) {
+impl {const n: integer} BitAnd for sint(n) {
     fn bitand(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} & ${other};
     }
 }
-impl {param n: integer} BitOr for sint(n) {
+impl {const n: integer} BitOr for sint(n) {
     fn bitor(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} | ${other};
     }
 }
-impl {param n: integer} BitXor for sint(n) {
+impl {const n: integer} BitXor for sint(n) {
     fn bitxor(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} ^ ${other};
     }
 }
-impl {param n: integer} BitNot for sint(n) {
+impl {const n: integer} BitNot for sint(n) {
     fn bitnot(self) -> Self = verilog {
         assign ${return} = ~${self};
     }
 }
 
-impl {param n: integer} BitAnd for bits(n) {
+impl {const n: integer} BitAnd for bits(n) {
     fn bitand(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} & ${other};
     }
 }
-impl {param n: integer} BitOr for bits(n) {
+impl {const n: integer} BitOr for bits(n) {
     fn bitor(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} | ${other};
     }
 }
-impl {param n: integer} BitXor for bits(n) {
+impl {const n: integer} BitXor for bits(n) {
     fn bitxor(self, other: Self) -> Self = verilog {
         assign ${return} = ${self} ^ ${other};
     }
 }
-impl {param n: integer} BitNot for bits(n) {
+impl {const n: integer} BitNot for bits(n) {
     fn bitnot(self) -> Self = verilog {
         assign ${return} = ~${self};
     }
@@ -423,7 +423,7 @@ impl Ord for integer {
 // emitting a module. `integer` is widthless (no representation) — no impl.
 
 #[inline]
-impl {param n: integer} BitPack for uint(n) {
+impl {const n: integer} BitPack for uint(n) {
     const bit_size: integer = n;
     fn pack(self) -> bits(bit_size) = verilog {
         assign ${return} = ${self};
@@ -434,7 +434,7 @@ impl {param n: integer} BitPack for uint(n) {
 }
 
 #[inline]
-impl {param n: integer} BitPack for sint(n) {
+impl {const n: integer} BitPack for sint(n) {
     const bit_size: integer = n;
     fn pack(self) -> bits(bit_size) = verilog {
         assign ${return} = ${self};
@@ -445,7 +445,7 @@ impl {param n: integer} BitPack for sint(n) {
 }
 
 #[inline]
-impl {param n: integer} BitPack for bits(n) {
+impl {const n: integer} BitPack for bits(n) {
     const bit_size: integer = n;
     fn pack(self) -> bits(bit_size) = verilog {
         assign ${return} = ${self};
@@ -476,67 +476,67 @@ impl BitPack for bool {
 // extend grows on the MSB side (zero/sign fill); truncate drops the MSB side.
 
 #[inline]
-impl {param n: integer} uint(n) {
-    fn extend {param to: integer} (self) -> uint(to) = verilog {
+impl {const n: integer} uint(n) {
+    fn extend {const to: integer} (self) -> uint(to) = verilog {
         assign ${return} = {{(${to} - ${n}){1'b0}}, ${self}};
     }
-    fn truncate {param to: integer} (self) -> uint(to) = verilog {
+    fn truncate {const to: integer} (self) -> uint(to) = verilog {
         assign ${return} = ${self}[${to} - 1 : 0];
     }
     // LSB side: extend_lsb appends low zeros (scale up); truncate_lsb drops the
     // low bits (scale down), keeping the high `to` bits.
-    fn extend_lsb {param to: integer} (self) -> uint(to) = verilog {
+    fn extend_lsb {const to: integer} (self) -> uint(to) = verilog {
         assign ${return} = {${self}, {(${to} - ${n}){1'b0}}};
     }
-    fn truncate_lsb {param to: integer} (self) -> uint(to) = verilog {
+    fn truncate_lsb {const to: integer} (self) -> uint(to) = verilog {
         assign ${return} = ${self}[${n} - 1 : ${n} - ${to}];
     }
     // resize is bidirectional (extend OR truncate, MSB side). SV's width-cast
     // `to'(self)` does both in one composition-safe expression (zero-extends an
     // unsigned value, truncates the high bits). resize_lsb (LSB-aligned
     // bidirectional) needs direction-aware lowering and is deferred.
-    fn resize {param to: integer} (self) -> uint(to) = verilog {
+    fn resize {const to: integer} (self) -> uint(to) = verilog {
         assign ${return} = ${to}'(${self});
     }
 }
 
 #[inline]
-impl {param n: integer} sint(n) {
+impl {const n: integer} sint(n) {
     // Sign-extend by replicating the sign bit; `$signed` keeps the spliced
     // concat/part-select signed for any surrounding signed arithmetic.
-    fn extend {param to: integer} (self) -> sint(to) = verilog {
+    fn extend {const to: integer} (self) -> sint(to) = verilog {
         assign ${return} = $signed({{(${to} - ${n}){${self}[${n} - 1]}}, ${self}});
     }
-    fn truncate {param to: integer} (self) -> sint(to) = verilog {
+    fn truncate {const to: integer} (self) -> sint(to) = verilog {
         assign ${return} = $signed(${self}[${to} - 1 : 0]);
     }
-    fn extend_lsb {param to: integer} (self) -> sint(to) = verilog {
+    fn extend_lsb {const to: integer} (self) -> sint(to) = verilog {
         assign ${return} = $signed({${self}, {(${to} - ${n}){1'b0}}});
     }
-    fn truncate_lsb {param to: integer} (self) -> sint(to) = verilog {
+    fn truncate_lsb {const to: integer} (self) -> sint(to) = verilog {
         assign ${return} = $signed(${self}[${n} - 1 : ${n} - ${to}]);
     }
     // The width-cast sign-extends a signed operand and stays signed.
-    fn resize {param to: integer} (self) -> sint(to) = verilog {
+    fn resize {const to: integer} (self) -> sint(to) = verilog {
         assign ${return} = ${to}'(${self});
     }
 }
 
 #[inline]
-impl {param n: integer} bits(n) {
-    fn extend {param to: integer} (self) -> bits(to) = verilog {
+impl {const n: integer} bits(n) {
+    fn extend {const to: integer} (self) -> bits(to) = verilog {
         assign ${return} = {{(${to} - ${n}){1'b0}}, ${self}};
     }
-    fn truncate {param to: integer} (self) -> bits(to) = verilog {
+    fn truncate {const to: integer} (self) -> bits(to) = verilog {
         assign ${return} = ${self}[${to} - 1 : 0];
     }
-    fn extend_lsb {param to: integer} (self) -> bits(to) = verilog {
+    fn extend_lsb {const to: integer} (self) -> bits(to) = verilog {
         assign ${return} = {${self}, {(${to} - ${n}){1'b0}}};
     }
-    fn truncate_lsb {param to: integer} (self) -> bits(to) = verilog {
+    fn truncate_lsb {const to: integer} (self) -> bits(to) = verilog {
         assign ${return} = ${self}[${n} - 1 : ${n} - ${to}];
     }
-    fn resize {param to: integer} (self) -> bits(to) = verilog {
+    fn resize {const to: integer} (self) -> bits(to) = verilog {
         assign ${return} = ${to}'(${self});
     }
 }

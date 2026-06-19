@@ -46,7 +46,7 @@ pub struct Signature<'db> {
     /// (planning/return_variable.md).
     pub result_places: Vec<ResultPlace<'db>>,
     pub fields: Vec<Field<'db>>,
-    /// Written bounds (`param T: Add + Bits`, `where T: Bits`) plus, on a
+    /// Written bounds (`type T: Add + Bits`, `where T: Bits`) plus, on a
     /// trait method decl, the implicit `Self: Trait`. Instantiated into
     /// obligations at call sites; assumed inside the body (the param env).
     pub predicates: Vec<Predicate<'db>>,
@@ -87,8 +87,8 @@ pub enum SigDiagnosticKind {
     /// (planning/domain_checking.md).
     ConflictingDomain,
     /// An `impl` on a generic owner written without its type arguments
-    /// (`impl {dom clk} Bus` on `struct Bus(A: Type)`). A generic owner must be
-    /// applied — `impl {dom clk, A: Type} Bus(A)` — so the owner is a real type,
+    /// (`impl {dom clk} Bus` on `struct Bus(type A)`). A generic owner must be
+    /// applied — `impl {dom clk, type A} Bus(A)` — so the owner is a real type,
     /// not a bare constructor.
     GenericOwnerNotApplied {
         name: String,
@@ -221,21 +221,16 @@ fn lower_impl_header<'db>(
 ) -> Signature<'db> {
     // The self-type node: the `for` self type for a trait impl, otherwise the
     // impl subject itself (an inherent impl's `name` IS its self type, applied
-    // if the owner is generic — `impl {A: Type} Bus(A)`). A generic owner is
+    // if the owner is generic — `impl {type A} Bus(A)`). A generic owner is
     // applied explicitly, so its params come from the binder (no auto-binding).
     let self_type_node = node
         .child_by_field_name("self_type")
         .or_else(|| node.child_by_field_name("name"));
     let mut generic_params = Vec::new();
-    let is_trait_name = |n: &str| {
-        map.resolve_in_scope(module, n, Namespace::Item)
-            .and_then(|d| map.def_data(d))
-            .is_some_and(|d| d.kind == DefKind::Trait)
-    };
     let mut generic_param_nodes: Vec<(usize, Node)> = Vec::new();
     for (field, child_kind) in [("named_parameters", "named_parameter")] {
         for p in section_params(node, field, child_kind) {
-            if let ParamClass::Generic(kind) = classify(&p, source, &is_trait_name) {
+            if let ParamClass::Generic(kind) = classify(&p, source) {
                 generic_params.push(GenericParam {
                     name: param_name(&p, source),
                     kind,
@@ -258,7 +253,7 @@ fn lower_impl_header<'db>(
     let self_ty = self_type_node
         .map(|st| lowerer.lower_type(&st, source))
         .unwrap_or(Type::Error);
-    // Binder bounds (`impl {param T: Bits} Bits for Pair(T)`) become the
+    // Binder bounds (`impl {type T: Bits} Bits for Pair(T)`) become the
     // impl's predicates — the solver's NESTED obligations on selection.
     let mut predicates = Vec::new();
     let mut pred_diags = Vec::new();
@@ -299,7 +294,7 @@ fn lower_impl_header<'db>(
     }
     let mut diagnostics = drain_unresolved(&lowerer, node);
     diagnostics.extend(pred_diags);
-    // A generic owner must be APPLIED: `impl {dom clk, A: Type} Bus(A)`, never
+    // A generic owner must be APPLIED: `impl {dom clk, type A} Bus(A)`, never
     // bare `impl {dom clk} Bus`. Resolve the owner and compare its positional
     // (non-binder) arity against the args written on the self type.
     if let Some(st) = self_type_node
@@ -365,15 +360,10 @@ fn lower_adt_sig<'db>(
         ("named_parameters", "named_parameter", true),
         ("parameters", "parameter", false),
     ];
-    let is_trait_name = |n: &str| {
-        map.resolve_in_scope(module, n, Namespace::Item)
-            .and_then(|d| map.def_data(d))
-            .is_some_and(|d| d.kind == DefKind::Trait)
-    };
     let mut generic_params = Vec::new();
     for (field, child_kind, named) in sections {
         for p in section_params(node, field, child_kind) {
-            if let ParamClass::Generic(kind) = classify(&p, source, &is_trait_name) {
+            if let ParamClass::Generic(kind) = classify(&p, source) {
                 generic_params.push(GenericParam {
                     name: param_name(&p, source),
                     kind,
@@ -580,7 +570,7 @@ fn lower_fn_sig<'db>(
     let mut generic_params = Vec::new();
     let mut value_param_nodes: Vec<(Node, bool)> = Vec::new();
     // A method's generics lead with the impl block's declared generics
-    // (`impl {dom clk: Clock, A: Type} Bus(A) { … }` — Rust's `impl<T>` shape;
+    // (`impl {dom clk: Clock, type A} Bus(A) { … }` — Rust's `impl<T>` shape;
     // a generic owner is APPLIED, its params declared in the binder), then the
     // fn's own.
     // A trait METHOD DECL (`fn add(self, other: Self) -> Self;` inside a
@@ -597,7 +587,7 @@ fn lower_fn_sig<'db>(
     }
     // The impl's self-type node: the `for` self type for a trait impl,
     // otherwise the inherent subject itself (applied if the owner is generic —
-    // `impl {A: Type} Bus(A)`). A generic owner is applied explicitly, so its
+    // `impl {type A} Bus(A)`). A generic owner is applied explicitly, so its
     // params come from the binder (no auto-binding).
     let impl_self_type_node = enclosing_impl(node).and_then(|impl_node| {
         impl_node
@@ -606,18 +596,13 @@ fn lower_fn_sig<'db>(
     });
     // CST node per written generic param — the source of its bounds.
     let mut generic_param_nodes: Vec<(usize, Node)> = Vec::new();
-    let is_trait_name = |n: &str| {
-        map.resolve_in_scope(module, n, Namespace::Item)
-            .and_then(|d| map.def_data(d))
-            .is_some_and(|d| d.kind == DefKind::Trait)
-    };
     if let Some(impl_node) = enclosing_impl(node) {
         for (field, child_kind, named) in [
             ("named_parameters", "named_parameter", true),
             ("parameters", "parameter", false),
         ] {
             for p in section_params(&impl_node, field, child_kind) {
-                if let ParamClass::Generic(kind) = classify(&p, source, &is_trait_name) {
+                if let ParamClass::Generic(kind) = classify(&p, source) {
                     generic_params.push(GenericParam {
                         name: param_name(&p, source),
                         kind,
@@ -633,7 +618,7 @@ fn lower_fn_sig<'db>(
         ("parameters", "parameter", false),
     ] {
         for p in section_params(node, field, child_kind) {
-            match classify(&p, source, &is_trait_name) {
+            match classify(&p, source) {
                 ParamClass::Generic(kind) => {
                     generic_params.push(GenericParam {
                         name: param_name(&p, source),
@@ -697,7 +682,7 @@ fn lower_fn_sig<'db>(
         if generic_params[*i].kind != TermKind::Type {
             continue;
         }
-        // The ascription itself, when it names a trait (`param T: Add`).
+        // The ascription itself, when it names a trait (`type T: Add`).
         if let Some(ty) = p.child_by_field_name("type") {
             let tname = field_text(&ty, "name", source);
             if tname != "Type" {
@@ -751,7 +736,7 @@ fn lower_fn_sig<'db>(
         bounds: RefCell::new(Vec::new()),
     };
     // What `Self` (and the bare `self` receiver) mean in an impl method: the
-    // impl's self type, lowered against the binder (`impl {A: Type} Bus(A)`
+    // impl's self type, lowered against the binder (`impl {type A} Bus(A)`
     // gives `Bus(A)`; a builtin self like `impl Bits for uint(8)` gives
     // `uint(8)`).
     let impl_self_base: Option<Type> =
@@ -1602,31 +1587,21 @@ enum ParamClass {
     Value,
 }
 
-/// Classify a parameter node as a generic param (by `dom`/`param` keyword or a
-/// `: Type` annotation) or a value param.
-fn classify(node: &Node, source: &str, is_trait: &dyn Fn(&str) -> bool) -> ParamClass {
+/// Classify a parameter node as a generic param or a value param, by its leading
+/// keyword: `type` (a type-generic, bound collected from `: Trait` separately),
+/// `const` (a const-generic), `dom` (a clock-domain generic); no keyword is a
+/// value param. The keyword decides the kind outright — there is no longer a
+/// `: Type` heuristic (`type A` / `const N: integer` are unambiguous).
+fn classify(node: &Node, source: &str) -> ParamClass {
     if param_name(node, source) == "self" {
         return ParamClass::Value;
     }
-    if field_text(node, "kind", source) == "dom" {
-        return ParamClass::Generic(TermKind::Domain(DomainSort::Clock));
+    match field_text(node, "kind", source).as_str() {
+        "dom" => ParamClass::Generic(TermKind::Domain(DomainSort::Clock)),
+        "type" => ParamClass::Generic(TermKind::Type),
+        "const" => ParamClass::Generic(TermKind::Const),
+        _ => ParamClass::Value,
     }
-    // A `: Type` annotation makes it a Type-kind generic — this wins over a
-    // `param` keyword (`param A: Type` is type-generic, not const-generic).
-    // A trait name in the ascription is a *bounded* Type-kind generic
-    // (`param T: Add` — planning/traits.md [D1]); the bound itself is
-    // collected with the predicates.
-    if let Some(ty) = node.child_by_field_name("type") {
-        let n = field_text(&ty, "name", source);
-        if n == "Type" || is_trait(&n) {
-            return ParamClass::Generic(TermKind::Type);
-        }
-    }
-    // `param N: integer` (or bare `param`) — a Const-kind generic.
-    if field_text(node, "kind", source) == "param" {
-        return ParamClass::Generic(TermKind::Const);
-    }
-    ParamClass::Value
 }
 
 fn section_params<'a>(item: &Node<'a>, field: &str, child_kind: &str) -> Vec<Node<'a>> {
@@ -1809,7 +1784,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "fn f { dom clk: Clock, param N: integer, A: Type } (x: uint(N) @clk) -> uint(N) @clk { return x; }",
+            "fn f { dom clk: Clock, const N: integer, type A } (x: uint(N) @clk) -> uint(N) @clk { return x; }",
         );
         let def = fn_def(&db, krate, "f");
         let sig = sig_of(&db, krate, def);
@@ -1881,7 +1856,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "struct Bus(A: Type) = bus { a: uint(8) }\nfn h (b: Bus(uint(8))) -> uint(8) { return 0; }",
+            "struct Bus(type A) = bus { a: uint(8) }\nfn h (b: Bus(uint(8))) -> uint(8) { return 0; }",
         );
         let def = fn_def(&db, krate, "h");
         let sig = sig_of(&db, krate, def);
@@ -1976,7 +1951,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "struct Bus(A: Type) = bus { valid: bool, data: A }",
+            "struct Bus(type A) = bus { valid: bool, data: A }",
         );
         let def = fn_def(&db, krate, "Bus");
         let sig = sig_of(&db, krate, def);
@@ -2016,7 +1991,7 @@ mod tests {
         let krate = load(
             &mut db,
             &mut vfs,
-            "port DF { dom clk: Clock } ( A: Type ) = df { in ready: bool @clk, out data: A @clk }",
+            "port DF { dom clk: Clock } ( type A ) = df { in ready: bool @clk, out data: A @clk }",
         );
         let def = fn_def(&db, krate, "DF");
         let sig = sig_of(&db, krate, def);

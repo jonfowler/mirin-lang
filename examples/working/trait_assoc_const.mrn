@@ -21,7 +21,7 @@ impl Bits for uint(8) {
     }
 }
 
-fn packer {param T: Bits} (x: T) -> uint(T::width) {
+fn packer {type T: Bits} (x: T) -> uint(T::width) {
     x.pack()
 }
 

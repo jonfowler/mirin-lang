@@ -317,7 +317,7 @@ module.exports = grammar({
         1,
         seq(
           optional(field("direction", choice("in", "out"))),
-          optional(field("kind", choice("param", "dom"))),
+          optional(field("kind", choice("type", "const", "dom"))),
           field("name", $.identifier),
           optional(
             seq(
@@ -338,11 +338,17 @@ module.exports = grammar({
         ),
         seq(
           optional(field("direction", choice("in", "out"))),
-          optional(field("kind", choice("param", "dom"))),
+          optional(field("kind", choice("type", "const", "dom"))),
           field("name", $.identifier),
-          ":",
-          field("type", $._type),
-          repeat(seq("+", field("bound", $.trait_bound))),
+          // Optional so a bare type-generic (`type A`) parses positionally;
+          // value and const params still carry their `: T`.
+          optional(
+            seq(
+              ":",
+              field("type", $._type),
+              repeat(seq("+", field("bound", $.trait_bound))),
+            ),
+          ),
           optional(seq("=", field("default", $.expression))),
         ),
       ),

@@ -1,5 +1,5 @@
 // verilator: -Gn=4
-fn rep {param n: integer} (x: uint(8)) -> uint(8) {
+fn rep {const n: integer} (x: uint(8)) -> uint(8) {
     let v: Vec(n, uint(8)) = [x; n];
     v[0]
 }

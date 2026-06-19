@@ -3,6 +3,6 @@ trait Amp {
     fn amp(self) -> Self;
 }
 
-fn boost {param T: Type} (x: T) -> T {
+fn boost {type T} (x: T) -> T {
     x.amp()
 }
