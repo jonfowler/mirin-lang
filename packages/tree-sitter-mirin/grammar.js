@@ -660,7 +660,14 @@ module.exports = grammar({
     const_paren: ($) => seq("(", $._const_operand, ")"),
 
     _const_operand: ($) =>
-      choice($.number, $.identifier, $.const_field, $.const_binary, $.const_paren),
+      choice(
+        $.number,
+        $.identifier,
+        $.const_field,
+        $.const_path,
+        $.const_binary,
+        $.const_paren,
+      ),
 
     expression: ($) =>
       choice(

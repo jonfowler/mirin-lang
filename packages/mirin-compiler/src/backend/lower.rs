@@ -380,6 +380,10 @@ fn match_type<'db>(callee: &Type<'db>, actual: &Type<'db>, subst: &mut [Option<T
                 def: ad, args: aa, ..
             },
         ) if cd == ad => match_args(ca, aa, subst),
+        // `Vec(N, A)` binds its element type param `A`; the length `N` is a
+        // Const-kind generic that rides the `#(...)` parameter (like a Port's
+        // const args), so it is NOT bound into the mono subst here.
+        (Type::Vec { elem: ce, .. }, Type::Vec { elem: ae, .. }) => match_type(ce, ae, subst),
         _ => {}
     }
 }
@@ -2746,7 +2750,7 @@ impl<'db> SvLower<'_, 'db> {
 
         // A type-generic callee is monomorphised: bind its Type params from the
         // actual arg types, name the copy `Callee__Arg`, and request its emission.
-        let subst: Vec<Option<Term<'db>>> = if let Some(ov) = &uc.subst_override {
+        let mut subst: Vec<Option<Term<'db>>> = if let Some(ov) = &uc.subst_override {
             ov.clone()
         } else if is_type_generic(csig) {
             let mut subst = vec![None; csig.generic_params.len()];
@@ -2761,6 +2765,22 @@ impl<'db> SvLower<'_, 'db> {
         } else {
             Vec::new()
         };
+        // Fill any still-unbound TYPE-kind generic from the inferred call subst.
+        // A receiver-less type-path call (`Vec(..)::unpack(b)`) carries its Self
+        // type in the path, not a value arg, so `match_type` over the args can't
+        // see it — but `infer` recorded it (planning/pack_resize.md).
+        if is_type_generic(csig) {
+            if subst.is_empty() {
+                subst = vec![None; csig.generic_params.len()];
+            }
+            for (i, g) in csig.generic_params.iter().enumerate() {
+                if g.kind == TermKind::Type && subst.get(i).is_none_or(Option::is_none) {
+                    if let Some(t @ Some(Term::Type(_))) = node_subst.get(i) {
+                        subst[i] = t.clone();
+                    }
+                }
+            }
+        }
         // Only TYPE-kind bindings force a specialised copy — Const-kind
         // bindings ride the `#(...)` parameters of the one parametric module.
         let needs_mono =
@@ -3158,13 +3178,29 @@ fn ground_widths<'db>(
     impl<'db> Folder<'db> for G<'db> {
         fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
             match c {
-                ConstArg::Local(_)
-                | ConstArg::Op(..)
-                | ConstArg::Field(..)
-                | ConstArg::Assoc { .. } => {
+                // A symbolic assoc (an input is a `#(...)` parameter) can't
+                // evaluate to a literal; expand it to its substituted body so a
+                // compound width like `N * A::bit_size` becomes `N * 8` — a
+                // renderable `Op` — instead of an unrenderable `Assoc`
+                // (planning/pack_resize.md). Then fold that body (grounding its
+                // inner, now-concrete assoc).
+                ConstArg::Assoc { item, self_ty } => {
                     match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c) {
                         Some(v) => ConstArg::Lit(v),
-                        None => c.clone(),
+                        None => match crate::hir::const_eval::assoc_grounded_body(
+                            self.db, self.krate, *item, self_ty,
+                        ) {
+                            Some(body) => self.fold_const(&body),
+                            None => c.clone(),
+                        },
+                    }
+                }
+                ConstArg::Local(_) | ConstArg::Op(..) | ConstArg::Field(..) => {
+                    match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c) {
+                        Some(v) => ConstArg::Lit(v),
+                        // Not a literal (a symbolic operand): fold the children,
+                        // so an inner assoc/local still grounds where it can.
+                        None => crate::hir::types::super_fold_const(self, c),
                     }
                 }
                 other => other.clone(),
@@ -3362,6 +3398,7 @@ fn type_head_def<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> Option<DefId<'d
             ..
         } => prelude("integer"),
         Type::Port { def, .. } => Some(*def),
+        Type::Vec { .. } => prelude("Vec"),
         Type::Clock => prelude("Clock"),
         _ => None,
     }
@@ -3591,13 +3628,12 @@ fn width_expr(c: &ConstArg, generics: &[GenericParam]) -> SvExpr {
             ),
         },
         // A symbolic COMPOUND width/length in a parametric module — `uint(n + 1)`,
-        // `Vec(a + b, …)`. `const_eval`/`ground_widths` cannot ground it (its
-        // generics are free here), so render it as a SV constant expression and
-        // let the SV elaborator evaluate it: `uint(n + 1)` → `[(n + 1)-1:0]`,
-        // `Vec(a + b, …)` → `[0:(a + b)-1]`. NEVER a silent 1-bit/`[0:0]`
-        // default (that masked a `uint(T::width)` substitution bug and silently
-        // miscompiled `Vec(a + b)`). `render_const_sv_generics` panics on a
-        // genuinely unrenderable form (an ungrounded `Local`/`Assoc`).
+        // `Vec(a + b, …)`, or an expanded assoc body (`Vec(N,A)::bit_size` →
+        // `N * 8`). `const_eval`/`ground_widths` cannot ground it (its generics
+        // are free here), so render it as a SV constant expression and let the
+        // SV elaborator evaluate it: `[(n + 1)-1:0]`. NEVER a silent 1-bit/`[0:0]`
+        // default. `render_const_sv_generics` panics on a genuinely unrenderable
+        // form (an ungrounded `Local`/`Assoc`).
         ConstArg::Op(..) => SvExpr::Lit(render_const_sv_generics(c, generics)),
         // A `Local`/`Field`/`Assoc` width: `ground_widths` grounds these to a
         // literal via const_eval before rendering (that grounding fixed the

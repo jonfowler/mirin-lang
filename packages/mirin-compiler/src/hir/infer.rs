@@ -2562,6 +2562,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 ..
             } => self.prelude_def("integer"),
             Type::Port { def, .. } => Some(def),
+            // `Vec(N, A)` dispatches through the `Vec` builtin owner, so
+            // `v.pack()` / `Vec(..)::unpack(b)` find `impl BitPack for Vec(N, A)`
+            // (planning/pack_resize.md).
+            Type::Vec { .. } => self.prelude_def("Vec"),
             Type::Clock => self.prelude_def("Clock"),
             _ => None,
         }

@@ -346,6 +346,36 @@ impl BitPack for bool {
     }
 }
 
+// BitPack for Vec(N, A) — little-endian: element 0 occupies the LOW bits
+// (planning/pack_resize.md). Built bit-by-bit in a generate-`for`, so it needs
+// no slice/concat primitive: every bit of `b` (and every element of `acc`) is
+// driven exactly once across the disjoint iterations — single-assignment per
+// leaf. `bit_size = N * A::bit_size` folds at monomorphisation.
+impl {const N: integer, type A: BitPack} BitPack for Vec(N, A) {
+    const bit_size: integer = N * A::bit_size;
+    fn pack(self) -> bits(bit_size) {
+        var b: bits(N * A::bit_size);
+        for i in range(N) {
+            let pelem = self[i].pack();
+            for j in range(A::bit_size) {
+                b[i * A::bit_size + j] = pelem[j];
+            }
+        }
+        b
+    }
+    fn unpack(b: bits(bit_size)) -> Self {
+        var acc: Vec(N, A);
+        for i in range(N) {
+            var eb: bits(A::bit_size);
+            for j in range(A::bit_size) {
+                eb[j] = b[i * A::bit_size + j];
+            }
+            acc[i] = A::unpack(eb);
+        }
+        acc
+    }
+}
+
 // ----- Resizing (planning/pack_resize.md) -----
 // Per-type inherent impls on the width-carrying primitives. The generic is the
 // TARGET width `to` (it unifies trivially with the context; the delta `to - n`

@@ -172,10 +172,34 @@ fn place_of(body: &Body, expr: ExprId) -> Option<(LocalId, Vec<String>)> {
                 ExprKind::Local(i) if matches!(body.local(*i).kind, LocalKind::ForBound) => {
                     Some((l, path))
                 }
+                // A compound index that references a `for`-bound genvar
+                // (`b[i*a + j]`) covers the WHOLE place: the loop(s) span every
+                // index. Like the bare-genvar case, coverage is assumed, not
+                // proven (rigorous range checking is deferred) — the unit of a
+                // per-bit `bits` construction (planning/pack_resize.md).
+                _ if index_uses_forbound(body, *index) => Some((l, path)),
                 _ => None,
             }
         }
         _ => None,
+    }
+}
+
+/// Does an index expression reference a `for`-bound genvar? (`i`, `i*a + j`,
+/// …) — used to recognise a loop-spanning partial drive whose index is a
+/// genvar *expression*, not a bare genvar.
+fn index_uses_forbound(body: &Body, expr: ExprId) -> bool {
+    match &body.expr(expr).kind {
+        ExprKind::Local(i) => matches!(body.local(*i).kind, LocalKind::ForBound),
+        ExprKind::MethodCall { receiver, args, .. } => {
+            index_uses_forbound(body, *receiver)
+                || args.iter().any(|a| index_uses_forbound(body, a.expr))
+        }
+        ExprKind::Index { base, index } => {
+            index_uses_forbound(body, *base) || index_uses_forbound(body, *index)
+        }
+        ExprKind::Field { receiver, .. } => index_uses_forbound(body, *receiver),
+        _ => false,
     }
 }
 

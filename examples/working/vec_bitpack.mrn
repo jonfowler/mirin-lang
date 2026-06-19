@@ -1,0 +1,14 @@
+// BitPack for Vec(N, A) (planning/pack_resize.md): little-endian — element 0
+// occupies the low bits. The impl is hand-written in the prelude and built
+// bit-by-bit in a generate-`for` (no slice/concat primitive): `pack` flattens
+// the vector to `bits`, `unpack` rebuilds it through the element type's own
+// `unpack`. Instantiating at `Vec(3, uint(8))` monomorphises the element type
+// and rides the length `N` as a `#(...)` parameter; the result width is the
+// compound `(N * 8)`.
+fn pack_vec {dom clk: Clock} (v: Vec(3, uint(8)) @clk) -> bits(24) @clk {
+    v.pack()
+}
+
+fn unpack_vec {dom clk: Clock} (b: bits(24) @clk) -> Vec(3, uint(8)) @clk {
+    Vec(3, uint(8))::unpack(b)
+}

@@ -308,6 +308,10 @@
             "named": true
           },
           {
+            "type": "const_path",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -357,6 +361,10 @@
           },
           {
             "type": "const_paren",
+            "named": true
+          },
+          {
+            "type": "const_path",
             "named": true
           },
           {
@@ -442,6 +450,10 @@
         },
         {
           "type": "const_paren",
+          "named": true
+        },
+        {
+          "type": "const_path",
           "named": true
         },
         {

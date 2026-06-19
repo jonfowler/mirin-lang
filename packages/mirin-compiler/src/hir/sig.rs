@@ -1541,6 +1541,7 @@ pub(crate) fn lower_type_expr<'db>(
     map: &CrateDefMap<'db>,
     module: ModuleId,
     generics: &[GenericParam],
+    bounds: &[(u32, DefId<'db>)],
     locals: Option<&dyn Fn(&str) -> Option<LocalId>>,
     node: &Node,
     source: &str,
@@ -1553,7 +1554,9 @@ pub(crate) fn lower_type_expr<'db>(
         locals,
         self_ty: RefCell::new(None),
         assoc_self: RefCell::new(None),
-        bounds: RefCell::new(Vec::new()),
+        // Type-param trait bounds, so a body width ascription can project an
+        // associated const (`bits(A::bit_size)`), as the sig does.
+        bounds: RefCell::new(bounds.to_vec()),
         unresolved: RefCell::new(Vec::new()),
     };
     let ty = lowerer.lower_type(node, source);

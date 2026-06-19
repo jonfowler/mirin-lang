@@ -28,7 +28,80 @@ use crate::hir::types::{
     type_has_infer,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
-use crate::nameres::ids::DefId;
+use crate::nameres::ids::{DefId, DefKind};
+
+/// The substituted *body* of an associated const at a (possibly partly
+/// symbolic) `self_ty` — the impl const's expression with the impl's generics
+/// bound from the self type, but NOT evaluated. `eval_assoc` is "ground then
+/// eval"; this is the "ground" half, exposed so the backend can render a
+/// compound width whose assoc body stays symbolic — `Vec(N, A)::bit_size` with
+/// `A = uint(8)` but `N` a `#(...)` parameter expands to `N * 8`
+/// (planning/pack_resize.md), which `render_const_sv` then prints.
+///
+/// `None` when the self type is itself abstract (a bare type param / infer var,
+/// so no impl is selectable) or the impl/const can't be resolved.
+pub fn assoc_grounded_body<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    item: DefId<'db>,
+    self_ty: &Type<'db>,
+) -> Option<ConstArg<'db>> {
+    if type_has_infer(self_ty)
+        || matches!(
+            self_ty,
+            Type::Value {
+                kind: ValueKind::Param(_),
+                ..
+            }
+        )
+    {
+        return None;
+    }
+    let map = crate_def_map(db, krate);
+    let owner = map.def_data(item)?.owner?;
+    let (binding, value) = match map.def_data(owner)?.kind {
+        // A trait's const DECL: select the impl by header match.
+        DefKind::Trait => {
+            let name = map.def_data(item)?.name.clone();
+            let mut found = None;
+            for data in map.trait_impls(owner) {
+                let hsig = sig_of(db, krate, data.impl_def);
+                let Some(header) = &hsig.return_type else {
+                    continue;
+                };
+                let mut binding = vec![None; hsig.generic_params.len()];
+                if match_header(self_ty, header, &mut binding) {
+                    let cdef = data.consts.iter().find(|(n, _)| *n == name)?.1;
+                    found = Some((binding, sig_of(db, krate, cdef).const_value.clone()?));
+                    break;
+                }
+            }
+            found?
+        }
+        // Already an impl's const: re-derive the binding from the self type.
+        _ => {
+            let value = sig_of(db, krate, item).const_value.clone()?;
+            let mut found = None;
+            'outer: for (_, impls) in map.all_trait_impls() {
+                for data in impls {
+                    if data.consts.iter().any(|(_, d)| *d == item) {
+                        let hsig = sig_of(db, krate, data.impl_def);
+                        let Some(header) = &hsig.return_type else {
+                            continue;
+                        };
+                        let mut binding = vec![None; hsig.generic_params.len()];
+                        if match_header(self_ty, header, &mut binding) {
+                            found = Some(binding);
+                        }
+                        break 'outer;
+                    }
+                }
+            }
+            (found?, value)
+        }
+    };
+    Some(subst_const_opt(&value, &binding))
+}
 
 /// A const value: the `integer` scalar, a bool, or a structural record
 /// (rustc's valtree analogue, names kept for field projection).
@@ -185,54 +258,7 @@ impl<'db> Evaluator<'db> {
             self.symbolic = true;
             return None; // still symbolic
         }
-        let owner = self.map.def_data(item)?.owner?;
-        let (binding, value) = match self.map.def_data(owner)?.kind {
-            // A trait's const DECL: select the impl by header match.
-            crate::nameres::ids::DefKind::Trait => {
-                let name = self.map.def_data(item)?.name.clone();
-                let mut found = None;
-                for data in self.map.trait_impls(owner) {
-                    let hsig = sig_of(self.db, self.krate, data.impl_def);
-                    let Some(header) = &hsig.return_type else {
-                        continue;
-                    };
-                    let mut binding = vec![None; hsig.generic_params.len()];
-                    if match_header(self_ty, header, &mut binding) {
-                        let cdef = data.consts.iter().find(|(n, _)| *n == name)?.1;
-                        found = Some((
-                            binding,
-                            sig_of(self.db, self.krate, cdef).const_value.clone()?,
-                        ));
-                        break;
-                    }
-                }
-                found?
-            }
-            // Already an impl's const: bind its prefix from the self type.
-            _ => {
-                let value = sig_of(self.db, self.krate, item).const_value.clone()?;
-                // Re-derive the binding by matching the impl header. The
-                // impl def is found through the owner's trait impls.
-                let mut found = None;
-                'outer: for (_, impls) in self.map.all_trait_impls() {
-                    for data in impls {
-                        if data.consts.iter().any(|(_, d)| *d == item) {
-                            let hsig = sig_of(self.db, self.krate, data.impl_def);
-                            let Some(header) = &hsig.return_type else {
-                                continue;
-                            };
-                            let mut binding = vec![None; hsig.generic_params.len()];
-                            if match_header(self_ty, header, &mut binding) {
-                                found = Some(binding);
-                            }
-                            break 'outer;
-                        }
-                    }
-                }
-                (found?, value)
-            }
-        };
-        let grounded = subst_const_opt(&value, &binding);
+        let grounded = assoc_grounded_body(self.db, self.krate, item, self_ty)?;
         self.eval_const_arg(frame, &grounded, depth + 1)
     }
 

@@ -3465,6 +3465,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "const_path"
+        },
+        {
+          "type": "SYMBOL",
           "name": "const_binary"
         },
         {
