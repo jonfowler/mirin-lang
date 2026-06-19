@@ -29,6 +29,7 @@
   "out"
   "type"
   "dom"
+  "mut"
 ] @keyword.modifier
 
 (comment) @comment

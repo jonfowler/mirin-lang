@@ -133,7 +133,7 @@
         },
         {
           "name": "storage.modifier.mirin",
-          "match": "\\b(pub|crate|super|let|var|in|out|type|dom|init)\\b"
+          "match": "\\b(pub|crate|super|let|var|mut|in|out|type|dom|init)\\b"
         },
         {
           "name": "constant.language.mirin",
