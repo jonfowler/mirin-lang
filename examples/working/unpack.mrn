@@ -1,22 +1,23 @@
-// BitPack round-trip (planning/pack_resize.md): `pack` flattens a value to its
-// raw `bits`; `unpack` rebuilds it. `unpack` dispatches on its RETURN type, so
-// it is called as a concrete type-path call `T::unpack(b)` rather than on a
-// receiver. For the primitives both directions are a wire (`#[inline]`).
+// BitPack `unpack` (planning/pack_resize.md): rebuild a typed value from its
+// raw `bits` representation — e.g. bits read off a bus or out of a memory.
+// `unpack` dispatches on its RETURN type, so it is called as a concrete
+// type-path call `T::unpack(b)` rather than on a receiver. For the primitives
+// it is a `bits`-reinterpret wire (`#[inline]`).
 //
 // A typed base (`uint(8)::`) is unambiguous; a bare base (`bool::`) parses as a
 // path call and is re-read as a type-path call when the base names a type.
-fn rt_uint {dom clk: Clock} (x: uint(8) @clk) -> uint(8) @clk {
-    uint(8)::unpack(x.pack())
+fn as_uint {dom clk: Clock} (b: bits(8) @clk) -> uint(8) @clk {
+    uint(8)::unpack(b)
 }
 
-fn rt_sint {dom clk: Clock} (x: sint(8) @clk) -> sint(8) @clk {
-    sint(8)::unpack(x.pack())
+fn as_sint {dom clk: Clock} (b: bits(8) @clk) -> sint(8) @clk {
+    sint(8)::unpack(b)
 }
 
-fn rt_bits {dom clk: Clock} (x: bits(4) @clk) -> bits(4) @clk {
-    bits(4)::unpack(x.pack())
+fn as_bits {dom clk: Clock} (b: bits(4) @clk) -> bits(4) @clk {
+    bits(4)::unpack(b)
 }
 
-fn rt_bool {dom clk: Clock} (x: bool @clk) -> bool @clk {
-    bool::unpack(x.pack())
+fn as_bool {dom clk: Clock} (b: bits(1) @clk) -> bool @clk {
+    bool::unpack(b)
 }

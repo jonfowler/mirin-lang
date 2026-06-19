@@ -115,8 +115,14 @@ parses as a two-segment path call and is re-read as a type-path call during
 lowering when the base names a type. Resolution mirrors method dispatch
 (inherent → trait → bounded-param-via-`Instance::resolve`), and the impl's
 generics are pinned from the Self type (the receiver-less analogue of the
-self-param subsume). The primitive `unpack` bodies are inline-verilog wire
-identities, like `pack`.
+self-param subsume). The primitive `unpack` bodies are inline-verilog
+`bits`-reinterpret wires, like `pack`.
+
+Each of `pack` and `unpack` is an ordinary `#[inline]` fn whose body is a single
+identity `assign`; there is **no round-trip recognition**. `unpack(pack(x))`
+holds by the bodies being individual identities, not by a compiler rule that
+collapses the pair (it just nests two inline substitutions, like any two
+passthrough fns).
 
 ### Endianness — little-endian, settled
 
