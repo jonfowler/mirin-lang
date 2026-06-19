@@ -107,6 +107,11 @@ pub enum ExprKind<'db> {
     Bool(bool),
     /// A resolved local (param / let / var).
     Local(LocalId),
+    /// The enclosing def's i-th generic parameter (Const-kind) referenced as a
+    /// **value** (`range(n)`, `acc[n-1]`, `acc + n`). The value-position dual of
+    /// `ValueKind::Param` (types) and `ConstArg::Param` (widths). Types as
+    /// `integer @const`; the backend renders it as the SV `#(…)` parameter name.
+    ConstParam(u32),
     /// A resolved item reference (fn, constructor, builtin).
     Def(DefId<'db>),
     /// A call. Operators (`+`, `*`) lower here too (callee = the prelude op).
@@ -1388,6 +1393,17 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             }
             if let Some(local) = self.lookup_local(name) {
                 return ExprKind::Local(local);
+            }
+            // A Const-kind generic param used as a value (`range(n)`). Locals
+            // shadow it (checked above); it shadows module items (checked
+            // below). The index is its position in the full generics array, to
+            // match `ConstArg::Param` / `ValueKind::Param`.
+            if let Some(i) = self
+                .generics
+                .iter()
+                .position(|g| g.name == *name && g.kind == TermKind::Const)
+            {
+                return ExprKind::ConstParam(i as u32);
             }
             if let Some(def) = self
                 .map

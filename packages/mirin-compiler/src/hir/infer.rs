@@ -1708,6 +1708,13 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 kind: ValueKind::Bool,
                 domain: Domain::Const,
             },
+            // A Const-kind generic used as a value: an `integer` known at
+            // compile time, hence `@const` (coerces into any clock via the one
+            // subtyping edge). The concrete value rides the SV `#(…)` parameter.
+            ExprKind::ConstParam(_) => Type::Value {
+                kind: ValueKind::Integer,
+                domain: Domain::Const,
+            },
             // `[a, b, c]`: the elements unify; the length is theirs to count.
             ExprKind::VecLit(elems) => {
                 let elems = elems.clone();
@@ -1888,6 +1895,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             let len = match args.first().map(|a| &body.expr(a.expr).kind) {
                 Some(ExprKind::Number(v, _)) => ConstArg::Lit(*v),
                 Some(ExprKind::Local(l)) => ConstArg::Local(*l),
+                Some(ExprKind::ConstParam(i)) => ConstArg::Param(*i),
                 _ => ConstArg::Deferred,
             };
             for a in args {

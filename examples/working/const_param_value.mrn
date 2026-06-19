@@ -1,0 +1,15 @@
+// verilator: -Gn=8
+// A `param n: integer` is now usable as a VALUE in the body, not only in type
+// position: `range(n)` as a loop bound, and `(n-1) - i` in index arithmetic. It
+// rides the SV `#(parameter int n)` — no monomorph copy needed.
+// (planning: proposals/param_const.md.)
+//
+// `reverse` mirrors a Vec end-for-end: a pure structural rewiring whose extent
+// is the const parameter.
+fn reverse {dom clk: Clock} (param n: integer, v: Vec(n, uint(8)) @clk) -> Vec(n, uint(8)) @clk {
+    var rev: Vec(n, uint(8)) @clk;
+    for i in range(n) {
+        rev[i] = v[(n - 1) - i];
+    }
+    rev
+}

@@ -1361,6 +1361,12 @@ impl<'db> SvLower<'_, 'db> {
             }
             ExprKind::Bool(b) => SvExpr::Lit(if *b { "1'b1" } else { "1'b0" }.to_owned()),
             ExprKind::Local(l) => SvExpr::Ident(self.local_name(*l)),
+            // A const generic used as a value renders as the SV `#(…)` parameter
+            // name — legal in widths, bounds, and ordinary expressions alike.
+            ExprKind::ConstParam(i) => match self.sig.generic_params.get(*i as usize) {
+                Some(g) => SvExpr::Ident(g.name.clone()),
+                None => SvExpr::Lit("0".to_owned()),
+            },
             ExprKind::Call { .. } => {
                 // User-fn calls become module instances (Q5d).
                 SvExpr::Lit("0".to_owned())
