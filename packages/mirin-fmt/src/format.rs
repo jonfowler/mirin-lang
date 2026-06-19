@@ -703,7 +703,12 @@ impl<'a> Formatter<'a> {
     fn let_stmt(&self, n: Node) -> Doc {
         let pattern = self.doc(self.field(n, "pattern").unwrap());
         let value = self.doc(self.field(n, "value").unwrap());
-        let mut parts = vec![text("let "), pattern];
+        let kw = if self.field(n, "modifier").is_some() {
+            "let mut "
+        } else {
+            "let "
+        };
+        let mut parts = vec![text(kw), pattern];
         if let Some(ty) = self.field(n, "type") {
             parts.push(concat([text(": "), self.doc(ty)]));
         }

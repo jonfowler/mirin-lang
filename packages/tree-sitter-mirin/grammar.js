@@ -512,6 +512,10 @@ module.exports = grammar({
     let_statement: ($) =>
       seq(
         "let",
+        // `let mut acc = …` — a mutable binding, reassignable in place (the
+        // loop-carried accumulator, proposals/compile_mutable.md). Without
+        // `mut`, `let` is single-assignment (shadowing mints a fresh binding).
+        optional(field("modifier", "mut")),
         field("pattern", $._pattern),
         optional(seq(":", field("type", $._type))),
         "=",

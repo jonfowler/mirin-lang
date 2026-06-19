@@ -118,6 +118,12 @@ pub fn check_drivers<'db>(
             }
             continue;
         }
+        // A `let mut` is reassigned in place — sequential, not an equation
+        // system — so repeated whole-place "drives" are expected, not a
+        // conflict (proposals/compile_mutable.md). Skip the overlap check.
+        if local.mutable {
+            continue;
+        }
         // Two drives conflict when one path is a prefix of the other
         // (equality included): `x` + `x.a`, or `x.a` twice — for every local
         // kind (a param's fields are drivable too: `downstream.valid = …`).

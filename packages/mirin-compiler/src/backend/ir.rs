@@ -196,8 +196,20 @@ pub struct SvAlwaysComb {
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub enum SvCombStmt {
-    Assign { lhs: SvExpr, rhs: SvExpr },
+    Assign {
+        lhs: SvExpr,
+        rhs: SvExpr,
+    },
     If(SvCombIf),
+    /// A procedural `for (int v = 0; v < bound; v++) begin … end` — the
+    /// loop-carried accumulator (proposals/compile_mutable.md). Distinct from
+    /// the structural `SvGenerateFor`: this runs inside an `always_comb`, with
+    /// blocking assignments to a mutable accumulator.
+    For {
+        var: String,
+        bound: SvExpr,
+        body: Vec<SvCombStmt>,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -464,6 +476,16 @@ fn fmt_comb_stmt(f: &mut fmt::Formatter<'_>, stmt: &SvCombStmt, indent: usize) -
             writeln!(f, "{pad}end else begin")?;
             for e in &s.else_branch {
                 fmt_comb_stmt(f, e, indent + 4)?;
+            }
+            writeln!(f, "{pad}end")
+        }
+        SvCombStmt::For { var, bound, body } => {
+            writeln!(
+                f,
+                "{pad}for (int {var} = 0; {var} < {bound}; {var}++) begin"
+            )?;
+            for s in body {
+                fmt_comb_stmt(f, s, indent + 4)?;
             }
             writeln!(f, "{pad}end")
         }

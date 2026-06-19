@@ -64,6 +64,11 @@ pub struct LocalData<'db> {
     /// SystemVerilog port base its leaves emit under (`result`, `result__0`,
     /// …). `None` for an ordinary local (planning/return_variable.md).
     pub result_base: Option<String>,
+    /// `let mut` — a mutable binding, reassignable in place (a loop-carried
+    /// accumulator). Sequential reassignment is exempt from the single-driver
+    /// check, and the backend lowers it as a procedural `always_comb` variable
+    /// (proposals/compile_mutable.md). Only ever set on a `LocalKind::Let`.
+    pub mutable: bool,
 }
 
 /// A lowered expression. (Spans land with the diagnostics infra, Q6.)
@@ -531,6 +536,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 kind: LocalKind::Param,
                 declared_ty: Some(p.ty.clone()),
                 result_base: None,
+                mutable: false,
             });
         }
         // A `dom clk` generic param is referenced in the body as a `Clock` value
@@ -546,6 +552,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     kind: LocalKind::Param,
                     declared_ty: Some(Type::Clock),
                     result_base: None,
+                    mutable: false,
                 });
             }
         }
@@ -564,6 +571,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 kind: LocalKind::Var,
                 declared_ty: Some(place.ty.clone()),
                 result_base: Some(place.sv_base.clone()),
+                mutable: false,
             });
         }
         // Params/`dom` generics have no body declaration site → default span.
@@ -785,6 +793,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             kind,
             declared_ty,
             result_base: None,
+            mutable: false,
         });
         self.local_spans.push(span);
         self.define(name, id);
@@ -1127,6 +1136,16 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 self.diag_unresolved_types(unres);
                 if let Some(pat) = node.child_by_field_name("pattern") {
                     self.bind_pattern(&pat, source, declared_ty, value, &mut block.stmts);
+                    // `let mut x` — mark the freshly bound bare-name local mutable
+                    // (the most recent `Stmt::Let`). `mut` on a destructuring
+                    // pattern is not meaningful and is ignored.
+                    if node.child_by_field_name("modifier").is_some()
+                        && pat.kind() != "tuple_pattern"
+                        && pat.kind() != "struct_pattern"
+                        && let Some(Stmt::Let { local, .. }) = block.stmts.last()
+                    {
+                        self.locals[local.0 as usize].mutable = true;
+                    }
                 }
             }
             "var_statement" => {

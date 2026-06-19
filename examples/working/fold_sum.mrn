@@ -1,0 +1,14 @@
+// verilator: -Gn=8
+// A loop-carried accumulator with `let mut` (proposals/compile_mutable.md).
+// Reassigning `acc` in place across the `for` is the fold; it lowers to a
+// PROCEDURAL always_comb with a mutable variable and a procedural `for` —
+// the synthesiser unrolls it into a comb adder tree. This is the readable
+// form of the structural ripple in const_param_value.mrn, and (unlike the
+// array-recurrence encoding) it does not trip verilator's UNOPTFLAT check.
+fn sum {dom clk: Clock} (const n: integer, v: Vec(n, uint(8)) @clk) -> uint(8) @clk {
+    let mut acc = 0;
+    for x in v {
+        acc = acc + x;
+    }
+    acc
+}

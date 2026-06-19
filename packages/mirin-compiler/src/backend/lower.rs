@@ -548,39 +548,219 @@ impl<'db> SvLower<'_, 'db> {
     }
 
     fn lower_stmts(&mut self, stmts: &[Stmt]) {
-        for stmt in stmts {
-            match stmt {
-                Stmt::Let { local, value } => self.lower_let(*local, *value),
-                Stmt::VarDecl { local } => self.declare_local(*local),
-                Stmt::Equation { lhs, rhs } => {
-                    if let ExprKind::Local(l) = self.body.expr(*lhs).kind
-                        && self.is_integer_local(l)
-                    {
-                        continue;
+        let mut i = 0;
+        while i < stmts.len() {
+            // A `let mut acc = init;` immediately followed by `for` loop(s) that
+            // reassign it is a loop-carried fold → one procedural `always_comb`
+            // (proposals/compile_mutable.md), not a continuous assign + a
+            // structural generate-for. Consume the run together.
+            if let Stmt::Let { local, value } = &stmts[i]
+                && self.body.local(*local).mutable
+            {
+                let (acc, init) = (*local, *value);
+                // The contiguous run of statements that reassign `acc` — a
+                // straight-line `acc = …` or a carrying `for`. (A statement that
+                // only reads `acc`, or anything else, ends the run; the mid-read
+                // fold is a later refinement.)
+                let mut steps: Vec<Stmt> = Vec::new();
+                let mut j = i + 1;
+                while let Some(stmt) = stmts.get(j) {
+                    let carries = match stmt {
+                        Stmt::Equation { lhs, .. } => {
+                            backend_root_local(self.body, *lhs) == Some(acc)
+                        }
+                        Stmt::For { body, .. } => self.for_carries(body, acc),
+                        _ => false,
+                    };
+                    if !carries {
+                        break;
                     }
-                    self.lower_equation(*lhs, *rhs)
+                    steps.push(stmt.clone());
+                    j += 1;
                 }
-                Stmt::Return { value } => self.drive_result(*value),
+                if !steps.is_empty() {
+                    self.lower_mut_fold(acc, init, &steps);
+                    i = j;
+                    continue;
+                }
+            }
+            self.lower_one_stmt(&stmts[i]);
+            i += 1;
+        }
+    }
+
+    fn lower_one_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let { local, value } => self.lower_let(*local, *value),
+            Stmt::VarDecl { local } => self.declare_local(*local),
+            Stmt::Equation { lhs, rhs } => {
+                if let ExprKind::Local(l) = self.body.expr(*lhs).kind
+                    && self.is_integer_local(l)
+                {
+                    return;
+                }
+                self.lower_equation(*lhs, *rhs)
+            }
+            Stmt::Return { value } => self.drive_result(*value),
+            Stmt::For {
+                index,
+                elem,
+                iter,
+                body,
+            } => {
+                let (index, elem, iter) = (*index, *elem, *iter);
+                let body = body.clone();
+                self.lower_for(index, elem, iter, &body);
+            }
+            // A bare call statement: a (void) submodule instantiation whose
+            // out-arg connections bind callee `out` params to caller places.
+            Stmt::Expr(e) => self.lower_call_stmt(*e),
+            Stmt::When { event, body, init } => {
+                let (event, body) = (*event, body.clone());
+                let init = init.clone();
+                self.lower_when_stmt(event, &body, init.as_ref());
+            }
+        }
+    }
+
+    /// Does this `for` body reassign `acc` (a loop-carried fold)?
+    fn for_carries(&self, body: &Block, acc: LocalId) -> bool {
+        body.stmts.iter().any(|s| {
+            matches!(s, Stmt::Equation { lhs, .. } if backend_root_local(self.body, *lhs) == Some(acc))
+        })
+    }
+
+    /// Lower `let mut acc = init;` + carrying `for`(s) to one procedural
+    /// `always_comb`: `acc = init;` then a procedural `for` per loop whose body
+    /// reassigns `acc` with blocking assignments (the synthesiser unrolls; the
+    /// recurrence rides procedural execution order, like LLVM after mem2reg).
+    /// First cut: scalar accumulator and scalar element.
+    fn lower_mut_fold(&mut self, acc: LocalId, init: ExprId, steps: &[Stmt]) {
+        self.declare_local(acc);
+        let acc_name = self.local_name(acc);
+        let mut comb: Vec<SvCombStmt> = Vec::new();
+        let init_v = self.expr_value(init);
+        comb.push(SvCombStmt::Assign {
+            lhs: SvExpr::Ident(acc_name),
+            rhs: init_v,
+        });
+        for step in steps {
+            match step {
+                // A straight-line reassignment `acc = …;` → a blocking assign.
+                Stmt::Equation { lhs, rhs } => {
+                    for a in self.blocking_assigns(*lhs, *rhs) {
+                        comb.push(a);
+                    }
+                }
+                // A carrying `for` → a procedural `for` with blocking body.
                 Stmt::For {
                     index,
                     elem,
                     iter,
                     body,
                 } => {
-                    let (index, elem, iter) = (*index, *elem, *iter);
-                    let body = body.clone();
-                    self.lower_for(index, elem, iter, &body);
+                    let Some((bound, var)) = self.loop_bound_var(*index, *elem, *iter) else {
+                        continue;
+                    };
+                    let mut inner: Vec<SvCombStmt> = Vec::new();
+                    // Element binding `x = v[i];` unless the element IS the
+                    // genvar (a `range(n)` loop).
+                    let elem_is_genvar = matches!(
+                        self.body.local(*elem).kind,
+                        crate::hir::body::LocalKind::ForBound
+                    );
+                    if !elem_is_genvar {
+                        self.declare_local(*elem);
+                        let elem_base = self.local_name(*elem);
+                        for (suffix, e) in self.expr_leaves(*iter) {
+                            inner.push(SvCombStmt::Assign {
+                                lhs: SvExpr::Ident(join(&elem_base, &suffix)),
+                                rhs: SvExpr::Lit(format!("{e}[{var}]")),
+                            });
+                        }
+                    }
+                    for stmt in &body.stmts {
+                        if let Stmt::Equation { lhs, rhs } = stmt {
+                            for a in self.blocking_assigns(*lhs, *rhs) {
+                                inner.push(a);
+                            }
+                        }
+                    }
+                    comb.push(SvCombStmt::For {
+                        var,
+                        bound,
+                        body: inner,
+                    });
                 }
-                // A bare call statement: a (void) submodule instantiation whose
-                // out-arg connections bind callee `out` params to caller places.
-                Stmt::Expr(e) => self.lower_call_stmt(*e),
-                Stmt::When { event, body, init } => {
-                    let (event, body) = (*event, body.clone());
-                    let init = init.clone();
-                    self.lower_when_stmt(event, &body, init.as_ref());
-                }
+                _ => {}
             }
         }
+        self.items
+            .push(SvItem::AlwaysComb(SvAlwaysComb { body: comb }));
+    }
+
+    /// Per-leaf blocking assignments for one `lhs = rhs` equation (used inside a
+    /// procedural fold `always_comb`).
+    fn blocking_assigns(&mut self, lhs: ExprId, rhs: ExprId) -> Vec<SvCombStmt> {
+        let lhs_leaves = self.place_leaves_dir(lhs);
+        let rhs_leaves = self.value_leaves_dir(rhs);
+        lhs_leaves
+            .into_iter()
+            .zip(rhs_leaves)
+            .map(|((lp, _), (rp, _))| SvCombStmt::Assign { lhs: lp, rhs: rp })
+            .collect()
+    }
+
+    /// The (bound, genvar-name) for a loop's iterable, mirroring `lower_for`.
+    fn loop_bound_var(
+        &mut self,
+        index: Option<LocalId>,
+        elem: LocalId,
+        iter: ExprId,
+    ) -> Option<(SvExpr, String)> {
+        let it = self
+            .inf
+            .expr_type(iter)
+            .cloned()
+            .map(|t| {
+                ground_widths(
+                    self.db,
+                    self.krate,
+                    self.def,
+                    &subst_type(&t, &self.self_subst),
+                )
+            })
+            .unwrap_or(Type::Error);
+        let len = match &it {
+            Type::Vec { len, .. } => len.clone(),
+            Type::Value {
+                kind: ValueKind::Bits { width },
+                ..
+            } => width.clone(),
+            _ => return None,
+        };
+        let bound = match &len {
+            ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
+            ConstArg::Param(i) => match self.sig.generic_params.get(*i as usize) {
+                Some(g) => SvExpr::Ident(g.name.clone()),
+                None => SvExpr::Lit("0".to_owned()),
+            },
+            other => SvExpr::Lit(render_const_sv(other, self.sig)),
+        };
+        let elem_is_genvar = matches!(
+            self.body.local(elem).kind,
+            crate::hir::body::LocalKind::ForBound
+        );
+        let var = match (elem_is_genvar, index) {
+            (true, _) => self.local_name(elem),
+            (false, Some(i)) => self.local_name(i),
+            (false, None) => {
+                let v = format!("__i{}", self.synth);
+                self.synth += 1;
+                v
+            }
+        };
+        Some((bound, var))
     }
 
     /// Statement-form `when` (proposals/when_binding.md): the body's drives
@@ -2771,6 +2951,17 @@ fn render_verilog(template: &crate::hir::body::VerilogTemplate, sig: &Signature<
     out
 }
 
+/// The base local of a place expression (`acc`, `acc.f`, `acc[i]` all root at
+/// the same local).
+fn backend_root_local(body: &Body, expr: ExprId) -> Option<LocalId> {
+    match &body.expr(expr).kind {
+        ExprKind::Local(l) => Some(*l),
+        ExprKind::Field { receiver, .. } => backend_root_local(body, *receiver),
+        ExprKind::Index { base, .. } => backend_root_local(body, *base),
+        _ => None,
+    }
+}
+
 /// Combine an outer `when` guard with an inner condition (`g && c`), or just the
 /// inner condition when there is no outer guard.
 fn and_guard(outer: &Option<SvExpr>, inner: SvExpr) -> SvExpr {
@@ -3204,6 +3395,23 @@ endmodule
         assert!(sv.contains("assign result = count;"), "{sv}");
         // No reset branch on a `when`.
         assert!(!sv.contains("if (!"), "{sv}");
+    }
+
+    #[test]
+    fn let_mut_fold_lowers_to_a_procedural_always_comb() {
+        // A loop-carried `let mut` accumulator (proposals/compile_mutable.md)
+        // becomes a procedural always_comb with a mutable var and a procedural
+        // `for` — not a continuous assign + generate-for.
+        let sv = emit(
+            "fn sum { dom clk: Clock } (v: Vec(4, uint(8)) @clk) -> uint(8) @clk {\n  let mut acc = 0;\n  for x in v {\n    acc = acc + x;\n  }\n  acc\n}",
+        );
+        assert!(sv.contains("always_comb begin"), "{sv}");
+        assert!(sv.contains("acc = 0;"), "{sv}");
+        assert!(sv.contains("< 4;") && sv.contains("for (int "), "{sv}");
+        assert!(sv.contains("acc = (acc + x);"), "{sv}");
+        assert!(sv.contains("assign result = acc;"), "{sv}");
+        // Not the structural generate-for path.
+        assert!(!sv.contains("genvar"), "{sv}");
     }
 
     #[test]
