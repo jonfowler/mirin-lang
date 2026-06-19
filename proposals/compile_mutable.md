@@ -4,8 +4,12 @@
 > a mutable accumulator reassigned across a `for` (or straight-line) lowers to
 > **option 2** — a procedural `always_comb` with a mutable variable and a
 > procedural `for` (the synthesiser unrolls). example:
-> `examples/working/fold_sum.mrn`. Deferred: the mid-loop-reference form (a read
-> *between* two carrying loops) and aggregate accumulators — first cut is scalar.
+> `examples/working/fold_sum.mrn`. Scalar *and* aggregate accumulators work
+> (init + carry lower per leaf: a Vec → `'{…}`, a tuple/struct → `acc__0`/…).
+> Still deferred: the mid-loop-reference form — a read of `acc` *between* two
+> carrying loops, which would need the read (and its uses) pulled into the same
+> `always_comb`; today it falls back to the structural generate-for and produces
+> a duplicate combinational driver (a gap that should become a diagnostic).
 
 Compile-time mutability for the loop-carried accumulator (`let mut`) case. The
 `when`-binding case that used to share this doc now lives in `when_binding.md`;

@@ -637,13 +637,15 @@ impl<'db> SvLower<'_, 'db> {
     /// First cut: scalar accumulator and scalar element.
     fn lower_mut_fold(&mut self, acc: LocalId, init: ExprId, steps: &[Stmt]) {
         self.declare_local(acc);
-        let acc_name = self.local_name(acc);
         let mut comb: Vec<SvCombStmt> = Vec::new();
-        let init_v = self.expr_value(init);
-        comb.push(SvCombStmt::Assign {
-            lhs: SvExpr::Ident(acc_name),
-            rhs: init_v,
-        });
+        // The init `acc = …;` per leaf — handles scalars, a Vec (`'{…}`), and
+        // multi-leaf tuples/structs (`acc__0 = …; acc__1 = …;`), consistent
+        // with the carry's per-leaf assigns.
+        let acc_leaves = self.local_leaves(acc);
+        let init_leaves = self.expr_leaves(init);
+        for ((_, lp), (_, rv)) in acc_leaves.into_iter().zip(init_leaves) {
+            comb.push(SvCombStmt::Assign { lhs: lp, rhs: rv });
+        }
         for step in steps {
             match step {
                 // A straight-line reassignment `acc = …;` → a blocking assign.
@@ -1682,18 +1684,41 @@ impl<'db> SvLower<'_, 'db> {
                 let b = b.clone();
                 self.block_value(&b)
             }
-            // Field access / records in scalar position: take the single leaf.
-            ExprKind::Field { .. } | ExprKind::Record { .. } => self
-                .expr_leaves(expr)
-                .into_iter()
-                .next()
-                .map(|(_, e)| e)
-                .unwrap_or_else(|| SvExpr::Lit("0".to_owned())),
+            // An aggregate or field/record in scalar value position: reduce to
+            // its single SV leaf if it has one (a scalar, or a Vec → `'{…}`).
+            // A value that flattens to SEVERAL signals (a tuple, a multi-field
+            // struct, a Vec-of-struct) has no scalar form — `one_leaf` emits a
+            // marker that fails downstream rather than silently dropping leaves
+            // or scalarising an array to `0`.
+            ExprKind::VecLit(_)
+            | ExprKind::TupleLit(_)
+            | ExprKind::VecRepeat { .. }
+            | ExprKind::Field { .. }
+            | ExprKind::Record { .. } => self.one_leaf(expr),
             // Defensive only: every shape that lands here (user method calls
             // pending Q5d-2, malformed exprs) is diagnosed by `infer`, and the
             // CLI refuses to emit SV when any diagnostic exists — so this
             // placeholder never reaches written output.
             _ => SvExpr::Lit("0".to_owned()),
+        }
+    }
+
+    /// Reduce an expression to a single scalar SV value. A value that flattens
+    /// to one SV signal (a scalar, or a Vec → `'{…}` assignment pattern) is
+    /// returned directly; one that flattens to several (a tuple, a multi-field
+    /// struct/port) has no scalar representation, so emit a marker that fails
+    /// downstream (verilator) — never a silent `0`, which would scalarise an
+    /// aggregate. (`expr_leaves` resolves these constructors itself, so this
+    /// does not recurse back through `expr_value`'s fallback.)
+    fn one_leaf(&mut self, expr: ExprId) -> SvExpr {
+        let mut leaves = self.expr_leaves(expr);
+        if leaves.len() == 1 {
+            leaves.pop().unwrap().1
+        } else {
+            SvExpr::Lit(format!(
+                "/* mirin: non-scalar value ({} leaves) in scalar position */",
+                leaves.len()
+            ))
         }
     }
 
@@ -3412,6 +3437,24 @@ endmodule
         assert!(sv.contains("assign result = acc;"), "{sv}");
         // Not the structural generate-for path.
         assert!(!sv.contains("genvar"), "{sv}");
+    }
+
+    #[test]
+    fn let_mut_fold_supports_aggregate_accumulators() {
+        // A tuple accumulator folds per leaf — init and carry both flatten to
+        // `acc__0`/`acc__1` (no silent scalarisation of the aggregate).
+        let sv = emit(
+            "fn f { dom clk: Clock } (v: Vec(4, uint(8)) @clk) -> uint(8) @clk {\n  let mut acc = (0, 0);\n  for x in v {\n    acc = (acc.0 + x, acc.1 + x);\n  }\n  acc.0 + acc.1\n}",
+        );
+        assert!(sv.contains("logic [7:0] acc__0;"), "{sv}");
+        assert!(sv.contains("logic [7:0] acc__1;"), "{sv}");
+        assert!(
+            sv.contains("acc__0 = 0;") && sv.contains("acc__1 = 0;"),
+            "{sv}"
+        );
+        assert!(sv.contains("acc__0 = (acc__0 + x);"), "{sv}");
+        // No silent array→0 scalarisation.
+        assert!(!sv.contains("acc = 0;"), "{sv}");
     }
 
     #[test]
