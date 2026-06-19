@@ -1,0 +1,8 @@
+// An explicit `@const` annotation now lowers to the const domain (previously it
+// fell to an inference variable — see proposals/param_const.md). `@const` is the
+// bottom of the domain lattice, so a `@const` value coerces into any clock via
+// the one subtyping edge (`@const <: @clk`): `k` mixes into the `@clk` addition
+// without a CDC error. (planning/domain_checking.md.)
+fn add_k {dom clk: Clock} (x: uint(8) @clk, k: uint(8) @const) -> uint(8) @clk {
+    x + k
+}

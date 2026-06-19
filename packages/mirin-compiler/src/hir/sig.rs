@@ -1340,6 +1340,12 @@ impl<'db> TypeLowerer<'_, 'db> {
             None => Domain::Unspecified,
             Some(d) => {
                 let name = node_text(&d, source);
+                // `@const` is the compile-time domain (it coerces into any clock
+                // via the one subtyping edge). Distinct from an elided domain,
+                // which is a fresh inference variable, not `@const`.
+                if name == "const" {
+                    return Domain::Const;
+                }
                 match self.generic_index(&name, TermKind::Domain(DomainSort::Clock)) {
                     Some(i) => Domain::Param(i),
                     None => Domain::Unspecified,
