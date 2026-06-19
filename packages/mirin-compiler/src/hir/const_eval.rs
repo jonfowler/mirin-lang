@@ -315,6 +315,8 @@ impl<'db> Evaluator<'db> {
                 Stmt::VarDecl { .. } => None,
                 // Loop-varying bindings are not const.
                 Stmt::For { .. } => None,
+                // Clocked state is never a const value.
+                Stmt::When { .. } => None,
             };
             if let Some(e) = nested
                 && let Some(v) = self.demand_in_expr_blocks(frame, e, local, depth)

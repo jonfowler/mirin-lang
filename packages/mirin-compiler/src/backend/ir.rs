@@ -173,6 +173,20 @@ pub struct SvAlwaysFf {
 pub struct SvSeqAssign {
     pub lhs: SvExpr,
     pub rhs: SvExpr,
+    /// A guard from a statement-form `when` body's `if` (`if (g) lhs <= rhs;`).
+    /// `None` = unconditional. When false the register simply holds — no else.
+    pub guard: Option<SvExpr>,
+}
+
+impl SvSeqAssign {
+    /// An unconditional nonblocking assignment.
+    pub fn new(lhs: SvExpr, rhs: SvExpr) -> Self {
+        Self {
+            lhs,
+            rhs,
+            guard: None,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -403,6 +417,16 @@ impl fmt::Display for SvItem {
     }
 }
 
+/// Render one clocked assignment, optionally guarded by an `if` (a
+/// statement-form `when` drive — hold when the guard is false, so no `else`).
+fn fmt_seq_assign(f: &mut fmt::Formatter<'_>, a: &SvSeqAssign, indent: usize) -> fmt::Result {
+    let pad = " ".repeat(indent);
+    match &a.guard {
+        Some(g) => writeln!(f, "{pad}if ({g}) {} <= {};", a.lhs, a.rhs),
+        None => writeln!(f, "{pad}{} <= {};", a.lhs, a.rhs),
+    }
+}
+
 impl fmt::Display for SvAlwaysFf {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "    always_ff @(posedge {}) begin", self.clock)?;
@@ -414,13 +438,13 @@ impl fmt::Display for SvAlwaysFf {
                 }
                 writeln!(f, "        end else begin")?;
                 for a in &self.clocked_body {
-                    writeln!(f, "            {} <= {};", a.lhs, a.rhs)?;
+                    fmt_seq_assign(f, a, 12)?;
                 }
                 writeln!(f, "        end")?;
             }
             None => {
                 for a in &self.clocked_body {
-                    writeln!(f, "        {} <= {};", a.lhs, a.rhs)?;
+                    fmt_seq_assign(f, a, 8)?;
                 }
             }
         }

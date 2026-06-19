@@ -2150,6 +2150,14 @@
         },
         {
           "type": "SYMBOL",
+          "name": "when_statement"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "if_statement"
+        },
+        {
+          "type": "SYMBOL",
           "name": "return_statement"
         },
         {
@@ -2163,6 +2171,89 @@
         {
           "type": "SYMBOL",
           "name": "expression_statement"
+        }
+      ]
+    },
+    "if_statement": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "if"
+        },
+        {
+          "type": "FIELD",
+          "name": "condition",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_if_condition"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "then_branch",
+          "content": {
+            "type": "SYMBOL",
+            "name": "block"
+          }
+        }
+      ]
+    },
+    "when_statement": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "init",
+              "content": {
+                "type": "SYMBOL",
+                "name": "when_init"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "STRING",
+          "value": "when"
+        },
+        {
+          "type": "FIELD",
+          "name": "event",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_when_event"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "body",
+          "content": {
+            "type": "SYMBOL",
+            "name": "block"
+          }
+        }
+      ]
+    },
+    "when_init": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "init"
+        },
+        {
+          "type": "FIELD",
+          "name": "body",
+          "content": {
+            "type": "SYMBOL",
+            "name": "block"
+          }
         }
       ]
     },
@@ -4726,6 +4817,10 @@
   "conflicts": [
     [
       "use_path"
+    ],
+    [
+      "when_statement",
+      "when_expression"
     ],
     [
       "path_expression",

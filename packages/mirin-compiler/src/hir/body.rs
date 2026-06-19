@@ -233,6 +233,18 @@ pub enum Stmt {
     Return { value: ExprId },
     /// A bare expression statement.
     Expr(ExprId),
+    /// Statement-form `when` (proposals/when_binding.md): the body's equations
+    /// are CLOCKED partial drives of `var`(s) — the RAM write shape. `init` is
+    /// an optional block of power-on equations (an SV initial block, not reset).
+    /// Distinct from the value form (`x = init V when E { tail }`, a `When`
+    /// expression on an `Equation`'s rhs). The body may contain `if`-statements
+    /// (no else, an `ExprKind::If` with an empty else block) for guarded drives;
+    /// the unwritten case holds.
+    When {
+        event: ExprId,
+        body: Block,
+        init: Option<Block>,
+    },
     /// `for x in v { … }` — structural replication (planning/for_loops.md).
     /// `index` is bound for the `for i, x in v.enumerate()` form; the elem
     /// local is "let x = v[i]" per iteration.
@@ -493,6 +505,9 @@ struct BodyLowerer<'a, 'db> {
     param_count: u32,
     /// Lexical scopes (ribs): name → local. Inner scopes shadow outer.
     scopes: Vec<HashMap<String, LocalId>>,
+    /// True while lowering a statement-form `when` body — the only place an
+    /// `if_statement` (no else) is allowed (a guarded clocked drive).
+    in_when_body: bool,
     diagnostics: Vec<BodyDiagnostic>,
 }
 
@@ -564,6 +579,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             locals,
             local_spans,
             scopes: vec![base],
+            in_when_body: false,
             diagnostics: Vec::new(),
         }
     }
@@ -1172,6 +1188,48 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     let id = self.lower_expr(&e, source);
                     block.stmts.push(Stmt::Expr(id));
                 }
+            }
+            // Statement-form `when` (binding form): a clocked drive of var(s).
+            "when_statement" => {
+                let event = self.lower_field_expr(node, "event", source);
+                let init = node.child_by_field_name("init").map(|i| {
+                    // `init { … }` — power-on equations.
+                    self.lower_block_field(&i, "body", source)
+                });
+                // The body's `if`-statements (no else) are legal here only.
+                let prev = self.in_when_body;
+                self.in_when_body = true;
+                let mut body = self.lower_block_field(node, "body", source);
+                self.in_when_body = prev;
+                // A `when` body yields no value: a trailing `if … else …` (which
+                // parses as the block tail) is really a final guarded drive —
+                // fold it into the statements so the driver/backend see it.
+                if let Some(tail) = body.tail.take() {
+                    body.stmts.push(Stmt::Expr(tail));
+                }
+                block.stmts.push(Stmt::When { event, body, init });
+            }
+            // Statement-form `if` (no else): a guarded drive, valid only inside
+            // a `when` body. Lowers to an `If` with an empty else block (the
+            // unwritten case holds, supplied by the backend).
+            "if_statement" => {
+                if !self.in_when_body {
+                    self.diag_at(
+                        node,
+                        BodyDiagnosticKind::Unsupported {
+                            what: "`if` without `else` outside a `when` body".to_owned(),
+                        },
+                    );
+                    return;
+                }
+                let cond = self.lower_field_expr(node, "condition", source);
+                let then_branch = self.lower_block_field(node, "then_branch", source);
+                let id = self.alloc(ExprKind::If {
+                    cond,
+                    then_branch,
+                    else_branch: Block::default(),
+                });
+                block.stmts.push(Stmt::Expr(id));
             }
             _ => {}
         }

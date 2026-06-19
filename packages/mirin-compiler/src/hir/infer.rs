@@ -1634,6 +1634,22 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     let for_body = for_body.clone();
                     self.infer_block(body, &for_body, None);
                 }
+                Stmt::When {
+                    event,
+                    body: when_body,
+                    init,
+                } => {
+                    // The event (`clk.posedge()`) types like any expression; the
+                    // init and body blocks are equation systems over the driven
+                    // var(s) — recurse so each drive's lhs/rhs unify.
+                    self.infer_expr(body, *event);
+                    if let Some(init) = init {
+                        let init = init.clone();
+                        self.infer_block(body, &init, None);
+                    }
+                    let when_body = when_body.clone();
+                    self.infer_block(body, &when_body, None);
+                }
             }
         }
         if let Some(tail) = block.tail {

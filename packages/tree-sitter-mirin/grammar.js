@@ -26,6 +26,10 @@ module.exports = grammar({
 
   conflicts: ($) => [
     [$.use_path],
+    // `when E { … }` / `init … when E { … }` opening a statement-form binding
+    // vs the value-form when expression (as an expression statement) — shared
+    // prefix; GLR settles by what follows (a trailing `;` ⇒ expression form).
+    [$.when_statement, $.when_expression],
     // `x { … }` in expression position is ambiguous: a record constructor
     // (`x { a: 1 }`) or a path `x` followed by a block. GLR resolves it by the
     // brace contents — a valid record literal wins. (`if`/`when` conditions
@@ -380,11 +384,40 @@ module.exports = grammar({
       choice(
         $.let_statement,
         $.for_statement,
+        $.when_statement,
+        $.if_statement,
         $.return_statement,
         $.var_statement,
         $.assignment_statement,
         $.expression_statement,
       ),
+
+    // Statement-form `if` (no `else`): a conditional drive. Only meaningful
+    // inside a `when` body, where the unwritten case HOLDS (the register's
+    // current value) — lowering rejects it elsewhere. Distinct from the
+    // value-form `if_expression`, which requires both branches.
+    if_statement: ($) =>
+      seq(
+        "if",
+        field("condition", $._if_condition),
+        field("then_branch", $.block),
+      ),
+
+    // Statement-form `when` (no trailing `;`, Rust block-expression style):
+    // the body's equations are CLOCKED partial drives of a `var` — the RAM
+    // write shape (proposals/when_binding.md). An optional `init { … }` block
+    // gives power-on values. Distinct from the value-form `when_expression`
+    // (`x = init V when E { tail }`) by being a bare statement; GLR settles
+    // the shared prefix.
+    when_statement: ($) =>
+      seq(
+        optional(field("init", $.when_init)),
+        "when",
+        field("event", $._when_event),
+        field("body", $.block),
+      ),
+
+    when_init: ($) => seq("init", field("body", $.block)),
 
     // `for x in v { … }` / `for (i, x) in v.enumerate() { … }` — structural
     // replication over a vector, emitted as a NAMED SV generate-for

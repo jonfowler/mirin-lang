@@ -5,21 +5,32 @@ statement, via index/field drives in the body. It is the smaller, self-contained
 half of the old `compile_mutable.md`; the loop-carried `let mut` half lives in
 `compile_mutable.md`.
 
+> **Status: LANDED (2026-06-19).** The statement-form `when` is implemented —
+> grammar (`when_statement` + `if_statement` + `init { … }`), HIR (`Stmt::When`),
+> infer, driver/coverage checking, and the backend (the inferred-BRAM idiom).
+> example: `examples/working/ram_write.mrn`. The clock/event is a **clock edge**
+> (the value-form model), not a bare condition — the original sketch below is
+> corrected accordingly.
+
 ## The shape
 
 ```mirin
-fn ram_write (addr: uint(8), data: uint(32), we: bool) -> () {
-  var ram : Vec(256, uint(32));
-  init { ram = [0; 256]; } when we {
-    ram[addr] = data;
+fn ram_write {dom clk: Clock}
+    (addr: uint(8) @clk, data: uint(32) @clk, we: bool @clk) -> () {
+  var ram: Vec(256, uint(32)) @clk;
+  init { ram = [0; 256]; }
+  when clk.posedge() {
+    if we { ram[addr] = data; }
   }
 }
 ```
 
-`ram` is a single signal node. Its *value* is given by the `init … when …`
-construct: the `init` block supplies the value when the condition does not hold,
-and the `when` body drives individual elements when it does. Reading `ram`
-anywhere else just reads that node.
+`ram` is a single signal node — a register. The `init { … }` block is its
+power-on contents (an SV `initial`, not reset); the `when clk.posedge()` body
+drives individual elements on the clock edge, guarded by `if we`. Unwritten
+elements **hold** (a register), so `if` needs no `else`. Reading `ram` anywhere
+else just reads that node. This lowers to the textbook inferred-BRAM idiom
+(`always_ff @(posedge clk) if (we) ram[addr] <= data;`).
 
 ## Rules
 

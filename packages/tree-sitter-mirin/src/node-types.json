@@ -840,6 +840,64 @@
     }
   },
   {
+    "type": "if_statement",
+    "named": true,
+    "fields": {
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
+            "named": true
+          },
+          {
+            "type": "postfix_expression",
+            "named": true
+          },
+          {
+            "type": "tuple_expression",
+            "named": true
+          },
+          {
+            "type": "typed_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "vec_literal",
+            "named": true
+          }
+        ]
+      },
+      "then_branch": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "impl_block",
     "named": true,
     "fields": {
@@ -1917,6 +1975,10 @@
           "named": true
         },
         {
+          "type": "if_statement",
+          "named": true
+        },
+        {
           "type": "let_statement",
           "named": true
         },
@@ -1926,6 +1988,10 @@
         },
         {
           "type": "var_statement",
+          "named": true
+        },
+        {
+          "type": "when_statement",
           "named": true
         }
       ]
@@ -2826,6 +2892,90 @@
           },
           {
             "type": "vec_literal",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "when_init",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "when_statement",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "event": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
+            "named": true
+          },
+          {
+            "type": "postfix_expression",
+            "named": true
+          },
+          {
+            "type": "tuple_expression",
+            "named": true
+          },
+          {
+            "type": "typed_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "vec_literal",
+            "named": true
+          }
+        ]
+      },
+      "init": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "when_init",
             "named": true
           }
         ]

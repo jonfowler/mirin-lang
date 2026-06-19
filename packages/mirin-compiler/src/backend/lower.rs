@@ -574,6 +574,88 @@ impl<'db> SvLower<'_, 'db> {
                 // A bare call statement: a (void) submodule instantiation whose
                 // out-arg connections bind callee `out` params to caller places.
                 Stmt::Expr(e) => self.lower_call_stmt(*e),
+                Stmt::When { event, body, init } => {
+                    let (event, body) = (*event, body.clone());
+                    let init = init.clone();
+                    self.lower_when_stmt(event, &body, init.as_ref());
+                }
+            }
+        }
+    }
+
+    /// Statement-form `when` (proposals/when_binding.md): the body's drives
+    /// become nonblocking assignments in one `always_ff` — `if`-guarded drives
+    /// render as `if (g) leaf <= d;` (unwritten/false → the register holds, no
+    /// else). An optional `init` block becomes an SV `initial` (power-on, not
+    /// reset). The register IS the driven `var`'s own leaves.
+    fn lower_when_stmt(&mut self, event: ExprId, body: &Block, init: Option<&Block>) {
+        let clock = self.clock_of_event(event);
+        if let Some(init) = init {
+            let mut assigns = Vec::new();
+            for stmt in &init.stmts {
+                if let Stmt::Equation { lhs, rhs } = stmt {
+                    let lhs_leaves = self.place_leaves_dir(*lhs);
+                    let rhs_leaves = self.value_leaves_dir(*rhs);
+                    for ((lp, _), (rp, _)) in lhs_leaves.into_iter().zip(rhs_leaves) {
+                        assigns.push((lp, rp));
+                    }
+                }
+            }
+            if !assigns.is_empty() {
+                self.items.push(SvItem::Initial(assigns));
+            }
+        }
+        let mut seq = Vec::new();
+        self.when_body_seq(body, None, &mut seq);
+        self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
+            clock,
+            reset: None,
+            reset_body: Vec::new(),
+            clocked_body: seq,
+        }));
+    }
+
+    /// Flatten a `when` body into guarded nonblocking assignments. Each `if`
+    /// narrows the guard (`g && cond` on the then-branch, `g && !cond` on the
+    /// else-branch); unwritten leaves hold by virtue of being a register.
+    fn when_body_seq(&mut self, block: &Block, guard: Option<SvExpr>, seq: &mut Vec<SvSeqAssign>) {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Equation { lhs, rhs } => {
+                    let lhs_leaves = self.place_leaves_dir(*lhs);
+                    let rhs_leaves = self.value_leaves_dir(*rhs);
+                    for ((lp, _), (rp, _)) in lhs_leaves.into_iter().zip(rhs_leaves) {
+                        seq.push(SvSeqAssign {
+                            lhs: lp,
+                            rhs: rp,
+                            guard: guard.clone(),
+                        });
+                    }
+                }
+                Stmt::Expr(e) => {
+                    if let ExprKind::If {
+                        cond,
+                        then_branch,
+                        else_branch,
+                    } = &self.body.expr(*e).kind
+                    {
+                        let (cond, then_b, else_b) =
+                            (*cond, then_branch.clone(), else_branch.clone());
+                        let c = self.expr_value(cond);
+                        self.when_body_seq(&then_b, Some(and_guard(&guard, c.clone())), seq);
+                        if !else_b.stmts.is_empty() {
+                            // `!c` as `c == 1'b0` (SvExpr has no logical not).
+                            let not_c = SvExpr::BinOp(
+                                SvBinOp::Eq,
+                                Box::new(c),
+                                Box::new(SvExpr::Lit("1'b0".to_owned())),
+                            );
+                            self.when_body_seq(&else_b, Some(and_guard(&guard, not_c)), seq);
+                        }
+                    }
+                }
+                Stmt::Let { local, value } => self.lower_let(*local, *value),
+                _ => {}
             }
         }
     }
@@ -744,10 +826,7 @@ impl<'db> SvLower<'_, 'db> {
             let d = self.block_leaves(&b);
             let clocked_body = d
                 .into_iter()
-                .map(|(suffix, dv)| SvSeqAssign {
-                    lhs: SvExpr::Ident(join(&base, &suffix)),
-                    rhs: dv,
-                })
+                .map(|(suffix, dv)| SvSeqAssign::new(SvExpr::Ident(join(&base, &suffix)), dv))
                 .collect();
             self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
                 clock,
@@ -1298,14 +1377,8 @@ impl<'db> SvLower<'_, 'db> {
             self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
                 clock: clock.clone(),
                 reset: Some(reset.clone()),
-                reset_body: vec![SvSeqAssign {
-                    lhs: SvExpr::Ident(name.clone()),
-                    rhs: init_v,
-                }],
-                clocked_body: vec![SvSeqAssign {
-                    lhs: SvExpr::Ident(name),
-                    rhs: d_in,
-                }],
+                reset_body: vec![SvSeqAssign::new(SvExpr::Ident(name.clone()), init_v)],
+                clocked_body: vec![SvSeqAssign::new(SvExpr::Ident(name), d_in)],
             }));
         }
     }
@@ -1597,10 +1670,7 @@ impl<'db> SvLower<'_, 'db> {
                         ty,
                         name: name.clone(),
                     }));
-                    seq.push(SvSeqAssign {
-                        lhs: SvExpr::Ident(name.clone()),
-                        rhs: d,
-                    });
+                    seq.push(SvSeqAssign::new(SvExpr::Ident(name.clone()), d));
                     out.push((suffix, SvExpr::Ident(name)));
                 }
                 self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
@@ -1738,10 +1808,7 @@ impl<'db> SvLower<'_, 'db> {
             clock,
             reset: None,
             reset_body: Vec::new(),
-            clocked_body: vec![SvSeqAssign {
-                lhs: SvExpr::Ident(synth.clone()),
-                rhs: d,
-            }],
+            clocked_body: vec![SvSeqAssign::new(SvExpr::Ident(synth.clone()), d)],
         }));
         SvExpr::Ident(synth)
     }
@@ -2704,6 +2771,15 @@ fn render_verilog(template: &crate::hir::body::VerilogTemplate, sig: &Signature<
     out
 }
 
+/// Combine an outer `when` guard with an inner condition (`g && c`), or just the
+/// inner condition when there is no outer guard.
+fn and_guard(outer: &Option<SvExpr>, inner: SvExpr) -> SvExpr {
+    match outer {
+        Some(g) => SvExpr::BinOp(SvBinOp::And, Box::new(g.clone()), Box::new(inner)),
+        None => inner,
+    }
+}
+
 /// A const tree as an SV constant expression (symbolic Params render as the
 /// module's SV parameter names — legal in any constant context).
 fn render_const_sv(c: &ConstArg<'_>, sig: &Signature<'_>) -> String {
@@ -3127,6 +3203,23 @@ endmodule
         assert!(sv.contains("count <= (count + 1);"), "{sv}");
         assert!(sv.contains("assign result = count;"), "{sv}");
         // No reset branch on a `when`.
+        assert!(!sv.contains("if (!"), "{sv}");
+    }
+
+    #[test]
+    fn statement_when_lowers_to_the_inferred_bram_idiom() {
+        // Statement-form `when` binding (proposals/when_binding.md): a guarded
+        // index drive becomes `if (we) mem[waddr] <= wdata;` in one always_ff,
+        // with `init { … }` as the power-on initial block.
+        let sv = emit(
+            "fn ram { dom clk: Clock } (waddr: uint(2) @clk, wdata: uint(8) @clk, we: bool @clk, raddr: uint(2) @clk) -> uint(8) @clk {\n  var mem: Vec(4, uint(8)) @clk;\n  init { mem = [0; 4]; }\n  when clk.posedge() {\n    if we { mem[waddr] = wdata; }\n  }\n  mem[raddr]\n}",
+        );
+        assert!(sv.contains("logic [7:0] mem [0:3];"), "{sv}");
+        assert!(sv.contains("initial begin"), "{sv}");
+        assert!(sv.contains("always_ff @(posedge clk) begin"), "{sv}");
+        assert!(sv.contains("if (we) mem[waddr] <= wdata;"), "{sv}");
+        assert!(sv.contains("assign result = mem[raddr];"), "{sv}");
+        // A `when` register has no reset branch.
         assert!(!sv.contains("if (!"), "{sv}");
     }
 

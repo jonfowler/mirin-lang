@@ -366,10 +366,71 @@ fn count_block(body: &Body, block: &Block, counts: &mut HashMap<LocalId, Vec<Vec
                 count_expr(body, *iter, counts);
                 count_block(body, b, counts);
             }
+            // A statement-form `when` is ONE clocked binding per driven `var`:
+            // all its body drives (disjoint leaves, possibly dynamic-index)
+            // form that var's next-state — a register holds unwritten parts, so
+            // the var counts as WHOLE-place driven (complete, and conflicting
+            // with any drive outside the `when`). Internal drives don't conflict
+            // with each other. `init` is power-on, not a competing driver
+            // (proposals/when_binding.md rule 2).
+            Stmt::When { event, body: b, .. } => {
+                count_expr(body, *event, counts);
+                let mut driven = std::collections::HashSet::new();
+                collect_when_drives(body, b, &mut driven, counts);
+                for l in driven {
+                    counts.entry(l).or_default().push(Vec::new());
+                }
+            }
         }
     }
     if let Some(tail) = block.tail {
         count_expr(body, tail, counts);
+    }
+}
+
+/// The base local of a place expression (`ram`, `v.valid`, `ram[addr]` all root
+/// at the same local) — unlike `place_of`, this also succeeds for a dynamic
+/// index, since a clocked `when` drive of `ram[addr]` still binds `ram`.
+fn root_local(body: &Body, expr: ExprId) -> Option<LocalId> {
+    match &body.expr(expr).kind {
+        ExprKind::Local(l) => Some(*l),
+        ExprKind::Field { receiver, .. } => root_local(body, *receiver),
+        ExprKind::Index { base, .. } => root_local(body, *base),
+        _ => None,
+    }
+}
+
+/// Collect the set of `var`s driven inside a `when` body (descending guarded
+/// `if`-drives), and count any nested out-connections in the rhs/conditions.
+fn collect_when_drives(
+    body: &Body,
+    block: &Block,
+    driven: &mut std::collections::HashSet<LocalId>,
+    counts: &mut HashMap<LocalId, Vec<Vec<String>>>,
+) {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Equation { lhs, rhs } => {
+                if let Some(l) = root_local(body, *lhs) {
+                    driven.insert(l);
+                }
+                count_expr(body, *rhs, counts);
+            }
+            Stmt::Expr(e) => match &body.expr(*e).kind {
+                ExprKind::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } => {
+                    count_expr(body, *cond, counts);
+                    collect_when_drives(body, then_branch, driven, counts);
+                    collect_when_drives(body, else_branch, driven, counts);
+                }
+                _ => count_expr(body, *e, counts),
+            },
+            Stmt::Let { value, .. } => count_expr(body, *value, counts),
+            _ => {}
+        }
     }
 }
 

@@ -1,0 +1,20 @@
+// The same RAM as ram.mrn, written in the STATEMENT form (binding form,
+// proposals/when_binding.md): instead of producing the whole next value
+// functionally (`mem = init … when … { mem.replace(…) }`), the body drives the
+// written element directly. `if we { … }` is a guarded clocked drive — the
+// unwritten elements HOLD (it is a register), so no `else` is needed. `init { … }`
+// gives the power-on contents (an SV initial block, not reset).
+//
+// Lowers to the textbook inferred-BRAM idiom:
+//   always_ff @(posedge clk) if (we) mem[waddr] <= wdata;
+fn ram_write
+    {dom clk: Clock}
+    (waddr: uint(2) @clk, wdata: uint(8) @clk, we: bool @clk, raddr: uint(2) @clk)
+    -> uint(8) @clk {
+    var mem: Vec(4, uint(8)) @clk;
+    init { mem = [0x10, 0x20, 0x30, 0x40]; }
+    when clk.posedge() {
+        if we { mem[waddr] = wdata; }
+    }
+    mem[raddr]
+}
