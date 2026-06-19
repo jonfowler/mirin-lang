@@ -160,6 +160,12 @@ impl<'a> Formatter<'a> {
                 text("::"),
                 text(self.text(self.field(n, "value").unwrap())),
             ]),
+            "type_path_call" => concat([
+                self.doc(self.field(n, "type").unwrap()),
+                text("::"),
+                text(self.text(self.field(n, "method").unwrap())),
+                self.argument_list(self.field(n, "arguments").unwrap()),
+            ]),
             "unary_expression" => {
                 let op = self.text(self.field(n, "operator").unwrap());
                 concat([text(op), self.doc(self.field(n, "operand").unwrap())])

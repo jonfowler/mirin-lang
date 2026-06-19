@@ -1978,6 +1978,26 @@ impl<'db> SvLower<'_, 'db> {
                     named: Vec::new(),
                 })
             }
+            // `uint(8)::unpack(b)` — a receiver-less associated call. Same as a
+            // method call minus the receiver (planning/pack_resize.md).
+            ExprKind::TypePathCall { args, .. } => {
+                let decl = self.inf.method_resolution(expr)?;
+                let (def, subst_override) = match self.resolve_trait_instance(expr, decl) {
+                    Some((m, ov)) => (m, Some(ov)),
+                    None => (decl, None),
+                };
+                if !self.map.def_data(def)?.inline {
+                    return None;
+                }
+                Some(UserCall {
+                    def,
+                    expr,
+                    subst_override,
+                    receiver: None,
+                    args: args.clone(),
+                    named: Vec::new(),
+                })
+            }
             _ => None,
         }
     }
@@ -2115,6 +2135,26 @@ impl<'db> SvLower<'_, 'db> {
                         named: Vec::new(),
                     })
                 }
+            }
+            // A receiver-less associated call (`uint(8)::unpack(b)`) that is not
+            // `#[inline]` becomes an instance, like a method call.
+            ExprKind::TypePathCall { args, .. } => {
+                let decl = self.inf.method_resolution(expr)?;
+                let (def, subst_override) = match self.resolve_trait_instance(expr, decl) {
+                    Some((m, ov)) => (m, Some(ov)),
+                    None => (decl, None),
+                };
+                if self.map.def_data(def)?.inline {
+                    return None;
+                }
+                Some(UserCall {
+                    def,
+                    expr,
+                    subst_override,
+                    receiver: None,
+                    args: args.clone(),
+                    named: Vec::new(),
+                })
             }
             _ => None,
         }

@@ -49,6 +49,7 @@ fn examples() -> Vec<(String, String)> {
 const CLEAN: &[&str] = &[
     "inline_attr.mrn",
     "pack.mrn",
+    "unpack.mrn",
     "resize.mrn",
     "ram.mrn",
     "vec_elem_domain.mrn",
@@ -212,6 +213,7 @@ fn dump_verilog() {
 const VERILATOR_CLEAN: &[&str] = &[
     "inline_attr.mrn",
     "pack.mrn",
+    "unpack.mrn",
     "resize.mrn",
     "ram.mrn",
     "vec_elem_domain.mrn",

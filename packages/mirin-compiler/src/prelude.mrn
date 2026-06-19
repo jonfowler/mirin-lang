@@ -67,14 +67,16 @@ pub trait Or {
     fn or(self, other: Self) -> Self;
 }
 
-// Pack a value to its raw `bits` representation (planning/pack_resize.md).
+// Pack a value to/from its raw `bits` representation (planning/pack_resize.md).
 // `bit_size` is an associated const (it appears in a TYPE position), so it is
-// dependent only on the type. `unpack` is deferred (it dispatches on its return
-// type, which the current machinery cannot express). For the primitives a
-// packed value occupies the same bits as its source, so `pack` is a wire.
+// dependent only on the type. `unpack` dispatches on its return type, so it is
+// called as a concrete type-path call (`uint(8)::unpack(b)`), not on a receiver.
+// For the primitives a packed value occupies the same bits as its source, so
+// both directions are a wire.
 pub trait BitPack {
     const bit_size: integer;
     fn pack(self) -> bits(bit_size);
+    fn unpack(b: bits(bit_size)) -> Self;
 }
 
 // Bitwise operators (`& | ^ ~`), distinct from the bool logicals `&& || !`
@@ -426,6 +428,9 @@ impl {param n: integer} BitPack for uint(n) {
     fn pack(self) -> bits(bit_size) = verilog {
         assign ${return} = ${self};
     }
+    fn unpack(b: bits(bit_size)) -> Self = verilog {
+        assign ${return} = ${b};
+    }
 }
 
 #[inline]
@@ -433,6 +438,9 @@ impl {param n: integer} BitPack for sint(n) {
     const bit_size: integer = n;
     fn pack(self) -> bits(bit_size) = verilog {
         assign ${return} = ${self};
+    }
+    fn unpack(b: bits(bit_size)) -> Self = verilog {
+        assign ${return} = ${b};
     }
 }
 
@@ -442,6 +450,9 @@ impl {param n: integer} BitPack for bits(n) {
     fn pack(self) -> bits(bit_size) = verilog {
         assign ${return} = ${self};
     }
+    fn unpack(b: bits(bit_size)) -> Self = verilog {
+        assign ${return} = ${b};
+    }
 }
 
 #[inline]
@@ -449,6 +460,9 @@ impl BitPack for bool {
     const bit_size: integer = 1;
     fn pack(self) -> bits(bit_size) = verilog {
         assign ${return} = ${self};
+    }
+    fn unpack(b: bits(bit_size)) -> Self = verilog {
+        assign ${return} = ${b};
     }
 }
 

@@ -27,7 +27,7 @@ use crate::base::diagnostics::Span;
 use crate::base::parser;
 use crate::hir::sig::{lower_type_expr, sig_of};
 use crate::hir::types::{
-    ConstArg, ConstOp, Domain, GenericParam, LocalId, TermKind, Type, ValueKind,
+    ConstArg, ConstOp, Domain, GenericArgs, GenericParam, LocalId, TermKind, Type, ValueKind,
 };
 use crate::nameres::def_map::{CrateDefMap, ModuleId, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -126,6 +126,14 @@ pub enum ExprKind<'db> {
     /// `recv.method(args)` — dispatch deferred to `infer` (Q3d).
     MethodCall {
         receiver: ExprId,
+        method: String,
+        args: Vec<ConnArg>,
+    },
+    /// `uint(8)::unpack(b)` — an associated function called on an explicit Self
+    /// type (planning/pack_resize.md). The impl is selected from `self_ty`, so a
+    /// fn with no receiver (return-type dispatch, like `unpack`) is callable.
+    TypePathCall {
+        self_ty: Type<'db>,
         method: String,
         args: Vec<ConnArg>,
     },
@@ -1245,6 +1253,35 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 self.diag_unresolved_types(unres);
                 self.alloc(ExprKind::TypedLiteral { value, base, ty })
             }
+            "type_path_call" => {
+                let lookup = |n: &str| self.lookup_local(n);
+                let mut unres = Vec::new();
+                let self_ty = node
+                    .child_by_field_name("type")
+                    .map(|t| {
+                        lower_type_expr(
+                            self.map,
+                            self.module,
+                            self.generics,
+                            Some(&lookup),
+                            &t,
+                            source,
+                            Some(&mut unres),
+                        )
+                    })
+                    .unwrap_or(Type::Error);
+                self.diag_unresolved_types(unres);
+                let method = field_text(node, "method", source);
+                let args = node
+                    .child_by_field_name("arguments")
+                    .map(|a| self.lower_arg_list(&a, source))
+                    .unwrap_or_default();
+                self.alloc(ExprKind::TypePathCall {
+                    self_ty,
+                    method,
+                    args,
+                })
+            }
             "unary_expression" => {
                 // `-x`/`!x` desugar to the prelude `Neg`/`Not` trait methods
                 // (planning/traits.md T5) — EXCEPT `-literal`, which
@@ -1451,14 +1488,21 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         let Some(receiver) = node.child_by_field_name("receiver") else {
             return self.alloc(ExprKind::Missing);
         };
-        let mut cur = self.lower_expr(&receiver, source);
         // Operations are the named children after the receiver, in order.
         let mut cursor = node.walk();
         let ops: Vec<Node> = node
             .children(&mut cursor)
             .filter(|c| c.is_named() && c.id() != receiver.id() && c.kind() != "comment")
             .collect();
-        let mut i = 0;
+        // `Base::method(args)` with a bare-identifier `Base` that resolves to a
+        // type is a type-path call (planning/pack_resize.md) — it parses as a
+        // two-segment path call, but a non-type base (a module) falls through
+        // to a normal path call. A TYPED base (`uint(8)::`) uses the grammar's
+        // `type_path_call` rule instead.
+        let (mut cur, mut i) = match self.try_type_path_call(&receiver, &ops, source) {
+            Some(c) => (c, 1),
+            None => (self.lower_expr(&receiver, source), 0),
+        };
         while i < ops.len() {
             let op = ops[i];
             match op.kind() {
@@ -1515,6 +1559,70 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             }
         }
         cur
+    }
+
+    /// `Base::method(args)` → a [`ExprKind::TypePathCall`] when `Base` is a
+    /// bare identifier naming a type (a Type-kind generic param, `bool`, or a
+    /// nullary struct/port). Returns `None` for any other shape — a non-type
+    /// base, a 3+-segment path, or a non-call — so the caller lowers it as an
+    /// ordinary path expression.
+    fn try_type_path_call(
+        &mut self,
+        receiver: &Node,
+        ops: &[Node],
+        source: &str,
+    ) -> Option<ExprId> {
+        if receiver.kind() != "path_expression" {
+            return None;
+        }
+        let mut c = receiver.walk();
+        let segs: Vec<Node> = receiver.children_by_field_name("segment", &mut c).collect();
+        if segs.len() != 2 || ops.first().map(|o| o.kind()) != Some("argument_list") {
+            return None;
+        }
+        let self_ty = self.name_as_type(&node_text(&segs[0], source))?;
+        let method = node_text(&segs[1], source);
+        let args = self.lower_arg_list(&ops[0], source);
+        Some(self.alloc(ExprKind::TypePathCall {
+            self_ty,
+            method,
+            args,
+        }))
+    }
+
+    /// A bare type name → its [`Type`], for a type-path call base. Covers the
+    /// width-less forms a bare identifier can denote: a Type-kind generic param
+    /// (`A`), the builtin `bool`, and a nullary user struct/port. Width-carrying
+    /// builtins (`uint(8)::`) and applied generics (`Bus(A)::`) use the typed
+    /// `type_path_call` grammar instead.
+    fn name_as_type(&self, name: &str) -> Option<Type<'db>> {
+        if let Some(i) = self
+            .generics
+            .iter()
+            .position(|g| g.name == name && matches!(g.kind, TermKind::Type))
+        {
+            return Some(Type::Value {
+                kind: ValueKind::Param(i as u32),
+                domain: Domain::Unspecified,
+            });
+        }
+        if name == "bool" {
+            return Some(Type::Value {
+                kind: ValueKind::Bool,
+                domain: Domain::Unspecified,
+            });
+        }
+        let def = self
+            .map
+            .resolve_in_scope(self.module, name, Namespace::Item)?;
+        match self.map.def_data(def)?.kind {
+            DefKind::Struct | DefKind::Port => Some(Type::Port {
+                def,
+                args: GenericArgs(Vec::new()),
+                domain: Domain::Unspecified,
+            }),
+            _ => None,
+        }
     }
 
     fn lower_arg_list(&mut self, node: &Node, source: &str) -> Vec<ConnArg> {

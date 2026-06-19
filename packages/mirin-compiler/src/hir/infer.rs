@@ -1804,6 +1804,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 method,
                 args,
             } => self.infer_method(body, expr, *receiver, method, args),
+            ExprKind::TypePathCall {
+                self_ty,
+                method,
+                args,
+            } => self.infer_type_path_call(body, expr, self_ty, method, args),
             ExprKind::Record { ctor, fields } => self.infer_record(body, *ctor, fields),
             ExprKind::If {
                 cond,
@@ -2063,6 +2068,141 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 });
                 Type::Error
             }
+        }
+    }
+
+    /// `uint(8)::unpack(b)` — an associated function on an explicit Self type
+    /// (planning/pack_resize.md). Resolves the method from the written type
+    /// (inherent first, then trait — like `infer_method`), then pins the impl's
+    /// generics from the Self type. Unlike a method call there is no receiver
+    /// value, so a fn with no `self` (return-type dispatch, e.g. `unpack`) is
+    /// callable: `call_def` binds the value args, and the Self header unify
+    /// below supplies what a receiver normally would.
+    fn infer_type_path_call(
+        &mut self,
+        body: &Body<'db>,
+        expr: ExprId,
+        self_ty: &Type<'db>,
+        method: &str,
+        args: &[ConnArg],
+    ) -> Type<'db> {
+        let self_ty = self.resolve_ty(self_ty);
+        if let Some(owner) = self.owner_of(&self_ty) {
+            // Inherent wins over trait, mirroring `infer_method`.
+            if let Some(method_def) = self.map.impl_method(owner, method) {
+                self.method_resolutions.insert(expr, method_def);
+                let ret = self.call_def(body, expr, method_def, args, &[], Some(&self_ty));
+                self.pin_impl_self(expr, method_def, None, &self_ty);
+                return ret;
+            }
+            match self.map.trait_dispatch(owner, method) {
+                [] => {}
+                [(trait_def, method_def)] => {
+                    let (trait_def, method_def) = (*trait_def, *method_def);
+                    self.method_resolutions.insert(expr, method_def);
+                    let ret = self.call_def(body, expr, method_def, args, &[], Some(&self_ty));
+                    self.pin_impl_self(expr, method_def, Some(trait_def), &self_ty);
+                    return ret;
+                }
+                many => {
+                    let traits = many
+                        .iter()
+                        .filter_map(|(t, _)| self.map.def_data(*t).map(|d| d.name.clone()))
+                        .collect();
+                    self.diag(InferDiagnosticKind::AmbiguousMethod {
+                        name: method.to_owned(),
+                        traits,
+                    });
+                    return Type::Error;
+                }
+            }
+        }
+        // A bounded type param (`A::unpack(b)` with `A: BitPack`): call the
+        // trait method DECL — monomorphisation re-selects the impl with the
+        // concrete Self (Instance::resolve), exactly as a `T`-typed receiver
+        // does in `infer_method`. Self (the decl's Param(0)) is pinned to the
+        // param from the call subst.
+        if let Type::Value {
+            kind: ValueKind::Param(i),
+            ..
+        } = self_ty
+        {
+            let own = sig_of(self.db, self.krate, self.def);
+            let mut cands: Vec<(DefId<'db>, DefId<'db>)> = Vec::new();
+            for p in &own.predicates {
+                let Predicate::Trait(tr) = p;
+                let on_this = matches!(
+                    &tr.self_ty,
+                    Type::Value { kind: ValueKind::Param(j), .. } if *j == i
+                );
+                if on_this && let Some(m) = self.map.trait_method(tr.trait_def, method) {
+                    cands.push((tr.trait_def, m));
+                }
+            }
+            match cands.as_slice() {
+                [] => {}
+                [(_, m)] => {
+                    let m = *m;
+                    self.method_resolutions.insert(expr, m);
+                    let ret = self.call_def(body, expr, m, args, &[], Some(&self_ty));
+                    // The decl's Self is Param(0); pin it to this param.
+                    if let Some(subst) = self.call_substs.get(&expr).cloned() {
+                        let decl_self = Type::Value {
+                            kind: ValueKind::Param(0),
+                            domain: Domain::Unspecified,
+                        };
+                        let inst = self.substitute(&decl_self, &subst);
+                        self.unify(&self_ty, &inst);
+                    }
+                    return ret;
+                }
+                many => {
+                    let traits = many
+                        .iter()
+                        .filter_map(|(t, _)| self.map.def_data(*t).map(|d| d.name.clone()))
+                        .collect();
+                    self.diag(InferDiagnosticKind::AmbiguousMethod {
+                        name: method.to_owned(),
+                        traits,
+                    });
+                    return Type::Error;
+                }
+            }
+        }
+        self.diag(InferDiagnosticKind::UnresolvedMethod {
+            name: method.to_owned(),
+        });
+        Type::Error
+    }
+
+    /// Pin a type-path callee's impl generics from the Self type: unify the
+    /// impl's Self header — instantiated under the call's fresh substitution —
+    /// with the written `self_ty`. A receiver-less fn (`unpack`) has no `self`
+    /// param to carry this, so the header unify is what binds the impl's `n` to
+    /// `uint(8)`. (For a method WITH `self`, `call_def`'s self-param subsume
+    /// already pins them, and this agrees.)
+    fn pin_impl_self(
+        &mut self,
+        expr: ExprId,
+        method_def: DefId<'db>,
+        trait_def: Option<DefId<'db>>,
+        self_ty: &Type<'db>,
+    ) {
+        let Some(subst) = self.call_substs.get(&expr).cloned() else {
+            return;
+        };
+        let Some(td) = trait_def else {
+            return; // inherent: the self param (if any) already pins it
+        };
+        let header = self
+            .map
+            .trait_impls(td)
+            .iter()
+            .find(|d| d.methods.iter().any(|(_, m)| *m == method_def))
+            .and_then(|d| sig_of(self.db, self.krate, d.impl_def).return_type.clone());
+        if let Some(header) = header {
+            let inst = self.substitute(&header, &subst);
+            self.unify(self_ty, &inst);
         }
     }
 

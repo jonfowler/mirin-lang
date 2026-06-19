@@ -615,6 +615,7 @@ module.exports = grammar({
       choice(
         $.binary_expression,
         $.unary_expression,
+        $.type_path_call,
         $.typed_literal,
         $.vec_literal,
         $.postfix_expression,
@@ -683,6 +684,26 @@ module.exports = grammar({
         field("type", $.return_type_expression),
         "::",
         field("value", $.number),
+      ),
+
+    // A concrete type-path call `uint(8)::unpack(b)` — an associated function
+    // invoked on an explicit Self type (planning/pack_resize.md). Resolves the
+    // impl from the written type, so a return-type-dispatched fn like `unpack`
+    // (no receiver) becomes callable. The type is the restricted return-type
+    // form (no `{}` ambiguity); `::ident(` distinguishes it from a typed_literal
+    // (`::number`) and a const_path (`::ident` with no call).
+    //
+    // Only a TYPED base (`uint(8)::`, `Vec(N,A)::`) uses this rule — it can't be
+    // a path, so it is unambiguous. A bare-identifier base (`bool::unpack(b)`, a
+    // type param `A::unpack(b)`) parses as a two-segment `path_expression` call
+    // and is re-read as a type-path call during lowering when the base resolves
+    // to a type (`hir::body`), avoiding a grammar fight with the postfix call.
+    type_path_call: ($) =>
+      seq(
+        field("type", $.return_type_expression),
+        "::",
+        field("method", $.identifier),
+        field("arguments", $.argument_list),
       ),
 
     // Prefix `-` (`Neg::neg`), `!` (`Not::not`, logical), and `~` (`BitNot::

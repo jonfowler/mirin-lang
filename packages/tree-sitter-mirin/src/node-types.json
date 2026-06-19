@@ -530,6 +530,10 @@
           "named": true
         },
         {
+          "type": "type_path_call",
+          "named": true
+        },
+        {
           "type": "typed_literal",
           "named": true
         },
@@ -2377,6 +2381,42 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "type_path_call",
+    "named": true,
+    "fields": {
+      "arguments": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "argument_list",
+            "named": true
+          }
+        ]
+      },
+      "method": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "return_type_expression",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {

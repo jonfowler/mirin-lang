@@ -106,12 +106,17 @@ impls (and carrying `#[inline]`, `planning/attributes.md`, so a pack is a wire,
 not a module). `pack` is a plain method call (`x.pack()`) — receiver-dispatched
 through the existing method probe.
 
-**`unpack` is deferred (v1 ships `bit_size` + `pack`).** Unlike `pack`, `unpack`
-dispatches on its *return* type (`unpack(b: bits(W)) -> Self`), which Mirin's
-receiver/owner dispatch and current grammar don't express: there is no
-concrete-type path-call (`uint(8)::unpack(b)`) and no return-type-directed
-dispatch. `unpack` becomes its own slice once one of those lands; the
-round-trip law is stated for when it does.
+**`unpack` LANDED** via the concrete type-path call. `unpack` dispatches on its
+*return* type (`unpack(b: bits(W)) -> Self`), which a receiver can't carry, so it
+is called on an explicit Self type: `uint(8)::unpack(b)`. A **typed base**
+(`uint(8)::`, `Vec(N,A)::`) is a dedicated grammar rule (`type_path_call`); a
+**bare-identifier base** (`bool::unpack(b)`, a bounded type param `A::unpack(b)`)
+parses as a two-segment path call and is re-read as a type-path call during
+lowering when the base names a type. Resolution mirrors method dispatch
+(inherent → trait → bounded-param-via-`Instance::resolve`), and the impl's
+generics are pinned from the Self type (the receiver-less analogue of the
+self-param subsume). The primitive `unpack` bodies are inline-verilog wire
+identities, like `pack`.
 
 ### Endianness — little-endian, settled
 
