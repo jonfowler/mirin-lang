@@ -1731,6 +1731,13 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 kind: ValueKind::Integer,
                 domain: Domain::Const,
             },
+            // An associated-const projection as a value (`A::bit_size`): an
+            // `integer @const`, like `ConstParam`; its value resolves through
+            // `eval_assoc` once Self is concrete (monomorphisation).
+            ExprKind::ConstAssoc { .. } => Type::Value {
+                kind: ValueKind::Integer,
+                domain: Domain::Const,
+            },
             // `[a, b, c]`: the elements unify; the length is theirs to count.
             ExprKind::VecLit(elems) => {
                 let elems = elems.clone();
@@ -1912,6 +1919,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 Some(ExprKind::Number(v, _)) => ConstArg::Lit(*v),
                 Some(ExprKind::Local(l)) => ConstArg::Local(*l),
                 Some(ExprKind::ConstParam(i)) => ConstArg::Param(*i),
+                Some(ExprKind::ConstAssoc { item, self_ty }) => ConstArg::Assoc {
+                    item: *item,
+                    self_ty: Box::new(self_ty.clone()),
+                },
                 _ => ConstArg::Deferred,
             };
             for a in args {

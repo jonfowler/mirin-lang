@@ -50,6 +50,7 @@ const CLEAN: &[&str] = &[
     "inline_attr.mrn",
     "pack.mrn",
     "unpack.mrn",
+    "assoc_const_value.mrn",
     "resize.mrn",
     "ram.mrn",
     "ram_write.mrn",

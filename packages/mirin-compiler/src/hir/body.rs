@@ -117,6 +117,15 @@ pub enum ExprKind<'db> {
     /// `ValueKind::Param` (types) and `ConstArg::Param` (widths). Types as
     /// `integer @const`; the backend renders it as the SV `#(…)` parameter name.
     ConstParam(u32),
+    /// An associated-const projection referenced as a **value** (`A::bit_size`
+    /// in `range(A::bit_size)`, `b[i * A::bit_size + j]`). The value-position
+    /// dual of `ConstArg::Assoc` (widths): `item` is the trait's const DECL,
+    /// `self_ty` the bounded type param. Types as `integer @const`; evaluates
+    /// at monomorphisation through `eval_assoc`, like the width-position form.
+    ConstAssoc {
+        item: DefId<'db>,
+        self_ty: Type<'db>,
+    },
     /// A resolved item reference (fn, constructor, builtin).
     Def(DefId<'db>),
     /// A call. Operators (`+`, `*`) lower here too (callee = the prelude op).
@@ -459,11 +468,28 @@ pub fn body<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db
     let Some(node) = tree.root_node().descendant_for_byte_range(start, end) else {
         return Body::default();
     };
+    // Trait bounds on Type-kind generics (`A: BitPack` → `(i, BitPack)`), for
+    // resolving associated-const projections in value position. Mirrors the
+    // bounds the sig `TypeLowerer` uses for width-position `A::bit_size`.
+    let bounds: Vec<(u32, DefId<'db>)> = sig
+        .predicates
+        .iter()
+        .filter_map(
+            |crate::hir::types::Predicate::Trait(tr)| match &tr.self_ty {
+                Type::Value {
+                    kind: ValueKind::Param(i),
+                    ..
+                } => Some((*i, tr.trait_def)),
+                _ => None,
+            },
+        )
+        .collect();
     let mut lowerer = BodyLowerer::new(
         map,
         module,
         start,
         &sig.generic_params,
+        &bounds,
         &sig.params,
         &sig.result_places,
     );
@@ -509,6 +535,10 @@ struct BodyLowerer<'a, 'db> {
     /// def-relative (edit-stable across other defs).
     def_start: usize,
     generics: &'a [GenericParam],
+    /// Trait bounds on Type-kind generics, `(param index, trait def)` — for
+    /// resolving an associated-const projection in value position (`A::bit_size`
+    /// where `A: BitPack`). Mirrors the sig `TypeLowerer`'s `bounds`.
+    bounds: &'a [(u32, DefId<'db>)],
     exprs: Vec<Expr<'db>>,
     expr_spans: Vec<Span>,
     locals: Vec<LocalData<'db>>,
@@ -528,6 +558,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         module: ModuleId,
         def_start: usize,
         generics: &'a [GenericParam],
+        bounds: &'a [(u32, DefId<'db>)],
         params: &[super::sig::Param<'db>],
         result_places: &[super::sig::ResultPlace<'db>],
     ) -> Self {
@@ -587,6 +618,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             module,
             def_start,
             generics,
+            bounds,
             exprs: Vec::new(),
             expr_spans: Vec::new(),
             param_count: params.len() as u32,
@@ -1498,6 +1530,29 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 return ExprKind::Def(def);
             }
         } else {
+            // `A::bit_size` — an associated-const projection in value position.
+            // The base is a Type-kind generic; the bound trait supplies the
+            // const DECL. Mirrors the sig `lower_const_path` (width position).
+            if let [base, item] = segments.as_slice()
+                && let Some(i) = self
+                    .generics
+                    .iter()
+                    .position(|g| g.name == *base && g.kind == TermKind::Type)
+            {
+                for (j, trait_def) in self.bounds {
+                    if *j == i as u32
+                        && let Some(c) = self.map.trait_const(*trait_def, item)
+                    {
+                        return ExprKind::ConstAssoc {
+                            item: c,
+                            self_ty: Type::Value {
+                                kind: ValueKind::Param(i as u32),
+                                domain: Domain::Unspecified,
+                            },
+                        };
+                    }
+                }
+            }
             let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
             if let Some(def) = self.map.resolve_path(&refs, self.module, Namespace::Item) {
                 return ExprKind::Def(def);

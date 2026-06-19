@@ -1899,6 +1899,25 @@ impl<'db> SvLower<'_, 'db> {
                     self.sig.generic_params.len(),
                 ),
             },
+            // An associated-const projection as a value (`A::bit_size`): ground
+            // Self with the instance substitution (concrete at emit), then
+            // evaluate through `eval_assoc` → a literal.
+            ExprKind::ConstAssoc { item, self_ty } => {
+                let self_ty = ground_widths(
+                    self.db,
+                    self.krate,
+                    self.def,
+                    &subst_type(self_ty, &self.self_subst),
+                );
+                let c = ConstArg::Assoc {
+                    item: *item,
+                    self_ty: Box::new(self_ty),
+                };
+                match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &c) {
+                    Some(v) => SvExpr::Lit(v.to_string()),
+                    None => SvExpr::Lit(render_const_sv(&c, self.sig)),
+                }
+            }
             ExprKind::Call { .. } => {
                 // User-fn calls become module instances (Q5d).
                 SvExpr::Lit("0".to_owned())

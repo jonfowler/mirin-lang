@@ -1,0 +1,13 @@
+// An associated-const projection used as a VALUE (planning/pack_resize.md).
+// `A::bit_size` already worked in type/width position (`bits(A::bit_size)`);
+// here it appears in expression position — an index, with arithmetic. It is the
+// value-position dual of a const param (`n`), typed `integer @const`, and folds
+// through `eval_assoc` once Self is concrete: `at` instantiated at `A = uint(8)`
+// reads `v[(8 - 1)]`.
+fn at {type A: BitPack, dom clk: Clock} (x: A @clk, v: Vec(16, uint(8)) @clk) -> uint(8) @clk {
+    v[A::bit_size - 1]
+}
+
+fn top {dom clk: Clock} (x: uint(8) @clk, v: Vec(16, uint(8)) @clk) -> uint(8) @clk {
+    at(x, v)
+}
