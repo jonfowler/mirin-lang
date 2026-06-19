@@ -1,5 +1,13 @@
 # `param` / `const` / `type`: flattening generic scope and naming the kinds
 
+> **Status: LANDED (2026-06-19).** All three parts implemented:
+> const params are usable as values in the body (`ExprKind::ConstParam`),
+> `@const` lowers to `Domain::Const`, and the keyword rename
+> `param`→`const` + new `type` (dropping the `: Type` heuristic) is in the
+> grammar and across the corpus. The sections below describe the *original*
+> mechanism (the "before") as the problem statement; the syntax in their
+> examples is pre-rename.
+
 Prerequisite design work for both `when_binding.md` and `compile_mutable.md`. The
 mutability work keeps tripping over "gap 2": a `param n: integer` is usable in
 *type* position (`Vec(n+1, …)`) but not in *value* position (`range(n)`,

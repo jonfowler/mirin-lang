@@ -154,7 +154,7 @@ recurrence. Option 1 is what the language can already express today.
 Source:
 
 ```mirin
-fn sum {dom clk: Clock} (param n: integer, v: Vec(n, uint(8)) @clk) -> uint(8) @clk {
+fn sum {dom clk: Clock} (const n: integer, v: Vec(n, uint(8)) @clk) -> uint(8) @clk {
   let mut acc = 0;
   for x in v {
     acc = acc + x;
