@@ -741,14 +741,9 @@ impl<'db> SvLower<'_, 'db> {
             } => width.clone(),
             _ => return None,
         };
-        let bound = match &len {
-            ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
-            ConstArg::Param(i) => match self.sig.generic_params.get(*i as usize) {
-                Some(g) => SvExpr::Ident(g.name.clone()),
-                None => SvExpr::Lit("0".to_owned()),
-            },
-            other => SvExpr::Lit(render_const_sv(other, self.sig)),
-        };
+        // The loop bound renders like any width/length: literal, generic param,
+        // or symbolic compound expr — never a silent `0` default.
+        let bound = width_expr(&len, &self.sig.generic_params);
         let elem_is_genvar = matches!(
             self.body.local(elem).kind,
             crate::hir::body::LocalKind::ForBound
@@ -875,14 +870,7 @@ impl<'db> SvLower<'_, 'db> {
             } => (width.clone(), true),
             _ => return,
         };
-        let bound = match &len {
-            ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
-            ConstArg::Param(i) => match self.sig.generic_params.get(*i as usize) {
-                Some(g) => SvExpr::Ident(g.name.clone()),
-                None => SvExpr::Lit("0".to_owned()),
-            },
-            other => SvExpr::Lit(render_const_sv(other, self.sig)),
-        };
+        let bound = width_expr(&len, &self.sig.generic_params);
         // A `range(n)` iterable never materialises: the ELEM local is the
         // genvar itself and no binding is emitted. Keyed off the SYNTACTIC
         // range call (lowering marks its elem ForBound) — the type alone
@@ -1232,16 +1220,10 @@ impl<'db> SvLower<'_, 'db> {
         {
             return;
         }
-        let len_sv = match &len {
-            ConstArg::Lit(n) => n.to_string(),
-            ConstArg::Param(i) => self
-                .sig
-                .generic_params
-                .get(*i as usize)
-                .map(|g| g.name.clone())
-                .unwrap_or_else(|| "0".to_owned()),
-            other => render_const_sv(other, self.sig),
-        };
+        // The bound renders like any width/length (literal, param, or symbolic
+        // compound expr) — `render_const_sv` covers all three, never a silent
+        // `0` default that would weaken the bounds check.
+        let len_sv = render_const_sv(&len, self.sig);
         let cond = format!("{idx_sv} < {len_sv}");
         if self.index_asserts.insert(cond.clone()) {
             self.items.push(SvItem::CombAssert(SvCombAssert { cond }));
@@ -1617,10 +1599,17 @@ impl<'db> SvLower<'_, 'db> {
             ExprKind::Bool(b) => SvExpr::Lit(if *b { "1'b1" } else { "1'b0" }.to_owned()),
             ExprKind::Local(l) => SvExpr::Ident(self.local_name(*l)),
             // A const generic used as a value renders as the SV `#(…)` parameter
-            // name — legal in widths, bounds, and ordinary expressions alike.
+            // name — legal in widths, bounds, and ordinary expressions alike. An
+            // out-of-range index means a foreign param leaked into rendering: an
+            // invariant violation, not a `0` value — surface it loudly.
             ExprKind::ConstParam(i) => match self.sig.generic_params.get(*i as usize) {
                 Some(g) => SvExpr::Ident(g.name.clone()),
-                None => SvExpr::Lit("0".to_owned()),
+                None => panic!(
+                    "ConstParam({i}) indexes no generic of the emitted module \
+                     (it has {} generic params) on a clean crate — a foreign \
+                     param leaked into rendering. Do not default to `0`.",
+                    self.sig.generic_params.len(),
+                ),
             },
             ExprKind::Call { .. } => {
                 // User-fn calls become module instances (Q5d).
@@ -2805,14 +2794,14 @@ fn flatten_leaves_inner(
         // Struct-of-arrays (planning/vectors.md): one unpacked-array leaf
         // per ELEMENT-TYPE leaf — Vec(3, Packet) → v__valid[0:2] + ….
         Type::Vec { len, elem } => {
-            let dim = match len {
-                ConstArg::Lit(n) => SvExpr::Lit(n.to_string()),
-                ConstArg::Param(i) => match generics.get(*i as usize) {
-                    Some(g) => SvExpr::Ident(g.name.clone()),
-                    None => SvExpr::Lit("1".to_owned()),
-                },
-                _ => SvExpr::Lit("1".to_owned()),
-            };
+            // The unpacked-array dimension. Share `width_expr` so a Vec length
+            // and a scalar width render identically: literals verbatim, a bare
+            // generic as an SV parameter, and a symbolic COMPOUND length
+            // (`Vec(a + b, …)`) as a rendered SV expression — leaning on the
+            // elaborator. A bug once made a non-literal length silently `1`
+            // (`[0:0]`), a wrong-width SILENT MISCOMPILE; `width_expr` panics on
+            // a genuinely unrenderable form instead.
+            let dim = width_expr(len, generics);
             flatten_leaves_inner(db, krate, elem, drives, generics)
                 .into_iter()
                 .map(|mut leaf| {
@@ -2999,13 +2988,35 @@ fn and_guard(outer: &Option<SvExpr>, inner: SvExpr) -> SvExpr {
 /// A const tree as an SV constant expression (symbolic Params render as the
 /// module's SV parameter names — legal in any constant context).
 fn render_const_sv(c: &ConstArg<'_>, sig: &Signature<'_>) -> String {
+    render_const_sv_generics(c, &sig.generic_params)
+}
+
+/// Render a const expression as a SystemVerilog constant — `Lit`s verbatim,
+/// `Param`s as the emitted module's generic name, `Op`s as a parenthesized SV
+/// expression — leaning on the SV elaborator to evaluate it. Used for both
+/// widths/lengths and inline-verilog const splices. Only `sig.generic_params`
+/// is needed, so this form takes the slice directly (callers in flattening have
+/// the generics but not the whole signature).
+///
+/// Anything that survives to here but cannot be rendered (a `Local`/`Field`/
+/// `Assoc` that `const_eval` failed to ground) is an internal invariant
+/// violation, not a renderable form — panic rather than emit `/*unknown*/`,
+/// which would silently produce malformed SV.
+fn render_const_sv_generics(c: &ConstArg<'_>, generics: &[GenericParam]) -> String {
     match c {
         ConstArg::Lit(v) => v.to_string(),
-        ConstArg::Param(i) => sig
-            .generic_params
+        ConstArg::Param(i) => generics
             .get(*i as usize)
             .map(|g| g.name.clone())
-            .unwrap_or_else(|| "/*unknown*/".to_owned()),
+            .unwrap_or_else(|| {
+                panic!(
+                    "const Param({i}) indexes no generic of the emitted module \
+                     (it has {} generic params) on a clean crate — a foreign \
+                     param leaked into rendering. Substitute it before \
+                     flattening; do not emit a placeholder.",
+                    generics.len(),
+                )
+            }),
         ConstArg::Op(op, a, b) => {
             let op = match op {
                 ConstOp::Add => "+",
@@ -3016,12 +3027,19 @@ fn render_const_sv(c: &ConstArg<'_>, sig: &Signature<'_>) -> String {
             };
             format!(
                 "({} {} {})",
-                render_const_sv(a, sig),
+                render_const_sv_generics(a, generics),
                 op,
-                render_const_sv(b, sig)
+                render_const_sv_generics(b, generics)
             )
         }
-        _ => "/*unknown*/".to_owned(),
+        // A `Local`/`Field`/`Assoc` reaching here means `const_eval`/`ground_widths`
+        // failed to ground a value that should have been concrete on a clean
+        // crate. Surfacing it loudly beats emitting `/*unknown*/` into the SV.
+        other => panic!(
+            "render_const_sv: cannot render `{other:?}` as a SV constant on a \
+             clean crate — it should have been grounded to a literal by \
+             const_eval before emission. Do not emit a placeholder.",
+        ),
     }
 }
 
@@ -3314,18 +3332,24 @@ fn width_expr(c: &ConstArg, generics: &[GenericParam]) -> SvExpr {
                 generics.len(),
             ),
         },
-        // A non-literal, non-`Param` width (associated const, const expression).
-        // `flatten_leaves` grounds these to a literal via const_eval before
-        // rendering (that grounding fixed the `uint(T::width)` → 1-bit bug), so on
-        // a clean crate one surviving here is an internal invariant violation.
-        // The exception worth building: a symbolic COMPOUND width in a parametric
-        // module (`uint(n + 1)`) — TODO: render those via `render_const_sv`
-        // (`[(n+1)-1:0]`) rather than this hard error.
+        // A symbolic COMPOUND width/length in a parametric module — `uint(n + 1)`,
+        // `Vec(a + b, …)`. `const_eval`/`ground_widths` cannot ground it (its
+        // generics are free here), so render it as a SV constant expression and
+        // let the SV elaborator evaluate it: `uint(n + 1)` → `[(n + 1)-1:0]`,
+        // `Vec(a + b, …)` → `[0:(a + b)-1]`. NEVER a silent 1-bit/`[0:0]`
+        // default (that masked a `uint(T::width)` substitution bug and silently
+        // miscompiled `Vec(a + b)`). `render_const_sv_generics` panics on a
+        // genuinely unrenderable form (an ungrounded `Local`/`Assoc`).
+        ConstArg::Op(..) => SvExpr::Lit(render_const_sv_generics(c, generics)),
+        // A `Local`/`Field`/`Assoc` width: `ground_widths` grounds these to a
+        // literal via const_eval before rendering (that grounding fixed the
+        // `uint(T::width)` → 1-bit bug), so one surviving here is an internal
+        // invariant violation — surface it loudly, never a 1-bit default.
         other => panic!(
-            "width/length `{other:?}` is neither a literal nor a generic param on \
-             a clean crate. A concrete width must be grounded to a literal by \
-             const_eval before emission; symbolic compound widths are not \
-             rendered yet (TODO: render via render_const_sv). Not a 1-bit default.",
+            "width/length `{other:?}` is neither a literal, a generic param, nor \
+             a const expression on a clean crate. A concrete width must be \
+             grounded to a literal by const_eval before emission. Not a 1-bit \
+             default.",
         ),
     }
 }
@@ -3362,6 +3386,34 @@ module addConstant (
 endmodule
 ";
         assert_eq!(sv, expected, "\n--- got ---\n{sv}");
+    }
+
+    #[test]
+    fn symbolic_compound_vec_length_renders_not_collapsed() {
+        // A Vec whose length is a symbolic COMPOUND const expr (`a + b`, both
+        // free generic params) must render the dimension as a SV expression,
+        // leaning on the elaborator — NOT silently collapse to `[0:0]` (a
+        // wrong-width miscompile). Regression for the silent-coercion bug.
+        let sv = emit(
+            "fn f (const a: integer, const b: integer, v: Vec(a + b, uint(8))) -> uint(8) {\n  v[0]\n}",
+        );
+        assert!(sv.contains("logic [7:0] v [0:(a + b)-1]"), "{sv}");
+        assert!(
+            !sv.contains("v [0:0]"),
+            "collapsed to a 1-element array: {sv}"
+        );
+    }
+
+    #[test]
+    fn symbolic_compound_scalar_width_renders_not_panics() {
+        // The sibling case: a symbolic compound scalar width (`uint(a + b)`)
+        // must render `[(a + b)-1:0]`, not panic (it used to) and not default to
+        // 1 bit.
+        let sv = emit(
+            "fn g (const a: integer, const b: integer, v: uint(a + b)) -> uint(a + b) {\n  v\n}",
+        );
+        assert!(sv.contains("logic [(a + b)-1:0] v"), "{sv}");
+        assert!(sv.contains("logic [(a + b)-1:0] result"), "{sv}");
     }
 
     #[test]
