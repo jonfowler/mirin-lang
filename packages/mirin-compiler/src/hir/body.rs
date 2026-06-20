@@ -202,6 +202,10 @@ pub struct RecordField {
 #[derive(Clone, PartialEq, Eq, Debug, Default, salsa::Update)]
 pub struct VerilogTemplate<'db> {
     pub segments: Vec<VerilogSegment<'db>>,
+    /// `verilog expr { … }`: the template is one SV *expression* (no `assign`),
+    /// rendered inline wherever the call sits (const or net context) rather
+    /// than emitted as a module body. Plain `verilog { … }` is statement-form.
+    pub expr_form: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -468,10 +472,12 @@ pub fn body<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db
     // `= verilog { … }`: no HIR block — the raw text becomes a template,
     // splices resolved against the signature.
     if let Some(vb) = node.child_by_field_name("verilog_body") {
-        let template = vb
+        let expr_form = node.child_by_field_name("verilog_form").is_some();
+        let mut template = vb
             .child_by_field_name("content")
             .map(|c| lowerer.lower_verilog_template(&c, source))
             .unwrap_or_default();
+        template.expr_form = expr_form;
         let mut body = lowerer.finish(Block::default());
         body.verilog = Some(template);
         return body;
@@ -636,7 +642,10 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         if rest.is_empty() == false {
             segments.push(VerilogSegment::Text(rest.to_owned()));
         }
-        VerilogTemplate { segments }
+        VerilogTemplate {
+            segments,
+            expr_form: false,
+        }
     }
 
     /// A `${…}` splice: single names resolve against the signature; anything

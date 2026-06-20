@@ -1297,6 +1297,22 @@
                   "value": "verilog"
                 },
                 {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "FIELD",
+                      "name": "verilog_form",
+                      "content": {
+                        "type": "STRING",
+                        "value": "expr"
+                      }
+                    },
+                    {
+                      "type": "BLANK"
+                    }
+                  ]
+                },
+                {
                   "type": "FIELD",
                   "name": "verilog_body",
                   "content": {

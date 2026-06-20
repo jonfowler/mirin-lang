@@ -1623,24 +1623,6 @@ impl<'db> SvLower<'_, 'db> {
                 self.index_bounds_assert(base, index, &i);
                 SvExpr::Lit(format!("{b}[{i}]"))
             }
-            // An operator desugar (`a + b` → `a.add(b)`) that selected a
-            // prelude impl: inline SV operator.
-            ExprKind::MethodCall { receiver, args, .. }
-                if self.prelude_op(expr).is_some() && args.len() == 1 =>
-            {
-                let op = self.prelude_op(expr).unwrap();
-                let l = self.expr_value(*receiver);
-                let r = self.expr_value(args[0].expr);
-                SvExpr::BinOp(op, Box::new(l), Box::new(r))
-            }
-            // `-x` (Neg on sint) / `!x` (Not on bool): inline unary operator.
-            ExprKind::MethodCall { receiver, args, .. }
-                if args.is_empty() && self.prelude_unary(expr).is_some() =>
-            {
-                let op = self.prelude_unary(expr).unwrap();
-                let x = self.expr_value(*receiver);
-                SvExpr::Lit(format!("({op}{x})"))
-            }
             // `e.reg(rst, init)` in value position: a register into a fresh local.
             ExprKind::MethodCall { .. } if self.as_reg(expr).is_some() => {
                 let reg = self.as_reg(expr).unwrap();
@@ -2122,85 +2104,34 @@ impl<'db> SvLower<'_, 'db> {
             .unwrap_or_else(|| "clk".to_owned())
     }
 
-    /// `Some(prefix)` if this method call selected a prelude UNARY operator
-    /// impl (`Neg` → `-`, `Not` → `!`) — emitted inline as `(-x)` / `(!x)`,
-    /// never as an instance (the unary twin of `prelude_op`).
-    fn prelude_unary(&self, expr: ExprId) -> Option<&'static str> {
-        let def = self.inf.method_resolution(expr)?;
-        let t = self.map.trait_of_method(def)?;
-        let tdata = self.map.def_data(t)?;
-        if tdata.module != self.map.prelude() {
-            return None;
-        }
-        match tdata.name.as_str() {
-            "Neg" => Some("-"),
-            "Not" => Some("!"),
-            "BitNot" => Some("~"),
-            _ => None,
-        }
-    }
-
-    /// `Some(op)` if a method call resolved to a PRELUDE operator-trait impl
-    /// method — codegen's one operator special case (rustc's enforce_builtin_
-    /// binop shape): the selection is real trait dispatch, but the emission
-    /// is the inline SV operator, never an instance.
-    fn prelude_op(&self, expr: ExprId) -> Option<SvBinOp> {
-        let def = self.inf.method_resolution(expr)?;
-        let t = self.map.trait_of_method(def)?;
-        let tdata = self.map.def_data(t)?;
-        if tdata.module != self.map.prelude() {
-            return None;
-        }
-        // Key on the resolved METHOD name, not the trait: one trait (`Ord`)
-        // backs four ordering operators, `Eq` backs `eq`/`ne`.
-        match self.map.def_data(def)?.name.as_str() {
-            "add" => Some(SvBinOp::Add),
-            "sub" => Some(SvBinOp::Sub),
-            "mul" => Some(SvBinOp::Mul),
-            "div" => Some(SvBinOp::Div),
-            "rem" => Some(SvBinOp::Rem),
-            "eq" => Some(SvBinOp::Eq),
-            "ne" => Some(SvBinOp::Ne),
-            "lt" => Some(SvBinOp::Lt),
-            "le" => Some(SvBinOp::Le),
-            "gt" => Some(SvBinOp::Gt),
-            "ge" => Some(SvBinOp::Ge),
-            "and" => Some(SvBinOp::And),
-            "or" => Some(SvBinOp::Or),
-            "bitand" => Some(SvBinOp::BitAnd),
-            "bitor" => Some(SvBinOp::BitOr),
-            "bitxor" => Some(SvBinOp::BitXor),
-            "shl" => Some(SvBinOp::Shl),
-            // `>>` is arithmetic (sign-extending) on a sint receiver, logical
-            // on uint/bits (planning/operators.md O3).
-            "shr" => Some(if self.receiver_is_signed(expr) {
-                SvBinOp::AShr
-            } else {
-                SvBinOp::Shr
-            }),
-            _ => None,
-        }
-    }
-
-    /// True if a method call's receiver has a signed integer type.
-    fn receiver_is_signed(&self, expr: ExprId) -> bool {
-        let ExprKind::MethodCall { receiver, .. } = &self.body.expr(expr).kind else {
-            return false;
-        };
-        matches!(
-            self.inf.expr_type(*receiver),
-            Some(Type::Value {
-                kind: ValueKind::SInt { .. },
-                ..
-            })
-        )
-    }
+    // (Prelude operators were once recognised here by trait/method name and
+    // emitted as an inline `SvBinOp` — `prelude_op`/`prelude_unary`. They are
+    // now ordinary `verilog expr` bodies, spliced via `inline_call`/
+    // `render_inline` like any other inline fn; see prelude.mrn.)
 
     // ----- #[inline] body splicing (planning/attributes.md) -----
 
-    /// `Some(call)` if `expr` is a call to an `#[inline]` fn/method (prelude or
-    /// user) — the body is spliced at the call site instead of instantiating a
-    /// module. Operators and `.reg` are handled by their own inline paths.
+    /// True if `def`'s body is an inline-expression verilog body
+    /// (`= verilog expr { … }`): the whole template is one SV expression,
+    /// spliced at the call site in whatever const/net context it sits — never
+    /// instantiated. This subsumes the old `prelude_op`/`prelude_unary` special
+    /// cases (the prelude operators are now expr-form bodies; see prelude.mrn).
+    fn is_inline_expr_body(&self, def: DefId) -> bool {
+        body(self.db, self.krate, def)
+            .verilog()
+            .is_some_and(|t| t.expr_form)
+    }
+
+    /// True if `def` should splice inline rather than instantiate: either an
+    /// explicit `#[inline]`, or a `verilog expr` body.
+    fn splices_inline(&self, def: DefId) -> bool {
+        self.map.def_data(def).is_some_and(|d| d.inline) || self.is_inline_expr_body(def)
+    }
+
+    /// `Some(call)` if `expr` is a call that splices inline (an `#[inline]`
+    /// fn/method, or a `verilog expr`-bodied fn such as a prelude operator) —
+    /// the body is rendered at the call site instead of instantiating a module.
+    /// `.reg` is handled by its own inline path.
     fn inline_call(&self, expr: ExprId) -> Option<UserCall<'db>> {
         match &self.body.expr(expr).kind {
             ExprKind::Call {
@@ -2211,7 +2142,7 @@ impl<'db> SvLower<'_, 'db> {
                 let ExprKind::Def(def) = self.body.expr(*callee).kind else {
                     return None;
                 };
-                if !self.map.def_data(def)?.inline {
+                if !self.splices_inline(def) {
                     return None;
                 }
                 Some(UserCall {
@@ -2223,17 +2154,13 @@ impl<'db> SvLower<'_, 'db> {
                     named: named.clone(),
                 })
             }
-            ExprKind::MethodCall { receiver, args, .. }
-                if self.prelude_op(expr).is_none()
-                    && self.prelude_unary(expr).is_none()
-                    && self.as_reg(expr).is_none() =>
-            {
+            ExprKind::MethodCall { receiver, args, .. } if self.as_reg(expr).is_none() => {
                 let decl = self.inf.method_resolution(expr)?;
                 let (def, subst_override) = match self.resolve_trait_instance(expr, decl) {
                     Some((m, ov)) => (m, Some(ov)),
                     None => (decl, None),
                 };
-                if !self.map.def_data(def)?.inline {
+                if !self.splices_inline(def) {
                     return None;
                 }
                 Some(UserCall {
@@ -2253,7 +2180,7 @@ impl<'db> SvLower<'_, 'db> {
                     Some((m, ov)) => (m, Some(ov)),
                     None => (decl, None),
                 };
-                if !self.map.def_data(def)?.inline {
+                if !self.splices_inline(def) {
                     return None;
                 }
                 Some(UserCall {
@@ -2339,7 +2266,14 @@ impl<'db> SvLower<'_, 'db> {
                 }
             }
         }
-        SvExpr::Lit(format!("({})", extract_assign_rhs(&out)))
+        // An expression body IS the SV expression; a statement body
+        // (`assign ${result} = RHS;`) needs its RHS extracted.
+        let rhs = if template.expr_form {
+            out.trim().to_owned()
+        } else {
+            extract_assign_rhs(&out)
+        };
+        SvExpr::Lit(format!("({rhs})"))
     }
 
     // ----- instantiation (user calls / methods → submodules) -----
@@ -2372,13 +2306,6 @@ impl<'db> SvLower<'_, 'db> {
                     named: named.clone(),
                 })
             }
-            // A prelude operator selection is NOT a user call — it lowers
-            // inline (`(a + b)`, `(-x)`), never as an instance.
-            ExprKind::MethodCall { .. }
-                if self.prelude_op(expr).is_some() || self.prelude_unary(expr).is_some() =>
-            {
-                None
-            }
             ExprKind::MethodCall { receiver, args, .. } if self.as_reg(expr).is_none() => {
                 {
                     let decl = self.inf.method_resolution(expr)?;
@@ -2389,8 +2316,10 @@ impl<'db> SvLower<'_, 'db> {
                         Some((m, ov)) => (m, Some(ov)),
                         None => (decl, None),
                     };
-                    // `#[inline]` methods splice their body; never an instance.
-                    if self.map.def_data(def)?.inline {
+                    // A method that splices inline (`#[inline]`, or a prelude
+                    // operator's `verilog expr` body) is never an instance —
+                    // it lowers in place (`(a + b)`, `(-x)`).
+                    if self.splices_inline(def) {
                         return None;
                     }
                     Some(UserCall {
@@ -2403,15 +2332,15 @@ impl<'db> SvLower<'_, 'db> {
                     })
                 }
             }
-            // A receiver-less associated call (`uint(8)::unpack(b)`) that is not
-            // `#[inline]` becomes an instance, like a method call.
+            // A receiver-less associated call (`uint(8)::unpack(b)`) that does
+            // not splice inline becomes an instance, like a method call.
             ExprKind::TypePathCall { args, .. } => {
                 let decl = self.inf.method_resolution(expr)?;
                 let (def, subst_override) = match self.resolve_trait_instance(expr, decl) {
                     Some((m, ov)) => (m, Some(ov)),
                     None => (decl, None),
                 };
-                if self.map.def_data(def)?.inline {
+                if self.splices_inline(def) {
                     return None;
                 }
                 Some(UserCall {

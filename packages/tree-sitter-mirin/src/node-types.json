@@ -749,6 +749,16 @@
           }
         ]
       },
+      "verilog_form": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "expr",
+            "named": false
+          }
+        ]
+      },
       "visibility": {
         "multiple": false,
         "required": false,
@@ -3179,6 +3189,10 @@
   },
   {
     "type": "else",
+    "named": false
+  },
+  {
+    "type": "expr",
     "named": false
   },
   {

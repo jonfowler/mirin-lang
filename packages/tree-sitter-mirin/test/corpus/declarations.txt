@@ -599,6 +599,28 @@ fn ff {dom clk: Clock} (d: uint(8) @clk, out q: uint(8) @clk) = verilog {
     verilog_body: (verilog_block
       content: (verilog_content))))
 
+================================================================================
+inline verilog expression body
+================================================================================
+
+fn add(self, other: Self) -> Self = verilog expr { ${self} + ${other} }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter)
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier))))
+    return_type: (return_type_expression
+      name: (identifier))
+    verilog_body: (verilog_block
+      content: (verilog_content))))
+
 ========================================
 impl block with binder-first generics
 ========================================

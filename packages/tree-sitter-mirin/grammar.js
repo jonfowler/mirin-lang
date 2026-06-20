@@ -271,12 +271,20 @@ module.exports = grammar({
         optional(field("where", $.where_clause)),
         choice(
           field("body", $.block),
-          seq("=", "verilog", field("verilog_body", $.verilog_block)),
+          seq(
+            "=",
+            "verilog",
+            optional(field("verilog_form", "expr")),
+            field("verilog_body", $.verilog_block),
+          ),
         ),
       ),
 
     // An inline-verilog fn body: the signature is the contract, the raw
     // text is spliced into the emitted module (`planning/inline_verilog.md`).
+    // `verilog expr { … }` marks an EXPRESSION body — the whole template is one
+    // SV expression (no `assign`), rendered inline in whatever const/net
+    // context the call sits in. Plain `verilog { … }` is a statement body.
     verilog_block: ($) => seq("{", field("content", $.verilog_content), "}"),
 
     // Return-position type. Excludes `type_named_args` because a trailing
