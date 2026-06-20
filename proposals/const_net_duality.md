@@ -67,24 +67,46 @@ A pure fn then has two lowerings — SV `function` (callable in const *and* net
 contexts) and, where it must instantiate, a module — chosen by use. A stateful
 fn stays module-only.
 
-## Item 2 — lift values to parameters (lazily)
+## Item 2 — `@const` leaves become constants (never nets)
 
-Default a value to **net**; lift it to a parameter **only when a use requires
-it** — i.e. it appears in a type/width/length/const-arg position. Making an
-argument a parameter is *stricter* (it must be elaboration-constant) than leaving
-it a net, so over-lifting needlessly constrains callers.
+**Every `@const` leaf is a compile-time constant in SV — never a net.** An
+earlier draft proposed lifting to a parameter *lazily* (only when used in a
+type). That was wrong: a `@const` value is already forbidden by the type system
+from ever carrying a runtime driver, so representing it as a net buys no
+permissiveness and only loses const-position usability. There is no program that
+compiles only because a `@const` stayed a net. So the decision is not *whether*
+to make it a constant, only *which constant form* — and that is **not tied to
+"width"**; a `@const` value is usable in every elaboration-time position (width,
+`Vec` length, `for`/`range` bound, generate condition) uniformly.
 
-The trigger already exists: `infer::width_locals` collects every
-`ConstArg::Local`/`ConstArg::Param` referenced in a type, and already *requires*
-those locals' domain to be `@const`. That set is exactly "must be a parameter."
+**The form is decided per leaf**, by concreteness + where it originates:
 
-**Granularity is per-leaf, not per-value** (Jon's point): a Mirin aggregate can
-mix const and clocked leaves — e.g. `enumerate`'s `(integer @const, A @D)` — so
-a single struct/tuple may need *some* leaves as params and others as nets. The
-per-leaf `@const` lives on the resolved `Type` (`Domain::Const` per
-`Type::Value`) **before** flatten, but `flatten_leaves` currently discards
-domain (its `Leaf` has no domain field) and `ground_widths` collapses
-`ConstArg::Local` to a literal during flatten.
+| leaf domain | originates as | SV home |
+|---|---|---|
+| `@const`, concrete, unnamed | anywhere | inline literal (`[7:0]`) |
+| `@const`, symbolic | generic / value param | `#(parameter)` |
+| `@const`, symbolic | body local | `localparam` (or inline const-expr) |
+| clocked | param | net **port** |
+| clocked | body local | net (`logic` / `assign`) |
+
+- **Interface vs internal (`#(parameter)` vs `localparam`) is structural, not
+  metadata.** A param/generic flattens into the module *interface*; a body local
+  lowers *internally* — already distinct code paths. So "is this a module
+  argument" is kept by construction.
+- **Per-leaf is the load-bearing requirement.** A Mirin aggregate can mix const
+  and clocked leaves — `enumerate`'s `(integer @const, A @D)` is the canonical
+  case, and this must be supported. Each leaf routes to its own home: a
+  mixed-const **argument** legitimately spans `#()` *and* the port list, which is
+  fine because flatten already explodes one arg into many leaves. No boundary
+  restriction.
+- **The one mechanism needed:** the per-leaf `@const` lives on the resolved
+  `Type` (`Domain::Const` per `Type::Value`) **before** flatten, but
+  `flatten_leaves` discards domain (its `Leaf` has no domain field) and
+  `ground_widths` collapses `ConstArg::Local` to a literal during flatten. So
+  `Leaf` must **carry per-leaf domain**, and a symbolic `@const` local must be
+  promoted (to a `localparam`/const-expr) *before* `ground_widths` erases its
+  identity. The width-shaped `width_locals`/`ground_widths`-to-literal path is
+  the narrow thing this uniform `@const → constant` rule replaces.
 
 ## Item 3 — defer the const-type-checking problem
 
@@ -160,18 +182,29 @@ and defs, but mechanically it lands *inside* flatten (carrying domain) and at th
 0. **(prereq, in flight)** Eliminate silent backend coercions — render symbolic
    const widths/lengths via `render_const_sv`, fail loudly otherwise. (item 4)
 1. `verilog expr { … }` body form + retire `prelude_op` → operators kind-agnostic.
-2. Carry per-leaf domain through `flatten_leaves`; emit `@const` leaves as
-   parameters where a use requires it (consume `width_locals` pre-grounding).
+2. Carry per-leaf domain through `flatten_leaves`; route every `@const` leaf to
+   its constant home (parameter / localparam / inline literal — never a net),
+   promoting symbolic locals before `ground_widths` collapses them.
 3. SV `function` IR + purity classifier; lift pure native fns; add the FFI purity
    marker.
 4. `localparam` emission for named/shared symbolic consts (`let w = a+b`).
 5. Deferred const-type checking (item 3) — concrete-instance discharge + lazy
    residuals, loop body checked symbolically.
 
+## Resolved (2026-06-20)
+
+- **All `@const` leaves are constants, never nets** (no lazy lifting). Form is
+  per-leaf: literal (concrete) / `#(parameter)` (interface) / `localparam`
+  (derived symbolic).
+- **Interface-vs-internal is structural** (param/generic → interface, body local
+  → internal), so it needs no extra metadata — only per-leaf *domain* does.
+- **Mixed-const aggregates are supported everywhere**, including as arguments (a
+  single arg's leaves split across `#()` and the port list).
+
 ## Open questions
 
-- Should a leaf's "is-param" be a field on `Leaf`, or a separate per-leaf
-  domain carried alongside? (Affects every `flatten_leaves` consumer.)
+- `Leaf` carries per-leaf domain — as a `Domain` field, or a reduced
+  `is_const: bool`? (Affects every `flatten_leaves` consumer.)
 - SV `function` vs `localparam` for a non-trivial symbolic const body: a constant
   function called in `localparam W = f(n);`, or inline? When is each preferred?
 - Exact purity boundary: does an `#[inline]` callee count as "calls a module"?
