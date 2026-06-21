@@ -1,0 +1,23 @@
+// Two localparams from the same const fn (the function is emitted once) where
+// the second call takes the FIRST localparam as its argument — `localparam b =
+// sum_to(a)` references the localparam `a`.
+//
+// verilator: -GN=3
+
+fn sum_to(n: integer) -> integer {
+    let mut acc = 0;
+    for i in range(n) {
+        acc = acc + i;
+    }
+    acc
+}
+
+fn chain {const N: integer} (x: uint(8) @clk) -> uint(8) @clk {
+    let a = sum_to(N);
+    let b = sum_to(a);
+    var t1: uint(a) @clk;
+    var t2: uint(b) @clk;
+    t1 = x.resize();
+    t2 = t1.resize();
+    t2.resize()
+}

@@ -1,0 +1,24 @@
+// A const-fn localparam consumed NOT by a width, but as a submodule instance's
+// parameter: `let w = sum_to(N)` then `sink(wide)` where `wide: uint(w)` binds
+// `sink`'s `W` generic to `w` — the instance should read `#(.W(w))`.
+//
+// verilator: -GN=5
+
+fn sum_to(n: integer) -> integer {
+    let mut acc = 0;
+    for i in range(n) {
+        acc = acc + i;
+    }
+    acc
+}
+
+fn sink {const W: integer} (x: uint(W)) -> uint(8) {
+    x.resize()
+}
+
+fn top {const N: integer} (x: uint(8) @clk) -> uint(8) @clk {
+    let w = sum_to(N);
+    var wide: uint(w) @clk;
+    wide = x.resize();
+    sink(wide)
+}

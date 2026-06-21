@@ -1,0 +1,27 @@
+// An adder tree (a loop-carried fold reducing a `Vec` — the synthesiser builds
+// the balanced tree) whose result is then widened to a const-fn-computed width.
+// Combines a datapath `for` fold with a const-fn `localparam` width.
+//
+// verilator: -GN=4
+
+// Extra headroom bits for summing N bytes (deliberately loose — precise
+// `clog2` would need a while loop; an over-estimate still elaborates and the
+// width math is the SV elaborator's job).
+fn headroom(n: integer) -> integer {
+    let mut bits = 8;
+    for i in range(n) {
+        bits = bits + 1;
+    }
+    bits
+}
+
+fn adder_tree {const N: integer} (v: Vec(N, uint(8)) @clk) -> uint(8) @clk {
+    let mut acc = 0;
+    for x in v {
+        acc = acc + x;
+    }
+    let w = headroom(N);
+    var wide: uint(w) @clk;
+    wide = acc.resize();
+    wide.resize()
+}

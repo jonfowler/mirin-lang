@@ -1,0 +1,23 @@
+// A const-fn localparam consumed two ways at once: as a `Vec` length (a width)
+// AND as a `for`-loop genvar bound (`range(w)`, a non-width use). `w = 2N` is a
+// promoted localparam; the loop fills the whole `Vec(w)` so the bare-genvar
+// drive covers it.
+//
+// verilator: -GN=4
+
+fn double(n: integer) -> integer {
+    let mut acc = 0;
+    for i in range(n) {
+        acc = acc + 2;
+    }
+    acc
+}
+
+fn fill {const N: integer} (seed: uint(8) @clk) -> uint(8) @clk {
+    let w = double(N);
+    var cells: Vec(w, uint(8)) @clk;
+    for i in range(w) {
+        cells[i] = seed;
+    }
+    cells[0]
+}

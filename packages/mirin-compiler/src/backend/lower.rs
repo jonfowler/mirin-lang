@@ -785,8 +785,10 @@ impl<'db> SvLower<'_, 'db> {
             self.expr_value(t)
         } else if let Some(rhs) = self.result_equation_rhs(&block) {
             self.expr_value(rhs)
-        } else if let Some(Stmt::Return { value }) =
-            block.stmts.iter().find(|s| matches!(s, Stmt::Return { .. }))
+        } else if let Some(Stmt::Return { value }) = block
+            .stmts
+            .iter()
+            .find(|s| matches!(s, Stmt::Return { .. }))
         {
             self.expr_value(*value)
         } else {
@@ -1060,12 +1062,15 @@ impl<'db> SvLower<'_, 'db> {
             .expr_type(iter)
             .cloned()
             .map(|t| {
-                ground_widths(
+                let t = ground_widths(
                     self.db,
                     self.krate,
                     self.def,
                     &subst_type(&t, &self.self_subst),
-                )
+                );
+                // A bound that is a promoted const local (`range(w)`) renders as
+                // its `localparam` name, not a panicking ungrounded `Local`.
+                self.subst_promoted(&t)
             })
             .unwrap_or(Type::Error);
         let (len, is_bits) = match &it {
@@ -2693,6 +2698,16 @@ impl<'db> SvLower<'_, 'db> {
                 .map(|ts| ts.iter().cloned().map(Some).collect())
                 .unwrap_or_default(),
         };
+        // A const arg bound to a promoted body local (`sink(wide)` with
+        // `wide: uint(w)`) renders as the `localparam` name — both in the
+        // `#(.W(w))` binding and when flattening the callee's `uint(W)` leaves.
+        let node_subst: Vec<Option<Term<'db>>> = node_subst
+            .into_iter()
+            .map(|t| match t {
+                Some(Term::Const(c)) => Some(Term::Const(self.subst_promoted_const(&c))),
+                other => other,
+            })
+            .collect();
         let parameters: Vec<(String, SvExpr)> = csig
             .generic_params
             .iter()
@@ -2720,6 +2735,8 @@ impl<'db> SvLower<'_, 'db> {
                             .get(*j as usize)
                             .map(|g| g.name.clone())?,
                     ),
+                    // A promoted body local → its `localparam` name (`#(.W(w))`).
+                    ConstArg::Symbol(s) => SvExpr::Ident(s.clone()),
                     ConstArg::Op(..) => SvExpr::Lit(render_const_sv(&c, self.sig)),
                     _ => return None, // unresolved — leave to the default
                 };

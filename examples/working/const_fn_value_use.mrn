@@ -1,0 +1,18 @@
+// A const-fn localparam consumed as a plain runtime VALUE (a shift amount),
+// not a width/bound/parameter. `count_set` also exercises a richer const-fn
+// body — `%` inside the loop.
+//
+// verilator: -GN=6
+
+fn count_pairs(n: integer) -> integer {
+    let mut acc = 0;
+    for i in range(n) {
+        acc = acc + (i % 2);
+    }
+    acc
+}
+
+fn shifter {const N: integer} (x: uint(16) @clk) -> uint(16) @clk {
+    let w = count_pairs(N);
+    x << w
+}

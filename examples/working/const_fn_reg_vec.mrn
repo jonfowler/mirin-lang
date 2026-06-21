@@ -1,0 +1,24 @@
+// A const-fn localparam sizing a clocked `Vec` of registers — exercises the
+// localparam length in a clocked (generate-for of `always_ff`) context.
+//
+// verilator: -GN=4
+
+fn sum_to(n: integer) -> integer {
+    let mut acc = 0;
+    for i in range(n) {
+        acc = acc + i;
+    }
+    acc
+}
+
+fn regbank
+    {dom clk: Clock, rstn: Reset @clk = high, const N: integer}
+    (inp: uint(8) @clk)
+    -> uint(8) @clk {
+    let d = sum_to(N);
+    var regs: Vec(d, uint(8)) @clk;
+    for i in range(d) {
+        regs[i] = inp.reg(rstn, 0);
+    }
+    regs[0]
+}
