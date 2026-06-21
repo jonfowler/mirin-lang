@@ -117,6 +117,10 @@ pub enum InferDiagnosticKind {
     /// A *closed* width (no generic params / inference vars left) that still has
     /// no value — e.g. divide-by-zero or overflow in the width expression.
     UnevaluableWidth,
+    /// A width whose expression is outside the representable const fragment —
+    /// a call (or other non-const construct) written directly in a type
+    /// position (`uint(f(n))`). Bind it first: `let w = f(n); uint(w)`.
+    DeferredWidth,
     /// A record-constructor connector that disagrees with the field's
     /// declared direction (`=` for supplied fields, `=>` for `in` fields).
     RecordConnector {
@@ -238,6 +242,11 @@ impl InferDiagnostic {
             InferDiagnosticKind::UnevaluableWidth => {
                 "this width is not a constant (its expression has no value, \
                  e.g. divide-by-zero or overflow)"
+                    .to_owned()
+            }
+            InferDiagnosticKind::DeferredWidth => {
+                "a call in a type position is not supported here — bind it to a \
+                 const first: `let w = f(n); uint(w)`"
                     .to_owned()
             }
             InferDiagnosticKind::RecordConnector { name, needs_arrow } => {
@@ -648,6 +657,17 @@ fn collect_widths<'db>(ty: &Type<'db>) -> Vec<ConstArg<'db>> {
     c.0
 }
 
+/// True if a width tree contains a `ConstArg::Deferred` node (a call or other
+/// expression outside the representable const fragment, written in a type).
+fn width_is_deferred(c: &ConstArg<'_>) -> bool {
+    match c {
+        ConstArg::Deferred => true,
+        ConstArg::Op(_, a, b) => width_is_deferred(a) || width_is_deferred(b),
+        ConstArg::Field(b, _) => width_is_deferred(b),
+        _ => false,
+    }
+}
+
 impl<'a, 'db> InferCtx<'a, 'db> {
     fn new(
         db: &'db dyn salsa::Database,
@@ -772,6 +792,15 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     continue;
                 }
                 let span = self.body.local_span(l);
+                // A call (or other non-representable expr) written directly in a
+                // type — `uint(f(n))` — lowers to `ConstArg::Deferred`, which the
+                // backend cannot render. Reject it cleanly (a hard error, not a
+                // backend panic) pointing at the `let w = f(n); uint(w)` form,
+                // which IS supported (const_net_duality.md).
+                if width_is_deferred(&w) {
+                    bad.push((span, InferDiagnosticKind::DeferredWidth));
+                    continue;
+                }
                 match self.eval_width(&w) {
                     WidthEval::Value(v) if v < 0 => {
                         bad.push((span, InferDiagnosticKind::NegativeWidth { value: v }));

@@ -1,0 +1,16 @@
+// A const-fn call written directly in a type position is not supported — the
+// width becomes `ConstArg::Deferred`, which has no SV rendering. The compiler
+// must reject this cleanly (not panic at emission), pointing at the supported
+// `let w = f(n); uint(w)` form (proposals/const_net_duality.md).
+
+fn sum_to(n: integer) -> integer {
+    let mut acc = 0;
+    for i in range(n) {
+        acc = acc + i;
+    }
+    acc
+}
+
+fn widen2 {const N: integer} (x: uint(8) @clk) -> uint(sum_to(N)) @clk {
+    x.resize()
+}
