@@ -122,6 +122,33 @@ pub enum SvItem {
     InitialAssert {
         cond: SvExpr,
     },
+    /// `localparam int name = value;` — a derived compile-time constant. Hosts
+    /// a symbolic const body local (`let w = …`) that sizes a signal, so the
+    /// value is computed by the SV elaborator (proposals/const_net_duality.md).
+    LocalParam {
+        name: String,
+        value: SvExpr,
+    },
+    /// An in-module pure SV `function automatic` — a const-only Mirin `fn`
+    /// lifted so it can be called in a constant position (`localparam W =
+    /// f(N);`), which a module instance cannot. (const_net_duality.md item 1.)
+    Function(SvFunction),
+}
+
+/// A lifted integer (`const`-only) `fn` rendered as an in-module SV
+/// `function automatic int`. First cut: integer args, integer return, a
+/// procedural body (the same `SvCombStmt` shapes a fold lowers to).
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SvFunction {
+    pub name: String,
+    /// Input argument names (each `input int <name>`), in declaration order.
+    pub params: Vec<String>,
+    /// Internal `int <name>;` declarations (accumulators, `let` locals).
+    pub locals: Vec<String>,
+    /// The procedural body (blocking assigns, `for`, `if`).
+    pub body: Vec<SvCombStmt>,
+    /// The returned expression (`return <ret>;`).
+    pub ret: SvExpr,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
@@ -396,6 +423,29 @@ impl fmt::Display for SvItem {
                 writeln!(f, "    initial begin")?;
                 writeln!(f, "        assert ({cond});")?;
                 writeln!(f, "    end")
+            }
+            Self::LocalParam { name, value } => {
+                writeln!(f, "    localparam int {name} = {value};")
+            }
+            Self::Function(fun) => {
+                let args = if fun.params.is_empty() {
+                    String::new()
+                } else {
+                    fun.params
+                        .iter()
+                        .map(|p| format!("input int {p}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                writeln!(f, "    function automatic int {}({args});", fun.name)?;
+                for l in &fun.locals {
+                    writeln!(f, "        int {l};")?;
+                }
+                for s in &fun.body {
+                    fmt_comb_stmt(f, s, 8)?;
+                }
+                writeln!(f, "        return {};", fun.ret)?;
+                writeln!(f, "    endfunction")
             }
             Self::Verbatim(text) => {
                 // Dedent to the common leading whitespace, re-indent to the

@@ -1,8 +1,41 @@
 # Const/net duality: SV functions and parameters as first-class lowerings
 
-Status: DRAFT (2026-06-20). Design only — nothing implemented yet. Item 4
-(eliminating silent backend coercions) is being investigated separately in a
-worktree; it is the prerequisite hygiene this design assumes.
+Status: PARTLY LANDED (2026-06-21). Stages 0–2 are implemented (see "Landed"
+below); stages 3+ (SV functions in *net* position, the deferred const-type
+checker) remain design. The original draft is kept below for context, with the
+scope corrections from the 2026-06-21 review folded in.
+
+## Landed
+
+- **Stage 0** — silent backend coercions eliminated; symbolic widths/lengths
+  render via `render_const_sv`, anything unrenderable is a hard error (commit
+  `45bedc5`).
+- **Stage 1** — `= verilog expr { EXPR }` body form; operators are ordinary
+  inline-expression fns spliced via `inline_call`/`render_inline`;
+  `prelude_op`/`prelude_unary`/`receiver_is_signed` retired (commit `82a7aa4`).
+- **Stage 2** — a const-only `fn` called in a **constant position** lowers to an
+  **in-module SV `function`** and the const local it feeds to a `localparam`
+  (`examples/working/const_fn_localparam.mrn`). Mechanics: a symbolic `let w =
+  f(N)` is promoted to `localparam int w = f(N);`; `ConstArg::Local` uses of a
+  promoted local render via a new backend-only `ConstArg::Symbol(name)`; the
+  callee body lowers to `function automatic int …` (the same procedural shapes a
+  fold uses). `const_eval` now treats `ExprKind::ConstParam` as symbolic so such
+  a width *defers* to the elaborator instead of being rejected.
+
+### Scope correction (2026-06-21 review)
+
+The placement question (where SV functions live — `$unit`, package, or
+in-module) resolved to: **everything is a module by default** (net-position
+calls stay module instances, no corpus churn), and an **in-module `function` is
+generated *only when required*** — i.e. a fn applied in a constant/localparam
+position, which a module instance cannot occupy. Simple integer math (`clog2`,
+`n + n`) stays an **inline SV const expression**, never a function. The key SV
+constraint that forces in-module placement: a function takes its widths from its
+*enclosing scope's* parameters (an argument can't size a declaration), so a
+parametric-width function must see the module's `#(parameter n)` — only possible
+inside the module. Duplication across callers is accepted (complex const math on
+parameters is rare). This supersedes the `$unit`/package options and the
+"two lowerings for the same fn in net position" framing from the draft below.
 
 ## The problem
 

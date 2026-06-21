@@ -1,0 +1,23 @@
+// A pure integer fn used in a constant position: `let w = sum_to(N)` binds a
+// symbolic const local, which then sizes a signal. `sum_to` cannot be folded to
+// a literal (N is a module parameter) and is not a single inline expression (it
+// has a loop), so it lowers to an in-module SV `function` and `w` to a
+// `localparam` — deferring the computation to the SV elaborator.
+// (proposals/const_net_duality.md)
+//
+// verilator: -GN=5
+
+fn sum_to(n: integer) -> integer {
+    let mut acc = 0;
+    for i in range(n) {
+        acc = acc + i;
+    }
+    acc
+}
+
+fn widen {const N: integer} (x: uint(8) @clk) -> uint(8) @clk {
+    let w = sum_to(N);
+    var tmp: uint(w) @clk;
+    tmp = x.resize();
+    tmp.resize()
+}

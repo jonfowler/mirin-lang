@@ -37,8 +37,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::backend::ir::{
     SvAlwaysComb, SvAlwaysFf, SvBinOp, SvCombAssert, SvCombIf, SvCombStmt, SvExpr, SvFile,
-    SvGenerateFor, SvInstance, SvItem, SvLogicDecl, SvModule, SvPort, SvPortDirection, SvSeqAssign,
-    SvType,
+    SvFunction, SvGenerateFor, SvInstance, SvItem, SvLogicDecl, SvModule, SvPort, SvPortDirection,
+    SvSeqAssign, SvType,
 };
 use crate::base::db::SourceRoot;
 use crate::hir::body::{
@@ -184,6 +184,8 @@ fn build_module<'db>(
         instance_counts: HashMap::new(),
         declared: HashSet::new(),
         mono_reqs: Vec::new(),
+        promoted: HashMap::new(),
+        fns_emitted: HashSet::new(),
     };
     if let Some(template) = body.verilog() {
         lower
@@ -245,6 +247,54 @@ fn build_module<'db>(
         },
         lower.mono_reqs,
     )
+}
+
+/// Lower a const-only (`integer`-in, `integer`-out) `fn` to an in-module SV
+/// `function automatic int`. Used when such a fn is called in a constant
+/// position (`let w = f(N)`), where a module instance is illegal. Returns
+/// `None` if the callee is not a lowerable const fn. (const_net_duality.md.)
+fn build_const_function<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+    name: &str,
+) -> Option<SvFunction> {
+    let map = crate_def_map(db, krate);
+    let data = map.def_data(def)?;
+    if !matches!(data.kind, DefKind::Fn | DefKind::Method) {
+        return None;
+    }
+    let sig = sig_of(db, krate, def);
+    let body = body(db, krate, def);
+    let inf = infer(db, krate, def);
+    let local_names = unique_local_names(body);
+    let mut lower = SvLower {
+        db,
+        krate,
+        def,
+        map,
+        body,
+        inf,
+        sig,
+        self_subst: Vec::new(),
+        local_names,
+        items: Vec::new(),
+        synth: 0,
+        index_asserts: std::collections::HashSet::new(),
+        instance_counts: HashMap::new(),
+        declared: HashSet::new(),
+        mono_reqs: Vec::new(),
+        promoted: HashMap::new(),
+        fns_emitted: HashSet::new(),
+    };
+    // The integer params are the function's input args; record them as
+    // "promoted" so a `Local` use in a width/loop-bound renders as the arg name
+    // (`range(n)` → `i < n`) rather than panicking on an ungrounded `Local`.
+    for p in &sig.params {
+        let arg = lower.local_names[p.local.0 as usize].clone();
+        lower.promoted.insert(p.local, arg);
+    }
+    Some(lower.lower_const_function(name))
 }
 
 /// `true` if a def has any Type-kind generic param (so it is not emitted
@@ -536,6 +586,13 @@ struct SvLower<'a, 'db> {
     /// Type-generic callees instantiated here — specialised copies the driver
     /// must emit.
     mono_reqs: Vec<MonoReq<'db>>,
+    /// Const body locals promoted to `localparam`s (a symbolic `let w = …` that
+    /// sizes a signal). A `ConstArg::Local(l)` for one of these renders as the
+    /// localparam's name; the const fn it calls is emitted as an in-module
+    /// function. Keyed by local; value is the SV localparam name.
+    promoted: HashMap<LocalId, String>,
+    /// In-module SV `function`s already emitted (dedup by name).
+    fns_emitted: HashSet<String>,
 }
 
 impl<'db> SvLower<'_, 'db> {
@@ -701,6 +758,148 @@ impl<'db> SvLower<'_, 'db> {
             .push(SvItem::AlwaysComb(SvAlwaysComb { body: comb }));
     }
 
+    /// Lower this (const-only) def's body to an SV `function automatic int`.
+    /// Integer params → input args; `let`/accumulator locals → `int` locals; the
+    /// body's procedural shape (assigns, a loop-carried fold) → `SvCombStmt`s;
+    /// the tail/`return` → the function's return expression. First cut: scalar
+    /// integer bodies (the common width-computing helper).
+    fn lower_const_function(&mut self, name: &str) -> SvFunction {
+        let params: Vec<String> = self
+            .sig
+            .params
+            .iter()
+            .map(|p| self.local_name(p.local))
+            .collect();
+        let block = self.body.block().clone();
+        let mut locals = Vec::new();
+        let mut body = Vec::new();
+        self.const_stmts(&block.stmts, &mut locals, &mut body);
+        // The return value: an explicit tail, a `return`, or — most commonly —
+        // the whole-result equation `body()` folds the tail into (`result = acc`,
+        // where `result` is the unnamed return place).
+        let ret = if let Some(t) = block.tail {
+            self.expr_value(t)
+        } else if let Some(rhs) = self.result_equation_rhs(&block) {
+            self.expr_value(rhs)
+        } else if let Some(Stmt::Return { value }) =
+            block.stmts.iter().find(|s| matches!(s, Stmt::Return { .. }))
+        {
+            self.expr_value(*value)
+        } else {
+            SvExpr::Lit("0".to_owned())
+        };
+        SvFunction {
+            name: name.to_owned(),
+            params,
+            locals,
+            body,
+            ret,
+        }
+    }
+
+    /// The RHS of the whole-result equation (`result = EXPR`) a body's tail is
+    /// folded into — the const fn's return value when there is no literal tail.
+    fn result_equation_rhs(&self, block: &Block) -> Option<ExprId> {
+        block.stmts.iter().find_map(|s| match s {
+            Stmt::Equation { lhs, rhs } => match self.body.expr(*lhs).kind {
+                ExprKind::Local(l) if self.body.local(l).result_base.is_some() => Some(*rhs),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
+    /// Lower a const fn's statements to procedural `SvCombStmt`s, collecting the
+    /// `int` locals declared. Mirrors [`Self::lower_stmts`]'s fold detection but
+    /// scalar-integer-only (no flatten, no clocks).
+    fn const_stmts(&mut self, stmts: &[Stmt], locals: &mut Vec<String>, out: &mut Vec<SvCombStmt>) {
+        let mut i = 0;
+        while i < stmts.len() {
+            // `let mut acc = init;` + carrying `for`/assigns → an accumulator.
+            if let Stmt::Let { local, value } = &stmts[i]
+                && self.body.local(*local).mutable
+            {
+                let (acc, init) = (*local, *value);
+                let mut steps: Vec<Stmt> = Vec::new();
+                let mut j = i + 1;
+                while let Some(stmt) = stmts.get(j) {
+                    let carries = match stmt {
+                        Stmt::Equation { lhs, .. } => {
+                            backend_root_local(self.body, *lhs) == Some(acc)
+                        }
+                        Stmt::For { body, .. } => self.for_carries(body, acc),
+                        _ => false,
+                    };
+                    if !carries {
+                        break;
+                    }
+                    steps.push(stmt.clone());
+                    j += 1;
+                }
+                if !steps.is_empty() {
+                    let acc_name = self.local_name(acc);
+                    locals.push(acc_name.clone());
+                    let init_val = self.expr_value(init);
+                    out.push(SvCombStmt::Assign {
+                        lhs: SvExpr::Ident(acc_name),
+                        rhs: init_val,
+                    });
+                    self.const_fold_steps(&steps, out);
+                    i = j;
+                    continue;
+                }
+            }
+            // A plain `let x = e;` → `int x; x = e;`.
+            if let Stmt::Let { local, value } = &stmts[i] {
+                let nm = self.local_name(*local);
+                locals.push(nm.clone());
+                let v = self.expr_value(*value);
+                out.push(SvCombStmt::Assign {
+                    lhs: SvExpr::Ident(nm),
+                    rhs: v,
+                });
+            }
+            i += 1;
+        }
+    }
+
+    /// The accumulator's reassignment steps (a straight-line `acc = …` or a
+    /// `for`) as procedural `SvCombStmt`s — the const-fn analogue of the fold
+    /// in [`Self::lower_mut_fold`], scalar-integer.
+    fn const_fold_steps(&mut self, steps: &[Stmt], out: &mut Vec<SvCombStmt>) {
+        for step in steps {
+            match step {
+                Stmt::Equation { lhs, rhs } => {
+                    let (lhs, rhs) = (self.expr_value(*lhs), self.expr_value(*rhs));
+                    out.push(SvCombStmt::Assign { lhs, rhs });
+                }
+                Stmt::For {
+                    index,
+                    elem,
+                    iter,
+                    body,
+                } => {
+                    let Some((bound, var)) = self.loop_bound_var(*index, *elem, *iter) else {
+                        continue;
+                    };
+                    let mut inner = Vec::new();
+                    for stmt in &body.stmts {
+                        if let Stmt::Equation { lhs, rhs } = stmt {
+                            let (lhs, rhs) = (self.expr_value(*lhs), self.expr_value(*rhs));
+                            inner.push(SvCombStmt::Assign { lhs, rhs });
+                        }
+                    }
+                    out.push(SvCombStmt::For {
+                        var,
+                        bound,
+                        body: inner,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Per-leaf blocking assignments for one `lhs = rhs` equation (used inside a
     /// procedural fold `always_comb`).
     fn blocking_assigns(&mut self, lhs: ExprId, rhs: ExprId) -> Vec<SvCombStmt> {
@@ -725,12 +924,15 @@ impl<'db> SvLower<'_, 'db> {
             .expr_type(iter)
             .cloned()
             .map(|t| {
-                ground_widths(
+                let t = ground_widths(
                     self.db,
                     self.krate,
                     self.def,
                     &subst_type(&t, &self.self_subst),
-                )
+                );
+                // A const fn's `range(n)` bound is the param local `n` — render
+                // it as the function arg name (promoted), not a panicking Local.
+                self.subst_promoted(&t)
             })
             .unwrap_or(Type::Error);
         let len = match &it {
@@ -929,6 +1131,19 @@ impl<'db> SvLower<'_, 'db> {
     /// the corresponding leaf of the value.
     fn lower_let(&mut self, local: LocalId, value: ExprId) {
         if self.is_integer_local(local) {
+            // A *symbolic* const local (one that can't fold to a literal, e.g.
+            // `let w = f(N)` with `N` a module parameter) that sizes a signal
+            // becomes a `localparam` — the value computed by the SV elaborator.
+            // A concrete one needs nothing (its widths fold to literals).
+            if self.is_symbolic_const(local) {
+                let name = self.local_name(local);
+                let val = self.const_rhs(value);
+                self.items.push(SvItem::LocalParam {
+                    name: name.clone(),
+                    value: val,
+                });
+                self.promoted.insert(local, name);
+            }
             return;
         }
         if let Some(reg) = self.as_reg(value) {
@@ -961,6 +1176,76 @@ impl<'db> SvLower<'_, 'db> {
         for (suf, target) in self.record_out_conns(value) {
             self.push_assign(target, SvExpr::Ident(join(&base, &suf)));
         }
+    }
+
+    /// True if a const (`integer`) local is symbolic — its value depends on a
+    /// generic param, so it cannot fold to a literal and must ride a
+    /// `localparam` / the SV elaborator (vs. a concrete one folded inline).
+    fn is_symbolic_const(&self, local: LocalId) -> bool {
+        matches!(
+            crate::hir::const_eval::eval_width(
+                self.db,
+                self.krate,
+                self.def,
+                &ConstArg::Local(local),
+            ),
+            crate::hir::const_eval::WidthEval::Symbolic,
+        )
+    }
+
+    /// Render the RHS of a promoted `localparam` as an SV constant expression.
+    /// A call to a const-only `fn` lowers to an in-module SV `function` and a
+    /// `name(args)` call (the function deferred to the elaborator); any other
+    /// const expression (`N + N`, `N`) renders inline via [`Self::expr_value`].
+    fn const_rhs(&mut self, value: ExprId) -> SvExpr {
+        if let Some(uc) = self.as_user_call(value) {
+            return self.emit_const_call(uc);
+        }
+        self.expr_value(value)
+    }
+
+    /// Emit (once) the in-module `function` for a const-only callee and return
+    /// a `name(args)` call expression. Args render as SV constant expressions.
+    fn emit_const_call(&mut self, uc: UserCall<'db>) -> SvExpr {
+        let fname = module_name(self.map, uc.def);
+        if self.fns_emitted.insert(fname.clone())
+            && let Some(fun) = build_const_function(self.db, self.krate, uc.def, &fname)
+        {
+            self.items.push(SvItem::Function(fun));
+        }
+        let args: Vec<String> = uc
+            .args
+            .iter()
+            .filter(|a| !a.out)
+            .map(|a| self.expr_value(a.expr).to_string())
+            .collect();
+        SvExpr::Lit(format!("{fname}({})", args.join(", ")))
+    }
+
+    /// Replace each promoted-local `ConstArg::Local(l)` in a type with its
+    /// `localparam` name (`uint(w)` → `[w-1:0]`), so a body var sized by a
+    /// promoted const renders against the localparam rather than panicking on
+    /// an ungrounded `Local`.
+    fn subst_promoted(&self, ty: &Type<'db>) -> Type<'db> {
+        if self.promoted.is_empty() {
+            return ty.clone();
+        }
+        PromotedFolder {
+            promoted: &self.promoted,
+        }
+        .fold_type(ty)
+    }
+
+    /// As [`Self::subst_promoted`], for a bare const (an inline-verilog
+    /// `${to}` splice whose generic bound to a promoted local).
+    fn subst_promoted_const(&self, c: &ConstArg<'db>) -> ConstArg<'db> {
+        if self.promoted.is_empty() {
+            return c.clone();
+        }
+        PromotedFolder {
+            promoted: &self.promoted,
+        }
+        .fold_const(c)
     }
 
     /// A driving equation `lhs = rhs`, per field. A builtin `.reg` on the RHS
@@ -1168,7 +1453,10 @@ impl<'db> SvLower<'_, 'db> {
         };
         base.map(|t| {
             let t = subst_type(&t, &self.self_subst);
-            ground_widths(self.db, self.krate, self.def, &t)
+            let t = ground_widths(self.db, self.krate, self.def, &t);
+            // A width that survives grounding as a promoted const local renders
+            // against its `localparam` name (`uint(w)` → `[w-1:0]`).
+            self.subst_promoted(&t)
         })
     }
 
@@ -2255,7 +2543,7 @@ impl<'db> SvLower<'_, 'db> {
                 }
                 VerilogSegment::Dom(_) => out.push_str(&self.first_clock()),
                 VerilogSegment::Const(c) => {
-                    let c = subst_const_opt(c, &node_subst);
+                    let c = self.subst_promoted_const(&subst_const_opt(c, &node_subst));
                     let s =
                         match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &c)
                         {
@@ -2813,6 +3101,24 @@ fn build_subst<'db>(
     subst
 }
 
+/// Folds a promoted const body local (`ConstArg::Local(l)`) to its `localparam`
+/// name (`ConstArg::Symbol`), so widths/splices sized by it render against the
+/// emitted localparam instead of panicking on an ungrounded `Local`.
+struct PromotedFolder<'a> {
+    promoted: &'a HashMap<LocalId, String>,
+}
+
+impl<'db> crate::hir::types::Folder<'db> for PromotedFolder<'_> {
+    fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
+        if let ConstArg::Local(l) = c
+            && let Some(name) = self.promoted.get(l)
+        {
+            return ConstArg::Symbol(name.clone());
+        }
+        crate::hir::types::super_fold_const(self, c)
+    }
+}
+
 /// Substitute a def's generic args into a (field) type: a `Param(i)` type → the
 /// i-th type arg, a `uint(Param(i))` width → the i-th const arg; nested
 /// struct/port args are substituted recursively. Anything unbound is unchanged.
@@ -2934,6 +3240,8 @@ fn render_const_sv(c: &ConstArg<'_>, sig: &Signature<'_>) -> String {
 fn render_const_sv_generics(c: &ConstArg<'_>, generics: &[GenericParam]) -> String {
     match c {
         ConstArg::Lit(v) => v.to_string(),
+        // A promoted localparam name — emit verbatim.
+        ConstArg::Symbol(s) => s.clone(),
         ConstArg::Param(i) => generics
             .get(*i as usize)
             .map(|g| g.name.clone())
@@ -3245,6 +3553,8 @@ fn describe_type(ty: &Type) -> &'static str {
 fn width_expr(c: &ConstArg, generics: &[GenericParam]) -> SvExpr {
     match c {
         ConstArg::Lit(w) => SvExpr::Lit(w.to_string()),
+        // A promoted body local: render as its `localparam` name (`[w-1:0]`).
+        ConstArg::Symbol(s) => SvExpr::Ident(s.clone()),
         // A `Param` indexes one of the emitted module's own generics — a
         // symbolic SV parameter (`[n-1:0]`). An OUT-OF-RANGE index means a
         // foreign type's param leaked into this module's rendering (e.g.

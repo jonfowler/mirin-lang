@@ -433,6 +433,15 @@ impl<'db> Evaluator<'db> {
             ExprKind::TypedLiteral { value, .. } => Some(Value::Int(*value)),
             ExprKind::Bool(b) => Some(Value::Bool(*b)),
             ExprKind::Local(l) => self.demand(frame, *l, depth),
+            // A const generic used as a value (`N` of `{const N: integer}`):
+            // symbolic at the root, exactly like `ConstArg::Param`. Marking it
+            // symbolic (rather than a bare `None`) lets a width that flows
+            // through it — `let w = f(N); uint(w)` — DEFER to monomorphisation /
+            // the SV elaborator instead of being rejected as unevaluable.
+            ExprKind::ConstParam(_) => {
+                self.symbolic = true;
+                None
+            }
             ExprKind::Field { receiver, field } => {
                 let r = self.eval_expr(frame, *receiver, depth)?;
                 project(&r, field)

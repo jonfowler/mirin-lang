@@ -173,6 +173,11 @@ pub enum ConstArg<'db> {
     /// equalities involving it are **recorded as residual obligations**,
     /// never silently dropped.
     Deferred,
+    /// A backend-only opaque SV constant identifier — the name of a promoted
+    /// `localparam` (a symbolic const body local that sizes a signal). Created
+    /// during lowering when a `ConstArg::Local` is promoted; renders verbatim.
+    /// Never produced by the front end (sig/infer/const_eval never see it).
+    Symbol(String),
 }
 
 /// The generic arguments applied at a type-reference site (`Bus(uint(8))`), in
@@ -396,6 +401,7 @@ impl std::hash::Hash for ConstArg<'_> {
             }
             ConstArg::Assoc { item, .. } => item.hash(state),
             ConstArg::Deferred => {}
+            ConstArg::Symbol(s) => s.hash(state),
         }
     }
 }
@@ -411,6 +417,7 @@ impl std::fmt::Debug for ConstArg<'_> {
             ConstArg::Field(b, name) => write!(f, "Field({b:?}, {name})"),
             ConstArg::Assoc { .. } => write!(f, "Assoc(..)"),
             ConstArg::Deferred => write!(f, "Deferred"),
+            ConstArg::Symbol(s) => write!(f, "Symbol({s})"),
         }
     }
 }
