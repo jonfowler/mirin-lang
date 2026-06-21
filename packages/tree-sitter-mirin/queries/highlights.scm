@@ -19,6 +19,7 @@
   "init"
   "self"
   "verilog"
+  "expr"
 ] @keyword
 
 [

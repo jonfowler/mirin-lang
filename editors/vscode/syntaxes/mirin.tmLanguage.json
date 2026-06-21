@@ -129,7 +129,7 @@
         },
         {
           "name": "keyword.other.mirin",
-          "match": "\\b(fn|struct|port|impl|trait|mod|use|const|where|as|verilog)\\b"
+          "match": "\\b(fn|struct|port|impl|trait|mod|use|const|where|as|verilog|expr)\\b"
         },
         {
           "name": "storage.modifier.mirin",
