@@ -204,9 +204,7 @@ impl {dom clk: Clock, type A} Bus(A) {
         type: (type_expression
           name: (identifier)))
       (named_parameter
-        name: (identifier)
-        type: (type_expression
-          name: (identifier))))
+        name: (identifier)))
     name: (return_type_expression
       name: (identifier)
       (type_index
