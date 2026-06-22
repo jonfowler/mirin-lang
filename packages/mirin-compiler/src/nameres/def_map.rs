@@ -53,16 +53,23 @@ const BUILTINS: &[(&str, DefKind)] = &[
     ("reg", DefKind::Fn),
     ("posedge", DefKind::Fn),
     ("range", DefKind::Fn),
+    // Synthetic owner for tuple trait impls (`impl BitPack for (A, B)`). Tuples
+    // have no surface type-constructor name; this keys their impls for dispatch.
+    ("Tuple", DefKind::BuiltinType),
 ];
 
-/// The builtin *type* names. Exposed so tooling (the LSP's highlight query, the
-/// VS Code TextMate fallback) can be tested against the language's actual
-/// builtin set instead of drifting.
+/// The builtin *type* names users actually write. Exposed so tooling (the LSP's
+/// highlight query, the VS Code TextMate fallback) can be tested against the
+/// language's actual builtin set instead of drifting. Excludes `Tuple`: it is a
+/// synthetic owner for tuple trait impls (`impl BitPack for (A, B)`), never a
+/// surface keyword — tuples are written `(A, B)`, so there is nothing to
+/// highlight.
 pub fn builtin_type_names() -> impl Iterator<Item = &'static str> {
     BUILTINS
         .iter()
         .filter(|(_, kind)| matches!(kind, DefKind::BuiltinType))
         .map(|(name, _)| *name)
+        .filter(|name| *name != "Tuple")
 }
 
 /// Index into [`CrateDefMap::modules`]. The root is always `ModuleId(0)`.

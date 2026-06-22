@@ -970,6 +970,10 @@
           {
             "type": "return_type_expression",
             "named": true
+          },
+          {
+            "type": "tuple_type",
+            "named": true
           }
         ]
       },
@@ -2519,6 +2523,10 @@
         "types": [
           {
             "type": "return_type_expression",
+            "named": true
+          },
+          {
+            "type": "tuple_type",
             "named": true
           }
         ]

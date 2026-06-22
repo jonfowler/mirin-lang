@@ -384,6 +384,13 @@ fn match_type<'db>(callee: &Type<'db>, actual: &Type<'db>, subst: &mut [Option<T
         // Const-kind generic that rides the `#(...)` parameter (like a Port's
         // const args), so it is NOT bound into the mono subst here.
         (Type::Vec { elem: ce, .. }, Type::Vec { elem: ae, .. }) => match_type(ce, ae, subst),
+        // A tuple binds each element type param positionally (the per-arity
+        // tuple impls' element types). Same arity is guaranteed by header match.
+        (Type::Tuple(ce), Type::Tuple(ae)) if ce.len() == ae.len() => {
+            for (c, a) in ce.iter().zip(ae) {
+                match_type(c, a, subst);
+            }
+        }
         _ => {}
     }
 }
@@ -3416,6 +3423,7 @@ fn type_head_def<'db>(map: &CrateDefMap<'db>, ty: &Type<'db>) -> Option<DefId<'d
         } => prelude("integer"),
         Type::Port { def, .. } => Some(*def),
         Type::Vec { .. } => prelude("Vec"),
+        Type::Tuple(_) => prelude("Tuple"),
         Type::Clock => prelude("Clock"),
         _ => None,
     }

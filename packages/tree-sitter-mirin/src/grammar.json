@@ -919,8 +919,17 @@
                   "type": "FIELD",
                   "name": "self_type",
                   "content": {
-                    "type": "SYMBOL",
-                    "name": "return_type_expression"
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "SYMBOL",
+                        "name": "return_type_expression"
+                      },
+                      {
+                        "type": "SYMBOL",
+                        "name": "tuple_type"
+                      }
+                    ]
                   }
                 }
               ]
@@ -3669,8 +3678,17 @@
           "type": "FIELD",
           "name": "type",
           "content": {
-            "type": "SYMBOL",
-            "name": "return_type_expression"
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "return_type_expression"
+              },
+              {
+                "type": "SYMBOL",
+                "name": "tuple_type"
+              }
+            ]
           }
         },
         {
@@ -4864,6 +4882,20 @@
     ],
     [
       "return_type_expression",
+      "path_expression"
+    ],
+    [
+      "type_expression",
+      "record_constructor_expression",
+      "path_expression"
+    ],
+    [
+      "type_expression",
+      "path_expression"
+    ],
+    [
+      "return_type_expression",
+      "type_expression",
       "path_expression"
     ],
     [

@@ -250,8 +250,20 @@ fn impl_item(node: &Node, source: &str, ast_ids: &AstIdMap) -> ImplItem {
     // impl it IS the self type (`Bus(A)`); for a trait impl it is the trait and
     // `for` introduces the self type. The owner is the self type's head ident;
     // `self_has_args` records whether that self type is applied (`Bus(A)`).
-    let has_args = |n: &Node| n.children(&mut n.walk()).any(|c| c.kind() == "type_index");
-    let head = |n: &Node| field_text(n, "name", source);
+    // A tuple self type (`impl BitPack for (A, B)`) has no head ident: it
+    // dispatches through the synthetic `Tuple` builtin owner, and its element
+    // types are "args" (so per-arity impls don't collide in the coherence
+    // check — they are distinguished by header unification).
+    let has_args = |n: &Node| {
+        n.kind() == "tuple_type" || n.children(&mut n.walk()).any(|c| c.kind() == "type_index")
+    };
+    let head = |n: &Node| {
+        if n.kind() == "tuple_type" {
+            "Tuple".to_owned()
+        } else {
+            field_text(n, "name", source)
+        }
+    };
     let name_node = node.child_by_field_name("name");
     let (owner, trait_, self_has_args) = match node.child_by_field_name("self_type") {
         Some(st) => (head(&st), name_node.as_ref().map(head), has_args(&st)),

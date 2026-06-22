@@ -2159,7 +2159,8 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 self.pin_impl_self(expr, method_def, None, &self_ty);
                 return ret;
             }
-            match self.map.trait_dispatch(owner, method) {
+            let cands = self.select_by_header(self.map.trait_dispatch(owner, method), &self_ty);
+            match cands.as_slice() {
                 [] => {}
                 [(trait_def, method_def)] => {
                     let (trait_def, method_def) = (*trait_def, *method_def);
@@ -2239,6 +2240,42 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         Type::Error
     }
 
+    /// Filter trait-impl method candidates to those whose impl Self header
+    /// matches `goal`. Multiple impls of one trait for one owner only arise for
+    /// the per-arity tuple impls (`BitPack for (A, B)` vs `(A, B, C)`), all keyed
+    /// to the synthetic `Tuple` owner; the header match (which compares arity)
+    /// picks the right one. A no-op with 0 or 1 candidates — so a genuine
+    /// two-traits-offer-the-method ambiguity still surfaces.
+    fn select_by_header(
+        &self,
+        cands: &[(DefId<'db>, DefId<'db>)],
+        goal: &Type<'db>,
+    ) -> Vec<(DefId<'db>, DefId<'db>)> {
+        if cands.len() < 2 {
+            return cands.to_vec();
+        }
+        cands
+            .iter()
+            .filter(|(td, md)| {
+                let Some(data) = self
+                    .map
+                    .trait_impls(*td)
+                    .iter()
+                    .find(|d| d.methods.iter().any(|(_, m)| m == md))
+                else {
+                    return false;
+                };
+                let sig = sig_of(self.db, self.krate, data.impl_def);
+                let Some(header) = sig.return_type.clone() else {
+                    return false;
+                };
+                let mut binding = vec![None; sig.generic_params.len()];
+                crate::hir::types::match_header(goal, &header, &mut binding)
+            })
+            .copied()
+            .collect()
+    }
+
     /// Pin a type-path callee's impl generics from the Self type: unify the
     /// impl's Self header — instantiated under the call's fresh substitution —
     /// with the written `self_ty`. A receiver-less fn (`unpack`) has no `self`
@@ -2316,7 +2353,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         // Trait-impl candidates for this receiver head (inherent wins above;
         // two traits offering the method is an ambiguity error).
         if let Some(owner) = owner {
-            match self.map.trait_dispatch(owner, method) {
+            let recv_g = self.resolve_ty(&recv);
+            let cands = self.select_by_header(self.map.trait_dispatch(owner, method), &recv_g);
+            match cands.as_slice() {
                 [] => {}
                 [(_, method_def)] => {
                     let method_def = *method_def;
@@ -2595,6 +2634,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             // `v.pack()` / `Vec(..)::unpack(b)` find `impl BitPack for Vec(N, A)`
             // (planning/pack_resize.md).
             Type::Vec { .. } => self.prelude_def("Vec"),
+            // Tuples dispatch through the synthetic `Tuple` owner, so
+            // `t.pack()` / `(A, B)::unpack(b)` find the per-arity tuple impls
+            // (planning/pack_resize.md). Arity is disambiguated by header match.
+            Type::Tuple(_) => self.prelude_def("Tuple"),
             Type::Clock => self.prelude_def("Clock"),
             _ => None,
         }

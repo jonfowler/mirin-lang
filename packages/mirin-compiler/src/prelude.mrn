@@ -376,6 +376,61 @@ impl {const N: integer, type A: BitPack} BitPack for Vec(N, A) {
     }
 }
 
+// BitPack for tuples — per-arity, little-endian: element 0 occupies the LOW
+// bits (planning/pack_resize.md). `pack` packs each element via its own BitPack
+// and `concat_hi`-stacks them (element 0 stays at the LSBs). `unpack` rebuilds
+// each element bit-by-bit into its own `var` (one disjoint loop per element, so
+// every leaf is driven once — like Vec, whose generic N forces the same loop
+// idiom), then hands each to the element type's `unpack`. `bit_size` folds at
+// monomorphisation.
+impl {type A: BitPack, type B: BitPack} BitPack for (A, B) {
+    const bit_size: integer = A::bit_size + B::bit_size;
+    fn pack(self) -> bits(bit_size) {
+        self.0.pack().concat_hi(self.1.pack())
+    }
+    fn unpack(b: bits(bit_size)) -> Self {
+        var ea: bits(A::bit_size);
+        for j in range(A::bit_size) { ea[j] = b[j]; }
+        var eb: bits(B::bit_size);
+        for j in range(B::bit_size) { eb[j] = b[A::bit_size + j]; }
+        (A::unpack(ea), B::unpack(eb))
+    }
+}
+
+impl {type A: BitPack, type B: BitPack, type C: BitPack} BitPack for (A, B, C) {
+    const bit_size: integer = A::bit_size + B::bit_size + C::bit_size;
+    fn pack(self) -> bits(bit_size) {
+        self.0.pack().concat_hi(self.1.pack()).concat_hi(self.2.pack())
+    }
+    fn unpack(b: bits(bit_size)) -> Self {
+        var ea: bits(A::bit_size);
+        for j in range(A::bit_size) { ea[j] = b[j]; }
+        var eb: bits(B::bit_size);
+        for j in range(B::bit_size) { eb[j] = b[A::bit_size + j]; }
+        var ec: bits(C::bit_size);
+        for j in range(C::bit_size) { ec[j] = b[A::bit_size + B::bit_size + j]; }
+        (A::unpack(ea), B::unpack(eb), C::unpack(ec))
+    }
+}
+
+impl {type A: BitPack, type B: BitPack, type C: BitPack, type D: BitPack} BitPack for (A, B, C, D) {
+    const bit_size: integer = A::bit_size + B::bit_size + C::bit_size + D::bit_size;
+    fn pack(self) -> bits(bit_size) {
+        self.0.pack().concat_hi(self.1.pack()).concat_hi(self.2.pack()).concat_hi(self.3.pack())
+    }
+    fn unpack(b: bits(bit_size)) -> Self {
+        var ea: bits(A::bit_size);
+        for j in range(A::bit_size) { ea[j] = b[j]; }
+        var eb: bits(B::bit_size);
+        for j in range(B::bit_size) { eb[j] = b[A::bit_size + j]; }
+        var ec: bits(C::bit_size);
+        for j in range(C::bit_size) { ec[j] = b[A::bit_size + B::bit_size + j]; }
+        var ed: bits(D::bit_size);
+        for j in range(D::bit_size) { ed[j] = b[A::bit_size + B::bit_size + C::bit_size + j]; }
+        (A::unpack(ea), B::unpack(eb), C::unpack(ec), D::unpack(ed))
+    }
+}
+
 // ----- Resizing (planning/pack_resize.md) -----
 // Per-type inherent impls on the width-carrying primitives. The generic is the
 // TARGET width `to` (it unifies trivially with the context; the delta `to - n`
@@ -448,5 +503,12 @@ impl {const n: integer} bits(n) {
     }
     fn resize {const to: integer} (self) -> bits(to) = verilog {
         assign ${return} = ${to}'(${self});
+    }
+    // `lo.concat_hi(hi)` = SV `{hi, lo}` — `self` occupies the LOW bits, `hi`
+    // the high bits. The little-endian builder aggregate `pack` concatenates
+    // with (element 0 stays at the LSBs); kept as inline text until the
+    // `SvExpr::Concat` node lands (planning/pack_resize.md).
+    fn concat_hi {const m: integer} (self, hi: bits(m)) -> bits(n + m) = verilog {
+        assign ${return} = {${hi}, ${self}};
     }
 }

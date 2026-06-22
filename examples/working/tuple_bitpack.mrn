@@ -1,0 +1,26 @@
+// BitPack for tuples (planning/pack_resize.md): per-arity, little-endian —
+// element 0 lands in the LOW bits. `pack` concatenates each element's packed
+// bits; `unpack` peels the layout back out, dispatching on its return type via
+// a tuple type-path call `(A, B)::unpack(b)`. The round trip is the identity.
+fn pack2(a: uint(8), b: uint(4)) -> bits(12) {
+    (a, b).pack()
+}
+
+fn unpack2(w: bits(12)) -> (uint(8), uint(4)) {
+    (uint(8), uint(4))::unpack(w)
+}
+
+fn pack3(a: uint(8), b: uint(4), c: bool) -> bits(13) {
+    (a, b, c).pack()
+}
+
+fn unpack3(w: bits(13)) -> (uint(8), uint(4), bool) {
+    (uint(8), uint(4), bool)::unpack(w)
+}
+
+// pack ∘ unpack is the identity: the layout `unpack` reads is exactly the one
+// `pack` writes, so a value survives the round trip through `bits`.
+fn roundtrip3(a: uint(8), b: uint(4), c: bool) -> (uint(8), uint(4), bool) {
+    let w: bits(13) = (a, b, c).pack();
+    (uint(8), uint(4), bool)::unpack(w)
+}

@@ -39,6 +39,13 @@ module.exports = grammar({
     // a typed_literal's type or a path — GLR decides at the next token (a
     // number ends a typed_literal; an identifier continues a path).
     [$.return_type_expression, $.path_expression],
+    // A tuple type-path call `(A, B)::unpack(x)` lets a `(` open a `tuple_type`
+    // (its elements are `type_expression`s), which collides with a `(`-opened
+    // parenthesized record/path expression until the `::` after the `)` arrives.
+    // GLR keeps all three alive and settles on the trailing `::method(`.
+    [$.type_expression, $.record_constructor_expression, $.path_expression],
+    [$.type_expression, $.path_expression],
+    [$.return_type_expression, $.type_expression, $.path_expression],
     // Header positions (if/for/when): after a path, `{` is either the body
     // block (path = the whole header) or a method's named-argument list
     // (which the grammar REQUIRES to be followed by `(…)`). GLR keeps both
@@ -210,7 +217,12 @@ module.exports = grammar({
         "impl",
         optional(field("named_parameters", $.named_parameter_section)),
         field("name", $.return_type_expression),
-        optional(seq("for", field("self_type", $.return_type_expression))),
+        optional(
+          seq(
+            "for",
+            field("self_type", choice($.return_type_expression, $.tuple_type)),
+          ),
+        ),
         optional(field("where", $.where_clause)),
         field("body", $.impl_body),
       ),
@@ -758,7 +770,7 @@ module.exports = grammar({
     // to a type (`hir::body`), avoiding a grammar fight with the postfix call.
     type_path_call: ($) =>
       seq(
-        field("type", $.return_type_expression),
+        field("type", choice($.return_type_expression, $.tuple_type)),
         "::",
         field("method", $.identifier),
         field("arguments", $.argument_list),
