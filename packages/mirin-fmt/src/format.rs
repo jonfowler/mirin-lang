@@ -155,6 +155,16 @@ impl<'a> Formatter<'a> {
                 self.doc(self.field(n, "index").unwrap()),
                 text("]"),
             ]),
+            // `x[lo..hi]` / `x[off..+w]` / elided ends (planning/slicing.md).
+            "slice_access" => {
+                let lo = self.field(n, "low").map(|c| self.doc(c)).unwrap_or(NIL);
+                let after = match (self.field(n, "high"), self.field(n, "width")) {
+                    (Some(h), _) => self.doc(h),
+                    (_, Some(w)) => concat([text("+"), self.doc(w)]),
+                    _ => NIL,
+                };
+                concat([text("["), lo, text(".."), after, text("]")])
+            }
             "typed_literal" => concat([
                 self.doc(self.field(n, "type").unwrap()),
                 text("::"),

@@ -892,6 +892,7 @@ module.exports = grammar({
             choice(
               $.field_access,
               $.index_access,
+              $.slice_access,
               seq($.named_argument_list, $.argument_list),
               $.argument_list,
             ),
@@ -906,6 +907,25 @@ module.exports = grammar({
 
     // `v[i]` — single-element indexing (planning/vectors.md).
     index_access: ($) => seq("[", field("index", $.expression), "]"),
+
+    // `x[lo..hi]` / `x[off..+w]` slicing (planning/slicing.md): half-open, the
+    // high endpoint exclusive. `bits` is written high-first (`x[hi..lo]`), vecs
+    // low-first (`v[lo..hi]`). Either endpoint may be elided (`x[lo..]`,
+    // `x[..hi]`); the `..+` form fixes a constant width at a (possibly runtime)
+    // offset. `+` is not a prefix operator, so `..+w` is unambiguous.
+    slice_access: ($) =>
+      seq(
+        "[",
+        optional(field("low", $.expression)),
+        "..",
+        optional(
+          choice(
+            seq("+", field("width", $.expression)),
+            field("high", $.expression),
+          ),
+        ),
+        "]",
+      ),
 
     // `[a, b, c]` / `[e; N]` — vector construction (planning/vectors.md).
     // The repeat form's length is a const expression (a literal or a

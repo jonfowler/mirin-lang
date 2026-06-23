@@ -167,6 +167,18 @@ pub enum ExprKind<'db> {
         then_branch: Block,
         else_branch: Block,
     },
+    /// `x[lo..hi]` / `x[off..+w]` — a slice (planning/slicing.md). Fields are
+    /// POSITIONAL: `lo` is the operand before `..` (the high endpoint for `bits`,
+    /// the low for vecs — interpreted by base type), `hi` the range endpoint
+    /// after `..`, `width` the `..+W` constant width; exactly one of `hi`/`width`
+    /// is set (range vs offset form), and an elided end leaves both `None`.
+    /// Semantics/lowering land with the slicing workstream.
+    Slice {
+        base: ExprId,
+        lo: Option<ExprId>,
+        hi: Option<ExprId>,
+        width: Option<ExprId>,
+    },
     /// `const if cond { … } else { … }` — a COMPILE-TIME conditional: `cond` is
     /// a constant expression resolved at elaboration, and only the selected arm
     /// is kept. The discarded arm may be invalid for this instantiation (an
@@ -1691,6 +1703,24 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 "index_access" => {
                     let index = self.lower_field_expr(&op, "index", source);
                     cur = self.alloc(ExprKind::Index { base: cur, index });
+                    i += 1;
+                }
+                "slice_access" => {
+                    let lo = op
+                        .child_by_field_name("low")
+                        .map(|n| self.lower_expr(&n, source));
+                    let hi = op
+                        .child_by_field_name("high")
+                        .map(|n| self.lower_expr(&n, source));
+                    let width = op
+                        .child_by_field_name("width")
+                        .map(|n| self.lower_expr(&n, source));
+                    cur = self.alloc(ExprKind::Slice {
+                        base: cur,
+                        lo,
+                        hi,
+                        width,
+                    });
                     i += 1;
                 }
                 "field_access" => {

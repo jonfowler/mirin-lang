@@ -1839,6 +1839,10 @@
         {
           "type": "named_argument_list",
           "named": true
+        },
+        {
+          "type": "slice_access",
+          "named": true
         }
       ]
     }
@@ -2020,6 +2024,42 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "slice_access",
+    "named": true,
+    "fields": {
+      "high": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      },
+      "low": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      },
+      "width": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -3189,6 +3229,10 @@
   },
   {
     "type": ".",
+    "named": false
+  },
+  {
+    "type": "..",
     "named": false
   },
   {

@@ -806,3 +806,60 @@ fn f(a: uint(8), b: uint(8)) -> uint(8) {
           else_branch: (block
             tail: (expression
               (path_expression segment: (identifier)))))))))
+
+========================================
+slice: range and offset+width forms
+========================================
+
+fn s(x: bits(16)) -> bits(4) {
+    x[8..4]
+}
+
+fn so(x: bits(16), i: uint(8)) -> bits(4) {
+    x[i..+4]
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index (type_argument (number))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index (type_argument (number))))
+    body: (block
+      tail: (expression
+        (postfix_expression
+          receiver: (path_expression segment: (identifier))
+          (slice_access
+            low: (expression (number))
+            high: (expression (number)))))))
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index (type_argument (number)))))
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index (type_argument (number))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index (type_argument (number))))
+    body: (block
+      tail: (expression
+        (postfix_expression
+          receiver: (path_expression segment: (identifier))
+          (slice_access
+            low: (expression (path_expression segment: (identifier)))
+            width: (expression (number))))))))

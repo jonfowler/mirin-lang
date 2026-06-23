@@ -57,6 +57,10 @@ pub enum InferDiagnosticKind {
     /// implemented (planning/inline_bodies.md). A spanned front-end error so the
     /// backend never hits the unsupported-splice path.
     InlineNonVerilogBody,
+    /// A slice expression (`x[lo..hi]` / `x[off..+w]`) — parsed and lowered, but
+    /// the semantics (planning/slicing.md) are not yet implemented. Rejected
+    /// cleanly here so a slice never silently lowers to its base.
+    SliceNotImplemented,
     /// Two types that had to be equal could not be unified.
     TypeMismatch,
     /// Two `uint` widths that had to be equal are different (`uint(8)` vs
@@ -195,6 +199,9 @@ impl InferDiagnostic {
                  verilog-bodied inline fns splice); remove `#[inline]` to emit it \
                  as a module"
                     .to_owned()
+            }
+            InferDiagnosticKind::SliceNotImplemented => {
+                "slicing is not yet implemented (planning/slicing.md)".to_owned()
             }
             InferDiagnosticKind::TypeMismatch => "type mismatch".to_owned(),
             InferDiagnosticKind::WidthMismatch => "mismatched `uint` widths".to_owned(),
@@ -782,9 +789,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         // bodies splice today — planning/inline_bodies.md). Reject at the
         // front-end so a diagnostic-free crate never reaches the backend's
         // unsupported-splice path (a clean spanned error, not a panic).
-        if self.body.verilog().is_none()
-            && self.map.def_data(self.def).is_some_and(|d| d.inline)
-        {
+        if self.body.verilog().is_none() && self.map.def_data(self.def).is_some_and(|d| d.inline) {
             self.current_span = Span::default();
             self.diag(InferDiagnosticKind::InlineNonVerilogBody);
         }
@@ -1870,6 +1875,24 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             // `v[i]`: Vec(N, A) → A; bits(N) → bool. The index is a literal,
             // an integer, or a uint (a hardware select); its domain joins the
             // base's via the result.
+            // Slicing (planning/slicing.md): parsed and lowered, semantics not
+            // yet implemented. Infer the sub-expressions (so they are not left
+            // untyped), then reject cleanly — never let a slice fall through to
+            // its base value.
+            ExprKind::Slice {
+                base,
+                lo,
+                hi,
+                width,
+            } => {
+                let (base, lo, hi, width) = (*base, *lo, *hi, *width);
+                self.infer_expr(body, base);
+                for e in [lo, hi, width].into_iter().flatten() {
+                    self.infer_expr(body, e);
+                }
+                self.diag(InferDiagnosticKind::SliceNotImplemented);
+                Type::Error
+            }
             ExprKind::Index { base, index } => {
                 let (base, index) = (*base, *index);
                 let bt = self.infer_expr(body, base);
