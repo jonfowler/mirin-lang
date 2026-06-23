@@ -50,9 +50,10 @@ leaf pipeline carries vectors without new wiring concepts.
 
 ## Deliberately later
 
-- **Element assignment** (`v[0] = x;`) and slices (`v[3:1]`) — with the
-  driver-tracking design for partial drives.
-- **bits slicing** (`x[7:4]`) — same machinery, planning/bits.md.
+- **Element assignment** (`v[0] = x;`) and slices (`v[1..3]`) — with the
+  driver-tracking design for partial drives (planning/slicing.md; vecs written
+  low-first, half-open).
+- **bits slicing** (`x[8..4]`) — same machinery, planning/slicing.md.
 - **for constructs** over vectors — the todo-list's "for" workstream.
 - **Variable-sized vectors** (testing): a separate type (`List(A)`-shaped),
   but the SYNTAX here is type-driven (literals take their type from

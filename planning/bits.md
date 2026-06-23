@@ -21,10 +21,9 @@ The reasons it exists, each owned by later work:
    customer) packs to and unpacks from `bits(Self::width)` — NOT uint:
    a packed struct is a representation, and arithmetic on it is almost
    always a bug.
-2. **Slicing.** `x[7:4]` / `x[3]` belong to bits directly (the vectors/
-   indexing/slicing workstream); on uint/sint, slicing will require going
-   through bits (or an explicit method), keeping "number" and "bit field"
-   honest.
+2. **Slicing.** `x[8..4]` / `x[3]` belong to bits directly (planning/slicing.md
+   — half-open, bits written high-first); on uint/sint, slicing goes through
+   bits (`u.pack()[..]`), keeping "number" and "bit field" honest.
 3. **X at the BIT level.** When Mirin grows 4-state semantics, `bits` is
    where per-bit X lives. uint/sint get VALUE-level semantics (a uint
    with any X bit is a poisoned value, not a partially-known number) —
