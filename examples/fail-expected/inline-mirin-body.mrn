@@ -1,0 +1,8 @@
+// `#[inline]` is only supported on verilog-bodied fns (prelude operators,
+// resize). A Mirin-bodied `#[inline] fn` is not yet spliced, so it is rejected
+// at the front-end with a spanned diagnostic — never a silent `0` or a backend
+// panic (planning/inline_bodies.md). Drop `#[inline]` to emit it as a module.
+#[inline]
+fn id (a: uint(8)) -> uint(8) {
+    a
+}
