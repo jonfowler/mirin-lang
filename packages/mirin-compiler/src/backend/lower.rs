@@ -2570,8 +2570,14 @@ impl<'db> SvLower<'_, 'db> {
     fn render_inline(&mut self, uc: UserCall<'db>) -> SvExpr {
         let csig = sig_of(self.db, self.krate, uc.def);
         let Some(template) = body(self.db, self.krate, uc.def).verilog().cloned() else {
-            // Non-verilog #[inline] bodies are not supported in v1.
-            return SvExpr::Lit("0".to_owned());
+            // A non-verilog `#[inline]` body (a Mirin-bodied `#[inline] fn`) is
+            // not yet spliced. Emission only runs on a diagnostic-free crate, so
+            // a hard stop here, never a silent `0` (a wrong-but-compiling result).
+            panic!(
+                "#[inline] on a Mirin-bodied fn `{}` is not yet supported (only \
+                 verilog-bodied inline splicing is implemented)",
+                self.map.def_data(uc.def).map(|d| d.name.as_str()).unwrap_or("?"),
+            );
         };
 
         // Value params → the caller's argument expressions (positional zip with
