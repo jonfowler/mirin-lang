@@ -451,6 +451,11 @@ fn collect_when_drives(
                     cond,
                     then_branch,
                     else_branch,
+                }
+                | ExprKind::ConstIf {
+                    cond,
+                    then_branch,
+                    else_branch,
                 } => {
                     count_expr(body, *cond, counts);
                     collect_when_drives(body, then_branch, driven, counts);
@@ -470,6 +475,11 @@ fn collect_when_drives(
 fn count_expr(body: &Body, expr: ExprId, counts: &mut HashMap<LocalId, Vec<Vec<String>>>) {
     match &body.expr(expr).kind {
         ExprKind::If {
+            then_branch,
+            else_branch,
+            ..
+        }
+        | ExprKind::ConstIf {
             then_branch,
             else_branch,
             ..

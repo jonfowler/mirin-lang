@@ -214,7 +214,8 @@ impl<'a> Formatter<'a> {
                 let inner = n.named_child(0).unwrap();
                 concat([text("("), self.doc(inner), text(")")])
             }
-            "if_expression" => self.if_expr(n),
+            "if_expression" => self.if_expr(n, "if "),
+            "const_if_expression" => self.if_expr(n, "const if "),
             "when_expression" => self.when_expr(n),
 
             "type_expression" => self.type_expr(n),
@@ -871,12 +872,12 @@ impl<'a> Formatter<'a> {
         text(segs.join("::"))
     }
 
-    fn if_expr(&self, n: Node) -> Doc {
+    fn if_expr(&self, n: Node, keyword: &str) -> Doc {
         let cond = self.doc(self.field(n, "condition").unwrap());
         let (then_inner, then_multi) = self.block_inner(self.field(n, "then_branch").unwrap());
         let (else_inner, else_multi) = self.block_inner(self.field(n, "else_branch").unwrap());
         let doc = concat([
-            text("if "),
+            text(keyword),
             cond,
             text(" {"),
             indent(concat([Line, then_inner])),

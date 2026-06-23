@@ -167,6 +167,17 @@ pub enum ExprKind<'db> {
         then_branch: Block,
         else_branch: Block,
     },
+    /// `const if cond { … } else { … }` — a COMPILE-TIME conditional: `cond` is
+    /// a constant expression resolved at elaboration, and only the selected arm
+    /// is kept. The discarded arm may be invalid for this instantiation (an
+    /// out-of-range slice when a width folds to 0), so — unlike [`If`], a mux
+    /// over both arms — it is folded away (or lowered to an SV `generate if`),
+    /// never elaborated together. planning/comptime_if.md.
+    ConstIf {
+        cond: ExprId,
+        then_branch: Block,
+        else_branch: Block,
+    },
     /// `when event { … }` — Mirin's registered-state primitive.
     When {
         event: ExprId,
@@ -1462,6 +1473,16 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 let then_branch = self.lower_block_field(node, "then_branch", source);
                 let else_branch = self.lower_block_field(node, "else_branch", source);
                 self.alloc(ExprKind::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                })
+            }
+            "const_if_expression" => {
+                let cond = self.lower_field_expr(node, "condition", source);
+                let then_branch = self.lower_block_field(node, "then_branch", source);
+                let else_branch = self.lower_block_field(node, "else_branch", source);
+                self.alloc(ExprKind::ConstIf {
                     cond,
                     then_branch,
                     else_branch,

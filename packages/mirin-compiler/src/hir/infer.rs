@@ -45,6 +45,10 @@ pub struct InferDiagnostic {
 
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub enum InferDiagnosticKind {
+    /// A `const if` whose condition carries a clock domain — i.e. depends on
+    /// runtime data. The condition is resolved at elaboration, so it must be a
+    /// constant (planning/comptime_if.md).
+    ConstIfRuntimeCond,
     /// Two types that had to be equal could not be unified.
     TypeMismatch,
     /// Two `uint` widths that had to be equal are different (`uint(8)` vs
@@ -167,6 +171,11 @@ pub enum InferDiagnosticKind {
 impl InferDiagnostic {
     pub fn message(&self) -> String {
         match &self.kind {
+            InferDiagnosticKind::ConstIfRuntimeCond => {
+                "a `const if` condition must be constant, but this one depends on \
+                 runtime data (it carries a clock domain)"
+                    .to_owned()
+            }
             InferDiagnosticKind::TypeMismatch => "type mismatch".to_owned(),
             InferDiagnosticKind::WidthMismatch => "mismatched `uint` widths".to_owned(),
             InferDiagnosticKind::DomainMismatch => "mismatched clock domains".to_owned(),
@@ -1875,6 +1884,38 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 else_branch,
             } => {
                 self.infer_expr(body, *cond);
+                let then_branch = then_branch.clone();
+                let else_branch = else_branch.clone();
+                let result = self.fresh_type();
+                self.infer_block(body, &then_branch, Some(&result));
+                self.infer_block(body, &else_branch, Some(&result));
+                result
+            }
+            // `const if`: typed like `If` — the condition is inferred and both
+            // arms unify with the result (so the value type is well-defined
+            // regardless of which arm a given instantiation selects). The
+            // difference is purely at lowering: the condition must be a constant
+            // and only the selected arm is elaborated (planning/comptime_if.md).
+            ExprKind::ConstIf {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let ct = self.infer_expr(body, *cond);
+                // The condition is resolved at elaboration, so it must be a
+                // constant. A condition carrying a clock domain — whether a
+                // concrete clock (`Clock`) or a domain-generic param (`@clk`,
+                // `Param`) — depends on runtime data, so reject it
+                // (planning/comptime_if.md). `Const`/`Unspecified`/`Infer` are
+                // left to lowering (the fold succeeds, or it is a symbolic const).
+                if let Type::Value { domain, .. } = self.resolve_ty(&ct)
+                    && matches!(
+                        self.table.resolve_domain_shallow(domain),
+                        Domain::Clock(_) | Domain::Param(_)
+                    )
+                {
+                    self.diag(InferDiagnosticKind::ConstIfRuntimeCond);
+                }
                 let then_branch = then_branch.clone();
                 let else_branch = else_branch.clone();
                 let result = self.fresh_type();

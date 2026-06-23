@@ -166,6 +166,30 @@ pub fn eval_width<'db>(
     }
 }
 
+/// Evaluate a boolean CONDITION expression (a `const if` guard) at elaboration.
+/// `Some(b)` if it folds to a constant; `None` if it stays symbolic — a const
+/// generic riding as an SV `#()` parameter — in which case the caller emits an
+/// SV `generate if` and lets the elaborator choose (planning/comptime_if.md).
+pub fn eval_cond<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+    cond: ExprId,
+) -> Option<bool> {
+    let mut ev = Evaluator {
+        db,
+        krate,
+        map: crate_def_map(db, krate),
+        steps: 0,
+        symbolic: false,
+    };
+    let frame = Frame::root(db, krate, def);
+    match ev.eval_expr(&frame, cond, 0) {
+        Some(Value::Bool(b)) => Some(b),
+        _ => None,
+    }
+}
+
 struct Evaluator<'db> {
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
@@ -365,6 +389,11 @@ impl<'db> Evaluator<'db> {
                 then_branch,
                 else_branch,
                 ..
+            }
+            | ExprKind::ConstIf {
+                then_branch,
+                else_branch,
+                ..
             } => self
                 .demand_in_block(frame, then_branch, local, depth)
                 .or_else(|| self.demand_in_block(frame, else_branch, local, depth)),
@@ -485,6 +514,11 @@ impl<'db> Evaluator<'db> {
                 Some(Value::Record(owner, vals))
             }
             ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            }
+            | ExprKind::ConstIf {
                 cond,
                 then_branch,
                 else_branch,

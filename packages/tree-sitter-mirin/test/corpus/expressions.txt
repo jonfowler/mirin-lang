@@ -766,3 +766,43 @@ fn f(b: bits(8)) -> uint(8) {
             (expression
               (path_expression
                 segment: (identifier)))))))))
+
+========================================
+const if (compile-time conditional)
+========================================
+
+fn f(a: uint(8), b: uint(8)) -> uint(8) {
+    const if 1 == 1 { a } else { b }
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index (type_argument (number)))))
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index (type_argument (number))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index (type_argument (number))))
+    body: (block
+      tail: (expression
+        (const_if_expression
+          condition: (binary_expression
+            left: (number)
+            right: (number))
+          then_branch: (block
+            tail: (expression
+              (path_expression segment: (identifier))))
+          else_branch: (block
+            tail: (expression
+              (path_expression segment: (identifier)))))))))

@@ -1,0 +1,6 @@
+// A `const if` condition must be a compile-time constant — it is resolved at
+// elaboration. Here the condition `sel == 0` depends on `sel`, a runtime
+// (clocked) input, so it is rejected (planning/comptime_if.md).
+fn bad {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk, sel: uint(8) @clk) -> uint(8) @clk {
+    const if sel == 0 { a } else { b }
+}

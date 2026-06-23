@@ -1974,6 +1974,20 @@ impl<'db> SvLower<'_, 'db> {
                 let else_branch = else_branch.clone();
                 self.lower_if(expr, cond, &then_branch, &else_branch)
             }
+            // `const if`: fold to the selected arm at elaboration — only it is
+            // emitted, so the discarded arm's (possibly invalid) SV is never
+            // produced (planning/comptime_if.md).
+            ExprKind::ConstIf {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let (tb, eb) = (then_branch.clone(), else_branch.clone());
+                match self.eval_const_cond(*cond) {
+                    true => self.block_value(&tb),
+                    false => self.block_value(&eb),
+                }
+            }
             ExprKind::Block(b) => {
                 let b = b.clone();
                 self.block_value(&b)
@@ -2103,6 +2117,18 @@ impl<'db> SvLower<'_, 'db> {
                     .into_iter()
                     .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}[{idx}]"))))
                     .collect()
+            }
+            // An aggregate-valued `const if`: fold to the selected arm's leaves.
+            ExprKind::ConstIf {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let (tb, eb) = (then_branch.clone(), else_branch.clone());
+                match self.eval_const_cond(*cond) {
+                    true => self.block_leaves(&tb),
+                    false => self.block_leaves(&eb),
+                }
             }
             // An aggregate-valued `if`: per-leaf mux into a synthetic.
             ExprKind::If {
@@ -2310,6 +2336,23 @@ impl<'db> SvLower<'_, 'db> {
             clocked_body: vec![SvSeqAssign::new(SvExpr::Ident(synth.clone()), d)],
         }));
         SvExpr::Ident(synth)
+    }
+
+    /// Fold a `const if` condition at elaboration. The grounded case — the
+    /// condition closes to a constant (literal bounds, or a const generic that
+    /// was inlined to a concrete value). A still-symbolic condition (a const
+    /// generic riding as an SV `#()` parameter) needs the `generate if` lowering
+    /// (planning/comptime_if.md), which is not yet built; since emission only
+    /// runs on a diagnostic-free crate, that gap is a hard stop, not a silent
+    /// mux (which would wrongly elaborate both arms).
+    fn eval_const_cond(&self, cond: ExprId) -> bool {
+        match crate::hir::const_eval::eval_cond(self.db, self.krate, self.def, cond) {
+            Some(b) => b,
+            None => panic!(
+                "const if: condition did not fold to a constant — the symbolic \
+                 `generate if` lowering is not yet implemented (planning/comptime_if.md)"
+            ),
+        }
     }
 
     /// `if c { a } else { b }` → an `always_comb` mux driving a synthetic
@@ -2578,7 +2621,15 @@ impl<'db> SvLower<'_, 'db> {
                 }
                 VerilogSegment::Dom(_) => out.push_str(&self.first_clock()),
                 VerilogSegment::Const(c) => {
-                    let c = self.subst_promoted_const(&subst_const_opt(c, &node_subst));
+                    // First resolve the call's own const generics (`to` →
+                    // `A::bit_size`, in the enclosing def's terms), then the
+                    // enclosing def's monomorphisation subst (`A` → `uint(8)`),
+                    // so an assoc-const projection onto an outer type param
+                    // (`Assoc { self_ty: A }`) grounds rather than reaching
+                    // `render_const_sv` as an opaque `Assoc(..)`.
+                    let c = subst_const_opt(c, &node_subst);
+                    let c = subst_const_opt(&c, &self.self_subst);
+                    let c = self.subst_promoted_const(&c);
                     let s =
                         match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &c)
                         {
@@ -2705,13 +2756,19 @@ impl<'db> SvLower<'_, 'db> {
                 .map(|ts| ts.iter().cloned().map(Some).collect())
                 .unwrap_or_default(),
         };
-        // A const arg bound to a promoted body local (`sink(wide)` with
-        // `wide: uint(w)`) renders as the `localparam` name — both in the
-        // `#(.W(w))` binding and when flattening the callee's `uint(W)` leaves.
+        // A const arg recorded against this generic def is in the def's own
+        // term space: ground its type-param projections through the enclosing
+        // monomorphisation subst (`Assoc { self_ty: A }` → `uint(8)::bit_size`),
+        // then rewrite a promoted body local (`sink(wide)` with `wide: uint(w)`)
+        // to its `localparam` name — both in the `#(.W(w))` binding and when
+        // flattening the callee's `uint(W)` leaves.
         let node_subst: Vec<Option<Term<'db>>> = node_subst
             .into_iter()
             .map(|t| match t {
-                Some(Term::Const(c)) => Some(Term::Const(self.subst_promoted_const(&c))),
+                Some(Term::Const(c)) => {
+                    let c = subst_const_opt(&c, &self.self_subst);
+                    Some(Term::Const(self.subst_promoted_const(&c)))
+                }
                 other => other,
             })
             .collect();
@@ -2726,7 +2783,10 @@ impl<'db> SvLower<'_, 'db> {
                     return None;
                 };
                 let c = match c {
-                    ConstArg::Local(_) | ConstArg::Field(..) | ConstArg::Op(..) => {
+                    ConstArg::Local(_)
+                    | ConstArg::Field(..)
+                    | ConstArg::Op(..)
+                    | ConstArg::Assoc { .. } => {
                         match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c) {
                             Some(v) => ConstArg::Lit(v),
                             None => c.clone(),

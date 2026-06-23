@@ -1,0 +1,13 @@
+// Compile-time `const if` (planning/comptime_if.md): the condition is a
+// constant resolved at elaboration, and only the selected arm is emitted — the
+// other is never elaborated (so it may be invalid for some instantiations, e.g.
+// an out-of-range slice when a width folds to 0). Here the conditions are
+// literal constants, so each folds to one arm: `pick_a` always drives `a`,
+// `pick_b` always drives `b`. The generated SV is a plain wire, not a mux.
+fn pick_a(a: uint(8), b: uint(8)) -> uint(8) {
+    const if 1 == 1 { a } else { b }
+}
+
+fn pick_b(a: uint(8), b: uint(8)) -> uint(8) {
+    const if 2 < 1 { a } else { b }
+}

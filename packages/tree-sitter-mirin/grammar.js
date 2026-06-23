@@ -697,7 +697,24 @@ module.exports = grammar({
         $.tuple_expression,
         $.block,
         $.if_expression,
+        $.const_if_expression,
         $.when_expression,
+      ),
+
+    // Compile-time `const if`: the condition is a constant (parameter-derived)
+    // expression resolved at elaboration. Unlike the value-form `if` (a mux
+    // that keeps both arms), only the SELECTED arm is elaborated — the other
+    // may be invalid for some instantiations (e.g. an out-of-range slice when a
+    // width folds to 0). Grounds to the taken arm, or lowers to an SV
+    // `generate if`. planning/comptime_if.md, planning/slicing.md.
+    const_if_expression: ($) =>
+      seq(
+        "const",
+        "if",
+        field("condition", $._if_condition),
+        field("then_branch", $.block),
+        "else",
+        field("else_branch", $.block),
       ),
 
     // Rust-style `if cond { … } else { … }`. Both branches are required;
