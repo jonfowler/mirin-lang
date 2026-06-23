@@ -103,10 +103,15 @@ A zero-width slice (`x[4..4]`, `x[i..+0]`, or any width that folds to 0) is
 erroring there forces an `n == 0` special case into every parameterised
 construction.
 
-SV has no zero-width signal (`logic [-1:0]` is illegal and tools reject it). The
-standard fix is to *remove zero-width signals entirely* — which is exactly
-Mirin's leaf model: a zero-width value (`bits(0)`, `Vec(0, A)`) has **no
-leaves**, so it emits no SV at all. This works because widths are grounded at
+SV has no zero-width signal, and range-underflow does not give us one: at
+`N == 0`, `logic [N-1:0]` becomes `logic [-1:0]`, which is legal syntax
+(negative-index ranges are allowed) but is *not* zero-width — it is a 2-bit
+ascending vector by the usual `|msb − lsb| + 1` size rule (some tools instead
+apply the signed `msb − lsb + 1 = 0` and reject it as a reversed range). Either
+way the width is never reliably 0, so underflowing silently yields a *wrong*
+2-bit signal — worse than an error. The standard fix is to *remove zero-width
+signals entirely* — which is exactly Mirin's leaf model: a zero-width value
+(`bits(0)`, `Vec(0, A)`) has **no leaves**, so it emits no SV at all. This works because widths are grounded at
 monomorphisation, so a zero width is known at emit time. Consequences, all the
 right thing:
 
