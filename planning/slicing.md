@@ -96,38 +96,96 @@ match. This rides the partial-drive completeness machinery already built for
 `b[i] = …` — a slice whose base uses a `for`-genvar is recognised as covering
 its run via `index_uses_forbound`, like a compound index drive.
 
-## Zero-width slices — vacuous, zero leaves
+## Zero-width values — effective-0-bit, guarded at the layout primitives
 
 A zero-width slice (`x[4..4]`, `x[i..+0]`, or any width that folds to 0) is
 **not an error** — generic code routinely folds a width to 0 at its limit, and
 erroring there forces an `n == 0` special case into every parameterised
 construction.
 
-SV has no zero-width signal, and range-underflow does not give us one: at
-`N == 0`, `logic [N-1:0]` becomes `logic [-1:0]`, which is legal syntax
-(negative-index ranges are allowed) but is *not* zero-width — it is a 2-bit
-ascending vector by the usual `|msb − lsb| + 1` size rule (some tools instead
-apply the signed `msb − lsb + 1 = 0` and reject it as a reversed range). Either
-way the width is never reliably 0, so underflowing silently yields a *wrong*
-2-bit signal — worse than an error. The standard fix is to *remove zero-width
-signals entirely* — which is exactly Mirin's leaf model: a zero-width value
-(`bits(0)`, `Vec(0, A)`) has **no leaves**, so it emits no SV at all. This works because widths are grounded at
-monomorphisation, so a zero width is known at emit time. Consequences, all the
-right thing:
+### Rejected: drop to zero leaves
 
-- `let z: bits(0) = x[4..4];` declares nothing.
-- `x[4..4] = y` emits no assigns (no-op) — never a degenerate `[base +: 0]`.
-- a `bits(0)` result is a port with zero pins (absent).
-- generic pack/unpack stays **total**: the `n == 0` arm is the identity element.
+The tempting fix — represent `bits(0)`/`Vec(0, A)` as *no leaves* and emit
+nothing — is rejected: it makes a value's **port/leaf structure depend on a
+width**. A module carrying `bits(M)` would then need a distinct
+monomorphisation for every zero/non-zero combination of its widths, and
+transitively for every *internal* intermediate that can fold to zero, across
+calls into further modules. `concat_with_middle {M, N} (x: bits(M), bool,
+y: bits(N)) -> bits(M+1+N)` would split into four structural forms instead of
+one parameterised module — a monomorphisation explosion, and finicky to track.
+
+### Representation: uniform `[W-1:0]`, an effective-0-bit signal
+
+Representation stays uniform: a zero-width value is just `[W-1:0]` at `W == 0`.
+The LRM blesses this — the range spec (§7.4.1) says msb/lsb "may be any integer
+value—positive, negative, or zero ... The lsb value may be greater than, equal
+to, or less than the msb value," with the example `logic [-1:4] b;` a 6-bit
+vector. So `logic [-1:0]` is a **legal** (nominally 2-bit) "effective-0-bit"
+signal: its bits are never meaningfully consumed, and its port/leaf shape is
+identical to any other width — so **nothing monomorphises on zero-ness** and
+there is no explosion. Plain pass-through is unaffected: `x + y`, port
+connections, and `assign` on `[-1:0]` operands are all legal and harmless.
+
+### The problem is local to the layout primitives
+
+Only operations whose emitted SV computes a bit *layout* from a width go wrong
+on a zero, and only two do:
+
+- **slice** with output width 0 → `x[hi-1:lo]` is a reversed/empty range
+  `x[lo-1:lo]` (illegal).
+- **concat** with a zero-width operand → a `[-1:0]` operand contributes junk
+  bits, and an all-zero concat is illegal.
+
+Zero *padding* needs nothing: §11.4.12.1 — a zero replication `{0{x}}` "is
+considered to have a size of zero and is ignored," provided the concat has ≥1
+positive-size operand. So `extend`/`resize`'s `{ {(to-n){1'b0}}, self }` is
+already correct at `to == n`; only a zero-width `self` needs the concat guard.
+
+### The fix: a compile-time `if` at those primitives
+
+Guard the layout primitives with a **compile-time `if`** on the (output) width
+— for slice, on `hi - lo`, which also covers a zero-width input (you cannot
+slice a positive width out of nothing):
+
+```
+slice(x: bits(W), hi, lo) -> bits(hi - lo) {
+    if hi - lo == 0 { /* zero result — never read */ }
+    else            { x[hi-1 : lo] }      // the real part-select
+}
+```
+
+Two lowering modes, by whether the condition is known at emit:
+
+- **grounded** (the width folds to a literal at monomorphisation — the common
+  case): evaluate the condition, emit only the taken branch. No generate, no
+  `[-1:0]` select ever reaches the tool.
+- **symbolic** (the width rides as an SV `#()` parameter): lower to an SV
+  **generate-if**. This is why it must be a *compile-time* if. §27.5: a
+  conditional generate "select[s] at most one generate block ... The selected
+  generate block, if any, is instantiated into the model," and only the
+  selected block's constructs are brought into existence — so the dead
+  `else { x[hi-1:lo] }` is **not elaborated** and its out-of-range select is
+  never checked. A *procedural* `always_comb if` will not do: both arms
+  elaborate, so the dead select stays a compile error.
+
+This one mechanism lets a single parameterised module (`#(W)`) cover every
+width including zero — the alternative to the rejected per-pattern explosion.
 
 A *literally* constant zero-width slice is almost always a typo, so it earns a
 **warning** (not an error) — totality without losing the diagnostic.
 
-**v1 limitation.** When a width rides as a *symbolic* SV parameter
-(`#(parameter int N)`) and could be 0 at an SV-level instantiation, the generic
-body still emits `[N-1:0]` / `[base +: N]`, which break at `N == 0`. Guarding
-that needs `generate`/`if` and is deferred; v1 does not emit such guards. The
-grounded-zero case (the common one) is fully handled.
+### Prerequisite — a compile-time `if` → `generate if`
+
+Mirin's `if` currently lowers to a procedural `always_comb` mux (both arms
+elaborated). The guard needs a **const-conditioned `if`** that, like the
+existing structural generate-`for` (`SvItem::GenerateFor`), emits an
+`SvItem::GenerateIf` (new) — or folds to the taken branch when the condition
+grounds. The generate-`for` path already shows the shape, so this is a small,
+well-precedented addition. The grounded case (fold) needs no new SV node and
+covers most real code, so it can land first; the generate-if (symbolic) case
+follows. Slice/concat lowering can synthesise the guard directly; exposing the
+const-`if` as a language construct lets prelude primitives (resize, `concat_hi`)
+and user code express the same guard.
 
 ## Bounds checks
 
@@ -141,10 +199,10 @@ the base is statically bounded; otherwise it is a simulation-time concern.
 - **`-:` (top-anchored) form** — unneeded; we always anchor at the low end.
 - **Variable-width slices** — no legal SV form (would need a barrel-shifter;
   not a slice).
-- **`generate`-guarded zero-width for symbolic SV-parameter widths** (above).
+- **Generate-if (symbolic-width) zero guard** — the grounded-width fold lands
+  first (covers most code); the `SvItem::GenerateIf` lowering follows. Both are
+  part of this design (see "Zero-width values"), not a separate workstream.
 - **Surface concatenation** (the dual of slicing) — shares the wanted
-  `SvExpr::Concat`/`Slice` backend nodes (planning/pack_resize.md). Designing
-  the pair together is what lets zero-width values compose cleanly through a
-  concat (a text-spliced `{${a}, ${b}}` cannot drop a zero-width operand; a
-  structured `Concat` node over leaves can).
-```
+  `SvExpr::Concat`/`Slice` backend nodes (planning/pack_resize.md), and is the
+  other layout primitive that needs the zero-width concat guard. Worth designing
+  alongside so the guard machinery is built once.
