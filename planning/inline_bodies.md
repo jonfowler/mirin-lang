@@ -46,23 +46,38 @@ sig)` while emitting into the caller's module. Two ways:
 So `render_inline`'s non-verilog branch calls a new `splice_inline_body(uc) ->
 SvExpr` / leaves, the inline twin of `emit_instance`.
 
+(rustc parallel, confirmed in review: the MIR inliner clones the callee body and
+instantiates it with the call's substs, remapping locals/blocks via an
+`Integrator` visitor and binding args to param-local temporaries — *because types
+ride on MIR*. Sub-lowering reproduces that integrate-with-subst at lowering time:
+the name-prefix + item-merge is the `Integrator`, the param-as-wire binding is
+the arg temporaries, and the depth limit matches rustc's history-depth guard.)
+
 ## Mechanics
 
 `splice_inline_body(uc)`:
 
 1. **Fetch** callee `body`/`inf`/`sig` (salsa per-def).
-2. **Bind params like an instance binds ports.** For each callee value param
-   (receiver included, for methods), declare a caller-side wire
-   `__inl{site}__<param>` per leaf and `assign` it the caller's argument leaf —
-   reusing the flatten/connection machinery `emit_instance` already has. Param
-   reads inside the callee then resolve to those wires (so a param used twice is
-   one wire, not a duplicated caller expression).
-3. **Sub-lower the body** with a fresh name space: every callee local/synthetic
-   name is prefixed with `__inl{site}__`, so `var`s, nested `__block_N`, and
-   nested instances merge into the caller's `items` without colliding. The tail
-   expression's `SvExpr` (scalar) / leaves (aggregate) is the spliced value.
-4. **Type generics** thread through `self_subst` (already how monomorphised
-   copies substitute Type-kind generics before flattening).
+2. **Bind only VALUE params as wires.** For each callee *value* param (receiver
+   included), declare a caller-side wire `__inl{site}__<param>` per leaf and
+   `assign` it the caller's argument leaf — reusing the flatten/connection
+   machinery `emit_instance` has. Param reads inside the callee resolve to those
+   wires (a param used twice is one wire, not a duplicated caller expression). A
+   zero-width leaf binds as the uniform `[-1:0]` wire — no special case, so this
+   composes with the zero-width representation (planning/slicing.md). **Integer /
+   const-generic params are NOT wires:** `build_module` already elides
+   integer-typed params (no port — `lower.rs`), and a slice helper's `lo`/`hi`
+   are const generics that must ride through const eval (next item), never a
+   wire.
+3. **Sub-lower the body** in a *fresh nested `SvLower`* over the callee's
+   `(body, inf, sig, self_subst)` whose emitted `items`/`mono_reqs` are drained
+   into the caller and whose tail `SvExpr` (scalar) / leaves (aggregate) is the
+   spliced value. `SvLower` holds `&'a` refs fixed at construction, so this is a
+   second context, not a field-swap. Every name it mints (`local_names`, the
+   `__block_N`/`__call_N` synth counter) is prefixed `__inl{site}__` so `var`s,
+   nested blocks, and nested instances merge without colliding.
+4. **Type generics** thread through the callee `self_subst` (as monomorphised
+   copies already substitute Type-kind generics before flattening).
 
 ### Const generics — the load-bearing detail
 
@@ -70,31 +85,67 @@ A `const if` (or a width) inside the callee references the callee's **const
 generics** (`ConstParam`). Spliced with concrete args (`slice{lo=4, hi=8}`),
 those must ground, or the `const if` cannot fold and the width is wrong.
 
-- **Widths** already ground via the call's substitution into `ConstArg`s
-  (`subst_const` + `eval_const`), the same path `emit_instance` uses — reuse it
-  at the inline site.
+- **Widths** already ground via the call's substitution into `ConstArg`s — but
+  note `emit_instance`/`render_inline` **double-substitute**: `call_subst` *then*
+  the caller's `self_subst` (`lower.rs` two `subst_const_opt` calls), so a const
+  arg projecting onto an *outer* type param (`A::bit_size`, `Assoc{self_ty: A}` —
+  the pack/slice guard shape) grounds once the enclosing module is
+  monomorphised. The inline site must compose the same two; factor them into one
+  shared helper.
 - **`const if` conditions** are *expressions*, not `ConstArg`s, and
-  `const_eval::eval_cond` today uses `Frame::root`, which marks `ConstParam`
-  symbolic. So extend it: `eval_cond(db, krate, def, cond, subst)` threads the
-  call's const-generic binding, and `eval_expr`'s `ConstParam(i)` consults
-  `subst[i]` (a const value → fold; else symbolic). `splice_inline_body` passes
-  the call's subst. This is what makes an inline `const if` helper fold to one
-  arm at each call site — the whole point of writing the guard in Mirin.
+  `const_eval` marks `ConstParam` symbolic at the root frame. Bind const generics
+  **on the `Frame`** (mirroring `Frame::bindings` for value params), populated in
+  both `Frame::root` (from the composed `call_subst ∘ self_subst`) and
+  `enter_call` (so a generic reached through a *recursive* const-helper call also
+  grounds — a threaded entry-point `subst` only reaches the outermost frame and
+  leaks symbolic one call deep). `eval_expr`'s `ConstParam(i)` consults the
+  Frame binding; a bound-but-still-symbolic arg correctly re-defers. This is the
+  recorded alternative `planning/alternative/inline_bodies-frame-constgen.md`,
+  adopted over the threaded-`subst` sketch — it also closes a pre-existing
+  recursive-symbolic leak independent of inlining.
+
+## Relationship to the slice/concat guards (reconciles comptime_if.md)
+
+`comptime_if.md` concluded the zero-width slice/concat guard should be
+**synthesised directly in the backend lowering of the slice/concat expression**
+(where the bounds are in hand), *not* delegated to an inline Mirin primitive.
+That conclusion **stands** — and this design does not supersede it:
+
+- **Slice/concat zero-width guards: backend-synthesised.** The slice expression's
+  bounds are its own operands; the backend builds the part-select wrapped in the
+  `const if` (grounded fold, or step-5 `generate if`) directly. This is robust
+  for both literal and generic bounds and is the slicing critical path. It does
+  **not** depend on inline-Mirin splicing.
+- **Inline-Mirin splicing is a *general* capability** — clean inline SV for
+  ordinary combinational Mirin helpers (`id`, small reinterprets, user
+  primitives), and it removes the silent-`0`/panic wart. It is *not* on the
+  slicing critical path; the two workstreams are independent.
+
+Crucially (the mono interaction): a spliced `const if` grounds **only** when
+`call_subst ∘ self_subst` makes the controlling const generic a *literal at this
+call site* (`choose{k=0}`, or the caller's own generic bound by *its* caller's
+mono). When the caller is itself generic and the value rides out as a `#()`
+param, the condition stays symbolic and hits the **same unbuilt step-5
+`generate if` wall** as everywhere else — so inline guards only work where the
+width grounds to a literal at the call site. This is why the guards are
+backend-synthesised, not why inlining is blocked.
 
 ## v1 scope and deferrals
 
-- **v1: combinational, value-returning bodies** — the slice/concat-guard shape.
-  Scalar and aggregate (leaf) results.
-- **Clocked inline bodies** (a `when`/`.reg` inside): the callee's domain/clock
-  generics must bind to the caller's clocks (as `emit_instance` threads the clock
-  connection). Doable via the same param/generic binding; deferred to keep v1
-  small. Until then, reject a clocked inline Mirin body with a diagnostic rather
-  than mis-thread a clock.
-- **out-params** (`=>` connections from an inline body): deferred; inline use is
-  value-returning.
-- **`var` / cyclic equations** in an inline body: should fall out of item
-  merging (the leaves become prefixed caller wires with the same equations), but
-  not a v1 target beyond what the guard helpers need.
+- **v1: combinational, value-returning bodies** — `id`, reinterprets, simple
+  helpers. Scalar and aggregate (leaf) results.
+- **Front-end validation (where the restriction lives).** `#[inline]` is today
+  only a flag (`def_map`), with no body-shape check. Add a front-end `check`
+  query over `body(def)` that, when `data.inline` and the body is non-verilog,
+  rejects a `when`/`.reg` (clocked), an out-param connection, or (v1) a `var`
+  with a spanned diagnostic — *not* a backend panic (emission runs only on a
+  diagnostic-free crate). This is the home for every "not yet" below.
+- **Clocked inline bodies**: the callee's domain/clock generics would bind to the
+  caller's clocks (as `emit_instance` threads the clock). Deferred; rejected by
+  the front-end check above until then.
+- **out-params** (`=>` from an inline body): deferred; rejected by the check.
+- **`var` / cyclic equations**: should fall out of item merging, but deferred
+  past what the v1 helpers need; rejected by the check until validated.
 - **Nested/recursive inline**: `splice_inline_body` recurses through
   `inline_call`; guard with a depth limit to turn accidental inline cycles into
   a clean error rather than a stack overflow.
@@ -104,11 +155,15 @@ those must ground, or the `const if` cannot fold and the width is wrong.
 - `backend/lower.rs`: `splice_inline_body` (twin of `emit_instance`); route the
   non-verilog branch of `render_inline` to it; a per-site name prefix threaded
   into local/synth naming; remove the panic.
-- `hir/const_eval.rs`: subst-aware `eval_cond` (+ `ConstParam` consults the
-  binding).
-- No new IR / no new pass — this lives inside the existing `verilog` emission
-  query, so `planning/ir_pipeline.md` needs no stage change (a one-line note at
-  most).
+- `hir/const_eval.rs`: const-generic bindings on `Frame` (populated in
+  `Frame::root` + `enter_call`); `ConstParam` consults them. A shared helper for
+  the `call_subst ∘ self_subst` composition, used by the inline site and
+  `emit_instance` alike.
+- a front-end `check` query for inline-body shape validation (clocked / out-param
+  / `var` rejection) with its own `*DiagnosticKind`.
+- No new IR / no new pass — splicing lives inside the existing `verilog` emission
+  query and the validation is a `check`-style query, so `planning/ir_pipeline.md`
+  needs no stage change (a one-line note at most).
 
 ## Tests
 
