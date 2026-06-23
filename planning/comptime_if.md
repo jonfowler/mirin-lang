@@ -13,9 +13,9 @@ guard needs (planning/slicing.md).
 ## Why a distinct construct, not "lift any const-condition `if`"
 
 The behaviour that a normal `if` cannot have is **not elaborating the dead arm**:
-its width/bounds obligations are dropped, and the arms need not share internal
-structure. That is a real semantic difference, not an optimisation, so it is
-explicit:
+its width/bounds obligations are not enforced, and the arms need not share
+internal structure. That is a real semantic difference, not an optimisation, so
+it is explicit:
 
 - a normal `if` is a mux — both arms elaborate, both must type the same, both
   arms' obligations are enforced;
@@ -23,6 +23,16 @@ explicit:
   *whether your dead arm is protected* depend on an inferred property; a refactor
   that made the condition runtime would silently turn the guard back into a mux
   and newly reject the dead arm — action at a distance.
+
+**Scope of "obligations not enforced" (v1).** The drop happens at **backend
+elaboration**: the grounded fold emits only the taken arm, so a *generic* dead
+arm's deferred width/bounds obligations (e.g. an out-of-range slice when a width
+folds to 0 — the motivating case) are never checked. They are **not** dropped at
+infer time: both arms are type-checked, so an *eager* check on a **non-generic**
+dead arm still fires (`const if 1==1 { a } else { uint(8)::999 }` errors on the
+dead `999`). Generic dead arms — what the slice/concat guards rely on — defer and
+are fine; the eager-literal gap on non-generic dead arms is a known v1 limitation
+(full infer-time obligation scoping is future work).
 
 Precedent is uniformly explicit: C++ `if constexpr`, D `static if`, Zig
 `comptime`, and SV's own `generate if`.

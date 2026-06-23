@@ -49,6 +49,10 @@ pub enum InferDiagnosticKind {
     /// runtime data. The condition is resolved at elaboration, so it must be a
     /// constant (planning/comptime_if.md).
     ConstIfRuntimeCond,
+    /// A `const if` (in a non-`#[inline]` def) whose condition does not reduce
+    /// to a constant: a symbolic const generic (which needs the not-yet-built
+    /// `generate if` lowering) or a runtime value.
+    ConstIfNotConst,
     /// Two types that had to be equal could not be unified.
     TypeMismatch,
     /// Two `uint` widths that had to be equal are different (`uint(8)` vs
@@ -174,6 +178,12 @@ impl InferDiagnostic {
             InferDiagnosticKind::ConstIfRuntimeCond => {
                 "a `const if` condition must be constant, but this one depends on \
                  runtime data (it carries a clock domain)"
+                    .to_owned()
+            }
+            InferDiagnosticKind::ConstIfNotConst => {
+                "a `const if` condition must reduce to a compile-time constant; \
+                 this one does not (a symbolic const generic needs `generate if`, \
+                 not yet implemented; a runtime value is not allowed)"
                     .to_owned()
             }
             InferDiagnosticKind::TypeMismatch => "type mismatch".to_owned(),
@@ -586,6 +596,10 @@ struct InferCtx<'a, 'db> {
     /// Non-`range` for-loop elems, re-checked at finish: a compile-time
     /// integer element can only be the genvar (ForConstVec).
     for_elem_checks: Vec<(LocalId, Span)>,
+    /// `const if` conditions, re-checked at finish (after deep-resolve, so a
+    /// domain bound by a *later* equation has propagated): the condition must
+    /// resolve to a compile-time constant, never a clock-domain (runtime) value.
+    const_if_checks: Vec<(ExprId, Span)>,
     /// Undecided constraints, retried at end-of-body (`discharge_obligations`).
     obligations: Vec<Obligation<'db>>,
     /// Def-relative span of the expression currently under inference — attached
@@ -702,6 +716,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             literal_vars: Vec::new(),
             fit_residuals: Vec::new(),
             for_elem_checks: Vec::new(),
+            const_if_checks: Vec::new(),
             obligations: Vec::new(),
             current_span: Span::default(),
         }
@@ -752,6 +767,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 self.diag(InferDiagnosticKind::ForConstVec);
             }
         }
+        self.check_const_ifs();
         self.check_widths();
         let substs: Vec<(ExprId, Vec<Term<'db>>)> = self
             .call_substs
@@ -778,6 +794,32 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             diagnostics: self.diagnostics,
             const_residuals,
             fit_residuals: self.fit_residuals,
+        }
+    }
+
+    /// `const if` conditions (checked post deep-resolve): the condition must
+    /// reduce to a compile-time constant. A clock-domain condition is runtime
+    /// data (rejected always — even in an `#[inline]` fn). A condition that does
+    /// not fold in a non-`#[inline]` def is either a symbolic const generic
+    /// (needs the `generate if` lowering, not yet built) or a runtime value —
+    /// both rejected here rather than panicking the backend. Inside an
+    /// `#[inline]` fn a symbolic-const condition is fine: it grounds when the
+    /// body is spliced at a call with concrete const generics (planning/inline_bodies.md).
+    fn check_const_ifs(&mut self) {
+        let inline = self.map.def_data(self.def).is_some_and(|d| d.inline);
+        for (cond, span) in std::mem::take(&mut self.const_if_checks) {
+            self.current_span = span;
+            let dom = match self.expr_types.get(&cond).cloned() {
+                Some(Type::Value { domain, .. }) => self.table.resolve_domain_shallow(domain),
+                _ => continue,
+            };
+            if matches!(dom, Domain::Clock(_) | Domain::Param(_)) {
+                self.diag(InferDiagnosticKind::ConstIfRuntimeCond);
+            } else if !inline
+                && crate::hir::const_eval::eval_cond(self.db, self.krate, self.def, cond).is_none()
+            {
+                self.diag(InferDiagnosticKind::ConstIfNotConst);
+            }
         }
     }
 
@@ -1901,21 +1943,13 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 then_branch,
                 else_branch,
             } => {
-                let ct = self.infer_expr(body, *cond);
-                // The condition is resolved at elaboration, so it must be a
-                // constant. A condition carrying a clock domain — whether a
-                // concrete clock (`Clock`) or a domain-generic param (`@clk`,
-                // `Param`) — depends on runtime data, so reject it
-                // (planning/comptime_if.md). `Const`/`Unspecified`/`Infer` are
-                // left to lowering (the fold succeeds, or it is a symbolic const).
-                if let Type::Value { domain, .. } = self.resolve_ty(&ct)
-                    && matches!(
-                        self.table.resolve_domain_shallow(domain),
-                        Domain::Clock(_) | Domain::Param(_)
-                    )
-                {
-                    self.diag(InferDiagnosticKind::ConstIfRuntimeCond);
-                }
+                self.infer_expr(body, *cond);
+                // The condition must resolve to a compile-time constant. Defer
+                // the check to `finish` (recorded here): the condition's domain
+                // can be pinned by a *later* equation (`var flag; const if flag;
+                // flag = clocked`), so an eager check here races the constraint
+                // system and would false-accept (planning/comptime_if.md).
+                self.const_if_checks.push((*cond, self.current_span));
                 let then_branch = then_branch.clone();
                 let else_branch = else_branch.clone();
                 let result = self.fresh_type();

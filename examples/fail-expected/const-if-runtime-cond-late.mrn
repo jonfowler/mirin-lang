@@ -1,0 +1,10 @@
+// A `const if` condition is checked at elaboration-finish (after the equation
+// system resolves), so a condition tied to a clock by a *later* drive is still
+// rejected — not silently accepted then panicking the backend. Here `flag` is
+// unannotated at the `const if`, then driven from the clocked `sel`.
+fn late {dom clk: Clock} (sel: bool @clk, a: uint(8) @clk, b: uint(8) @clk) -> uint(8) @clk {
+    var flag: bool;
+    let r = const if flag { a } else { b };
+    flag = sel;
+    return r;
+}
