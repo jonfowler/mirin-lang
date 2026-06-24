@@ -42,6 +42,59 @@
 - [ ] **S7 — Inline on MIR.** rustc-Integrator-style splice (subsumes inline_bodies.md).
 - [ ] **S8 — Re-add const-eval during infer** via the per-item anon-const units.
 
+## Design notes for upcoming slices
+
+### S2 — Places (the equation-LHS / connection-target model)
+
+In an HDL equation system the LHS of an `Equation`, an out-connection target
+(`=> target`), an out record field, and the result place (`return.x = …`) are all
+**places** — addressable locations, not value expressions. HIR keeps them as
+exprs; the backend pattern-matches the chains (`index_uses_forbound`, etc.).
+
+MIR model:
+```
+Place { base: LocalId, projections: Vec<Projection> }
+Projection = Field(String)        // x.field  AND  x.0 (tuple parts are Field("0"))
+           | Index(MExprId)       // v[i] — i is a genvar/const in a drive target
+           | BitRange{lo,width}   // slice-set — added in S4, not S2
+```
+Place-ification walks a `Local`/`Field`/`Index` chain to a root `Local`. A root
+that is not a `Local` is **not a valid drive target** → panic (negative space):
+value-shaped LHSs cannot occur (patterns already desugared to synthetic locals
+in HIR lowering; `return`/named results are locals with `result_base`).
+
+Scope split:
+- **S2**: `MStmt::Equation { lhs: Place, rhs }`. The driver/completeness checker
+  (S-future) reasons over places — the clean home for slice-set completeness
+  (mir.md §"Slicing on MIR — Set").
+- **S2b**: place-ify out-arg / out-named / out-record targets too, unifying all
+  connection targets onto one direction-carrying place model (the named-args
+  discussion: one connection rule for instance + inline, value + port).
+
+Validation worry: with no consumer yet, a place-ification bug is silent (smoke
+test only checks no-panic). Mitigation: the S3 emission retarget is the real
+parity gate; until then keep S2 mechanical and add a debug dump (below) so MIR
+is at least inspectable.
+
+### S3 — Retarget emission onto MIR (the parity gate)
+
+`backend/lower.rs` is ~4.2k lines reading `body` + `infer` directly. Retargeting
+is the high-value, high-risk step that proves MIR is correct/complete. Strategy:
+- **Do NOT big-bang.** First add a MIR **debug dump** (`mir/pretty.rs` + a
+  `--emit mir` hook mirroring `--emit cst`) — a cheap real consumer to eyeball
+  structure on the corpus.
+- Then move `build_module` to read `mir_of(def)` instead of `body`+`inf`,
+  function by function, gating each on:
+  1. the existing `examples` CLEAN/VERILATOR_CLEAN tests (byte-for-byte SV), and
+  2. the `mirin-compiler-old` parity oracle.
+- The call sites that read `self.inf.call_subst` / `method_resolution` /
+  `expr_type` become reads off the MIR node (types-on-node) — this is where MIR
+  earns its keep and where the named-args/connection logic unifies.
+- Const-eval-in-infer may be dropped during this (per Jon); re-add as S8.
+
 ## Status log (newest first)
 
-- 2026-06-24: starting S1.
+- 2026-06-24: S1 landed (commit). Typed MIR skeleton + `mir_of` + corpus smoke
+  test; calls unified, builtins as closed node, TypedLiteral folded. Launched a
+  fresh-context reviewer on S1; wrote S2/S3 design notes above. Next: incorporate
+  review, then S2 (places) + a MIR debug dump.
