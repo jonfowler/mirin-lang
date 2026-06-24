@@ -2576,7 +2576,10 @@ impl<'db> SvLower<'_, 'db> {
             panic!(
                 "#[inline] on a Mirin-bodied fn `{}` is not yet supported (only \
                  verilog-bodied inline splicing is implemented)",
-                self.map.def_data(uc.def).map(|d| d.name.as_str()).unwrap_or("?"),
+                self.map
+                    .def_data(uc.def)
+                    .map(|d| d.name.as_str())
+                    .unwrap_or("?"),
             );
         };
 
@@ -2594,6 +2597,14 @@ impl<'db> SvLower<'_, 'db> {
                 pos_i += 1;
                 e
             };
+            // TODO(named-args): each param is rendered as ONE scalar string, so a
+            // multi-leaf SIGNAL/PORT param (named or positional) is not handled
+            // here — only scalar value params splice correctly. Named params may
+            // be signals/ports with per-field DIRECTIONS and a `= default`
+            // (a deliberate language feature, e.g. `rstn: Reset @clk = high`);
+            // an aggregate default is also rendered as a single scalar. Inline
+            // splicing of such params needs per-leaf handling (cf. emit_instance,
+            // which flattens) and direction folding (cf. drive_result).
             let rendered = match caller_expr {
                 Some(e) => self.expr_value(e).to_string(),
                 None => match &p.default {
@@ -2926,6 +2937,12 @@ impl<'db> SvLower<'_, 'db> {
             );
             // A supplied arg flattens to its leaves; an omitted param with a
             // default wires that default to each callee leaf.
+            // TODO(named-args): the default is BROADCAST as a single scalar to
+            // every callee leaf — correct only for a scalar default (`rstn =
+            // high`, `reset_val = 0`). A multi-leaf SIGNAL/PORT param with a
+            // `= default` (a deliberate feature: named params can be signals/
+            // ports, not just generics) would mis-wire — each leaf needs the
+            // corresponding leaf of a flattened default, not the whole scalar.
             let caller_leaves: Vec<(String, SvExpr)> = match caller_expr {
                 Some(e) => self.expr_leaves(*e),
                 None => match default {
@@ -2936,6 +2953,12 @@ impl<'db> SvLower<'_, 'db> {
                     None => Vec::new(),
                 },
             };
+            // TODO(named-args): this connects every leaf as `.port(caller)`
+            // regardless of `cl.drives`. For an instance that is fine (SV resolves
+            // port direction), but a port param with per-field directions is not
+            // direction-folded the way returns are (drive_result honours
+            // `rl.drives`); revisit if/when named port params with mixed
+            // in/out fields are exercised.
             for (cl, (_, cv)) in callee_leaves.into_iter().zip(caller_leaves) {
                 connections.push((join(pname, &cl.suffix), cv));
             }
