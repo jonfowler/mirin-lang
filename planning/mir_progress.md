@@ -23,16 +23,18 @@
 
 ## Slices
 
-- [ ] **S1 — MIR skeleton.** `src/mir/` module, `Mir` IR (arena, types-on-node),
+- [x] **S1 — MIR skeleton.** `src/mir/` module, `Mir` IR (arena, types-on-node),
   `mir_of(def)` derived query, HIR→MIR lowering as a faithful typed mirror.
-  Unifications already in S1: `TypedLiteral`→`Number` (node carries the type);
+  Unifications: `TypedLiteral`→`Number` (node carries the type);
   `Call`/`MethodCall`/`TypePathCall`/operator-call → one resolved `Call`
-  (callee `DefId` + baked substs + optional receiver). Smoke test builds MIR
-  over the working corpus (loud panics on unhandled shapes). Nothing consumes it.
-- [ ] **S2 — Places.** Introduce `Place` (local + projections: field, index,
-  tuple-field; bit-range later) for equation LHS / connection targets / returns.
-  Unifies slice-set, out-connections, named-port args, returns onto one
-  direction-carrying place model (see mir.md and the named-args discussion).
+  (callee `DefId` + recorded substs + optional receiver); builtins
+  (reg/posedge/replace/enumerate) as a closed `Builtin` node. Corpus smoke test.
+  Reviewed (fresh context): no blockers; fixes applied (below). Nothing consumes it.
+- [x] **S2 — Places (equation LHS).** `Place { base: LocalId, projections }`,
+  `Projection = Field | Index` (BitRange in S4). `MStmt::Equation.lhs` is now a
+  `Place`. Aligns with the backend's `backend_root_local`. **S2b** (out-conn /
+  out-record / out-arg targets → places; the connection-unification payoff) and
+  **slice-set BitRange** (S4) still pending.
 - [ ] **S3 — Retarget emission onto MIR.** `sv_module`/`build_module` read `mir_of`
   instead of `body`+`infer`. Parity gate against current backend + `mirin-compiler-old`.
 - [ ] **S4 — Slice desugar on MIR.** Type-directed `x[a..b]` → part-select
@@ -95,6 +97,15 @@ is the high-value, high-risk step that proves MIR is correct/complete. Strategy:
 ## Status log (newest first)
 
 - 2026-06-24: S1 landed (commit). Typed MIR skeleton + `mir_of` + corpus smoke
-  test; calls unified, builtins as closed node, TypedLiteral folded. Launched a
-  fresh-context reviewer on S1; wrote S2/S3 design notes above. Next: incorporate
-  review, then S2 (places) + a MIR debug dump.
+  test; calls unified, builtins as closed node, TypedLiteral folded.
+- 2026-06-24: S1 reviewed (fresh-context agent) — no blockers; verdict "sound
+  foundation". S2 (places) implemented + review fixes applied in one commit:
+  (1) negative-space panics now degrade to `Missing`/degenerate places on
+  malformed bodies (`well_typed` gate = body+infer diagnostics clean), reserving
+  panics for well-formed-but-unhandled — locked in by a fail-expected MIR smoke
+  test; (2) cross-ref comment in `infer_method` ↔ `mir::lower::builtin_method`
+  (single source of truth for the builtin set); (4) `debug_assert` in `ty_of`
+  turns a missing type on a clean body from a silent `Error` into a loud failure;
+  (5) reworded `Call.substs` doc — it is the inference-recorded subst, not the
+  ground/mono subst (S6 resolves trait-instance overrides + fills generics).
+  Next: S2b (out-targets → places) or begin S3 (emission retarget) + MIR dump.

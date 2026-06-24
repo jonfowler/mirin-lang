@@ -126,9 +126,13 @@ pub enum MExprKind<'db> {
     /// Field access `recv.field`.
     Field { receiver: MExprId, field: String },
     /// A resolved call. Unifies plain calls, method calls, type-path calls, and
-    /// operators. `callee` is the resolved def; `substs` is the baked,
-    /// deep-resolved generic substitution (callee-param order, possibly empty);
-    /// `receiver` is `Some` for method calls (`recv.m(args)`), `None` otherwise.
+    /// operators. `callee` is the resolved def. `substs` is the **inference-
+    /// recorded** call subst (callee-param order, deep-resolved, possibly empty)
+    /// — *not* the final ground/mono subst: mono (S6) resolves trait-instance
+    /// overrides and fills unbound type generics from it (cf. `backend::lower`'s
+    /// `match_type` + `node_subst`). A `range`-builtin plain call records no
+    /// subst (empty) — recognised by name downstream. `receiver` is `Some` for
+    /// method calls (`recv.m(args)`), `None` otherwise.
     Call {
         callee: DefId<'db>,
         substs: Vec<Term<'db>>,
@@ -196,6 +200,29 @@ pub enum BuiltinMethod {
     Enumerate,
 }
 
+/// An addressable location — the target of a driving equation. Roots at a local
+/// and applies projections. HDL drive targets are exactly `Local`/`Field`/
+/// `Index` chains (cf. the backend's `backend_root_local`), so a place always
+/// has a `Local` base; a non-place LHS is a lowering invariant violation.
+///
+/// S2b will extend places to out-connection / out-record / out-arg targets;
+/// S4 will add a `BitRange` projection for slice-set.
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
+pub struct Place {
+    pub base: LocalId,
+    pub projections: Vec<Projection>,
+}
+
+/// One step of a place projection, applied base→leaf order.
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
+pub enum Projection {
+    /// `.field` — also tuple parts (`x.0` is `Field("0")`, reusing field machinery).
+    Field(String),
+    /// `[index]` — an element index. In a drive target this is a genvar/const
+    /// (or a runtime index for a partial drive); kept as an expression.
+    Index(MExprId),
+}
+
 /// A positional connection argument. `out` marks a `=> target` reverse flow.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct MArg {
@@ -234,8 +261,9 @@ pub enum MStmt {
     Let { local: LocalId, value: MExprId },
     /// `var x;` declaration.
     VarDecl { local: LocalId },
-    /// A driving equation / connection: `lhs = rhs;`.
-    Equation { lhs: MExprId, rhs: MExprId },
+    /// A driving equation / connection: `lhs = rhs;`. The LHS is a [`Place`]
+    /// (a resolved drive target), not a value expression.
+    Equation { lhs: Place, rhs: MExprId },
     /// `return value;`
     Return { value: MExprId },
     /// A bare expression statement.

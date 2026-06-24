@@ -45,7 +45,7 @@ pub use hir::types::{
     ConstArg, Direction, Domain, DomainSort, GenericArgs, GenericParam, InferVar, LocalId, Term,
     TermKind, Type, ValueKind,
 };
-pub use mir::ir::{MExpr, MExprId, MExprKind, Mir};
+pub use mir::ir::{MExpr, MExprId, MExprKind, Mir, Place, Projection};
 pub use mir::lower::mir_of;
 pub use nameres::def_map::{
     Binding, BindingSource, CrateDefMap, DefData, DefDiagnostic, DefDiagnosticKind, ModuleData,

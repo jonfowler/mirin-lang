@@ -5,15 +5,19 @@
 //! input), embedding types costs nothing incrementally — exactly as rustc keeps
 //! `TypeckResults` separate from MIR.
 //!
-//! Lowering is **structural and total over well-typed bodies**, with negative
-//! space made explicit: any shape we assert cannot occur (an unresolved method
-//! call, a non-`Def` callee) `panic!`s rather than silently degrading. Nothing
-//! consumes MIR yet, so a panic here surfaces only via the smoke test.
+//! Lowering is **structural and total**, with negative space made explicit. On a
+//! *well-formed* body (no body/infer diagnostics) any shape we assert cannot
+//! occur — an unresolved method call, a non-`Def` callee, a non-place equation
+//! LHS — `panic!`s rather than silently degrading. On a malformed body those
+//! same shapes can legitimately appear (parse recovery, type errors), so there
+//! they degrade to `Missing`/degenerate places instead of crashing: a consumer
+//! running ahead of the diagnostics gate (the LSP, a future pass) must not be
+//! taken down by imperfect input. The `well_typed` flag gates the two regimes.
 
 use crate::base::db::SourceRoot;
 use crate::hir::body::{Block, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::infer::{Inference, infer};
-use crate::hir::types::{Term, Type};
+use crate::hir::types::{LocalId, Term, Type};
 use crate::mir::ir::*;
 use crate::nameres::ids::DefId;
 
@@ -27,6 +31,13 @@ pub fn mir_of<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'
     let mut lower = Lower {
         body,
         inf,
+        // A malformed body can carry shapes the lowering/inference left
+        // unresolved: a `Missing` node (parse recovery — a BODY diagnostic, not
+        // an infer one), a non-`Def` callee, an unresolved method. On such a
+        // body the negative-space panics degrade to `Missing`/degenerate places
+        // — the panics assert the *well-formed-but-unhandled* invariant only, so
+        // the gate must see both body and infer diagnostics.
+        well_typed: body.diagnostics().is_empty() && inf.diagnostics().is_empty(),
         exprs: Vec::with_capacity(body.exprs().count()),
     };
 
@@ -80,14 +91,24 @@ fn builtin_method(name: &str) -> BuiltinMethod {
 struct Lower<'a, 'db> {
     body: &'a crate::hir::body::Body<'db>,
     inf: &'a Inference<'db>,
+    /// Whether the body type-checked (no infer diagnostics). Gates the
+    /// negative-space panics: only a well-typed body asserts the invariants.
+    well_typed: bool,
     exprs: Vec<MExpr<'db>>,
 }
 
 impl<'a, 'db> Lower<'a, 'db> {
-    /// The baked type of a HIR expression. Missing only for exprs inference does
-    /// not type (e.g. the callee sub-expression of a call) — `Error` there is
-    /// fine because those nodes are consumed structurally, not by type.
+    /// The baked type of a HIR expression. Every expr that is *lowered* (pushed
+    /// to the arena) is one inference visited and typed; callee sub-expressions —
+    /// the only untyped exprs in a well-typed body — are consumed structurally
+    /// (their `DefId` extracted), never lowered. So on a well-typed body a
+    /// missing type is a hole, not a normal case: assert it. On an ill-typed
+    /// body `Error` is the honest fallback.
     fn ty_of(&self, id: ExprId) -> Type<'db> {
+        debug_assert!(
+            !self.well_typed || self.inf.expr_type(id).is_some(),
+            "MIR lowering: lowered expr has no inferred type on a clean body"
+        );
         self.inf.expr_type(id).cloned().unwrap_or(Type::Error)
     }
 
@@ -116,7 +137,7 @@ impl<'a, 'db> Lower<'a, 'db> {
             },
             Stmt::VarDecl { local } => MStmt::VarDecl { local: *local },
             Stmt::Equation { lhs, rhs } => MStmt::Equation {
-                lhs: self.lower_expr(*lhs),
+                lhs: self.lower_place(*lhs),
                 rhs: self.lower_expr(*rhs),
             },
             Stmt::Return { value } => MStmt::Return {
@@ -190,11 +211,15 @@ impl<'a, 'db> Lower<'a, 'db> {
             } => {
                 let callee_def = match &self.body.expr(*callee).kind {
                     ExprKind::Def(d) => *d,
-                    other => panic!(
+                    // A non-`Def` callee only arises from infer's Def-or-Error
+                    // fallback on an ill-typed body. Degrade there; assert only
+                    // on a well-typed body (a genuine dispatch-resolution gap).
+                    other if self.well_typed => panic!(
                         "MIR lowering: plain-call callee is not a Def ({:?}-shaped); \
                          dispatch resolution gap",
                         std::mem::discriminant(other)
                     ),
+                    _ => return MExprKind::Missing,
                 };
                 MExprKind::Call {
                     callee: callee_def,
@@ -211,6 +236,9 @@ impl<'a, 'db> Lower<'a, 'db> {
             } => {
                 // A resolved dispatch records a callee def; a builtin does not.
                 // The presence of a `method_resolution` is exactly that split.
+                // On an ill-typed body a `None` may instead be an unresolved
+                // method (infer emitted `UnresolvedMethod`) — degrade to Missing
+                // rather than mis-tag it as a builtin.
                 match self.inf.method_resolution(id) {
                     Some(callee) => MExprKind::Call {
                         callee,
@@ -219,11 +247,12 @@ impl<'a, 'db> Lower<'a, 'db> {
                         args: self.lower_args(args),
                         named: Vec::new(),
                     },
-                    None => MExprKind::Builtin {
+                    None if self.well_typed => MExprKind::Builtin {
                         method: builtin_method(method),
                         receiver: self.lower_expr(*receiver),
                         args: self.lower_args(args),
                     },
+                    None => MExprKind::Missing,
                 }
             }
             ExprKind::TypePathCall {
@@ -231,9 +260,17 @@ impl<'a, 'db> Lower<'a, 'db> {
                 method,
                 args,
             } => {
-                let callee = self.inf.method_resolution(id).unwrap_or_else(|| {
-                    panic!("MIR lowering: unresolved type-path call `::{method}`")
-                });
+                // A well-typed type-path call always has a resolution; a `None`
+                // means infer rejected it (`UnresolvedMethod`) — degrade.
+                let callee = match self.inf.method_resolution(id) {
+                    Some(c) => c,
+                    None if self.well_typed => {
+                        panic!(
+                            "MIR lowering: unresolved type-path call `::{method}` on a clean body"
+                        )
+                    }
+                    None => return MExprKind::Missing,
+                };
                 MExprKind::Call {
                     callee,
                     substs: self.substs_of(id),
@@ -288,6 +325,59 @@ impl<'a, 'db> Lower<'a, 'db> {
                 init: init.map(|e| self.lower_expr(e)),
             },
             ExprKind::Block(b) => MExprKind::Block(self.lower_block(b)),
+        }
+    }
+
+    /// Lower an equation LHS to a [`Place`]: walk the `Local`/`Field`/`Index`
+    /// chain to its root local. The chain is collected leaf→base, then reversed
+    /// so projections read base→leaf.
+    fn lower_place(&mut self, id: ExprId) -> Place {
+        let mut projections = Vec::new();
+        match self.collect_place(id, &mut projections) {
+            Some(base) => {
+                projections.reverse();
+                Place { base, projections }
+            }
+            // Only reachable on an ill-typed body (the panics below fire on a
+            // well-typed one). Degrade to a degenerate place — this MIR is never
+            // emitted (the diagnostics gate blocks it).
+            None => {
+                debug_assert!(!self.well_typed);
+                Place {
+                    base: LocalId(0),
+                    projections: Vec::new(),
+                }
+            }
+        }
+    }
+
+    /// Walk a `Local`/`Field`/`Index` chain to its root local, pushing
+    /// projections leaf→base. Returns `None` only on an ill-typed body (a
+    /// non-place LHS); on a well-typed body a non-place LHS is a lowering
+    /// invariant violation and panics.
+    fn collect_place(&mut self, id: ExprId, projs: &mut Vec<Projection>) -> Option<LocalId> {
+        match self.body.expr(id).kind.clone() {
+            ExprKind::Local(l) => Some(l),
+            ExprKind::Field { receiver, field } => {
+                projs.push(Projection::Field(field));
+                self.collect_place(receiver, projs)
+            }
+            ExprKind::Index { base, index } => {
+                let mi = self.lower_expr(index);
+                projs.push(Projection::Index(mi));
+                self.collect_place(base, projs)
+            }
+            // Slice-set (`x[a..b] = y`) needs a BitRange projection — S4. Slicing
+            // is still diagnosed, so a slice LHS only reaches here on an
+            // ill-typed body today; once S4 lands this becomes the BitRange case.
+            ExprKind::Slice { .. } if self.well_typed => {
+                panic!("MIR lowering: slice-set place not yet supported (S4)")
+            }
+            other if self.well_typed => panic!(
+                "MIR lowering: equation LHS is not a place ({:?}-shaped)",
+                std::mem::discriminant(&other)
+            ),
+            _ => None,
         }
     }
 

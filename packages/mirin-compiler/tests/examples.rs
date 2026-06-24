@@ -498,6 +498,31 @@ fn every_working_example_lowers_to_mir() {
 }
 
 #[test]
+fn fail_expected_examples_lower_to_mir_without_panicking() {
+    // Negative-space robustness: MIR lowering must DEGRADE (to `Missing` /
+    // degenerate places) on ill-typed bodies, not crash. The fail-expected
+    // corpus is the error-body suite — a hard crash here means a negative-space
+    // panic fired on input that merely failed to type-check.
+    for entry in std::fs::read_dir(fail_expected_dir()).expect("fail-expected") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("mrn") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).unwrap();
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        vfs.set_file_text(&mut db, "t.mrn", src);
+        let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+        let map = crate_def_map(&db, krate);
+        for def in map.defs().collect::<Vec<_>>() {
+            if let Some(DefKind::Fn | DefKind::Method) = map.def_data(def).map(|d| d.kind) {
+                let _ = mir_of(&db, krate, def);
+            }
+        }
+    }
+}
+
+#[test]
 fn clean_examples_typecheck_without_diagnostics() {
     for (name, src) in examples() {
         let counts = diagnostic_counts(&src);

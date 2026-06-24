@@ -2592,6 +2592,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
         }
         // Prelude methods not in the impl-method index yet (Q3a backfill pending).
+        // These builtins are typed structurally and record NO `method_resolution`
+        // — that absence is how MIR (`mir::lower`) and the backend tell a builtin
+        // from a resolved dispatch. If you add another resolution-less builtin
+        // here, add it to `mir::lower::builtin_method` / `mir::ir::BuiltinMethod`
+        // too, or MIR lowering will panic on it.
         let args_inferred: Vec<Type<'db>> =
             args.iter().map(|a| self.infer_expr(body, a.expr)).collect();
         let recv = self.resolve_ty(&recv);
