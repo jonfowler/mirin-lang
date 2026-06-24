@@ -20,6 +20,7 @@
 pub mod backend;
 pub mod base;
 pub mod hir;
+pub mod mir;
 pub mod nameres;
 pub mod syntax;
 
@@ -44,6 +45,8 @@ pub use hir::types::{
     ConstArg, Direction, Domain, DomainSort, GenericArgs, GenericParam, InferVar, LocalId, Term,
     TermKind, Type, ValueKind,
 };
+pub use mir::ir::{MExpr, MExprId, MExprKind, Mir};
+pub use mir::lower::mir_of;
 pub use nameres::def_map::{
     Binding, BindingSource, CrateDefMap, DefData, DefDiagnostic, DefDiagnosticKind, ModuleData,
     ModuleId, ModuleKind, Visibility, builtin_type_names, crate_def_map,

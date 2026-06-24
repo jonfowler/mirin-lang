@@ -1,0 +1,11 @@
+//! The **MIR** layer — a typed, derived mid-level IR between the HIR
+//! (`body` + `infer`) and SystemVerilog emission. See `planning/mir.md` for the
+//! design and `planning/mir_progress.md` for the migration state.
+//!
+//! - [`ir`] — the MIR data types ([`Mir`](ir::Mir), [`MExpr`](ir::MExpr), …):
+//!   a faithful typed mirror of the HIR body, with types baked on the nodes and
+//!   dispatch resolved.
+//! - [`lower`] — the [`mir_of`](lower::mir_of) query: HIR→MIR lowering.
+
+pub mod ir;
+pub mod lower;

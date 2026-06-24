@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use mirin_compiler::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, completeness, crate_def_map,
-    directions, infer, load_crate, reserved_words, sig_of, syntax_errors, verilog,
+    directions, infer, load_crate, mir_of, reserved_words, sig_of, syntax_errors, verilog,
 };
 
 fn working_dir() -> PathBuf {
@@ -474,6 +474,26 @@ fn every_working_example_runs_the_query_stack() {
     for (name, src) in examples() {
         let _ = diagnostic_counts(&src);
         eprintln!("ran: {name}");
+    }
+}
+
+#[test]
+fn every_working_example_lowers_to_mir() {
+    // MIR lowering is negative-space: any unhandled HIR shape panics loudly.
+    // Building MIR for every fn/method in the corpus surfaces such gaps here
+    // rather than later, while nothing else consumes MIR yet.
+    for (name, src) in examples() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        vfs.set_file_text(&mut db, "t.mrn", src);
+        let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+        let map = crate_def_map(&db, krate);
+        for def in map.defs().collect::<Vec<_>>() {
+            if let Some(DefKind::Fn | DefKind::Method) = map.def_data(def).map(|d| d.kind) {
+                let _ = mir_of(&db, krate, def);
+            }
+        }
+        eprintln!("mir: {name}");
     }
 }
 
