@@ -12,21 +12,29 @@ use std::{env, fs, process};
 
 use mirin_compiler::{
     DefKind, RootDatabase, SourceRoot, Span, Vfs, ast_id_map, body, check_drivers, completeness,
-    crate_def_map, directions, infer, load_crate, parse_text, render, reserved_words, sig_of,
-    syntax_errors, verilog,
+    crate_def_map, directions, infer, load_crate, mir_of, parse_text, pretty_mir, render,
+    reserved_words, sig_of, syntax_errors, verilog,
 };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Emit {
+    Sv,
+    Cst,
+    Mir,
+}
 
 struct CliArgs {
     input: PathBuf,
     out_dir: PathBuf,
-    emit_cst: bool,
+    emit: Emit,
 }
 
 fn print_usage(program: &str) {
-    eprintln!("usage: {program} [--emit sv|cst] [--out <dir>] <path-to-.mrn-file>");
+    eprintln!("usage: {program} [--emit sv|cst|mir] [--out <dir>] <path-to-.mrn-file>");
     eprintln!();
     eprintln!("  --emit sv   (default) write SystemVerilog to <out-dir>/<stem>.sv");
     eprintln!("  --emit cst  print the root file's concrete syntax tree to stdout");
+    eprintln!("  --emit mir  print each fn/method's MIR to stdout (a debug aid)");
     eprintln!("  --out <dir> output directory for `--emit sv` (default: ./sv/)");
 }
 
@@ -34,7 +42,7 @@ fn parse_args(program: &str) -> Result<CliArgs, i32> {
     let mut args = env::args_os().skip(1);
     let mut input: Option<PathBuf> = None;
     let mut out_dir = PathBuf::from("./sv/");
-    let mut emit_cst = false;
+    let mut emit = Emit::Sv;
 
     while let Some(raw) = args.next() {
         let Some(s) = raw.to_str().map(str::to_owned) else {
@@ -44,14 +52,15 @@ fn parse_args(program: &str) -> Result<CliArgs, i32> {
         match s.as_str() {
             "--emit" => {
                 let value = args.next().ok_or_else(|| {
-                    eprintln!("error: `--emit` expects a value (sv or cst)");
+                    eprintln!("error: `--emit` expects a value (sv, cst, or mir)");
                     2
                 })?;
                 match value.to_string_lossy().as_ref() {
-                    "sv" => emit_cst = false,
-                    "cst" => emit_cst = true,
+                    "sv" => emit = Emit::Sv,
+                    "cst" => emit = Emit::Cst,
+                    "mir" => emit = Emit::Mir,
                     other => {
-                        eprintln!("error: unknown emit mode `{other}` (expected sv or cst)");
+                        eprintln!("error: unknown emit mode `{other}` (expected sv, cst, or mir)");
                         return Err(2);
                     }
                 }
@@ -90,7 +99,7 @@ fn parse_args(program: &str) -> Result<CliArgs, i32> {
     Ok(CliArgs {
         input,
         out_dir,
-        emit_cst,
+        emit,
     })
 }
 
@@ -106,7 +115,7 @@ fn main() {
     };
 
     // `--emit cst`: parse just the root file and print its tree (a debug aid).
-    if args.emit_cst {
+    if args.emit == Emit::Cst {
         match fs::read_to_string(&args.input) {
             Ok(src) => println!("{}", parse_text(&src).root_node().to_sexp()),
             Err(e) => {
@@ -126,6 +135,23 @@ fn main() {
             process::exit(2);
         }
     };
+
+    // `--emit mir`: dump each fn/method's MIR (a debug aid). Prints regardless
+    // of diagnostics so a half-typed body can still be inspected.
+    if args.emit == Emit::Mir {
+        let map = crate_def_map(&db, krate);
+        for def in map.defs().collect::<Vec<_>>() {
+            let Some(data) = map.def_data(def) else {
+                continue;
+            };
+            if !matches!(data.kind, DefKind::Fn | DefKind::Method) {
+                continue;
+            }
+            println!("=== {} ===", data.name);
+            println!("{}", pretty_mir(&db, krate, mir_of(&db, krate, def)));
+        }
+        return;
+    }
 
     // Syntax errors short-circuit before semantic analysis (a parse-recovered
     // tree would otherwise lower to partial, wrong output).

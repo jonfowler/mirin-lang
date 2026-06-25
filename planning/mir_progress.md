@@ -39,6 +39,9 @@
   instead of `body`+`infer`. Parity gate: `golden_sv_snapshot` (built, 89 cases).
   Planning-reviewed; ordered sub-steps + invariants in the design note below.
   - [x] S3.0 — golden-SV byte-for-byte gate (`tests/golden/`).
+  - [x] S3.1 — MIR debug dump (`mir/pretty.rs` + `--emit mir`); first real
+    consumer. Validated: `value + 3` → `l0.call add<8, D0>(3)` (operator unified,
+    substs baked, `:uint(8)@D0` types on every node).
 - [ ] **S4 — Slice desugar on MIR.** Type-directed `x[a..b]` → part-select
   primitive + zero-width `const if` guard (retires SliceNotImplemented).
 - [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass.
@@ -160,3 +163,9 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   ordered S3 sub-steps into the S3 design note above. Next loop iteration:
   S3.1 — `mir/pretty.rs` + `--emit mir`, then S3.2 first scalar subtarget on
   `add_constant` behind the golden gate.
+- 2026-06-25: S3.1 landed — `mir/pretty.rs` + `--emit mir` + a fast dump test.
+  The dump confirms S1/S2 produce correct structure (unified call, baked types,
+  places). **BLOCKER for S3.2+**: the actual emission retarget edits
+  `backend/lower.rs`, which has uncommitted user WIP — cannot touch it without
+  clobbering. S3.2+ is gated on that WIP landing/clearing. Until then, available
+  MIR work is in `src/mir/` only: S2b (out-targets → places), cleanup, design.

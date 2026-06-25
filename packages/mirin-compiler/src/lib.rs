@@ -47,6 +47,7 @@ pub use hir::types::{
 };
 pub use mir::ir::{MExpr, MExprId, MExprKind, Mir, Place, Projection};
 pub use mir::lower::mir_of;
+pub use mir::pretty::pretty as pretty_mir;
 pub use nameres::def_map::{
     Binding, BindingSource, CrateDefMap, DefData, DefDiagnostic, DefDiagnosticKind, ModuleData,
     ModuleId, ModuleKind, Visibility, builtin_type_names, crate_def_map,

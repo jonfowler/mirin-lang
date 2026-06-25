@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 
 use mirin_compiler::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, completeness, crate_def_map,
-    directions, infer, load_crate, mir_of, reserved_words, sig_of, syntax_errors, verilog,
+    directions, infer, load_crate, mir_of, pretty_mir, reserved_words, sig_of, syntax_errors,
+    verilog,
 };
 
 fn working_dir() -> PathBuf {
@@ -562,6 +563,33 @@ fn every_working_example_lowers_to_mir() {
         }
         eprintln!("mir: {name}");
     }
+}
+
+#[test]
+fn mir_pretty_dump_renders_unified_call_with_types() {
+    // The `--emit mir` consumer: `value + 3` must lower to a unified resolved
+    // call (`add`) with the operand types baked on the nodes. Validates the
+    // pretty-printer and, through it, the S1 call-unification + types-on-node.
+    let src = std::fs::read_to_string(working_dir().join("add_constant.mrn")).unwrap();
+    let mut db = RootDatabase::default();
+    let mut vfs = Vfs::new();
+    vfs.set_file_text(&mut db, "t.mrn", src);
+    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+    let map = crate_def_map(&db, krate);
+    let def = map
+        .defs()
+        .find(|d| {
+            map.def_data(*d)
+                .map(|dd| dd.name == "addConstant")
+                .unwrap_or(false)
+        })
+        .expect("addConstant def");
+    let dump = pretty_mir(&db, krate, mir_of(&db, krate, def));
+    assert!(
+        dump.contains("call add"),
+        "expected unified call in:\n{dump}"
+    );
+    assert!(dump.contains("uint(8)"), "expected baked types in:\n{dump}");
 }
 
 #[test]
