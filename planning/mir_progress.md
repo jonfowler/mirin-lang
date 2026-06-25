@@ -210,6 +210,17 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: S3.2d cont(2) — inline call machinery on MIR. Added
+  `resolve_trait_instance_with` (substs-taking, id-agnostic) + `mir_call_target`
+  + `render_inline_mir` (prep from a MIR `Call` node, shares `render_inline_spliced`).
+  Wired the `Call` arm in both `expr_value_mir` and `expr_leaves_mir`: inline
+  callees splice via `render_inline_mir`; non-inline (instance) is `todo!`
+  (needs `emit_instance`/`call_value_leaves` on MIR). Dead code; live
+  `resolve_trait_instance` refactor is identity — golden green (93s), 127 lib green.
+  **Inline calls (operators) now lower on MIR** — the bottleneck arm is done for
+  the common case. Next (S3.2e): `lower_stmts_mir` + `drive_result_mir`, then a
+  parallel-entry flip of `add_constant` (inline-only) for the first real
+  byte-for-byte validation of the walker.
 - 2026-06-25: S3.2d cont. — refactored `render_inline` to extract the
   **id-agnostic** `render_inline_spliced(template, val_map, node_subst)` (the
   SV-building half). The HIR path now builds `val_map`/`node_subst` then calls

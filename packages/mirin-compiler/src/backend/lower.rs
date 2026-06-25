@@ -52,7 +52,7 @@ use crate::hir::types::{
     ConstArg, ConstOp, Direction, Domain, Folder, GenericArgs, GenericParam, LocalId, Term,
     TermKind, Type, ValueKind, subst_const_opt,
 };
-use crate::mir::ir::{MExprId, MExprKind, Mir};
+use crate::mir::ir::{Conn, MExprId, MExprKind, MNamedArg, Mir};
 use crate::mir::lower::mir_of;
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -1592,11 +1592,21 @@ impl<'db> SvLower<'_, 'db> {
         expr: ExprId,
         decl: DefId<'db>,
     ) -> Option<(DefId<'db>, Vec<Option<Term<'db>>>)> {
+        self.resolve_trait_instance_with(decl, self.inf.call_subst(expr)?)
+    }
+
+    /// `resolve_trait_instance`, but taking the recorded decl substitution
+    /// directly instead of looking it up by HIR `ExprId` — id-agnostic, so the
+    /// MIR walker can pass a `Call` node's `substs`.
+    fn resolve_trait_instance_with(
+        &self,
+        decl: DefId<'db>,
+        decl_subst: &[Term<'db>],
+    ) -> Option<(DefId<'db>, Vec<Option<Term<'db>>>)> {
         if !self.map.is_trait_method_decl(decl) {
             return None;
         }
         let trait_def = self.map.def_data(decl)?.owner?;
-        let decl_subst = self.inf.call_subst(expr)?;
         let Some(Term::Type(self_ty)) = decl_subst.first() else {
             return None;
         };
@@ -1627,6 +1637,22 @@ impl<'db> SvLower<'_, 'db> {
             return Some((method, composed));
         }
         None
+    }
+
+    /// Resolve a MIR `Call` node's callee to the concrete instance: a trait
+    /// method DECL re-selects to its impl (with the composed subst override);
+    /// anything else is itself. The MIR analogue of the
+    /// `resolve_trait_instance` step the HIR call paths do.
+    #[allow(dead_code)]
+    fn mir_call_target(
+        &self,
+        callee: DefId<'db>,
+        substs: &[Term<'db>],
+    ) -> (DefId<'db>, Option<Vec<Option<Term<'db>>>>) {
+        match self.resolve_trait_instance_with(callee, substs) {
+            Some((m, ov)) => (m, Some(ov)),
+            None => (callee, None),
+        }
     }
 
     /// A statement-position call is const-only when the callee's every value
@@ -2088,9 +2114,24 @@ impl<'db> SvLower<'_, 'db> {
                 }
             }
             MExprKind::Missing => SvExpr::Lit("0".to_owned()),
-            // Cross-method twins pending (each is its own S3.2 sub-step):
-            MExprKind::Call { .. } => {
-                todo!("S3.2d: expr_value_mir Call (inline-splice / module instance on MIR)")
+            MExprKind::Call {
+                callee,
+                substs,
+                receiver,
+                args,
+                named,
+            } => {
+                let (callee, substs) = (*callee, substs.clone());
+                let (receiver, args, named) = (*receiver, args.clone(), named.clone());
+                let (def, ov) = self.mir_call_target(callee, &substs);
+                if self.splices_inline(def) {
+                    self.render_inline_mir(def, &substs, ov.as_deref(), receiver, &args, &named)
+                } else {
+                    // A user call in scalar position: instantiate, take one leaf.
+                    todo!(
+                        "S3.2d: expr_value_mir Call instance (emit_instance / call_value_leaves on MIR)"
+                    )
+                }
             }
             MExprKind::Builtin { .. } => {
                 todo!("S3.2e: expr_value_mir Builtin (reg in value position)")
@@ -2431,8 +2472,31 @@ impl<'db> SvLower<'_, 'db> {
                 todo!("S3.2d: expr_leaves_mir Record (record_leaves on MIR)")
             }
             MExprKind::Index { .. } => todo!("S3.2d: expr_leaves_mir Index"),
-            MExprKind::Call { .. } => {
-                todo!("S3.2d: expr_leaves_mir Call (inline/instance leaves)")
+            MExprKind::Call {
+                callee,
+                substs,
+                receiver,
+                args,
+                named,
+            } => {
+                let (callee, substs) = (*callee, substs.clone());
+                let (receiver, args, named) = (*receiver, args.clone(), named.clone());
+                let (def, ov) = self.mir_call_target(callee, &substs);
+                if self.splices_inline(def) {
+                    vec![(
+                        String::new(),
+                        self.render_inline_mir(
+                            def,
+                            &substs,
+                            ov.as_deref(),
+                            receiver,
+                            &args,
+                            &named,
+                        ),
+                    )]
+                } else {
+                    todo!("S3.2d: expr_leaves_mir Call instance (call_value_leaves on MIR)")
+                }
             }
             MExprKind::Builtin { .. } => todo!("S3.2e: expr_leaves_mir Builtin (replace/reg)"),
             MExprKind::ConstIf { .. } => todo!("S3.2e: expr_leaves_mir ConstIf"),
@@ -2887,6 +2951,74 @@ impl<'db> SvLower<'_, 'db> {
             extract_assign_rhs(&out)
         };
         SvExpr::Lit(format!("({rhs})"))
+    }
+
+    /// MIR twin of `render_inline`'s prep (S3.2d): build the param→value map and
+    /// const subst from a MIR `Call` node's parts, then share the splice. `def`
+    /// is the resolved callee (after `resolve_trait_instance_with`); `substs` is
+    /// the node's recorded subst; `subst_override` is the trait-instance subst
+    /// when one applies.
+    #[allow(dead_code)]
+    fn render_inline_mir(
+        &mut self,
+        def: DefId<'db>,
+        substs: &[Term<'db>],
+        subst_override: Option<&[Option<Term<'db>>]>,
+        receiver: Option<MExprId>,
+        args: &[Conn],
+        named: &[MNamedArg],
+    ) -> SvExpr {
+        let csig = sig_of(self.db, self.krate, def);
+        let Some(template) = body(self.db, self.krate, def).verilog().cloned() else {
+            panic!(
+                "#[inline] on a Mirin-bodied fn `{}` is not yet supported (only \
+                 verilog-bodied inline splicing is implemented)",
+                self.map
+                    .def_data(def)
+                    .map(|d| d.name.as_str())
+                    .unwrap_or("?"),
+            );
+        };
+        // Value params → caller arg expressions: positional zip with
+        // `[receiver?] ++ in-args`, named by name. (An inline call carries only
+        // in-connections; an out-connection to an inline body is not a thing.)
+        let mut positional: Vec<MExprId> = receiver.into_iter().collect();
+        positional.extend(args.iter().filter_map(|a| match a {
+            Conn::In(e) => Some(*e),
+            Conn::Out(_) => None,
+        }));
+        let mut pos_i = 0;
+        let mut val_map: HashMap<LocalId, String> = HashMap::new();
+        for p in &csig.params {
+            let caller_expr = if p.from_named_section {
+                named
+                    .iter()
+                    .find(|n| n.name == p.name)
+                    .and_then(|n| match &n.conn {
+                        Conn::In(e) => Some(*e),
+                        Conn::Out(_) => None,
+                    })
+            } else {
+                let e = positional.get(pos_i).copied();
+                pos_i += 1;
+                e
+            };
+            // TODO(named-args): one scalar string per param — a multi-leaf
+            // signal/port param is not handled (same limit as the HIR path).
+            let rendered = match caller_expr {
+                Some(e) => self.expr_value_mir(e).to_string(),
+                None => match &p.default {
+                    Some(d) => default_value(d).to_string(),
+                    None => continue,
+                },
+            };
+            val_map.insert(p.local, rendered);
+        }
+        let node_subst: Vec<Option<Term<'db>>> = match subst_override {
+            Some(ov) => ov.to_vec(),
+            None => substs.iter().cloned().map(Some).collect(),
+        };
+        self.render_inline_spliced(&template, &val_map, &node_subst)
     }
 
     // ----- instantiation (user calls / methods → submodules) -----
