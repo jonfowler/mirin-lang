@@ -214,6 +214,16 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S4 step 1 — first slice end-to-end (bits, literal, read).**
+  `x[8..4]` on `bits` now types to `bits(4)` (infer `slice_bits_literal`,
+  high-first, width≥1) and lowers through the MIR walker to the SV part-select
+  `x[7:4]` (`expr_value_mir` Slice arm + `mir_lit`; predicate admits a
+  literal-endpoint bits slice). `examples/working/slice_bits.mrn` added to
+  CLEAN+VERILATOR_CLEAN+golden; the now-passing `fail-expected/slice-not-implemented.mrn`
+  removed. The S4 pipeline is proven; wider cases still reject cleanly
+  (SliceNotImplemented): vec, offset `..+w`, param/runtime endpoints, elision,
+  zero-width (needs the const-if guard), slice-set. Next S4: vec slices + offset
+  form + param/runtime endpoints + zero-width guard.
 - 2026-06-25: cleanup — dropped the 43 stale `#[allow(dead_code)]` on the MIR
   walker twins (all now live in the call graph; compiles clean). Wrote the S4
   (slicing) implementation plan + the HIR-core-deletion deferred-cleanup note

@@ -1899,6 +1899,14 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
+    /// A MIR node's literal value (a `Number`). Used for literal slice endpoints.
+    fn mir_lit(&self, m: MExprId) -> i128 {
+        match self.mir.expr(m).kind {
+            MExprKind::Number(v, _) => v,
+            _ => panic!("MIR: expected a literal slice endpoint"),
+        }
+    }
+
     /// `Some((d_input, reset, init))` if a MIR node is a `.reg(rst, init)` builtin.
     fn as_reg_mir(&self, m: MExprId) -> Option<(MExprId, MExprId, MExprId)> {
         if let MExprKind::Builtin {
@@ -2269,7 +2277,19 @@ impl<'db> SvLower<'_, 'db> {
                 Conn::In(e) => self.mir_ok_expr(mir, *e),
                 Conn::Out(p) => self.mir_ok_place(mir, p),
             }),
-            // Slice, ConstIf, other Builtins, Def: not yet walked.
+            // A `bits` slice (S4 first cut): base walkable, both endpoints
+            // literal (infer only types this shape; the walker reads the lits).
+            MExprKind::Slice {
+                base,
+                lo: Some(lo),
+                hi: Some(hi),
+                width: None,
+            } => {
+                self.mir_ok_expr(mir, *base)
+                    && matches!(mir.expr(*lo).kind, MExprKind::Number(..))
+                    && matches!(mir.expr(*hi).kind, MExprKind::Number(..))
+            }
+            // ConstIf, other Builtins, Def, offset/non-literal slices: not walked.
             _ => false,
         }
     }
@@ -3172,7 +3192,15 @@ impl<'db> SvLower<'_, 'db> {
                 self.lower_if_mir(m, cond, &tb, &eb)
             }
             MExprKind::ConstIf { .. } => todo!("S3.2l: expr_value_mir ConstIf (const-eval on MIR)"),
-            MExprKind::Slice { .. } => todo!("S4: expr_value_mir Slice (part-select desugar)"),
+            // A `bits` slice (S4 first cut): two literal high-first endpoints
+            // `x[high..low]` → the constant part-select `x[high-1:low]`.
+            MExprKind::Slice { base, lo, hi, .. } => {
+                let (base, lo, hi) = (*base, *lo, *hi);
+                let base_sv = self.expr_value_mir(base);
+                let high = self.mir_lit(lo.expect("slice high endpoint"));
+                let low = self.mir_lit(hi.expect("slice low endpoint"));
+                SvExpr::Lit(format!("{base_sv}[{}:{}]", high - 1, low))
+            }
             MExprKind::Block(b) => {
                 let b = b.clone();
                 self.block_value_mir(&b)

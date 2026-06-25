@@ -1776,6 +1776,54 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         ty
     }
 
+    /// A literal endpoint's value (a `Number`/typed literal), else `None`.
+    fn lit_val(&self, body: &Body<'db>, e: ExprId) -> Option<i128> {
+        match body.expr(e).kind {
+            ExprKind::Number(v, _) => Some(v),
+            ExprKind::TypedLiteral { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Type a `bits` slice with two literal, high-first endpoints (the S4 first
+    /// cut). `x[high..low]` → `bits(high-low)` on the base's domain. Returns
+    /// `None` for any shape not yet handled (offset form, non-literal endpoints,
+    /// non-`bits` base, ascending) so the caller rejects it cleanly.
+    fn slice_bits_literal(
+        &self,
+        body: &Body<'db>,
+        bt: &Type<'db>,
+        lo: Option<ExprId>,
+        hi: Option<ExprId>,
+        width: Option<ExprId>,
+    ) -> Option<Type<'db>> {
+        if width.is_some() {
+            return None; // offset form `..+w` not yet
+        }
+        let Type::Value {
+            kind: ValueKind::Bits { .. },
+            domain,
+        } = bt
+        else {
+            return None;
+        };
+        // `bits` is written high-first: the first endpoint is the (exclusive)
+        // high, the second the (inclusive) low.
+        let high = self.lit_val(body, lo?)?;
+        let low = self.lit_val(body, hi?)?;
+        if high <= low {
+            // ascending on bits is wrong order; zero-width needs the const-if
+            // guard (a later S4 step) — reject both in this first cut.
+            return None;
+        }
+        Some(Type::Value {
+            kind: ValueKind::Bits {
+                width: ConstArg::Lit(high - low),
+            },
+            domain: *domain,
+        })
+    }
+
     /// Push an inference diagnostic at the current expression's span.
     fn diag(&mut self, kind: InferDiagnosticKind) {
         self.diagnostics.push(InferDiagnostic {
@@ -1875,10 +1923,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             // `v[i]`: Vec(N, A) → A; bits(N) → bool. The index is a literal,
             // an integer, or a uint (a hardware select); its domain joins the
             // base's via the result.
-            // Slicing (planning/slicing.md): parsed and lowered, semantics not
-            // yet implemented. Infer the sub-expressions (so they are not left
-            // untyped), then reject cleanly — never let a slice fall through to
-            // its base value.
+            // Slicing (planning/slicing.md). First cut: a `bits` slice with two
+            // LITERAL endpoints, written high-first (`x[8..4]` → bits(4)). Wider
+            // cases (vec, offset `..+w`, param/runtime endpoints, elision,
+            // zero-width) still reject cleanly — never fall through to the base.
             ExprKind::Slice {
                 base,
                 lo,
@@ -1886,12 +1934,18 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 width,
             } => {
                 let (base, lo, hi, width) = (*base, *lo, *hi, *width);
-                self.infer_expr(body, base);
+                let bt = self.infer_expr(body, base);
+                let bt = self.resolve_ty(&bt);
                 for e in [lo, hi, width].into_iter().flatten() {
                     self.infer_expr(body, e);
                 }
-                self.diag(InferDiagnosticKind::SliceNotImplemented);
-                Type::Error
+                match self.slice_bits_literal(body, &bt, lo, hi, width) {
+                    Some(ty) => ty,
+                    None => {
+                        self.diag(InferDiagnosticKind::SliceNotImplemented);
+                        Type::Error
+                    }
+                }
             }
             ExprKind::Index { base, index } => {
                 let (base, index) = (*base, *index);

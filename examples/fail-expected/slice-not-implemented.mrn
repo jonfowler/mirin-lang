@@ -1,7 +1,0 @@
-// Slice syntax parses and lowers (planning/slicing.md), but the semantics are
-// not yet implemented — so a slice is rejected with a clean diagnostic rather
-// than silently lowering to its base value. (Both the range form `x[hi..lo]`
-// and the offset form `x[off..+w]` are recognised.)
-fn s (x: bits(16)) -> bits(4) {
-    x[8..4]
-}

@@ -1,0 +1,6 @@
+// A `bits` slice with two literal, high-first endpoints (planning/slicing.md).
+// `x[8..4]` is the half-open interval [4, 8) — bits {4,5,6,7}, width 4 — and
+// lowers to the SystemVerilog constant part-select `x[7:4]`.
+fn s(x: bits(16)) -> bits(4) {
+    x[8..4]
+}
