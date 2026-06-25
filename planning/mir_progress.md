@@ -47,6 +47,9 @@
   - [x] S3.1 — MIR debug dump (`mir/pretty.rs` + `--emit mir`); first real
     consumer. Validated: `value + 3` → `l0.call add<8, D0>(3)` (operator unified,
     substs baked, `:uint(8)@D0` types on every node).
+  - [x] S3.2a — HIR↔MIR bridge (`Mir.of_hir`), the retarget seam.
+  - [ ] S3.2b — type-source swap (backend reads `mexpr.ty` via `of_hir`).
+  - [ ] S3.2c..e — `as_reg`→`Builtin`, calls, control flow onto MIR. (Plan below.)
 - [ ] **S4 — Slice desugar on MIR.** Type-directed `x[a..b]` → part-select
   primitive + zero-width `const if` guard (retires SliceNotImplemented).
 - [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass.
@@ -175,9 +178,37 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   clobbering. S3.2+ is gated on that WIP landing/clearing. Until then, available
   MIR work is in `src/mir/` only: S2b (out-targets → places), cleanup, design.
 - 2026-06-25: S2b landed — `Conn { In | Out(Place) }` unifies all connection
-  sites. Out-connections place-ified (dump-validated on `record_out_conn`). All
-  unblocked MIR structure (S1, S2, S2b) is now in: types-on-node, unified
-  resolved calls, builtins, places for both equation LHS and out-connections.
-  Remaining MIR slices (S3.2 emission retarget, S4 slice desugar, S5 flatten,
-  S6 mono, S7 inline) all require editing `backend/lower.rs` (user WIP) or land
-  inside S3 — blocked until that WIP clears.
+  sites. Out-connections place-ified (dump-validated on `record_out_conn`).
+- 2026-06-25: **Correction** — `backend/lower.rs` is NOT blocked. Its earlier
+  dirty state was my own pre-MIR commit `3076994` (named-arg TODOs), already
+  committed. The only uncommitted files are user WIP elsewhere (`prelude.mrn`,
+  `planning/{domain_checking,pack_resize,todo-list}.md`, `proposals/*` deletions)
+  — none of which the retarget touches. **S3.2 (emission retarget) is unblocked.**
+- 2026-06-25: S3.2a landed — the HIR↔MIR bridge. `Mir.of_hir(ExprId) ->
+  Option<MExprId>` (populated in `push`) lets the backend, which keys on HIR ids,
+  read MIR nodes incrementally before it walks MIR natively. Holds 1:1 at birth;
+  retires once S4/S7 add nodes and emission reads MIR natively.
+
+## S3.2 entry plan (next fire)
+
+The backend keys every read on a HIR `ExprId`; MIR has its own arena. The bridge
+(`of_hir`) is the migration seam. Do the retarget as type-source-first, then
+control-flow, each gated by `golden_sv_snapshot` (regenerate only on an
+*intended* change, reviewing the diff):
+
+1. **S3.2b — type-source swap.** In `build_module`, fetch `let mir = mir_of(db,
+   krate, def)` and store it on `SvLower`. Replace `self.inf.expr_type(e)` /
+   `local_type` reads with `self.mir.of_hir(e)` → `mexpr.ty` (and MIR local ty).
+   **Keep** `self_subst` + `ground_widths` (MIR ty is inference-recorded, not
+   ground — see invariants). Everything else stays on HIR. Golden must stay
+   byte-for-byte. This proves types-on-node end-to-end with no control-flow
+   churn. Watch: exprs with no `of_hir` entry (callee sub-exprs) — those reads
+   should not have needed a type anyway; assert/fallback.
+2. **S3.2c — `as_reg` → `Builtin::Reg`** at its 3 call sites (read the MIR node
+   via `of_hir`); use `Place.base` instead of `backend_root_local`.
+3. **S3.2d — calls** read `Call.substs`/`receiver`/`args`(`Conn`)/`named` off the
+   MIR node; keep `resolve_trait_instance` + inline on HIR (`trait_*`/
+   `df_example_poly` goldens catch trait-instance mistakes).
+4. **S3.2e — statements/expr control flow** walk MIR `MStmt`/`MExprKind` directly;
+   at this point `of_hir` is only needed at the few remaining HIR seams.
+5. Once emission reads MIR natively, S4 (slice desugar) / S5 / S6 / S7 follow.

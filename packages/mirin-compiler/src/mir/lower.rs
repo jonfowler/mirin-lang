@@ -14,6 +14,8 @@
 //! running ahead of the diagnostics gate (the LSP, a future pass) must not be
 //! taken down by imperfect input. The `well_typed` flag gates the two regimes.
 
+use std::collections::HashMap;
+
 use crate::base::db::SourceRoot;
 use crate::hir::body::{Block, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::infer::{Inference, infer};
@@ -39,6 +41,7 @@ pub fn mir_of<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'
         // the gate must see both body and infer diagnostics.
         well_typed: body.diagnostics().is_empty() && inf.diagnostics().is_empty(),
         exprs: Vec::with_capacity(body.exprs().count()),
+        hir_to_mir: HashMap::new(),
     };
 
     // Typed locals: take HIR locals, replace the declared/inferred split with the
@@ -69,6 +72,7 @@ pub fn mir_of<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'
         param_count: body.param_count(),
         block,
         verilog: body.verilog().cloned(),
+        hir_to_mir: lower.hir_to_mir,
     }
 }
 
@@ -95,6 +99,8 @@ struct Lower<'a, 'db> {
     /// negative-space panics: only a well-typed body asserts the invariants.
     well_typed: bool,
     exprs: Vec<MExpr<'db>>,
+    /// HIR `ExprId` → `MExprId`, recorded in `push` (the migration bridge).
+    hir_to_mir: HashMap<ExprId, MExprId>,
 }
 
 impl<'a, 'db> Lower<'a, 'db> {
@@ -120,6 +126,7 @@ impl<'a, 'db> Lower<'a, 'db> {
         };
         let mid = MExprId(self.exprs.len() as u32);
         self.exprs.push(mexpr);
+        self.hir_to_mir.insert(id, mid);
         mid
     }
 

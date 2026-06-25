@@ -16,8 +16,10 @@
 //! places/projections (S2), flatten (S5), slice desugar (S4), mono (S6),
 //! inline (S7). Until then MIR is a faithful structural mirror.
 
+use std::collections::HashMap;
+
 use crate::base::diagnostics::Span;
-use crate::hir::body::{LocalKind, NumBase, VerilogTemplate};
+use crate::hir::body::{ExprId, LocalKind, NumBase, VerilogTemplate};
 use crate::hir::types::{ConstArg, LocalId, Term, Type};
 use crate::nameres::ids::DefId;
 
@@ -39,6 +41,13 @@ pub struct Mir<'db> {
     /// `Some` for an inline-verilog fn (`= verilog { … }`); `block` is empty.
     /// Carried through verbatim — MIR does not interpret the template.
     pub(crate) verilog: Option<VerilogTemplate<'db>>,
+    /// HIR `ExprId` → its lowered `MExprId`. The migration bridge: the backend
+    /// keys on HIR ids today, so this lets it read MIR nodes incrementally
+    /// (S3) before it walks MIR natively. Gaps exist — exprs not lowered (a
+    /// call's callee sub-expr) have no entry. Holds 1:1 only at birth; once
+    /// desugar/inline passes (S4/S7) add nodes, the backend reads MIR natively
+    /// and this can retire.
+    pub(crate) hir_to_mir: HashMap<ExprId, MExprId>,
 }
 
 impl<'db> Mir<'db> {
@@ -68,6 +77,13 @@ impl<'db> Mir<'db> {
 
     pub fn verilog(&self) -> Option<&VerilogTemplate<'db>> {
         self.verilog.as_ref()
+    }
+
+    /// The MIR node a HIR expression lowered to, if it was lowered. `None` for
+    /// exprs MIR consumes structurally (a call's callee sub-expr) or for an
+    /// id from a different body.
+    pub fn of_hir(&self, hir: ExprId) -> Option<MExprId> {
+        self.hir_to_mir.get(&hir).copied()
     }
 }
 
