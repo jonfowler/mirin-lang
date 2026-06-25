@@ -213,6 +213,16 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2h — value-position instances on MIR.** Added
+  `call_value_leaves_mir` (instantiate into `__call_N`, return leaves), wired the
+  non-inline `Call` arm in `expr_value_mir`/`expr_leaves_mir`, and widened the
+  predicate's `Call` arm to admit instances (in-only connections). The gate caught
+  an over-admission — a unit-return def whose tail is a void call hit
+  `drive_result_mir`'s unported branch; fixed by keeping unit-return tails/returns
+  on HIR. Golden byte-for-byte green (89), 127 lib green. Nested/value-position
+  user calls (e.g. `g(f(x))`) now lower on MIR. (The incremental-validation safety
+  net working as intended.) Remaining: reg/when-RAM, when/if/for, place
+  projections, records, let-mut fold, unit-return call statements; then delete HIR core.
 - 2026-06-25: **S3.2g — instances on MIR.** Refactored `emit_instance` into a
   `CallSlot` (resolved caller leaves + actual type) + an id-agnostic
   `emit_instance_core` (pure extraction, golden-validated identity). Added

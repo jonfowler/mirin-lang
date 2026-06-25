@@ -1627,6 +1627,17 @@ impl<'db> SvLower<'_, 'db> {
     /// on the HIR path — never a wrong lowering.
     fn mir_walk_supported(&self, mir: &Mir<'db>) -> bool {
         let block = mir.block();
+        // A unit-return def whose tail/`return` is a void call needs the
+        // call-statement path (lower_call_stmt), not yet ported — keep on HIR.
+        if self.sig.return_type.is_none()
+            && (block.tail.is_some()
+                || block
+                    .stmts
+                    .iter()
+                    .any(|s| matches!(s, MStmt::Return { .. })))
+        {
+            return false;
+        }
         block.stmts.iter().all(|s| self.mir_ok_stmt(mir, s))
             && block.tail.is_none_or(|t| self.mir_ok_expr(mir, t))
     }
@@ -1688,18 +1699,16 @@ impl<'db> SvLower<'_, 'db> {
                 es.iter().all(|e| self.mir_ok_expr(mir, *e))
             }
             MExprKind::VecRepeat { elem, .. } => self.mir_ok_expr(mir, *elem),
-            // Only inline calls are walked; instances are not ported yet. All
-            // connections must be in-values (no out-targets / record fields).
+            // Both inline calls (render_inline_mir) and value-position instances
+            // (call_value_leaves_mir) are walked. All connections must be
+            // in-values — a call with an out-arg (`=> target`) stays on HIR.
             MExprKind::Call {
-                callee,
-                substs,
                 receiver,
                 args,
                 named,
+                ..
             } => {
-                let (def, _) = self.mir_call_target(*callee, substs);
-                self.splices_inline(def)
-                    && receiver.is_none_or(|r| self.mir_ok_expr(mir, r))
+                receiver.is_none_or(|r| self.mir_ok_expr(mir, r))
                     && args.iter().all(|a| match a {
                         Conn::In(e) => self.mir_ok_expr(mir, *e),
                         Conn::Out(_) => false,
@@ -2423,9 +2432,11 @@ impl<'db> SvLower<'_, 'db> {
                     self.render_inline_mir(def, &substs, ov.as_deref(), receiver, &args, &named)
                 } else {
                     // A user call in scalar position: instantiate, take one leaf.
-                    todo!(
-                        "S3.2d: expr_value_mir Call instance (emit_instance / call_value_leaves on MIR)"
-                    )
+                    self.call_value_leaves_mir(m)
+                        .into_iter()
+                        .next()
+                        .map(|(_, e)| e)
+                        .unwrap_or_else(|| SvExpr::Lit("0".to_owned()))
                 }
             }
             MExprKind::Builtin { .. } => {
@@ -2790,7 +2801,7 @@ impl<'db> SvLower<'_, 'db> {
                         ),
                     )]
                 } else {
-                    todo!("S3.2d: expr_leaves_mir Call instance (call_value_leaves on MIR)")
+                    self.call_value_leaves_mir(m)
                 }
             }
             MExprKind::Builtin { .. } => todo!("S3.2e: expr_leaves_mir Builtin (replace/reg)"),
@@ -3761,6 +3772,62 @@ impl<'db> SvLower<'_, 'db> {
         let (receiver, args, named) = (*receiver, args.clone(), named.clone());
         let (def, ov) = self.mir_call_target(callee, &substs);
         self.emit_instance_mir(def, &substs, ov, receiver, &args, &named, result_target);
+    }
+
+    /// MIR twin of `call_value_leaves`: a value-position user call instantiates
+    /// into a fresh `__call_N` (declared per result leaf) and returns its leaves.
+    /// (The instance path only wires in-connections; the predicate keeps calls
+    /// with out-args on the HIR path.)
+    #[allow(dead_code)]
+    fn call_value_leaves_mir(&mut self, m: MExprId) -> Vec<(String, SvExpr)> {
+        let MExprKind::Call {
+            callee,
+            substs,
+            receiver,
+            args,
+            named,
+        } = &self.mir.expr(m).kind
+        else {
+            unreachable!("call_value_leaves_mir on a non-Call node");
+        };
+        let (callee, substs) = (*callee, substs.clone());
+        let (receiver, args, named) = (*receiver, args.clone(), named.clone());
+        let (def, ov) = self.mir_call_target(callee, &substs);
+        let Some(rt) = sig_of(self.db, self.krate, def).return_type.clone() else {
+            self.emit_instance_mir(def, &substs, ov, receiver, &args, &named, Vec::new());
+            return vec![(String::new(), SvExpr::Lit("0".to_owned()))];
+        };
+        // Substitute the callee-space return type by the recorded instantiation
+        // before flattening (mirrors `call_value_leaves`).
+        let rt = match &ov {
+            Some(o) => ground_widths(self.db, self.krate, self.def, &subst_type(&rt, o)),
+            None if substs.is_empty() => rt,
+            None => {
+                let opts: Vec<Option<Term<'db>>> = substs.iter().cloned().map(Some).collect();
+                ground_widths(self.db, self.krate, self.def, &subst_type(&rt, &opts))
+            }
+        };
+        let base = self.fresh_call();
+        let target: Vec<(String, SvExpr)> = flatten_leaves(
+            self.db,
+            self.krate,
+            self.def,
+            &rt,
+            true,
+            &self.sig.generic_params,
+        )
+        .into_iter()
+        .map(|l| {
+            let name = join(&base, &l.suffix);
+            self.items.push(SvItem::Logic(SvLogicDecl {
+                ty: l.ty,
+                name: name.clone(),
+            }));
+            (l.suffix, SvExpr::Ident(name))
+        })
+        .collect();
+        self.emit_instance_mir(def, &substs, ov, receiver, &args, &named, target.clone());
+        target
     }
 
     /// A user call in value position: instantiate into a fresh `__call_N`
