@@ -48,7 +48,11 @@
     consumer. Validated: `value + 3` → `l0.call add<8, D0>(3)` (operator unified,
     substs baked, `:uint(8)@D0` types on every node).
   - [x] S3.2a — HIR↔MIR bridge (`Mir.of_hir`), the retarget seam.
-  - [ ] S3.2b — type-source swap (backend reads `mexpr.ty` via `of_hir`).
+  - [x] S3.2b — type-source swap: the backend's expr-type reads now source from
+    MIR (`mir_expr_type` via `of_hir`), incl. the central `expr_type`,
+    `expr_type_width`, `index_bounds_assert`, reg-clock typing, leaf-typing, and
+    `actual_type`. Golden-SV byte-for-byte unchanged → MIR is load-bearing for
+    types. (Local-type reads deferred — `self`-param + `Option`/`Error` subtlety.)
   - [ ] S3.2c..e — `as_reg`→`Builtin`, calls, control flow onto MIR. (Plan below.)
 - [ ] **S4 — Slice desugar on MIR.** Type-directed `x[a..b]` → part-select
   primitive + zero-width `const if` guard (retires SliceNotImplemented).

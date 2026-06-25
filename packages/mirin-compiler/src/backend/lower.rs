@@ -52,6 +52,8 @@ use crate::hir::types::{
     ConstArg, ConstOp, Direction, Domain, Folder, GenericArgs, GenericParam, LocalId, Term,
     TermKind, Type, ValueKind, subst_const_opt,
 };
+use crate::mir::ir::Mir;
+use crate::mir::lower::mir_of;
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
 use crate::syntax::ast_id::ast_id_map;
@@ -168,6 +170,7 @@ fn build_module<'db>(
     }
 
     let inf = infer(db, krate, def);
+    let mir = mir_of(db, krate, def);
     let mut lower = SvLower {
         db,
         krate,
@@ -175,6 +178,7 @@ fn build_module<'db>(
         map,
         body,
         inf,
+        mir,
         sig,
         self_subst: self_subst.to_vec(),
         local_names: unique_local_names(body),
@@ -267,6 +271,7 @@ fn build_const_function<'db>(
     let sig = sig_of(db, krate, def);
     let body = body(db, krate, def);
     let inf = infer(db, krate, def);
+    let mir = mir_of(db, krate, def);
     let local_names = unique_local_names(body);
     let mut lower = SvLower {
         db,
@@ -275,6 +280,7 @@ fn build_const_function<'db>(
         map,
         body,
         inf,
+        mir,
         sig,
         self_subst: Vec::new(),
         local_names,
@@ -576,6 +582,11 @@ struct SvLower<'a, 'db> {
     map: &'a CrateDefMap<'db>,
     body: &'a Body<'db>,
     inf: &'a Inference<'db>,
+    /// The def's MIR — the migration type-source (types-on-node). Read via
+    /// `mir_expr_type`/`mir_local_type`, which bridge HIR ids through `of_hir`.
+    /// Note: MIR types are inference-recorded, NOT mono-ground — callers still
+    /// apply `self_subst` + `ground_widths` (planning/mir_progress.md S3).
+    mir: &'a Mir<'db>,
     sig: &'a Signature<'db>,
     /// Substitution for the def's own generics (a Type-kind binding when lowering
     /// a monomorphised copy; empty otherwise). Applied to every type read from
@@ -1484,7 +1495,7 @@ impl<'db> SvLower<'_, 'db> {
     /// length always leaves a gap). Synthesis ignores it; simulation fires
     /// at the access. planning/vectors.md.
     fn index_bounds_assert(&mut self, base: ExprId, index: ExprId, idx_sv: &SvExpr) {
-        let Some(it) = self.inf.expr_type(index).cloned() else {
+        let Some(it) = self.mir_expr_type(index) else {
             return;
         };
         let it = ground_widths(
@@ -1500,7 +1511,7 @@ impl<'db> SvLower<'_, 'db> {
         else {
             return; // static (integer/literal) indexes are checked in infer
         };
-        let Some(bt) = self.inf.expr_type(base).cloned() else {
+        let Some(bt) = self.mir_expr_type(base) else {
             return;
         };
         let bt = ground_widths(
@@ -1537,7 +1548,7 @@ impl<'db> SvLower<'_, 'db> {
     /// The bool is "prefer hex": bits-typed literals print hex by default
     /// (planning/bits.md).
     fn expr_type_width(&mut self, expr: ExprId) -> Option<(u32, bool)> {
-        let t = self.inf.expr_type(expr)?.clone();
+        let t = self.mir_expr_type(expr)?;
         let t = ground_widths(
             self.db,
             self.krate,
@@ -1789,11 +1800,23 @@ impl<'db> SvLower<'_, 'db> {
     }
 
     /// An expression's SV type, falling back to 1-bit.
+    /// The inference-recorded type of a HIR expr, **sourced from MIR**
+    /// (types-on-node) via the `of_hir` bridge, falling back to the infer
+    /// side-table only for exprs MIR did not lower (a call's callee sub-expr).
+    /// On a well-typed body the two agree by construction — this is the
+    /// migration's type-source swap (planning/mir_progress.md S3.2b). The type
+    /// is NOT mono-ground: callers still apply `self_subst` + `ground_widths`.
+    fn mir_expr_type(&self, e: ExprId) -> Option<Type<'db>> {
+        match self.mir.of_hir(e) {
+            Some(m) => Some(self.mir.expr(m).ty.clone()),
+            None => self.inf.expr_type(e).cloned(),
+        }
+    }
+
     fn expr_type(&self, expr: ExprId) -> SvType {
-        self.inf
-            .expr_type(expr)
+        self.mir_expr_type(expr)
             .map(|t| {
-                let t = ground_widths(self.db, self.krate, self.def, t);
+                let t = ground_widths(self.db, self.krate, self.def, &t);
                 sv_type(&t, &self.sig.generic_params)
             })
             .unwrap_or_else(SvType::bit)
@@ -1955,7 +1978,7 @@ impl<'db> SvLower<'_, 'db> {
                     ty,
                     name: synth.clone(),
                 }));
-                let clock = self.clock_of_type(self.inf.expr_type(reg.d_input));
+                let clock = self.clock_of_type(self.mir_expr_type(reg.d_input).as_ref());
                 self.emit_reg(synth.clone(), clock, reg);
                 SvExpr::Ident(synth)
             }
@@ -2401,7 +2424,7 @@ impl<'db> SvLower<'_, 'db> {
 
     /// The SV types of an expression's leaves, in leaf order.
     fn expr_leaf_types(&mut self, expr: ExprId) -> Vec<SvType> {
-        let Some(t) = self.inf.expr_type(expr).cloned() else {
+        let Some(t) = self.mir_expr_type(expr) else {
             return Vec::new();
         };
         let t = ground_widths(
@@ -3001,7 +3024,7 @@ impl<'db> SvLower<'_, 'db> {
     fn actual_type(&self, e: ExprId) -> Option<Type<'db>> {
         match self.body.expr(e).kind {
             ExprKind::Local(l) => self.local_ty(l),
-            _ => self.inf.expr_type(e).cloned(),
+            _ => self.mir_expr_type(e),
         }
     }
 
