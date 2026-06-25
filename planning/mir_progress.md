@@ -156,6 +156,15 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 
 ## Status log (newest first)
 
+- 2026-06-25: **mono_check — width positivity added.** Extended the ground check
+  beyond residuals: collect the width/length `ConstArg`s from the callee's
+  signature (param + return, nested via a `Folder`), substitute with the call
+  subst, and flag any grounding `< 1`. Catches a parametric `uint(n - m)` return
+  that goes non-positive at a literal call — verified infer does *not* catch this
+  (it was reaching verilator). Tested: `mono_check_catches_ground_negative_width`
+  + `fail-expected/mono-negative-width.mrn`. Struct/port field widths not yet
+  walked.
+
 - 2026-06-25: **S6 first slice BUILT — `mono_check` ground check.** New
   `backend/mono_check.rs` + `mono_check(krate)` salsa query: walks every def's MIR
   call sites (`MExprKind::Call { callee, substs }`), substitutes the callee's

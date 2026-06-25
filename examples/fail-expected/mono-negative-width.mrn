@@ -1,0 +1,14 @@
+// A width arithmetic expression that grounds non-positive at a literal
+// instantiation. `combine`'s return is `uint(n - m)`; infer leaves `n - m`
+// symbolic in `combine`'s own frame, and the caller binds n=4, m=8 — so the
+// return width grounds to -4, an invalid SV range. infer does not reject it
+// (the subtraction is only ground at the call); `mono_check` decides it at the
+// call site.
+fn combine {dom clk: Clock, const n: integer, const m: integer}
+    (a: uint(n) @clk, b: uint(m) @clk) -> uint(n - m) @clk {
+    a.resize()
+}
+
+fn use_bad {dom clk: Clock} (a: uint(4) @clk, b: uint(8) @clk) -> uint(4) @clk {
+    combine(a, b)
+}

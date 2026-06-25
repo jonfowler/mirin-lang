@@ -615,6 +615,29 @@ fn mono_check_decides_ground_residuals() {
     );
 }
 
+/// `mono_check` catches a parametric width that grounds non-positive at a
+/// literal instantiation — a `uint(n - m)` return with n=4, m=8 → width -4,
+/// which infer leaves symbolic (decided only at the call).
+#[test]
+fn mono_check_catches_ground_negative_width() {
+    let src = "fn combine {dom clk: Clock, const n: integer, const m: integer} \
+        (a: uint(n) @clk, b: uint(m) @clk) -> uint(n - m) @clk { a.resize() }\n\
+        fn use_bad {dom clk: Clock} (a: uint(4) @clk, b: uint(8) @clk) -> uint(4) @clk \
+        { combine(a, b) }\n";
+    let mut db = RootDatabase::default();
+    let mut vfs = Vfs::new();
+    vfs.set_file_text(&mut db, "t.mrn", src);
+    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+    let diags = mono_check(&db, krate);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message().contains("-4") && d.message().contains("must be >= 1")),
+        "expected a negative-width diagnostic: {:?}",
+        diags.iter().map(|d| d.message()).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn every_working_example_runs_the_query_stack() {
     // No panic on any example == the smoke test passes.

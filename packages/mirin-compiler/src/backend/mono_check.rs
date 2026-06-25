@@ -29,11 +29,16 @@
 //! does not fire here (it is not a ground decision) — never a silent wrong pass,
 //! because the symbolic `initial assert` still guards it downstream.
 
+use std::collections::HashSet;
+
 use crate::base::db::SourceRoot;
 use crate::base::diagnostics::Span;
 use crate::hir::const_eval::eval_const;
 use crate::hir::infer::infer;
-use crate::hir::types::{Term, subst_const_opt};
+use crate::hir::sig::sig_of;
+use crate::hir::types::{
+    ConstArg, Folder, Term, Type, ValueKind, subst_const_opt, subst_type_opt, super_fold_type,
+};
 use crate::mir::ir::MExprKind;
 use crate::mir::lower::mir_of;
 use crate::nameres::def_map::crate_def_map;
@@ -95,7 +100,9 @@ fn check_call<'db>(
     let inf = infer(db, krate, callee);
     let residuals = inf.const_residuals();
     let fits = inf.fit_residuals();
-    if residuals.is_empty() && fits.is_empty() {
+    // Nothing to ground: a monomorphic callee (no subst) whose widths are already
+    // literal and infer-checked, with no deferred obligations.
+    if substs.is_empty() && residuals.is_empty() && fits.is_empty() {
         return;
     }
     // `Call.substs` is in the callee's declared generic-param order, the same
@@ -112,10 +119,13 @@ fn check_call<'db>(
     for (a, b) in residuals {
         let a = subst_const_opt(a, &subst);
         let b = subst_const_opt(b, &subst);
-        if let (Some(va), Some(vb)) = (
-            eval_const(db, krate, callee, &a),
-            eval_const(db, krate, callee, &b),
-        ) && va != vb
+        if is_closed(&a)
+            && is_closed(&b)
+            && let (Some(va), Some(vb)) = (
+                eval_const(db, krate, callee, &a),
+                eval_const(db, krate, callee, &b),
+            )
+            && va != vb
         {
             out.push(MonoDiagnostic {
                 def: caller,
@@ -130,7 +140,8 @@ fn check_call<'db>(
     // symbolic fallback (no i128 shift to decide it with).
     for fit in fits {
         let width = subst_const_opt(&fit.width, &subst);
-        if let Some(w) = eval_const(db, krate, callee, &width)
+        if is_closed(&width)
+            && let Some(w) = eval_const(db, krate, callee, &width)
             && (0..127).contains(&w)
             && fit.value >= (1i128 << w)
         {
@@ -143,5 +154,76 @@ fn check_call<'db>(
                 ),
             });
         }
+    }
+
+    // Width positivity. A parametric width/len (`uint(n - m)`, `Vec(k, …)`) that
+    // grounds to `< 1` at this instantiation is invalid SV (`logic [-5:0]`).
+    // infer defers parametric widths, so this is their ground decision; a
+    // monomorphic callee's widths are already literal and infer-checked, so skip.
+    // Covers the callee signature's own widths (param/return, nested through
+    // Vec/Tuple) — struct/port *field* widths resolve elsewhere and are not
+    // walked here yet. Dedup by value so repeated widths report once per call.
+    if !substs.is_empty() {
+        let sig = sig_of(db, krate, callee);
+        let tys = sig
+            .params
+            .iter()
+            .map(|p| &p.ty)
+            .chain(sig.return_type.as_ref());
+        let mut reported: HashSet<i128> = HashSet::new();
+        for ty in tys {
+            let mut collector = WidthCollector(Vec::new());
+            collector.fold_type(&subst_type_opt(ty, &subst));
+            for w in &collector.0 {
+                if is_closed(w)
+                    && let Some(v) = eval_const(db, krate, callee, w)
+                    && v < 1
+                    && reported.insert(v)
+                {
+                    out.push(MonoDiagnostic {
+                        def: caller,
+                        span,
+                        message: format!(
+                            "instantiating `{name}`: width evaluates to {v} (must be >= 1)"
+                        ),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Is a `ConstArg` closed — evaluable to a literal with **no** frame (only
+/// `Lit` and arithmetic over closed operands)? After substituting a call's args,
+/// only a closed expr is safely ground: anything still carrying a `Param` /
+/// `Local` / `Assoc` / `Field` needs a frame to resolve, and a substituted-in
+/// *caller* `Local` would resolve against the wrong (callee) frame — so we defer
+/// it rather than risk a misframed eval. This is exactly the ground-literal
+/// regime mono_check decides; the rest stays the `initial assert` fallback's job.
+fn is_closed(c: &ConstArg<'_>) -> bool {
+    match c {
+        ConstArg::Lit(_) => true,
+        ConstArg::Op(_, a, b) => is_closed(a) && is_closed(b),
+        _ => false,
+    }
+}
+
+/// Collects the width/length [`ConstArg`]s at every scalar/vec position of a
+/// type (recursing through `Vec`/`Tuple`/`Port` args via `super_fold_type`).
+struct WidthCollector<'db>(Vec<ConstArg<'db>>);
+
+impl<'db> Folder<'db> for WidthCollector<'db> {
+    fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
+        match t {
+            Type::Value { kind, .. } => match kind {
+                ValueKind::UInt { width }
+                | ValueKind::SInt { width }
+                | ValueKind::Bits { width } => self.0.push(width.clone()),
+                _ => {}
+            },
+            Type::Vec { len, .. } => self.0.push(len.clone()),
+            _ => {}
+        }
+        super_fold_type(self, t)
     }
 }

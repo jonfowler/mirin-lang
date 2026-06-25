@@ -255,10 +255,16 @@ scope a literal). This landed naively (no assertion-map factoring yet):
   - `const_residuals` (`n == m`) → ground both sides, compare; unequal ⇒
     diagnostic.
   - `fit_residuals` (`value` fits `width` bits) → ground the width, check the fit.
-- A residual that stays **symbolic** after subst (a non-literal arg) simply does
-  not ground, so it does not fire — the existing `initial assert` fallback in
-  `build_module` still guards it. Negative space: no silent pass; the unevaluable
-  case is covered downstream.
+  - **width positivity** → collect the width/length `ConstArg`s from the callee's
+    signature (param + return types, nested through `Vec`/`Tuple`/`Port` args via a
+    `Folder`), substitute, and flag any that grounds `< 1` (e.g. a `uint(n - m)`
+    return with n=4, m=8 → -4, an invalid SV range). infer leaves the subtraction
+    symbolic in the callee frame and does *not* reject it at the call, so this is a
+    real gap mono_check closes (verified — it was reaching verilator otherwise).
+    Struct/port *field* widths are not walked here yet (they resolve elsewhere).
+- A residual/width that stays **symbolic** after subst (a non-literal arg) simply
+  does not ground, so it does not fire — the existing `initial assert` fallback in
+  `build_module` still guards equality residuals. Negative space: no silent pass.
 
 Scope of this slice: **direct** call sites only. A *transitive* obligation (the
 callee calls another generic with the caller's param) grounds only when that inner
