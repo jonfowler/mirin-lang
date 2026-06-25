@@ -1,0 +1,6 @@
+// A `Vec` slice, written low-first (planning/slicing.md): `v[2..5]` is the
+// half-open interval [2, 5) — elements {2,3,4}, width 3 — and lowers to the
+// SystemVerilog part-select `v[4:2]`.
+fn s(v: Vec(8, uint(4))) -> Vec(3, uint(4)) {
+    v[2..5]
+}

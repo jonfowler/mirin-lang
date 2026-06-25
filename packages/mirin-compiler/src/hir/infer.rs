@@ -1785,11 +1785,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         }
     }
 
-    /// Type a `bits` slice with two literal, high-first endpoints (the S4 first
-    /// cut). `x[high..low]` → `bits(high-low)` on the base's domain. Returns
-    /// `None` for any shape not yet handled (offset form, non-literal endpoints,
-    /// non-`bits` base, ascending) so the caller rejects it cleanly.
-    fn slice_bits_literal(
+    /// Type a slice with two literal endpoints (the S4 cut so far). `bits` is
+    /// written high-first (`x[high..low]` → `bits(high-low)`); `Vec` is written
+    /// low-first (`v[low..high]` → `Vec(high-low, A)`). Returns `None` for any
+    /// shape not yet handled (offset form, non-literal endpoints, non-bits/vec
+    /// base, wrong order, zero width) so the caller rejects it cleanly.
+    fn slice_literal(
         &self,
         body: &Body<'db>,
         bt: &Type<'db>,
@@ -1800,28 +1801,38 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         if width.is_some() {
             return None; // offset form `..+w` not yet
         }
-        let Type::Value {
-            kind: ValueKind::Bits { .. },
-            domain,
-        } = bt
-        else {
-            return None;
-        };
-        // `bits` is written high-first: the first endpoint is the (exclusive)
-        // high, the second the (inclusive) low.
-        let high = self.lit_val(body, lo?)?;
-        let low = self.lit_val(body, hi?)?;
-        if high <= low {
-            // ascending on bits is wrong order; zero-width needs the const-if
-            // guard (a later S4 step) — reject both in this first cut.
-            return None;
+        let a = self.lit_val(body, lo?)?;
+        let b = self.lit_val(body, hi?)?;
+        match bt {
+            // bits: first endpoint is the (exclusive) high, second the low.
+            Type::Value {
+                kind: ValueKind::Bits { .. },
+                domain,
+            } => {
+                let (high, low) = (a, b);
+                if high <= low {
+                    return None; // ascending on bits / zero-width — not this cut
+                }
+                Some(Type::Value {
+                    kind: ValueKind::Bits {
+                        width: ConstArg::Lit(high - low),
+                    },
+                    domain: *domain,
+                })
+            }
+            // Vec: first endpoint is the (inclusive) low, second the high.
+            Type::Vec { elem, .. } => {
+                let (low, high) = (a, b);
+                if high <= low {
+                    return None; // descending on vec / zero-width — not this cut
+                }
+                Some(Type::Vec {
+                    len: ConstArg::Lit(high - low),
+                    elem: elem.clone(),
+                })
+            }
+            _ => None,
         }
-        Some(Type::Value {
-            kind: ValueKind::Bits {
-                width: ConstArg::Lit(high - low),
-            },
-            domain: *domain,
-        })
     }
 
     /// Push an inference diagnostic at the current expression's span.
@@ -1939,7 +1950,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 for e in [lo, hi, width].into_iter().flatten() {
                     self.infer_expr(body, e);
                 }
-                match self.slice_bits_literal(body, &bt, lo, hi, width) {
+                match self.slice_literal(body, &bt, lo, hi, width) {
                     Some(ty) => ty,
                     None => {
                         self.diag(InferDiagnosticKind::SliceNotImplemented);

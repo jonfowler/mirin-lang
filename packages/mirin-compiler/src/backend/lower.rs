@@ -3192,15 +3192,9 @@ impl<'db> SvLower<'_, 'db> {
                 self.lower_if_mir(m, cond, &tb, &eb)
             }
             MExprKind::ConstIf { .. } => todo!("S3.2l: expr_value_mir ConstIf (const-eval on MIR)"),
-            // A `bits` slice (S4 first cut): two literal high-first endpoints
-            // `x[high..low]` → the constant part-select `x[high-1:low]`.
-            MExprKind::Slice { base, lo, hi, .. } => {
-                let (base, lo, hi) = (*base, *lo, *hi);
-                let base_sv = self.expr_value_mir(base);
-                let high = self.mir_lit(lo.expect("slice high endpoint"));
-                let low = self.mir_lit(hi.expect("slice low endpoint"));
-                SvExpr::Lit(format!("{base_sv}[{}:{}]", high - 1, low))
-            }
+            // A slice in scalar position (a `bits` slice — one leaf). Vec slices
+            // are aggregates and go through `expr_leaves_mir`.
+            MExprKind::Slice { .. } => self.one_leaf_mir(m),
             MExprKind::Block(b) => {
                 let b = b.clone();
                 self.block_value_mir(&b)
@@ -3630,13 +3624,33 @@ impl<'db> SvLower<'_, 'db> {
                 let b = b.clone();
                 self.block_leaves_mir(&b)
             }
+            // A slice (literal endpoints), per base leaf → a part-select. Type
+            // directed in BOTH endpoint order and SV range direction:
+            // `bits` is packed MSB:LSB (high-first: `lo`=high) → `[high-1:low]`;
+            // `Vec` is an unpacked `[0:N-1]` array (low-first: `lo`=low) →
+            // ascending `[low:high-1]`. One leaf for `bits`, N for a `Vec`.
+            MExprKind::Slice { base, lo, hi, .. } => {
+                let (base, lo, hi) = (*base, *lo, *hi);
+                let (a, b) = (self.mir_lit(lo.unwrap()), self.mir_lit(hi.unwrap()));
+                let range = match &self.mir.expr(base).ty {
+                    Type::Value {
+                        kind: ValueKind::Bits { .. },
+                        ..
+                    } => format!("[{}:{}]", a - 1, b), // bits: lo=high, hi=low
+                    Type::Vec { .. } => format!("[{}:{}]", a, b - 1), // vec: lo=low, hi=high
+                    _ => panic!("MIR: slice base is neither bits nor vec"),
+                };
+                self.expr_leaves_mir(base)
+                    .into_iter()
+                    .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}{range}"))))
+                    .collect()
+            }
             // Scalars: a single empty-suffix leaf via the value twin.
             MExprKind::Number(..)
             | MExprKind::Bool(_)
             | MExprKind::ConstParam(_)
             | MExprKind::ConstAssoc { .. }
             | MExprKind::Def(_)
-            | MExprKind::Slice { .. }
             | MExprKind::Missing => vec![(String::new(), self.expr_value_mir(m))],
         }
     }

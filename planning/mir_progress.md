@@ -214,6 +214,15 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S4 step 2 — vec slices.** Extended `slice_literal` to `Vec`
+  (low-first: `v[2..5]` → `Vec(3,A)`). The MIR walker Slice arm is now
+  type-directed in both endpoint order AND SV range direction: `bits` packed
+  `[high-1:low]` (descending), `Vec` unpacked `[0:N-1]` ascending `[low:high-1]`;
+  `expr_leaves_mir` Slice is canonical (per base leaf), `expr_value_mir` reduces
+  via `one_leaf_mir`. `slice_vec.mrn` (`v[2..5]`→`v[2:4]`) verilator-clean, added
+  to CLEAN+VERILATOR_CLEAN+golden. Lib + clean green. Next S4: offset form
+  `x[off..+w]`, param/runtime endpoints (`x[i +: w]`), elision, zero-width guard,
+  slice-set.
 - 2026-06-25: **S4 step 1 — first slice end-to-end (bits, literal, read).**
   `x[8..4]` on `bits` now types to `bits(4)` (infer `slice_bits_literal`,
   high-first, width≥1) and lowers through the MIR walker to the SV part-select
