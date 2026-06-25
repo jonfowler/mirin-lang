@@ -213,6 +213,14 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2i — registers on MIR.** Split `emit_registers` into a
+  resolved core (`emit_registers_parts`) + `emit_registers_mir`; extracted
+  `sv_type_of` and `expr_type_leaves_mir`. Wired the reg branch of `lower_let_mir`
+  (typed by D-input), `lower_equation_mir` (typed by target local), and
+  `expr_value_mir` (value-position into a fresh `__block_N`). Predicate: dropped
+  the `as_reg` rejections from Let/Equation and added a `Builtin::Reg` arm to
+  `mir_ok_expr` (D/reset/init must be walkable). Clocked defs (counter, delay,
+  accumulator, shift_register, …) now lower through MIR.
 - 2026-06-25: **S3.2h — value-position instances on MIR.** Added
   `call_value_leaves_mir` (instantiate into `__call_N`, return leaves), wired the
   non-inline `Call` arm in `expr_value_mir`/`expr_leaves_mir`, and widened the
