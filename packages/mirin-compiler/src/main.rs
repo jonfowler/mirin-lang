@@ -12,8 +12,8 @@ use std::{env, fs, process};
 
 use mirin_compiler::{
     DefKind, RootDatabase, SourceRoot, Span, Vfs, ast_id_map, body, check_drivers, completeness,
-    crate_def_map, directions, infer, load_crate, mir_of, parse_text, pretty_mir, render,
-    reserved_words, sig_of, syntax_errors, verilog,
+    crate_def_map, directions, infer, load_crate, mir_of, mono_check, parse_text, pretty_mir,
+    render, reserved_words, sig_of, syntax_errors, verilog,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -271,6 +271,24 @@ fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
                 }
             }
             _ => {}
+        }
+    }
+    // Monomorphisation-time checks (ground-instance residuals). Reported only
+    // when the front end is clean — an ill-typed body's residuals would cascade.
+    if out.is_empty() {
+        for d in mono_check(db, krate) {
+            let file = d.def.file(db);
+            let path = file.path(db).to_string_lossy().into_owned();
+            let source = file.text(db);
+            let def_start = ast_id_map(db, file)
+                .range_of(d.def.ast_id(db))
+                .map(|(s, _)| s as u32)
+                .unwrap_or(0);
+            let span = Span {
+                start: def_start + d.span.start,
+                end: def_start + d.span.end,
+            };
+            out.push(render(&path, source, span, d.message()));
         }
     }
     out

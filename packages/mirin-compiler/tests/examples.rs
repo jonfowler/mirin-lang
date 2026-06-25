@@ -18,9 +18,18 @@ use std::path::{Path, PathBuf};
 
 use mirin_compiler::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, completeness, crate_def_map,
-    directions, infer, load_crate, mir_of, pretty_mir, reserved_words, sig_of, syntax_errors,
-    verilog,
+    directions, infer, load_crate, mir_of, mono_check, pretty_mir, reserved_words, sig_of,
+    syntax_errors, verilog,
 };
+
+/// Count of monomorphisation-time (ground-residual) diagnostics for a source.
+fn mono_diag_count(src: &str) -> usize {
+    let mut db = RootDatabase::default();
+    let mut vfs = Vfs::new();
+    vfs.set_file_text(&mut db, "t.mrn", src.to_owned());
+    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+    mono_check(&db, krate).len()
+}
 
 fn working_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/working")
@@ -539,13 +548,71 @@ fn fail_expected_examples_produce_diagnostics() {
         let syntax = syntax_errors(&db, file).len();
         let reserved = reserved_words(&db, krate).len();
         let counts = diagnostic_counts(&src);
-        let total =
-            syntax + reserved + counts.0 + counts.1 + counts.2 + counts.3 + counts.4 + counts.5;
+        let total = syntax
+            + reserved
+            + counts.0
+            + counts.1
+            + counts.2
+            + counts.3
+            + counts.4
+            + counts.5
+            + mono_diag_count(&src);
         assert!(
             total > 0,
             "{name} is in fail-expected but produced no diagnostics"
         );
     }
+}
+
+/// `mono_check` decides a ground residual at the call site: a literal-arg call
+/// that makes two width params unequal is a compile-time diagnostic; the same
+/// shape called with equal widths is clean (the residual grounds true).
+#[test]
+fn mono_check_decides_ground_residuals() {
+    const CALLEE: &str = "fn add_mismatch {const n: integer, const m: integer} \
+        (a: uint(n), b: uint(m)) -> uint(n) { a + b }\n";
+
+    let bad = format!(
+        "{CALLEE}fn use_bad (a: uint(8), b: uint(4)) -> uint(8) {{ add_mismatch(a, b) }}\n"
+    );
+    let mut db = RootDatabase::default();
+    let mut vfs = Vfs::new();
+    vfs.set_file_text(&mut db, "t.mrn", bad);
+    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+    let diags = mono_check(&db, krate);
+    assert_eq!(diags.len(), 1, "expected one ground-mismatch diagnostic");
+    let msg = diags[0].message();
+    assert!(
+        msg.contains("add_mismatch") && (msg.contains("8 != 4") || msg.contains("4 != 8")),
+        "unexpected message: {msg}"
+    );
+
+    // Equal widths: the residual grounds true, no diagnostic.
+    let good =
+        format!("{CALLEE}fn use_ok (a: uint(8), b: uint(8)) -> uint(8) {{ add_mismatch(a, b) }}\n");
+    let mut db = RootDatabase::default();
+    let mut vfs = Vfs::new();
+    vfs.set_file_text(&mut db, "t.mrn", good);
+    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+    assert!(
+        mono_check(&db, krate).is_empty(),
+        "equal-width instantiation should not diagnose"
+    );
+
+    // Still-symbolic instantiation (a passthrough param) stays deferred — the
+    // ground check must not fire on a non-literal arg.
+    let sym = format!(
+        "{CALLEE}fn wrap {{const k: integer}} (a: uint(k), b: uint(k)) -> uint(k) \
+         {{ add_mismatch(a, b) }}\n"
+    );
+    let mut db = RootDatabase::default();
+    let mut vfs = Vfs::new();
+    vfs.set_file_text(&mut db, "t.mrn", sym);
+    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+    assert!(
+        mono_check(&db, krate).is_empty(),
+        "symbolic instantiation should defer, not diagnose"
+    );
 }
 
 #[test]
@@ -640,6 +707,11 @@ fn clean_examples_typecheck_without_diagnostics() {
                 (0, 0, 0, 0, 0, 0),
                 "{name} is listed CLEAN but produced diagnostics \
                  (nameres, sig, body, infer, drivers, directions) = {counts:?}"
+            );
+            assert_eq!(
+                mono_diag_count(&src),
+                0,
+                "{name} is listed CLEAN but produced mono-check diagnostics"
             );
         } else {
             assert!(

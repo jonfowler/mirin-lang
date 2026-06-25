@@ -1,0 +1,13 @@
+// Two distinct width params forced equal by `+`: in `add_mismatch`'s own frame
+// `n == m` is undecidable, so `infer` defers it as a const residual rather than
+// erroring (the polymorphic boundary stays loose). Calling it with literal
+// mismatched widths (8 vs 4) makes the residual ground and false — `mono_check`
+// decides it at the call site, a compile-time diagnostic rather than a deferred
+// `initial assert`.
+fn add_mismatch {const n: integer, const m: integer} (a: uint(n), b: uint(m)) -> uint(n) {
+    a + b
+}
+
+fn use_bad (a: uint(8), b: uint(4)) -> uint(8) {
+    add_mismatch(a, b)
+}

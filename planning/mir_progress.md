@@ -156,6 +156,21 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 
 ## Status log (newest first)
 
+- 2026-06-25: **S6 first slice BUILT — `mono_check` ground check.** New
+  `backend/mono_check.rs` + `mono_check(krate)` salsa query: walks every def's MIR
+  call sites (`MExprKind::Call { callee, substs }`), substitutes the callee's
+  `const_residuals`/`fit_residuals` with the call's recorded subst, and for the
+  **ground** case (`eval_const` decides) turns a false obligation into a
+  compile-time diagnostic at the call span. Symbolic instantiations defer to the
+  existing `initial assert` fallback (unchanged). **Refinement on the design:**
+  walks call sites directly rather than reusing `sv_file`'s `MonoReq` worklist —
+  const-generic fns ground at call sites (`#(.N(8))`), not via the type-mono
+  worklist. Wired into `main.rs` (gated on clean front end). Tested:
+  `mono_check_decides_ground_residuals` + `fail-expected/mono-width-mismatch.mrn`;
+  folded into the fail-expected + CLEAN ratchets (`mono_diag_count`). Scope:
+  direct calls only — cross-module composition is next. Doc:
+  `planning/mono_check.md` "Implementation plan". TODO: LSP wiring.
+
 - 2026-06-25: **S6 design landed (mono + mono_check).** Researched the rustc
   analogy (collector dedup, `Instance`=`DefId`+substs, lazy
   `instantiate_mir_and_normalize` — MIR not cloned per instance, post-mono

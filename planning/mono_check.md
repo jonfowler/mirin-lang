@@ -1,12 +1,12 @@
 # Monomorphisation-time checking (`mono_check`)
 
-> **Status: designed, not built.** This is the dashed box in the architecture
-> overview — the precise check that closes the loose ones upstream. The code in
-> `packages/mirin-compiler/src/` does not implement it yet; this doc is the plan.
-> The scaling design (assertion maps, support factoring, family dedup) is the
-> *destination*; **see "## Implementation plan" at the end for the on-ramp** — a
-> naive ground check that lands the capability first, with the factoring as the
-> later optimisation it is.
+> **Status: first slice BUILT (2026-06-25); scaling design not yet.** The ground
+> direct-call check is live in `backend/mono_check.rs` (the `mono_check(krate)`
+> query) — a literal-arg call that grounds a callee residual false is now a
+> compile-time diagnostic. The scaling design below (assertion maps, support
+> factoring, family dedup) and cross-module composition are the *destination*,
+> not yet built. **See "## Implementation plan" at the end** for what landed and
+> what remains.
 
 ## Why it exists
 
@@ -236,45 +236,58 @@ read, never clone per instance* — is **already how Mirin emits**. S6 is theref
    readability/locality win, not new capability — do it **after** (1) is green,
    and only if it earns its churn. Sequencing it first would be a big-bang.
 
-### First slice: the naive ground check
+### First slice: the naive ground check — LANDED (`backend/mono_check.rs`)
 
 The precise check the doc is about is **the ground regime** (every const param in
-scope a literal). Land that first, naively (no assertion-map factoring yet):
+scope a literal). This landed naively (no assertion-map factoring yet):
 
-- New salsa query `mono_check(krate) -> Vec<Diagnostic>`. It **reuses `sv_file`'s
-  worklist enumeration** of reachable instantiations (refactor the worklist into a
-  shared `reachable_instances(krate) -> Vec<MonoReq>` so both consume it — DRY,
-  and the collector lives once).
-- For each instantiation whose `subst` binds **every** const param to a literal
-  (ground): evaluate each obligation under the subst with `const_eval`:
-  - `const_residuals` (`n == m`, etc.) → substitute params, `eval_const` both
-    sides, compare. False ⇒ a real diagnostic.
-  - `fit_residuals` (`value < 2^width`) → same.
-  - width positivity (`w ≥ 1`) → already partly covered by infer's neg-width
-    reject on literals; fold the parametric-ground case in here.
-- For a **non-ground** (still-symbolic) instantiation, change nothing: the
-  existing `initial assert` emission in `build_module` stays the fallback.
+- A salsa query `mono_check(krate) -> Vec<MonoDiagnostic>`. **Refinement on the
+  original plan:** it does *not* reuse `sv_file`'s `MonoReq` worklist. That
+  worklist only collects *type*-generic copies; a *const*-generic fn emits **one**
+  parametric module (`#(parameter int N)`) and grounds only at its **call sites**
+  (`#(.N(8))`). So `mono_check` instead **walks MIR call sites** — every
+  `MExprKind::Call { callee, substs }` in every def's `mir_of` — which is exactly
+  the per-call instantiation the doc wanted, with a precise call-site span and no
+  worklist needed. (`MExpr.span` gives the diagnostic location.)
+- For each call, substitute the callee's residuals with the call's `substs`
+  (callee generic-param order — the index `ConstArg::Param(i)` uses) and evaluate
+  with `eval_const`:
+  - `const_residuals` (`n == m`) → ground both sides, compare; unequal ⇒
+    diagnostic.
+  - `fit_residuals` (`value` fits `width` bits) → ground the width, check the fit.
+- A residual that stays **symbolic** after subst (a non-literal arg) simply does
+  not ground, so it does not fire — the existing `initial assert` fallback in
+  `build_module` still guards it. Negative space: no silent pass; the unevaluable
+  case is covered downstream.
 
-This is `O(reachable ground instances × |obligations|)` — the explosion the
-scaling design avoids — but it is *correct*, small, and the foundation the
-assertion-map/support-factoring (above) later optimises **without changing the
-diagnostics**. Negative-space: an obligation shape we cannot yet evaluate
-(a residual that is not Param/Lit after subst) is an explicit `todo!`/skip with a
-note, never a silent pass.
+Scope of this slice: **direct** call sites only. A *transitive* obligation (the
+callee calls another generic with the caller's param) grounds only when that inner
+call is itself literal — cross-module **composition** (substituting the callee's
+summary into the caller's frame, per "Cross-module composition" above) is the next
+step, not yet built.
+
+Reported via `main.rs`'s `collect_diagnostics`, gated on a clean front end (an
+ill-typed body's residuals would cascade). Tested by
+`mono_check_decides_ground_residuals` (ground-false diagnoses, ground-true and
+symbolic do not) + `examples/fail-expected/mono-width-mismatch.mrn`; folded into
+the fail-expected and CLEAN ratchets via `mono_diag_count`.
+
+This is `O(call sites × |obligations|)` — the explosion the scaling design avoids
+— but it is *correct*, small, and the foundation the assertion-map/support-
+factoring (above) later optimises **without changing the diagnostics**.
 
 ### Two decisions this resolves (the doc's open questions)
 
-- **Keying / placement.** Start with **a single walk** (`mono_check(krate)`), not
-  a per-instantiation query — simpler to report an instantiation *path* from, and
-  the worklist already centralises enumeration. Promote to a per-instance query
-  only if caching demands it (the doc's "smallest-blast-radius" caching is the
-  destination, not the on-ramp).
+- **Keying / placement.** Settled on **a single walk** (`mono_check(krate)`), not
+  a per-instantiation query — the call-site walk centralises enumeration and gives
+  a precise per-call span. Promote to a per-instance query only if caching demands
+  it (the doc's "smallest-blast-radius" caching is the destination, not the
+  on-ramp).
 - **Where mono diagnostics surface.** A new query, **separate from
   `crate_emittable`**: front-end diagnostics still gate emission; `mono_check`
-  diagnostics are reported by the CLI/LSP alongside them but do **not** block
-  `sv_file` (a ground violation is a hard error to the user, but emission of the
-  *other* modules need not be suppressed — match how the front-end queries report
-  independently). Wire it into `main.rs`'s diagnostic print and the LSP.
+  diagnostics are reported alongside them but do **not** block `sv_file`. Wired
+  into `main.rs`'s `collect_diagnostics` (gated on a clean front end to avoid
+  cascade). **TODO: wire into the LSP** (`mirin-lsp`) the same way.
 
 ### Test on-ramp
 
