@@ -22,6 +22,7 @@ for reference only.)
        infer(def)         types + domains         hir/infer.rs
        check_drivers(def) var driver counts       hir/check.rs
        directions(def)    port-direction checks   hir/check.rs
+       mir_of(def)        typed mid-IR            mir/lower.rs
   ─► sv_module(def)       per-def SV lowering     backend/lower.rs
   ─► sv_file / verilog    assemble + emit         backend/lower.rs, backend/ir.rs
 ```
@@ -67,6 +68,17 @@ Per-def, owner-relative arenas (`ExprId`, `LocalId`), names resolved to
 dispatch deferred to `infer`. Depends on `sig_of(self)` only — never another
 def's body.
 
+### MIR — `mir/ir.rs`
+Per-def typed mid-IR (`planning/mir.md`), its own arenas (`MExprId`). Types are
+on every node (`MExpr.ty`, from `infer`), the four HIR call shapes collapse to
+one `Call`, `TypedLiteral`→`Number`, builtins (`reg`/`posedge`/`replace`/
+`enumerate`) are a closed `Builtin` node, drive targets are resolved `Place`s
+(`base` local + `Field`/`Index`/`BitRange` projections — slicing lowers here),
+and `const if` is folded at lowering. Derived per-def by the `mir_of` query and
+read by the backend as its single lowering source. Negative-space: well-formed
+shapes it can't lower `panic!`; ill-typed bodies (the `well_typed` gate, body +
+infer diagnostics clean) degrade to `Missing`.
+
 ### SV IR — `backend/ir.rs`
 Shallow Verilog-shaped tree (`SvFile` of `SvModule`s with parameters, ports,
 items). The emitter is a deterministic pretty-printer that hard-errors on SV
@@ -88,6 +100,7 @@ reserved-word collisions.
 | `check_drivers(def)` | `hir/check.rs` | Per-leaf drive paths (syntactic, pre-type): every `var` is driven, and no two drives overlap (one path a prefix of the other) — for every local kind, params included. Disjoint per-field wiring is legal. |
 | `completeness(def)` | `hir/check.rs` | Typed drive completeness (post-infer — field sets need types): a field-driven struct local must cover every leaf; an `out` param must be driven at all. Partially-driven port locals deferred to direction-folding (Q5d). |
 | `directions(def)` | `hir/check.rs` | Connection operators agree with port-field / param direction (`=` in, `=>` out). |
+| `mir_of(def)` | `mir/lower.rs` | Lower `body(def)` + `infer(def)` to the typed MIR: bake types onto every node, unify the four HIR call shapes into one `Call`, resolve drive targets to `Place`s (slices → `BitRange` projections), reduce builtins to the closed `Builtin` set, fold `const if` to the taken branch. The single source the backend lowers from. |
 | `sv_module(def)` | `backend/lower.rs` | Per-def lowering to one SV module: register recognition (`.reg`), verbatim emission of inline-verilog templates, block/if/when statement-forming, method-call rewriting, out-arg desugaring, aggregate flattening (structs/ports → per-field leaves, domain stamping, direction-aware equation splitting), type-generic monomorphisation at call sites; Const-kind generics bind as instance parameters (`#(.n(8))`) from the per-call instantiations `infer` records (rustc's node substs); a call recorded against a trait-method DECL re-selects to the unique matching impl once the self type is concrete (`Instance::resolve`, `planning/traits.md`). Widths ground through `const_eval` at the type chokepoints; `integer`-typed locals/ports and const-only fns are elided (compile-time only). Width residuals emit as `initial assert`. |
 | `sv_file` / `verilog(crate)` | `backend/lower.rs` | Assemble modules deterministically; pretty-print. |
 | `reserved_words(crate)` | `backend/reserved.rs` | SV reserved-word table for the emitter's collision check. |
