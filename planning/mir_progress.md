@@ -59,6 +59,7 @@
   - [ ] S3.2c..e — `as_reg`→`Builtin`, calls, control flow onto MIR. (Plan below.)
 - [ ] **S4 — Slice desugar on MIR.** Type-directed `x[a..b]` → part-select
   primitive + zero-width `const if` guard (retires SliceNotImplemented).
+  Implementation plan below ("S4 — slicing on the MIR walker").
 - [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass.
 - [ ] **S6 — Mono + mono_check on MIR.** "apply recorded substs" + ground-regime check.
 - [ ] **S7 — Inline on MIR.** rustc-Integrator-style splice (subsumes inline_bodies.md).
@@ -213,6 +214,10 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: cleanup — dropped the 43 stale `#[allow(dead_code)]` on the MIR
+  walker twins (all now live in the call graph; compiles clean). Wrote the S4
+  (slicing) implementation plan + the HIR-core-deletion deferred-cleanup note
+  (both below). S3 (emission on MIR) is corpus-complete; next MIR work is S4.
 - 2026-06-25: **S3.2s — const-fn localparams + `replace`; CORPUS-COMPLETE.**
   Ported the integer/symbolic-const let (localparam promotion via
   `const_rhs_mir`/`emit_const_call_mir`; the const-*function* emission stays on
@@ -376,6 +381,55 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   `emit_instance` + `UserCall` carrying MIR data) — that unblocks the Call arms
   in both value/leaves twins and is the bulk of S3.2d. Then `block_leaves_mir`,
   `index_bounds_assert`/`record_leaves` on MIR, then S3.2e statements + flip.
+
+## S4 — slicing on the MIR walker (implementation plan)
+
+Now that emission walks MIR (S3 corpus-complete), slicing rides it. S4 is a
+**coupled** feature: do NOT relax infer's `SliceNotImplemented` until emission is
+ready, or a slice silently miscompiles (HIR `expr_value` has no Slice arm → `0`;
+MIR walker Slice arm → `todo!`). Land infer-typing + MIR/emission together.
+Design source: planning/slicing.md (+ mir.md §"Slicing on MIR").
+
+Ordered steps (each golden-gated; add slice examples as they work):
+1. **infer typing** (hir/infer.rs, replace `SliceNotImplemented`): base must be
+   `bits(N)` (high-first) or `Vec(N,A)` (low-first). Endpoints `lo`/`hi`/`width`
+   → const args; `width = high - low` must fold to a **constant** (the one hard
+   SV rule); base/offset may be runtime. Result `bits(w)` / `Vec(w,A)`. Enforce
+   direction (ascending-bits / descending-vec = error w/ hint). Elision defaults
+   (bits `x[hi..]`→`x[hi..0]`, `x[..lo]`→`x[N..lo]`; vec dual). Zero width is
+   allowed (not an error).
+2. **MIR**: keep `MExprKind::Slice` (already lowered structurally) — handle it in
+   the walker, type-directed: `expr_value_mir`/`expr_leaves_mir` Slice arm emits
+   the part-select. Compute `(low, width)` from the endpoints (const-eval the
+   width). Emit `base[msb:lo]` when `low` is const, else `base[low +: width]`
+   (slicing.md table). bits vs vec only differs in which endpoint is low.
+3. **zero-width guard**: wrap the part-select primitive in a `const if width > 0`
+   (folds at lowering — S3.2q machinery): width 0 → emit nothing / a `[-1:0]`
+   effective-0-bit, never a reversed `[lo-1:lo]`. (Concat zero-width guard is
+   separate, only if a concat primitive needs it.)
+4. **predicate**: admit Slice in `mir_ok_expr` (base walkable, width const).
+5. **slice-set** (lvalue `x[a..b] = y`): a `Place` with a `BitRange` projection
+   (the `Projection::BitRange` reserved in S2). `place_leaves_dir_mir` emits the
+   part-select target; rides the partial-drive completeness machinery
+   (`index_uses_forbound`) like a compound index drive. Do LAST (its own step).
+6. tests: examples/working slices (bits two-endpoint, offset form, vec, elision,
+   zero-width via a parameter at its limit); fail-expected (ascending-bits,
+   descending-vec, non-const width). Promote into CLEAN/VERILATOR_CLEAN + golden.
+
+Hardest part: step 1 (const-width derivation + direction). Step 5 (slice-set) is
+separable. The whole feature is the payoff of the MIR migration — it lands as one
+clean MIR-walker desugar instead of touching two backends.
+
+## HIR-core deletion (deferred cleanup)
+
+The HIR lowering core still coexists with the MIR walker (reached only for
+predicate-rejected defs + the const-fn `build_const_function` path, which uses
+HIR `expr_value`/`const_stmts`). Deleting it requires: (a) handle the 3 untested
+edges in MIR (runtime-index *write* bounds-assert; symbolic `const if` is
+unbuilt in both; slice = S4), (b) port the const-fn SV-function builder off HIR
+`expr_value`, (c) flip the predicate always-on, (d) delete ~25 HIR methods +
+`UserCall`/`RegCall`. Big, mostly untested edges — lower priority than S4. Track
+here; tackle after S4 or leave the predicate as a permanent fallback.
 
 ## S3.2 entry plan (next fire)
 
