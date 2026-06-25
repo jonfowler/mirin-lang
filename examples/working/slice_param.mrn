@@ -1,0 +1,7 @@
+// verilator: -Gn=8
+// A parametric-width slice: the endpoint is a const generic. `x[n..1]` drops
+// bit 0, giving `bits(n-1)` (planning/slicing.md) — the slice width is symbolic
+// and renders against the module's `#()` parameter.
+fn drop_low(const n: integer, x: bits(n)) -> bits(n - 1) {
+    x[n..1]
+}

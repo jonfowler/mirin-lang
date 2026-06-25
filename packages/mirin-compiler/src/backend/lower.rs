@@ -1914,41 +1914,61 @@ impl<'db> SvLower<'_, 'db> {
     ) -> String {
         if let Some(w_e) = width {
             let off = self.expr_value_mir(lo.expect("slice offset base"));
-            let w = self.mir_lit(w_e);
+            let w = self.render_const(&self.mir_const_arg(w_e));
             return format!("[{off} +: {w}]");
         }
         let (n, is_bits) = match base_ty {
             Type::Value {
-                kind:
-                    ValueKind::Bits {
-                        width: ConstArg::Lit(n),
-                    },
+                kind: ValueKind::Bits { width: n },
                 ..
-            } => (*n, true),
-            Type::Vec {
-                len: ConstArg::Lit(n),
-                ..
-            } => (*n, false),
-            _ => panic!("MIR: slice base length is not a literal"),
+            } => (n.clone(), true),
+            Type::Vec { len: n, .. } => (n.clone(), false),
+            _ => panic!("MIR: slice base is neither bits nor vec"),
         };
-        let a = lo
-            .map(|e| self.mir_lit(e))
-            .unwrap_or(if is_bits { n } else { 0 });
-        let b = hi
-            .map(|e| self.mir_lit(e))
-            .unwrap_or(if is_bits { 0 } else { n });
-        if is_bits {
-            format!("[{}:{}]", a - 1, b) // bits: a=high, b=low
+        let zero = ConstArg::Lit(0);
+        let a = lo.map(|e| self.mir_const_arg(e)).unwrap_or(if is_bits {
+            n.clone()
         } else {
-            format!("[{}:{}]", a, b - 1) // vec: a=low, b=high
+            zero.clone()
+        });
+        let b = hi
+            .map(|e| self.mir_const_arg(e))
+            .unwrap_or(if is_bits { zero } else { n });
+        // Type-directed: bits high-first (`a`=high) → `[high-1:low]`; vec
+        // low-first (`a`=low) → ascending `[low:high-1]`. The msb (`high-1`)
+        // folds for literals, renders symbolic for a param.
+        let (high, low) = if is_bits { (a, b) } else { (b, a) };
+        let msb = self.render_const(&ConstArg::Op(
+            ConstOp::Sub,
+            Box::new(high),
+            Box::new(ConstArg::Lit(1)),
+        ));
+        let lsb = self.render_const(&low);
+        if is_bits {
+            format!("[{msb}:{lsb}]")
+        } else {
+            format!("[{lsb}:{msb}]")
         }
     }
 
-    /// A MIR node's literal value (a `Number`). Used for literal slice endpoints.
-    fn mir_lit(&self, m: MExprId) -> i128 {
-        match self.mir.expr(m).kind {
-            MExprKind::Number(v, _) => v,
-            _ => panic!("MIR: expected a literal slice endpoint"),
+    /// A slice endpoint as a const arg (a literal or const generic param).
+    fn mir_const_arg(&self, m: MExprId) -> ConstArg<'db> {
+        match &self.mir.expr(m).kind {
+            MExprKind::Number(v, _) => ConstArg::Lit(*v),
+            MExprKind::ConstParam(i) => ConstArg::Param(*i),
+            _ => panic!("MIR: slice endpoint is not a const (literal/param)"),
+        }
+    }
+
+    /// Render a const arg as an SV constant string: ground it through the mono
+    /// `self_subst` + promoted locals, then fold to a literal or render symbolic
+    /// (a param as the emitted module's `#()` name).
+    fn render_const(&self, c: &ConstArg<'db>) -> String {
+        let c = subst_const_opt(c, &self.self_subst);
+        let c = self.subst_promoted_const(&c);
+        match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &c) {
+            Some(v) => v.to_string(),
+            None => render_const_sv(&c, self.sig),
         }
     }
 
@@ -2379,12 +2399,17 @@ impl<'db> SvLower<'_, 'db> {
         hi: Option<MExprId>,
         width: Option<MExprId>,
     ) -> bool {
-        let is_num = |e: MExprId| matches!(mir.expr(e).kind, MExprKind::Number(..));
+        let is_const = |e: MExprId| {
+            matches!(
+                mir.expr(e).kind,
+                MExprKind::Number(..) | MExprKind::ConstParam(_)
+            )
+        };
         match width {
             None => {
-                (lo.is_some() || hi.is_some()) && lo.is_none_or(is_num) && hi.is_none_or(is_num)
+                (lo.is_some() || hi.is_some()) && lo.is_none_or(is_const) && hi.is_none_or(is_const)
             }
-            Some(w) => lo.is_some_and(|e| self.mir_ok_expr(mir, e)) && is_num(w),
+            Some(w) => lo.is_some_and(|e| self.mir_ok_expr(mir, e)) && is_const(w),
         }
     }
 

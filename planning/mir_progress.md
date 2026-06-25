@@ -58,10 +58,10 @@
     types. (Local-type reads deferred — `self`-param + `Option`/`Error` subtlety.)
   - [ ] S3.2c..e — `as_reg`→`Builtin`, calls, control flow onto MIR. (Plan below.)
 - [~] **S4 — Slicing on MIR.** Reads: two-endpoint / offset / elision, over
-  bits + Vec, literal + runtime base — all end-to-end, verilator-clean. Slice-set
-  (lvalue): bits `word[hi..lo] = …` via a `Projection::BitRange` + a distinct
-  partial-drive path in completeness. Remaining: zero-width const-if guard,
-  param/const-expr endpoints, vec slice-set range coverage.
+  bits + Vec, literal / runtime / **const-param** endpoints — all end-to-end,
+  verilator-clean. Slice-set (lvalue): bits `word[hi..lo] = …` via a
+  `Projection::BitRange` + a distinct partial-drive path in completeness.
+  Remaining: zero-width const-if guard, vec slice-set range coverage.
 - [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass.
 - [ ] **S6 — Mono + mono_check on MIR.** "apply recorded substs" + ground-regime check.
 - [ ] **S7 — Inline on MIR.** rustc-Integrator-style splice (subsumes inline_bodies.md).
@@ -216,6 +216,16 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S4 step 6 — const-param slice endpoints (symbolic widths).**
+  `slice_literal`/`sliced_ty` now build a `ConstArg` width (literals fold to
+  `Lit`, a const generic param yields a symbolic `Op(Sub,…)`); the walker's
+  `slice_range_sv` builds endpoints as `ConstArg`s and renders each via
+  `render_const` (ground through `self_subst`/promoted, then fold-or-render). So
+  `x[n..1]` → `bits(n-1)` → `x[(n - 1):1]` against the module's `#(parameter int
+  n)`. Golden-stable for literal slices; `slice_param.mrn` verilator-clean
+  (-Gn=8), in CLEAN+VERILATOR_CLEAN+golden. **Slicing now covers literal /
+  runtime / parametric endpoints, both directions, read + set.** Remaining S4:
+  zero-width const-if guard, vec slice-set range coverage (both niche).
 - 2026-06-25: **S4 step 5 — slice-set (lvalue, bits).** `word[8..0] = lo;
   word[16..8] = hi;` on a `var bits(16)` → `word[7:0]=…; word[15:8]=…`,
   verilator-clean. `Projection::BitRange` (lvalue dual of the read Slice); the

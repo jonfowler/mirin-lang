@@ -29,8 +29,9 @@ use crate::base::diagnostics::Span;
 use crate::hir::body::{Body, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::sig::sig_of;
 use crate::hir::types::{
-    ConstArg, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam, InferVar, LocalId,
-    Predicate, Term, TermKind, Type, ValueKind, super_fold_const, super_fold_type, type_has_infer,
+    ConstArg, ConstOp, Direction, Domain, DomainSort, Folder, GenericArgs, GenericParam, InferVar,
+    LocalId, Predicate, Term, TermKind, Type, ValueKind, super_fold_const, super_fold_type,
+    type_has_infer,
 };
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -1777,10 +1778,13 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     }
 
     /// A literal endpoint's value (a `Number`/typed literal), else `None`.
-    fn lit_val(&self, body: &Body<'db>, e: ExprId) -> Option<i128> {
+    /// A slice endpoint as a const arg: a literal or a const generic param. Other
+    /// shapes (a runtime value, arithmetic) are not const endpoints here.
+    fn const_arg_of(&self, body: &Body<'db>, e: ExprId) -> Option<ConstArg<'db>> {
         match body.expr(e).kind {
-            ExprKind::Number(v, _) => Some(v),
-            ExprKind::TypedLiteral { value, .. } => Some(value),
+            ExprKind::Number(v, _) => Some(ConstArg::Lit(v)),
+            ExprKind::TypedLiteral { value, .. } => Some(ConstArg::Lit(value)),
+            ExprKind::ConstParam(i) => Some(ConstArg::Param(i)),
             _ => None,
         }
     }
@@ -1799,78 +1803,79 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         width: Option<ExprId>,
     ) -> Option<Type<'db>> {
         // Offset form `x[off..+w]`: the base (`lo`) may be RUNTIME; only the
-        // width must be a constant — a fixed-size synthesisable runtime slice.
+        // width must be a constant (literal or a const generic param).
         if let Some(w_e) = width {
             lo?; // must have a base/offset
-            let w = self.lit_val(body, w_e)?;
-            if w <= 0 {
-                return None; // zero/neg width needs the const-if guard (later)
+            let w = self.const_arg_of(body, w_e)?;
+            if matches!(&w, ConstArg::Lit(v) if *v <= 0) {
+                return None; // zero/neg literal width needs the const-if guard
             }
             return self.sliced_ty(bt, w);
         }
         // Two-endpoint form `x[a..b]`, possibly elided. The base's length `N`
-        // (literal) supplies an elided end: bits `x[hi..]`→`x[hi..0]`,
-        // `x[..lo]`→`x[N..lo]`; vec `v[lo..]`→`v[lo..N]`, `v[..hi]`→`v[0..hi]`.
-        // Bare `x[..]` (both elided) is rejected. `bits` is high-first (`a`=high),
-        // `Vec` is low-first (`a`=low).
+        // supplies an elided end: bits `x[hi..]`→`x[hi..0]`, `x[..lo]`→`x[N..lo]`;
+        // vec `v[lo..]`→`v[lo..N]`, `v[..hi]`→`v[0..hi]`. Bare `x[..]` rejected.
+        // `bits` is high-first (`a`=high), `Vec` is low-first (`a`=low).
         if lo.is_none() && hi.is_none() {
             return None; // bare `x[..]` is redundant
         }
         let (n, is_bits) = match bt {
             Type::Value {
-                kind:
-                    ValueKind::Bits {
-                        width: ConstArg::Lit(n),
-                    },
+                kind: ValueKind::Bits { width: n },
                 ..
-            } => (*n, true),
-            Type::Vec {
-                len: ConstArg::Lit(n),
-                ..
-            } => (*n, false),
-            _ => return None, // non-literal length / wrong base
+            } => (n.clone(), true),
+            Type::Vec { len: n, .. } => (n.clone(), false),
+            _ => return None,
         };
+        let zero = ConstArg::Lit(0);
         let a = match lo {
-            Some(e) => self.lit_val(body, e)?,
+            Some(e) => self.const_arg_of(body, e)?,
             None => {
                 if is_bits {
-                    n
+                    n.clone()
                 } else {
-                    0
+                    zero.clone()
                 }
             }
         };
         let b = match hi {
-            Some(e) => self.lit_val(body, e)?,
+            Some(e) => self.const_arg_of(body, e)?,
             None => {
                 if is_bits {
-                    0
+                    zero
                 } else {
                     n
                 }
             }
         };
-        let w = if is_bits { a - b } else { b - a };
-        if w <= 0 {
-            return None; // wrong order / zero-width — not this cut
-        }
+        // width = high - low (bits: a-b; vec: b-a). Fold when both endpoints are
+        // literal (so concrete slices keep a `Lit` width); else build a symbolic
+        // `Op(Sub, …)` that grounds at elaboration.
+        let (high, low) = if is_bits { (a, b) } else { (b, a) };
+        let w = match (&high, &low) {
+            (ConstArg::Lit(h), ConstArg::Lit(l)) => {
+                if h <= l {
+                    return None; // wrong order / zero-width — not this cut
+                }
+                ConstArg::Lit(h - l)
+            }
+            _ => ConstArg::Op(ConstOp::Sub, Box::new(high), Box::new(low)),
+        };
         self.sliced_ty(bt, w)
     }
 
     /// The result type of a width-`w` slice of `bt` (`bits(w)` / `Vec(w, A)`).
-    fn sliced_ty(&self, bt: &Type<'db>, w: i128) -> Option<Type<'db>> {
+    fn sliced_ty(&self, bt: &Type<'db>, w: ConstArg<'db>) -> Option<Type<'db>> {
         match bt {
             Type::Value {
                 kind: ValueKind::Bits { .. },
                 domain,
             } => Some(Type::Value {
-                kind: ValueKind::Bits {
-                    width: ConstArg::Lit(w),
-                },
+                kind: ValueKind::Bits { width: w },
                 domain: *domain,
             }),
             Type::Vec { elem, .. } => Some(Type::Vec {
-                len: ConstArg::Lit(w),
+                len: w,
                 elem: elem.clone(),
             }),
             _ => None,
