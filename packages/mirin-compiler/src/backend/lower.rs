@@ -43,7 +43,7 @@ use crate::backend::ir::{
 use crate::base::db::SourceRoot;
 use crate::hir::body::{
     Block, Body, ConnArg, ExprId, ExprKind, LocalKind, NamedArg, RecordField, Stmt, VerilogSegment,
-    body,
+    VerilogTemplate, body,
 };
 use crate::hir::check::{check_drivers, completeness, directions};
 use crate::hir::infer::{Inference, infer};
@@ -2836,6 +2836,19 @@ impl<'db> SvLower<'_, 'db> {
                 .unwrap_or_default(),
         };
 
+        self.render_inline_spliced(&template, &val_map, &node_subst)
+    }
+
+    /// Splice a verilog inline template given the resolved param→value map and
+    /// the call's const substitution. **Id-agnostic** — the SV-building half of
+    /// `render_inline`, shared by the HIR-id path and the MIR walker (which build
+    /// `val_map`/`node_subst` from their own ids, then call this).
+    fn render_inline_spliced(
+        &mut self,
+        template: &VerilogTemplate<'db>,
+        val_map: &HashMap<LocalId, String>,
+        node_subst: &[Option<Term<'db>>],
+    ) -> SvExpr {
         let mut out = String::new();
         for seg in &template.segments {
             match seg {
@@ -2853,7 +2866,7 @@ impl<'db> SvLower<'_, 'db> {
                     // so an assoc-const projection onto an outer type param
                     // (`Assoc { self_ty: A }`) grounds rather than reaching
                     // `render_const_sv` as an opaque `Assoc(..)`.
-                    let c = subst_const_opt(c, &node_subst);
+                    let c = subst_const_opt(c, node_subst);
                     let c = subst_const_opt(&c, &self.self_subst);
                     let c = self.subst_promoted_const(&c);
                     let s =

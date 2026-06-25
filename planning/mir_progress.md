@@ -210,6 +210,16 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: S3.2d cont. — refactored `render_inline` to extract the
+  **id-agnostic** `render_inline_spliced(template, val_map, node_subst)` (the
+  SV-building half). The HIR path now builds `val_map`/`node_subst` then calls
+  it; the MIR path will do the same from a MIR `Call` node, *sharing* the splice
+  rather than duplicating it. Pure extraction — golden byte-for-byte green. This
+  is the "push id-resolution to the edges" cleanup that shrinks the call-machinery
+  port. Next: `render_inline_mir` prep (val_map from Conn args via
+  `expr_value_mir`, node_subst from `Call.substs`; trait re-selection via a
+  substs-taking `resolve_trait_instance` variant) + wire `expr_value_mir`/
+  `expr_leaves_mir` Call arm for the inline case.
 - 2026-06-25: S3.2d started — `expr_leaves_mir` (aggregate arms ported off the
   MIR node, reusing id-agnostic `local_leaves`/`strip_field`/`eval_const`;
   Record/Index/Call/control-flow `todo!`) + `one_leaf_mir`; `expr_value_mir`
