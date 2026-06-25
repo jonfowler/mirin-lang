@@ -156,6 +156,21 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 
 ## Status log (newest first)
 
+- 2026-06-25: **S6 design landed (mono + mono_check).** Researched the rustc
+  analogy (collector dedup, `Instance`=`DefId`+substs, lazy
+  `instantiate_mir_and_normalize` — MIR not cloned per instance, post-mono
+  errors, CTFE-as-query). Finding: the backend already has the collector (the
+  `MonoReq` worklist in `sv_file`) and lazy-on-read substitution (`ground_widths`
+  at ~20 sites), so S6 is **additive, not a rewrite** — add the post-mono ground
+  check first, consolidate grounding later. Wrote the executable first slice into
+  `planning/mono_check.md` ("Implementation plan"): a `mono_check(krate)` salsa
+  query reusing the worklist (extract `reachable_instances`), evaluating
+  residuals/widths for **ground** instantiations into diagnostics, leaving the
+  symbolic `initial assert` fallback unchanged; settled the keying (single walk
+  first) and diagnostic-placement (separate query, doesn't gate `sv_file`)
+  questions. Next fire: implement that slice (start with the `reachable_instances`
+  extraction — safe, golden-protected).
+
 - 2026-06-25: **HIR-core deletion DONE.** Ported the const-fn SV-`function`
   builder to MIR (`lower_const_function_mir` + twins), which was the last root
   keeping the HIR value lowering alive. The whole HIR lowering core then went dead

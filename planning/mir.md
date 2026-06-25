@@ -166,6 +166,15 @@ unchanged — MIR is a cleaner *substrate* to build the summaries from (uniform
 calls/loops/consts/types), and makes each ground per-instantiation check trivial;
 it is an enabler, not a replacement for the factoring.
 
+**On-ramp:** the backend already has the rustc-shaped bones — a deduped mono
+**collector** (the `MonoReq` worklist in `sv_file`) and **lazy-on-read**
+substitution (`ground_widths`, never cloning MIR per instance). So S6 is additive,
+not a rewrite: add the post-mono **check** first (the naive ground regime),
+*then* optionally consolidate the grounding calls. The executable first slice —
+`mono_check(krate)` reusing the worklist, the two architecture decisions it
+settles, and the test on-ramp — is in `planning/mono_check.md` ("Implementation
+plan"). The retarget-grounding consolidation is the readability win that follows.
+
 ## Inline on MIR
 
 Inlining becomes an ordinary MIR transform (the rustc Integrator: clone the
