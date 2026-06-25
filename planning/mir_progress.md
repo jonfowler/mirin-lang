@@ -213,6 +213,14 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2p — let-mut fold on MIR.** Added run-consumption to
+  `lower_stmts_mir` (`let mut acc` + carrying steps → `lower_mut_fold_mir`, a
+  procedural `always_comb`), plus `mir_carries`, `blocking_assigns_mir`,
+  `loop_bound_var_mir`. Predicate is now run-aware (`mir_ok_stmts` +
+  `mir_ok_fold_step`). Golden green (89), 127 lib. Fold defs (adder_tree,
+  fold_sum, …) now lower on MIR. **Remaining: `const if` (const-eval over a MIR
+  cond) + runtime-index bounds-asserts — then every construct lowers on MIR and
+  the HIR lowering core can be deleted.**
 - 2026-06-25: **S3.2o — unit-return call statements + out-args on MIR.** Fixed
   `emit_instance_mir` to wire `Conn::Out` args (out-target leaves via
   `projected_leaves_mir`, type for mono from a bare-local target). Added

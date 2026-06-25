@@ -1517,11 +1517,157 @@ impl<'db> SvLower<'_, 'db> {
 
     #[allow(dead_code)]
     fn lower_stmts_mir(&mut self, stmts: &[MStmt]) {
-        // NB: the let-mut-fold run-consumption is not ported; the predicate must
-        // reject mutable-local fns.
-        for stmt in stmts {
-            self.lower_one_stmt_mir(stmt);
+        let mut i = 0;
+        while i < stmts.len() {
+            // `let mut acc = init;` followed by the contiguous run of statements
+            // that reassign `acc` (a straight-line `acc = …` or a carrying `for`)
+            // is a loop-carried fold → one procedural `always_comb`.
+            if let MStmt::Let { local, value } = &stmts[i]
+                && self.mir.local(*local).mutable
+            {
+                let (acc, init) = (*local, *value);
+                let mut steps: Vec<MStmt> = Vec::new();
+                let mut j = i + 1;
+                while let Some(stmt) = stmts.get(j) {
+                    if !self.mir_carries(stmt, acc) {
+                        break;
+                    }
+                    steps.push(stmt.clone());
+                    j += 1;
+                }
+                if !steps.is_empty() {
+                    self.lower_mut_fold_mir(acc, init, &steps);
+                    i = j;
+                    continue;
+                }
+            }
+            self.lower_one_stmt_mir(&stmts[i]);
+            i += 1;
         }
+    }
+
+    /// Does a statement reassign `acc` (a loop-carried fold step)?
+    fn mir_carries(&self, stmt: &MStmt, acc: LocalId) -> bool {
+        match stmt {
+            MStmt::Equation { lhs, .. } => lhs.base == acc,
+            MStmt::For { body, .. } => body
+                .stmts
+                .iter()
+                .any(|s| matches!(s, MStmt::Equation { lhs, .. } if lhs.base == acc)),
+            _ => false,
+        }
+    }
+
+    /// MIR twin of `lower_mut_fold` — `let mut acc` + carrying steps → one
+    /// procedural `always_comb` (init, then blocking reassignments / a
+    /// procedural `for`).
+    #[allow(dead_code)]
+    fn lower_mut_fold_mir(&mut self, acc: LocalId, init: MExprId, steps: &[MStmt]) {
+        self.declare_local(acc);
+        let mut comb: Vec<SvCombStmt> = Vec::new();
+        let acc_leaves = self.local_leaves(acc);
+        let init_leaves = self.expr_leaves_mir(init);
+        for ((_, lp), (_, rv)) in acc_leaves.into_iter().zip(init_leaves) {
+            comb.push(SvCombStmt::Assign { lhs: lp, rhs: rv });
+        }
+        for step in steps {
+            match step {
+                MStmt::Equation { lhs, rhs } => {
+                    for a in self.blocking_assigns_mir(lhs, *rhs) {
+                        comb.push(a);
+                    }
+                }
+                MStmt::For {
+                    index,
+                    elem,
+                    iter,
+                    body,
+                } => {
+                    let Some((bound, var)) = self.loop_bound_var_mir(*index, *elem, *iter) else {
+                        continue;
+                    };
+                    let mut inner: Vec<SvCombStmt> = Vec::new();
+                    let elem_is_genvar = matches!(self.mir.local(*elem).kind, LocalKind::ForBound);
+                    if !elem_is_genvar {
+                        self.declare_local(*elem);
+                        let elem_base = self.local_name(*elem);
+                        for (suffix, e) in self.expr_leaves_mir(*iter) {
+                            inner.push(SvCombStmt::Assign {
+                                lhs: SvExpr::Ident(join(&elem_base, &suffix)),
+                                rhs: SvExpr::Lit(format!("{e}[{var}]")),
+                            });
+                        }
+                    }
+                    let body = body.clone();
+                    for stmt in &body.stmts {
+                        if let MStmt::Equation { lhs, rhs } = stmt {
+                            for a in self.blocking_assigns_mir(lhs, *rhs) {
+                                inner.push(a);
+                            }
+                        }
+                    }
+                    comb.push(SvCombStmt::For {
+                        var,
+                        bound,
+                        body: inner,
+                    });
+                }
+                _ => {}
+            }
+        }
+        self.items
+            .push(SvItem::AlwaysComb(SvAlwaysComb { body: comb }));
+    }
+
+    /// Per-leaf blocking assignments for one `lhs = rhs` (inside a fold).
+    #[allow(dead_code)]
+    fn blocking_assigns_mir(&mut self, lhs: &Place, rhs: MExprId) -> Vec<SvCombStmt> {
+        let lhs_leaves = self.place_leaves_dir_mir(lhs);
+        let rhs_leaves = self.value_leaves_dir_mir(rhs);
+        lhs_leaves
+            .into_iter()
+            .zip(rhs_leaves)
+            .map(|((lp, _), (rp, _))| SvCombStmt::Assign { lhs: lp, rhs: rp })
+            .collect()
+    }
+
+    /// MIR twin of `loop_bound_var` — `(bound, genvar-name)` from a MIR iterable.
+    #[allow(dead_code)]
+    fn loop_bound_var_mir(
+        &mut self,
+        index: Option<LocalId>,
+        elem: LocalId,
+        iter: MExprId,
+    ) -> Option<(SvExpr, String)> {
+        let it = {
+            let t = ground_widths(
+                self.db,
+                self.krate,
+                self.def,
+                &subst_type(&self.mir.expr(iter).ty, &self.self_subst),
+            );
+            self.subst_promoted(&t)
+        };
+        let len = match &it {
+            Type::Vec { len, .. } => len.clone(),
+            Type::Value {
+                kind: ValueKind::Bits { width },
+                ..
+            } => width.clone(),
+            _ => return None,
+        };
+        let bound = width_expr(&len, &self.sig.generic_params);
+        let elem_is_genvar = matches!(self.mir.local(elem).kind, LocalKind::ForBound);
+        let var = match (elem_is_genvar, index) {
+            (true, _) => self.local_name(elem),
+            (false, Some(i)) => self.local_name(i),
+            (false, None) => {
+                let v = format!("__i{}", self.synth);
+                self.synth += 1;
+                v
+            }
+        };
+        Some((bound, var))
     }
 
     #[allow(dead_code)]
@@ -1816,8 +1962,67 @@ impl<'db> SvLower<'_, 'db> {
     /// on the HIR path — never a wrong lowering.
     fn mir_walk_supported(&self, mir: &Mir<'db>) -> bool {
         let block = mir.block();
-        block.stmts.iter().all(|s| self.mir_ok_stmt(mir, s))
+        self.mir_ok_stmts(mir, &block.stmts)
             && block.tail.is_none_or(|t| self.mir_ok_result_value(mir, t))
+    }
+
+    /// Run-aware statement-list check, mirroring `lower_stmts_mir`: a `let mut`
+    /// followed by carrying steps is a fold (validate init + steps as a run);
+    /// everything else is per-statement. A `let mut` with no carrying steps falls
+    /// to the per-statement `Let` check, which keeps mutable lets on HIR.
+    fn mir_ok_stmts(&self, mir: &Mir<'db>, stmts: &[MStmt]) -> bool {
+        let mut i = 0;
+        while i < stmts.len() {
+            if let MStmt::Let { local, value } = &stmts[i]
+                && mir.local(*local).mutable
+            {
+                let acc = *local;
+                let mut j = i + 1;
+                while stmts.get(j).is_some_and(|s| self.mir_carries(s, acc)) {
+                    j += 1;
+                }
+                if j > i + 1 {
+                    let init_ok = !self.is_integer_local(acc)
+                        && self.as_reg_mir(*value).is_none()
+                        && self.mir_ok_value(mir, *value);
+                    if !init_ok
+                        || !stmts[i + 1..j]
+                            .iter()
+                            .all(|s| self.mir_ok_fold_step(mir, s))
+                    {
+                        return false;
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+            if !self.mir_ok_stmt(mir, &stmts[i]) {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// A fold reassignment step: a `acc = …` equation or a carrying `for` whose
+    /// body is all (walkable) equations (`lower_mut_fold` ignores non-equations,
+    /// but the predicate stays conservative and keeps those defs on HIR).
+    fn mir_ok_fold_step(&self, mir: &Mir<'db>, s: &MStmt) -> bool {
+        match s {
+            MStmt::Equation { lhs, rhs } => {
+                self.mir_ok_place(mir, lhs) && self.mir_ok_value(mir, *rhs)
+            }
+            MStmt::For { iter, body, .. } => {
+                self.mir_ok_expr(mir, *iter)
+                    && body.stmts.iter().all(|s| match s {
+                        MStmt::Equation { lhs, rhs } => {
+                            self.mir_ok_place(mir, lhs) && self.mir_ok_value(mir, *rhs)
+                        }
+                        _ => false,
+                    })
+            }
+            _ => false,
+        }
     }
 
     /// A tail/`return` value: in a unit fn it is a void call statement (or a
