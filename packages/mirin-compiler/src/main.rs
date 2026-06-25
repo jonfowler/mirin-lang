@@ -12,8 +12,8 @@ use std::{env, fs, process};
 
 use mirin_compiler::{
     DefKind, RootDatabase, SourceRoot, Span, Vfs, ast_id_map, body, check_drivers, completeness,
-    crate_def_map, directions, infer, load_crate, mir_of, mono_check, parse_text, pretty_mir,
-    render, reserved_words, sig_of, syntax_errors, verilog,
+    crate_def_map, directions, infer, inline_check, load_crate, mir_of, mono_check, parse_text,
+    pretty_mir, render, reserved_words, sig_of, syntax_errors, verilog,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -246,6 +246,9 @@ fn collect_diagnostics(db: &RootDatabase, krate: SourceRoot) -> Vec<String> {
                     out.push(render(&path, source, abs(d.span), &d.message()));
                 }
                 for d in directions(db, krate, def) {
+                    out.push(render(&path, source, abs(d.span), &d.message()));
+                }
+                for d in inline_check(db, krate, def) {
                     out.push(render(&path, source, abs(d.span), &d.message()));
                 }
                 for d in infer(db, krate, def).diagnostics() {

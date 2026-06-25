@@ -90,7 +90,27 @@
   cross-module **composition** (transitive ground obligations through a chain of
   generic calls); the symbolic assertion-map/support-factoring scaling design in
   `planning/mono_check.md`.
-- [ ] **S7 — Inline on MIR.** rustc-Integrator-style splice (subsumes inline_bodies.md).
+- [~] **S7 — Inline on MIR (v1 combinational splice LANDED).** Mirin-bodied
+  `#[inline]` fns now splice at the call site (`splice_inline_body`,
+  `backend/lower.rs`): a fresh prefix-scoped nested `SvLower` over the callee's
+  own `(body, inf, mir, sig)` (rustc-Integrator shape — name-prefix + item-merge
+  = the integrator, param-as-wire = the arg temporaries), value params bound to
+  caller-side `__inl{site}__<param>` wires, items/mono_reqs drained into the
+  caller. The top-level lower keeps `prefix == ""`, so non-inline emission stays
+  byte-identical (golden green). The blanket `InlineNonVerilogBody` rejection in
+  `infer` is retired; a new front-end `inline_check(def)` query (`hir/check.rs`,
+  wired into CLI + LSP + the test diagnostic counts) holds the v1 restrictions —
+  clocked (`when`/`.reg`), `var`, out-param, `const if`, integer params — as
+  clean spanned diagnostics (emission runs only on a clean crate, so an
+  unsupported shape never reaches the splice). `examples/working/inline_mirin_body.mrn`
+  (id + let + nested inline) + golden + CLEAN + VERILATOR_CLEAN; the old
+  `fail-expected/inline-mirin-body.mrn` promoted (now compiles);
+  `fail-expected/inline-var.mrn` for the check. **Remaining (next slice):**
+  `const if` folding in an inline body via call-site const generics bound on the
+  `const_eval` `Frame` (planning/alternative/inline_bodies-frame-constgen.md) —
+  the slice/pack-guard use case; then relax the `ConstIf`/`IntegerParam` checks.
+  Aggregate-returning inline bodies work through `expr_leaves` but want a
+  dedicated example.
 - [ ] **S8 — const-eval during infer via per-item anon-const units.** NB (verified
   2026-06-25): const-eval-in-infer is *not* a functional gap — `infer` calls the
   `const_eval` helper (`try_eval`/`eval_width`/`eval_cond`) throughout obligation

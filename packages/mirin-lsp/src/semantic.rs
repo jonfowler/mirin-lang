@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use mirin_compiler::{
     DefKind, RootDatabase, Span, Vfs, ast_id_map, body, check_drivers, completeness, crate_def_map,
-    directions, infer, mono_check, sig_of,
+    directions, infer, inline_check, mono_check, sig_of,
 };
 use ropey::Rope;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Range, Uri};
@@ -112,6 +112,9 @@ pub fn diagnostics(
             out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
         }
         for d in directions(db, krate, def) {
+            out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
+        }
+        for d in inline_check(db, krate, def) {
             out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
         }
     }

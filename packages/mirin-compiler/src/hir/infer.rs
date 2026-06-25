@@ -54,10 +54,6 @@ pub enum InferDiagnosticKind {
     /// to a constant: a symbolic const generic (which needs the not-yet-built
     /// `generate if` lowering) or a runtime value.
     ConstIfNotConst,
-    /// `#[inline]` on a Mirin-bodied fn — only verilog-bodied inline splicing is
-    /// implemented (planning/inline_bodies.md). A spanned front-end error so the
-    /// backend never hits the unsupported-splice path.
-    InlineNonVerilogBody,
     /// A slice expression (`x[lo..hi]` / `x[off..+w]`) — parsed and lowered, but
     /// the semantics (planning/slicing.md) are not yet implemented. Rejected
     /// cleanly here so a slice never silently lowers to its base.
@@ -193,12 +189,6 @@ impl InferDiagnostic {
                 "a `const if` condition must reduce to a compile-time constant; \
                  this one does not (a symbolic const generic needs `generate if`, \
                  not yet implemented; a runtime value is not allowed)"
-                    .to_owned()
-            }
-            InferDiagnosticKind::InlineNonVerilogBody => {
-                "`#[inline]` on a Mirin-bodied fn is not yet supported (only \
-                 verilog-bodied inline fns splice); remove `#[inline]` to emit it \
-                 as a module"
                     .to_owned()
             }
             InferDiagnosticKind::SliceNotImplemented => {
@@ -792,14 +782,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
         }
         self.check_const_ifs();
-        // `#[inline]` on a Mirin-bodied fn is not yet spliced (only verilog
-        // bodies splice today — planning/inline_bodies.md). Reject at the
-        // front-end so a diagnostic-free crate never reaches the backend's
-        // unsupported-splice path (a clean spanned error, not a panic).
-        if self.body.verilog().is_none() && self.map.def_data(self.def).is_some_and(|d| d.inline) {
-            self.current_span = Span::default();
-            self.diag(InferDiagnosticKind::InlineNonVerilogBody);
-        }
+        // A Mirin-bodied `#[inline]` fn now splices at the call site
+        // (planning/inline_bodies.md); the v1 shape restrictions (clocked / `var`
+        // / out-param / `const if` / integer params) live in `inline_check`.
         self.check_widths();
         let substs: Vec<(ExprId, Vec<Term<'db>>)> = self
             .call_substs

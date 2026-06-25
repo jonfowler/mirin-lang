@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 
 use mirin_compiler::{
     DefKind, RootDatabase, SourceRoot, Vfs, body, check_drivers, completeness, crate_def_map,
-    directions, infer, load_crate, mir_of, mono_check, pretty_mir, reserved_words, sig_of,
-    syntax_errors, verilog,
+    directions, infer, inline_check, load_crate, mir_of, mono_check, pretty_mir, reserved_words,
+    sig_of, syntax_errors, verilog,
 };
 
 /// Count of monomorphisation-time (ground-residual) diagnostics for a source.
@@ -58,6 +58,7 @@ fn examples() -> Vec<(String, String)> {
 /// functional type checker over it.
 const CLEAN: &[&str] = &[
     "inline_attr.mrn",
+    "inline_mirin_body.mrn",
     "pack.mrn",
     "unpack.mrn",
     "vec_bitpack.mrn",
@@ -185,6 +186,7 @@ fn crate_diagnostic_counts(
                 infer_d += infer(db, krate, def).diagnostics().len();
                 driver_d += check_drivers(db, krate, def).len();
                 driver_d += completeness(db, krate, def).len();
+                driver_d += inline_check(db, krate, def).len();
                 dir_d += directions(db, krate, def).len();
             }
             // Struct/port/impl HEADERS carry only signature diagnostics (an
@@ -245,6 +247,7 @@ fn dump_verilog() {
 /// this harness reads and forwards.
 const VERILATOR_CLEAN: &[&str] = &[
     "inline_attr.mrn",
+    "inline_mirin_body.mrn",
     "pack.mrn",
     "unpack.mrn",
     "vec_bitpack.mrn",

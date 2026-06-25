@@ -38,7 +38,7 @@ pub use hir::body::{
 };
 pub use hir::check::{
     DirectionDiagnostic, DirectionDiagnosticKind, DriverDiagnostic, DriverDiagnosticKind,
-    check_drivers, completeness, directions,
+    InlineDiagnostic, InlineDiagnosticKind, check_drivers, completeness, directions, inline_check,
 };
 pub use hir::infer::{InferDiagnostic, InferDiagnosticKind, Inference, infer};
 pub use hir::sig::{Field, Param, Signature, sig_of};

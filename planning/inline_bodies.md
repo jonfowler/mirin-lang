@@ -1,9 +1,17 @@
 # Splicing Mirin-bodied `#[inline]` fns
 
-Status: designed, not implemented. Today only **verilog-bodied** inline fns
-splice (`render_inline` — a `${result} = EXPR` template); a Mirin-bodied
-`#[inline] fn` hits a panic (was a silent `SvExpr::Lit("0")`, fixed in
-`c2316c1`). This doc designs the real splice.
+Status: **v1 implemented** (combinational, value-returning). A Mirin-bodied
+`#[inline] fn` splices via `splice_inline_body` (`backend/lower.rs`): a fresh
+prefix-scoped nested `SvLower` over the callee's `(body, inf, mir, sig)`, value
+params bound to caller-side `__inl{site}__<param>` wires, items merged into the
+caller. The v1 restrictions (clocked / `var` / out-param / `const if` / integer
+params) live in the `inline_check(def)` front-end query (`hir/check.rs`). Still
+deferred: `const if` folding via call-site const generics on the const-eval
+`Frame` (see "const generics" below + `alternative/inline_bodies-frame-constgen.md`),
+and the clocked / out-param / `var` shapes. Historically only **verilog-bodied**
+inline fns spliced (`render_inline` — a `${result} = EXPR` template); a
+Mirin-bodied `#[inline] fn` used to hit a front-end rejection (`InlineNonVerilogBody`,
+retired) / a backend panic.
 
 ## Why we want it
 

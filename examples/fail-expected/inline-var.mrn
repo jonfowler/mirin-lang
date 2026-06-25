@@ -1,0 +1,12 @@
+// A Mirin-bodied `#[inline]` fn is restricted to combinational, value-returning
+// bodies (planning/inline_bodies.md "v1 scope"). A `var` declares a cyclic
+// equation node, which v1 splicing does not support, so `inline_check` rejects
+// it up front — emission runs only on a diagnostic-free crate, so the rejection
+// keeps the unsupported shape away from the backend splice rather than letting
+// it mis-lower. The same body without `#[inline]` is fine.
+#[inline]
+fn with_var(a: uint(8)) -> uint(8) {
+    var x: uint(8);
+    x = a;
+    x
+}

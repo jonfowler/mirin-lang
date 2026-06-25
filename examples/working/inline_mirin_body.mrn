@@ -1,0 +1,19 @@
+// A Mirin-bodied `#[inline]` fn splices its combinational body at the call site
+// (planning/inline_bodies.md), instead of emitting a module instance. `id`
+// returns its input; `inc` adds via a `let`; `top` calls both inline, so the
+// emitted `top` is a flat chain of `assign`s with no submodules. The spliced
+// value is parenthesised so it composes inside a larger expression.
+#[inline]
+fn id(a: uint(8)) -> uint(8) {
+    a
+}
+
+#[inline]
+fn inc(a: uint(8)) -> uint(8) {
+    let one = id(a);
+    one + 1
+}
+
+fn top {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> uint(8) @clk {
+    inc(a) + id(b)
+}

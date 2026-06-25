@@ -15,7 +15,7 @@ use crate::base::db::SourceRoot;
 use crate::base::diagnostics::Span;
 use crate::hir::body::{Block, Body, ExprId, ExprKind, LocalKind, Stmt, body};
 use crate::hir::sig::sig_of;
-use crate::hir::types::{ConstArg, Direction, LocalId, Type};
+use crate::hir::types::{ConstArg, Direction, LocalId, Type, ValueKind};
 use crate::nameres::def_map::crate_def_map;
 use crate::nameres::ids::{DefId, DefKind};
 
@@ -782,6 +782,172 @@ fn check_dir(
     out.push(DirectionDiagnostic { span, kind });
 }
 
+/// A Mirin-bodied `#[inline]` fn outside the v1 splice scope
+/// (planning/inline_bodies.md "v1 scope and deferrals").
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct InlineDiagnostic {
+    pub span: Span,
+    pub kind: InlineDiagnosticKind,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub enum InlineDiagnosticKind {
+    /// Clocked state (`when` / `.reg`) in an inline body — its domain/clock
+    /// generics would have to bind to the caller's clocks (deferred).
+    Clocked,
+    /// An `out` parameter on an inline body (no instance to carry the
+    /// out-connection; deferred).
+    OutParam { name: String },
+    /// A `var` (cyclic-equation node) in an inline body — only `let`-style
+    /// combinational bodies splice in v1.
+    Var { name: String },
+    /// A `const if` in an inline body — folding it needs the call-site const
+    /// generics bound on the const-eval frame (planning/inline_bodies.md
+    /// "const generics"); deferred to a later slice.
+    ConstIf,
+    /// An `integer`-typed value parameter — compile-time only, not a wire; v1
+    /// binds value params as caller-side wires, so an integer param is deferred.
+    IntegerParam { name: String },
+}
+
+impl InlineDiagnostic {
+    pub fn message(&self) -> String {
+        match &self.kind {
+            InlineDiagnosticKind::Clocked => {
+                "an `#[inline]` fn must be combinational: clocked state \
+                 (`when` / `.reg`) in an inline body is not supported yet"
+                    .to_owned()
+            }
+            InlineDiagnosticKind::OutParam { name } => {
+                format!("an `#[inline]` fn cannot have an `out` parameter (`{name}`) yet")
+            }
+            InlineDiagnosticKind::Var { name } => {
+                format!(
+                    "an `#[inline]` fn cannot declare `var {name}` yet \
+                     (only `let`-style combinational bodies splice)"
+                )
+            }
+            InlineDiagnosticKind::ConstIf => {
+                "a `const if` in an `#[inline]` fn is not supported yet \
+                 (the call-site const generics it folds against are not bound \
+                 during the splice)"
+                    .to_owned()
+            }
+            InlineDiagnosticKind::IntegerParam { name } => {
+                format!(
+                    "an `#[inline]` fn cannot take an `integer` parameter (`{name}`) yet \
+                     (value params splice as wires; an `integer` is compile-time only)"
+                )
+            }
+        }
+    }
+}
+
+/// QUERY: validate that a Mirin-bodied `#[inline]` fn is within the v1 splice
+/// scope — combinational, value-returning (planning/inline_bodies.md). This is
+/// the home for the "not yet" restrictions: emission runs only on a
+/// diagnostic-free crate, so a rejected shape never reaches the backend splice
+/// (which would otherwise mis-thread a clock or panic). A verilog-bodied inline
+/// (its body is trusted, contract = signature) and a non-inline fn are unchecked.
+#[salsa::tracked(returns(ref))]
+pub fn inline_check<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+) -> Vec<InlineDiagnostic> {
+    let map = crate_def_map(db, krate);
+    let Some(data) = map.def_data(def) else {
+        return Vec::new();
+    };
+    if !data.inline || !matches!(data.kind, DefKind::Fn | DefKind::Method) {
+        return Vec::new();
+    }
+    let body = body(db, krate, def);
+    // A verilog-bodied inline splices its trusted template — no body shape to
+    // validate (the signature is the contract).
+    if body.verilog().is_some() {
+        return Vec::new();
+    }
+    let sig = sig_of(db, krate, def);
+    let mut out = Vec::new();
+
+    // out-params: an inline body has no instance to carry an out-connection.
+    for p in &sig.params {
+        if p.direction == Some(Direction::Out) {
+            out.push(InlineDiagnostic {
+                span: body.local_span(p.local),
+                kind: InlineDiagnosticKind::OutParam {
+                    name: p.name.clone(),
+                },
+            });
+        }
+        // An `integer` value param is compile-time only — not a spliceable wire.
+        if matches!(
+            p.ty,
+            Type::Value {
+                kind: ValueKind::Integer,
+                ..
+            }
+        ) {
+            out.push(InlineDiagnostic {
+                span: body.local_span(p.local),
+                kind: InlineDiagnosticKind::IntegerParam {
+                    name: p.name.clone(),
+                },
+            });
+        }
+    }
+
+    // `var` nodes: only `let`-style combinational bodies splice in v1. The
+    // synthetic result place (a `var`-kind local carrying `result_base`, from a
+    // desugared whole-result equation) is not a user `var` — skip it.
+    for (i, l) in body.locals().iter().enumerate() {
+        if l.kind == LocalKind::Var && l.result_base.is_none() {
+            out.push(InlineDiagnostic {
+                span: body.local_span(LocalId(i as u32)),
+                kind: InlineDiagnosticKind::Var {
+                    name: l.name.clone(),
+                },
+            });
+        }
+    }
+
+    // Clocked state: a value-form `when` or a `.reg` is an expr in the arena; a
+    // statement-form `when` is a `Stmt::When` reached by walking the block tree.
+    // (The span anchors at the def start — the body is small and the message is
+    // unambiguous.)
+    let clocked = body.exprs().any(|e| {
+        matches!(&e.kind, ExprKind::When { .. })
+            || matches!(&e.kind, ExprKind::MethodCall { method, .. } if method == "reg")
+    }) || block_has_stmt_when(body.block());
+    if clocked {
+        out.push(InlineDiagnostic {
+            span: Span::default(),
+            kind: InlineDiagnosticKind::Clocked,
+        });
+    }
+
+    // `const if`: folding it during a splice needs the call-site const generics
+    // on the const-eval frame (a later slice). Reject for now.
+    if body.exprs().any(|e| matches!(&e.kind, ExprKind::ConstIf { .. })) {
+        out.push(InlineDiagnostic {
+            span: Span::default(),
+            kind: InlineDiagnosticKind::ConstIf,
+        });
+    }
+
+    out
+}
+
+/// Is there a statement-form `when` anywhere in `block`'s tree?
+fn block_has_stmt_when(block: &Block) -> bool {
+    block.stmts.iter().any(|stmt| match stmt {
+        Stmt::When { .. } => true,
+        Stmt::For { body, .. } => block_has_stmt_when(body),
+        _ => false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -989,5 +1155,62 @@ mod tests {
             "{:?}",
             drivers(&db, krate, "counter")
         );
+    }
+
+    fn inline_diags<'db>(
+        db: &'db RootDatabase,
+        krate: SourceRoot,
+        name: &str,
+    ) -> &'db Vec<InlineDiagnostic> {
+        let map = crate_def_map(db, krate);
+        let def = map
+            .resolve_in_scope(map.root(), name, Namespace::Item)
+            .expect("def");
+        inline_check(db, krate, def)
+    }
+
+    #[test]
+    fn inline_check_passes_combinational_value_body() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(&mut db, &mut vfs, "#[inline]\nfn id(a: uint(8)) -> uint(8) { a }");
+        assert!(inline_diags(&db, krate, "id").is_empty());
+    }
+
+    #[test]
+    fn inline_check_rejects_var_and_integer_param() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "#[inline]\nfn f(a: uint(8), n: integer) -> uint(8) { var x: uint(8); x = a; x }",
+        );
+        let ds = inline_diags(&db, krate, "f");
+        assert!(
+            ds.iter()
+                .any(|d| matches!(&d.kind, InlineDiagnosticKind::Var { name } if name == "x")),
+            "{ds:?}"
+        );
+        assert!(
+            ds.iter()
+                .any(|d| matches!(&d.kind, InlineDiagnosticKind::IntegerParam { name } if name == "n")),
+            "{ds:?}"
+        );
+    }
+
+    #[test]
+    fn inline_check_skips_non_inline_and_verilog_bodies() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // A non-inline fn with a `var` is fine; a verilog-bodied inline is trusted.
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "fn g(a: uint(8)) -> uint(8) { var x: uint(8); x = a; x }\n\
+             #[inline]\nfn h(a: uint(8)) -> uint(8) = verilog { assign ${result} = ${a}; }",
+        );
+        assert!(inline_diags(&db, krate, "g").is_empty());
+        assert!(inline_diags(&db, krate, "h").is_empty());
     }
 }

@@ -189,6 +189,8 @@ fn build_module<'db>(
         mono_reqs: Vec::new(),
         promoted: HashMap::new(),
         fns_emitted: HashSet::new(),
+        prefix: String::new(),
+        inline_depth: 0,
     };
     if let Some(template) = body.verilog() {
         lower
@@ -295,6 +297,8 @@ fn build_const_function<'db>(
         mono_reqs: Vec::new(),
         promoted: HashMap::new(),
         fns_emitted: HashSet::new(),
+        prefix: String::new(),
+        inline_depth: 0,
     };
     // The integer params are the function's input args; record them as
     // "promoted" so a `Local` use in a width/loop-bound renders as the arg name
@@ -617,6 +621,14 @@ struct SvLower<'a, 'db> {
     promoted: HashMap<LocalId, String>,
     /// In-module SV `function`s already emitted (dedup by name).
     fns_emitted: HashSet<String>,
+    /// Name prefix for every net/instance this lower mints. Empty for the
+    /// top-level module (so its emission is byte-identical to before MIR-inline);
+    /// an inline splice runs a *nested* `SvLower` over the callee with a unique
+    /// `__inl{site}__` prefix so its locals, synth blocks, and nested instances
+    /// merge into the caller without colliding (planning/inline_bodies.md).
+    prefix: String,
+    /// Inline-splice nesting depth (a recursion guard against `#[inline]` cycles).
+    inline_depth: u32,
 }
 
 impl<'db> SvLower<'_, 'db> {
@@ -1537,7 +1549,7 @@ impl<'db> SvLower<'_, 'db> {
         if let Some(base) = &self.body.local(local).result_base {
             return base.clone();
         }
-        self.local_names[local.0 as usize].clone()
+        format!("{}{}", self.prefix, self.local_names[local.0 as usize])
     }
 
     /// A result place — carries an SV result base.
@@ -1925,7 +1937,7 @@ impl<'db> SvLower<'_, 'db> {
     fn fresh_block(&mut self) -> String {
         let n = self.synth;
         self.synth += 1;
-        format!("__block_{n}")
+        format!("{}__block_{n}", self.prefix)
     }
 
     /// Lower a MIR node in scalar value position to one SV expression. Cases this
@@ -1981,7 +1993,11 @@ impl<'db> SvLower<'_, 'db> {
                 let (receiver, args, named) = (*receiver, args.clone(), named.clone());
                 let (def, ov) = self.mir_call_target(callee, &substs);
                 if self.splices_inline(def) {
-                    self.render_inline(def, &substs, ov.as_deref(), receiver, &args, &named)
+                    self.inline_call_leaves(def, &substs, ov.as_deref(), receiver, &args, &named)
+                        .into_iter()
+                        .next()
+                        .map(|(_, e)| e)
+                        .unwrap_or_else(|| SvExpr::Lit("0".to_owned()))
                 } else {
                     // A user call in scalar position: instantiate, take one leaf.
                     self.call_value_leaves(m)
@@ -2153,10 +2169,7 @@ impl<'db> SvLower<'_, 'db> {
                 let (receiver, args, named) = (*receiver, args.clone(), named.clone());
                 let (def, ov) = self.mir_call_target(callee, &substs);
                 if self.splices_inline(def) {
-                    vec![(
-                        String::new(),
-                        self.render_inline(def, &substs, ov.as_deref(), receiver, &args, &named),
-                    )]
+                    self.inline_call_leaves(def, &substs, ov.as_deref(), receiver, &args, &named)
                 } else {
                     self.call_value_leaves(m)
                 }
@@ -2750,6 +2763,175 @@ impl<'db> SvLower<'_, 'db> {
         self.render_inline_spliced(&template, &val_map, &node_subst)
     }
 
+    /// The leaves of an inline call, dispatching on the callee's body shape: a
+    /// verilog template splices its trusted text (one scalar leaf); a Mirin body
+    /// sub-lowers (`splice_inline_body`). The seam the two `Call` arms share.
+    fn inline_call_leaves(
+        &mut self,
+        def: DefId<'db>,
+        substs: &[Term<'db>],
+        subst_override: Option<&[Option<Term<'db>>]>,
+        receiver: Option<MExprId>,
+        args: &[Conn],
+        named: &[MNamedArg],
+    ) -> Vec<(String, SvExpr)> {
+        if body(self.db, self.krate, def).verilog().is_some() {
+            vec![(
+                String::new(),
+                self.render_inline(def, substs, subst_override, receiver, args, named),
+            )]
+        } else {
+            self.splice_inline_body(def, substs, subst_override, receiver, args, named)
+        }
+    }
+
+    /// Ground a call's generic argument through the caller's own monomorphisation
+    /// (`call_subst ∘ self_subst`): a type/const arg that projects onto an *outer*
+    /// type param grounds once the enclosing module is monomorphised — the same
+    /// double-substitution `render_inline_spliced`/`emit_instance_core` apply.
+    fn compose_term(&self, t: &Option<Term<'db>>) -> Option<Term<'db>> {
+        match t {
+            Some(Term::Type(ty)) => Some(Term::Type(ground_widths(
+                self.db,
+                self.krate,
+                self.def,
+                &subst_type(ty, &self.self_subst),
+            ))),
+            Some(Term::Const(c)) => {
+                let c = subst_const_opt(c, &self.self_subst);
+                Some(Term::Const(self.subst_promoted_const(&c)))
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// Splice a Mirin-bodied `#[inline]` callee at this call site
+    /// (planning/inline_bodies.md): sub-lower the callee's own `(body, inf, mir,
+    /// sig)` in a fresh prefix-scoped `SvLower`, with its value params bound to
+    /// caller-side wires, merging its items into the caller and returning the
+    /// body's value as leaves. v1 scope (combinational, value-returning, no
+    /// clocked state / `var` / out-param / `const if` / integer params) is
+    /// enforced up front by `inline_check`, so a clean crate only reaches here
+    /// with a spliceable body.
+    fn splice_inline_body(
+        &mut self,
+        def: DefId<'db>,
+        substs: &[Term<'db>],
+        subst_override: Option<&[Option<Term<'db>>]>,
+        receiver: Option<MExprId>,
+        args: &[Conn],
+        named: &[MNamedArg],
+    ) -> Vec<(String, SvExpr)> {
+        const MAX_INLINE_DEPTH: u32 = 16;
+        assert!(
+            self.inline_depth < MAX_INLINE_DEPTH,
+            "inline splice depth exceeded — a recursive `#[inline]` cycle?"
+        );
+
+        // The call's generic args, grounded through the caller's mono subst, are
+        // the nested lower's `self_subst` (binds the callee's type/const params).
+        let node_subst: Vec<Option<Term<'db>>> = match subst_override {
+            Some(ov) => ov.to_vec(),
+            None => substs.iter().cloned().map(Some).collect(),
+        };
+        let composed: Vec<Option<Term<'db>>> =
+            node_subst.iter().map(|t| self.compose_term(t)).collect();
+
+        let cbody = body(self.db, self.krate, def);
+        let csig = sig_of(self.db, self.krate, def);
+        let site = self.fresh_inline();
+        let mut sub = SvLower {
+            db: self.db,
+            krate: self.krate,
+            def,
+            map: crate_def_map(self.db, self.krate),
+            body: cbody,
+            inf: infer(self.db, self.krate, def),
+            mir: mir_of(self.db, self.krate, def),
+            sig: csig,
+            self_subst: composed,
+            local_names: unique_local_names(cbody),
+            items: Vec::new(),
+            synth: 0,
+            index_asserts: HashSet::new(),
+            instance_counts: HashMap::new(),
+            declared: HashSet::new(),
+            mono_reqs: Vec::new(),
+            promoted: HashMap::new(),
+            fns_emitted: HashSet::new(),
+            prefix: site,
+            inline_depth: self.inline_depth + 1,
+        };
+
+        // Bind each value param to a caller-side wire: declare the param's leaves
+        // (named exactly as the nested body reads them) and assign each from the
+        // caller argument's leaf. A param read inside the callee then resolves to
+        // its wire — one wire even if the param is used many times.
+        let mut positional: Vec<MExprId> = receiver.into_iter().collect();
+        positional.extend(args.iter().filter_map(|a| match a {
+            Conn::In(e) => Some(*e),
+            Conn::Out(_) => None,
+        }));
+        let mut pos_i = 0;
+        for p in &csig.params {
+            let caller_expr = if p.from_named_section {
+                named
+                    .iter()
+                    .find(|n| n.name == p.name)
+                    .and_then(|n| match &n.conn {
+                        Conn::In(e) => Some(*e),
+                        Conn::Out(_) => None,
+                    })
+            } else {
+                let e = positional.get(pos_i).copied();
+                pos_i += 1;
+                e
+            };
+            let Some(caller_expr) = caller_expr else {
+                continue; // omitted (defaulted) param — defaults are not v1 wired
+            };
+            let base = sub.local_name(p.local);
+            let param_leaves = sub.local_type_leaves(p.local);
+            let caller_leaves = self.expr_leaves(caller_expr);
+            for (leaf, (_, cv)) in param_leaves.into_iter().zip(caller_leaves) {
+                let name = join(&base, &leaf.suffix);
+                self.items.push(SvItem::Logic(SvLogicDecl {
+                    ty: leaf.ty,
+                    name: name.clone(),
+                }));
+                self.push_assign(SvExpr::Ident(name), cv);
+            }
+        }
+
+        // Lower the callee body for its value: emit intermediate `let`s/blocks,
+        // then take the tail (or the desugared whole-result equation / `return`)
+        // as the spliced value — never driving a `result` port (there is none).
+        let block = sub.mir.block().clone();
+        let mut rest: Vec<MStmt> = Vec::new();
+        let mut value_src: Option<MExprId> = block.tail;
+        for s in &block.stmts {
+            match s {
+                MStmt::Equation { lhs, rhs }
+                    if lhs.projections.is_empty()
+                        && sub.mir.local(lhs.base).result_base.is_some() =>
+                {
+                    value_src = Some(*rhs);
+                }
+                MStmt::Return { value } => value_src = Some(*value),
+                other => rest.push(other.clone()),
+            }
+        }
+        sub.lower_stmts(&rest);
+        let leaves = match value_src {
+            Some(e) => sub.expr_leaves(e),
+            None => vec![(String::new(), SvExpr::Lit("0".to_owned()))],
+        };
+
+        self.items.append(&mut sub.items);
+        self.mono_reqs.append(&mut sub.mono_reqs);
+        leaves
+    }
+
     // ----- instantiation (user calls / methods → submodules) -----
 
     /// Id-agnostic core of `emit_instance`: build the SV module instance from the
@@ -3174,20 +3356,28 @@ impl<'db> SvLower<'_, 'db> {
     fn fresh_call(&mut self) -> String {
         let n = self.synth;
         self.synth += 1;
-        format!("__call_{n}")
+        format!("{}__call_{n}", self.prefix)
+    }
+
+    /// A unique per-site inline prefix, scoped under this lower's own prefix so
+    /// nested splices never collide (`__inl0__` then `__inl0____inl1__`, …).
+    fn fresh_inline(&mut self) -> String {
+        let n = self.synth;
+        self.synth += 1;
+        format!("{}__inl{n}__", self.prefix)
     }
 
     /// A per-callee instance name: the first instance is the bare module name,
     /// later ones get `_1`, `_2`, ….
     fn instance_name(&mut self, module: &str) -> String {
         let n = self.instance_counts.entry(module.to_owned()).or_insert(0);
-        let name = if *n == 0 {
+        let bare = if *n == 0 {
             module.to_owned()
         } else {
             format!("{module}_{n}")
         };
         *n += 1;
-        name
+        format!("{}{bare}", self.prefix)
     }
 }
 
