@@ -1538,7 +1538,7 @@ impl<'db> SvLower<'_, 'db> {
                 self.lower_equation_mir(&lhs, rhs);
             }
             MStmt::Return { value } => self.drive_result_mir(*value),
-            MStmt::Expr(_) => todo!("S3.2k: lower_one_stmt_mir Expr (call statement)"),
+            MStmt::Expr(e) => self.lower_call_stmt_mir(*e),
             MStmt::When { event, body, init } => {
                 let (event, body) = (*event, body.clone());
                 let init = init.clone();
@@ -1675,7 +1675,10 @@ impl<'db> SvLower<'_, 'db> {
     #[allow(dead_code)]
     fn drive_result_mir(&mut self, value: MExprId) {
         let Some(rt) = self.sig.return_type.clone() else {
-            todo!("S3.2e: drive_result_mir unit return (call statement)");
+            // A unit fn whose tail/return is a side-effecting (void) call still
+            // needs its instance — and the drives it carries — emitted.
+            self.lower_call_stmt_mir(value);
+            return;
         };
         let rt = subst_type(&rt, &self.self_subst);
         let result_leaves = flatten_leaves(
@@ -1813,19 +1816,49 @@ impl<'db> SvLower<'_, 'db> {
     /// on the HIR path — never a wrong lowering.
     fn mir_walk_supported(&self, mir: &Mir<'db>) -> bool {
         let block = mir.block();
-        // A unit-return def whose tail/`return` is a void call needs the
-        // call-statement path (lower_call_stmt), not yet ported — keep on HIR.
-        if self.sig.return_type.is_none()
-            && (block.tail.is_some()
-                || block
-                    .stmts
-                    .iter()
-                    .any(|s| matches!(s, MStmt::Return { .. })))
-        {
-            return false;
-        }
         block.stmts.iter().all(|s| self.mir_ok_stmt(mir, s))
-            && block.tail.is_none_or(|t| self.mir_ok_expr(mir, t))
+            && block.tail.is_none_or(|t| self.mir_ok_result_value(mir, t))
+    }
+
+    /// A tail/`return` value: in a unit fn it is a void call statement (or a
+    /// dropped no-op); otherwise an ordinary result value.
+    fn mir_ok_result_value(&self, mir: &Mir<'db>, m: MExprId) -> bool {
+        if self.sig.return_type.is_none() {
+            self.mir_ok_call_or_noop(mir, m)
+        } else {
+            self.mir_ok_value(mir, m)
+        }
+    }
+
+    /// A statement/tail expression that lowers via `lower_call_stmt`: an instance
+    /// call (connections walkable) emits; anything else is a no-op in both paths.
+    fn mir_ok_call_or_noop(&self, mir: &Mir<'db>, m: MExprId) -> bool {
+        if self.is_instance_call_mir(m) {
+            self.mir_ok_call_stmt(mir, m)
+        } else {
+            true
+        }
+    }
+
+    /// A void call statement: connections walkable — an in-arg is a value, an
+    /// out-arg (`=> target`) is a bare-local place.
+    fn mir_ok_call_stmt(&self, mir: &Mir<'db>, m: MExprId) -> bool {
+        let MExprKind::Call {
+            receiver,
+            args,
+            named,
+            ..
+        } = &mir.expr(m).kind
+        else {
+            return false;
+        };
+        let conn_ok = |c: &Conn| match c {
+            Conn::In(e) => self.mir_ok_expr(mir, *e),
+            Conn::Out(p) => p.projections.is_empty(),
+        };
+        receiver.is_none_or(|r| self.mir_ok_expr(mir, r))
+            && args.iter().all(conn_ok)
+            && named.iter().all(|n| conn_ok(&n.conn))
     }
 
     fn mir_ok_stmt(&self, mir: &Mir<'db>, s: &MStmt) -> bool {
@@ -1839,7 +1872,7 @@ impl<'db> SvLower<'_, 'db> {
             MStmt::Equation { lhs, rhs } => {
                 self.mir_ok_place(mir, lhs) && self.mir_ok_value(mir, *rhs)
             }
-            MStmt::Return { value } => self.mir_ok_value(mir, *value),
+            MStmt::Return { value } => self.mir_ok_result_value(mir, *value),
             // A generate-for: the iterable and the whole body must be walkable.
             // (An indexed body drive `out[i] = …` has projections, which
             // mir_ok_stmt's Equation arm still rejects — so it stays on HIR.)
@@ -1854,7 +1887,9 @@ impl<'db> SvLower<'_, 'db> {
                     && self.mir_ok_when_body(mir, body)
                     && init.as_ref().is_none_or(|b| self.mir_ok_block(mir, b))
             }
-            MStmt::Expr(_) => false,
+            // A bare expression statement: a void call (its connections walkable)
+            // emits an instance; any non-call/inline expr is a dropped no-op.
+            MStmt::Expr(e) => self.mir_ok_call_or_noop(mir, *e),
         }
     }
 
@@ -4500,31 +4535,40 @@ impl<'db> SvLower<'_, 'db> {
         result_target: Vec<(String, SvExpr)>,
     ) {
         let csig = sig_of(self.db, self.krate, def);
-        let mut positional: Vec<MExprId> = receiver.into_iter().collect();
-        positional.extend(args.iter().filter_map(|a| match a {
-            Conn::In(e) => Some(*e),
-            Conn::Out(_) => None,
-        }));
+        // Positional = `[receiver?] ++ args` as connections (in OR out — an
+        // out-arg `=> target` connects the callee's out port to a caller place).
+        let mut positional: Vec<Conn> = Vec::new();
+        if let Some(r) = receiver {
+            positional.push(Conn::In(r));
+        }
+        positional.extend(args.iter().cloned());
         let mut pos_i = 0;
         let slots: Vec<CallSlot<'db>> = csig
             .params
             .iter()
             .map(|p| {
-                let caller = if p.from_named_section {
+                let conn = if p.from_named_section {
                     named
                         .iter()
                         .find(|n| n.name == p.name)
-                        .and_then(|n| match &n.conn {
-                            Conn::In(e) => Some(*e),
-                            Conn::Out(_) => None,
-                        })
+                        .map(|n| n.conn.clone())
                 } else {
-                    let e = positional.get(pos_i).copied();
+                    let c = positional.get(pos_i).cloned();
                     pos_i += 1;
-                    e
+                    c
                 };
-                let (caller_leaves, actual_ty) = match caller {
-                    Some(e) => (Some(self.expr_leaves_mir(e)), self.actual_type_mir(e)),
+                let (caller_leaves, actual_ty) = match conn {
+                    Some(Conn::In(e)) => (Some(self.expr_leaves_mir(e)), self.actual_type_mir(e)),
+                    Some(Conn::Out(place)) => {
+                        // The out-target's leaves; its type (for mono) is known
+                        // for a bare-local target (the common `=> target` form).
+                        let aty = if place.projections.is_empty() {
+                            self.local_ty(place.base)
+                        } else {
+                            None
+                        };
+                        (Some(self.projected_leaves_mir(&place)), aty)
+                    }
                     None => (None, None),
                 };
                 CallSlot {
@@ -4557,6 +4601,54 @@ impl<'db> SvLower<'_, 'db> {
         let (receiver, args, named) = (*receiver, args.clone(), named.clone());
         let (def, ov) = self.mir_call_target(callee, &substs);
         self.emit_instance_mir(def, &substs, ov, receiver, &args, &named, result_target);
+    }
+
+    /// MIR twin of `declare_out_targets`: declare each `=> target` out-arg's
+    /// (bare-local, non-param) place as a fresh `logic` before the instance.
+    #[allow(dead_code)]
+    fn declare_out_targets_mir(&mut self, args: &[Conn], named: &[MNamedArg]) {
+        let places: Vec<&Place> = named
+            .iter()
+            .filter_map(|n| match &n.conn {
+                Conn::Out(p) => Some(p),
+                Conn::In(_) => None,
+            })
+            .chain(args.iter().filter_map(|a| match a {
+                Conn::Out(p) => Some(p),
+                Conn::In(_) => None,
+            }))
+            .collect();
+        for place in places {
+            if place.projections.is_empty() && self.mir.local(place.base).kind != LocalKind::Param {
+                self.declare_local(place.base);
+            }
+        }
+    }
+
+    /// MIR twin of `lower_call_stmt`: a void user call in statement position
+    /// (`f();`, or a unit fn's tail/return) — a (void) instance whose out-args
+    /// bind callee out-ports to caller places. An inline / non-call / const-only
+    /// statement has no instance to emit.
+    #[allow(dead_code)]
+    fn lower_call_stmt_mir(&mut self, m: MExprId) {
+        let MExprKind::Call {
+            callee,
+            substs,
+            args,
+            named,
+            ..
+        } = &self.mir.expr(m).kind
+        else {
+            return;
+        };
+        let (callee, substs) = (*callee, substs.clone());
+        let (args, named) = (args.clone(), named.clone());
+        let (def, _) = self.mir_call_target(callee, &substs);
+        if self.splices_inline(def) || is_const_only_fn(sig_of(self.db, self.krate, def)) {
+            return;
+        }
+        self.declare_out_targets_mir(&args, &named);
+        self.emit_instance_from_mir(m, Vec::new());
     }
 
     /// MIR twin of `call_value_leaves`: a value-position user call instantiates

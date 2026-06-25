@@ -213,6 +213,17 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2o — unit-return call statements + out-args on MIR.** Fixed
+  `emit_instance_mir` to wire `Conn::Out` args (out-target leaves via
+  `projected_leaves_mir`, type for mono from a bare-local target). Added
+  `declare_out_targets_mir` + `lower_call_stmt_mir`; wired `MStmt::Expr` and the
+  unit-return branch of `drive_result_mir`. Predicate: `mir_ok_call_stmt` /
+  `mir_ok_call_or_noop` / `mir_ok_result_value` (unit tail/return = void call or
+  no-op; out-args allowed for call statements, bare-local targets). Golden green
+  (89), 127 lib. Void top-modules (module_wrapped, use_across_modules) and
+  instance `=> target` connections (stream_connect, dataflow_stage) now lower on
+  MIR. Remaining: let-mut fold, `const if`, runtime-index bounds-assert; then
+  delete the HIR core.
 - 2026-06-25: **S3.2n — records on MIR.** Added `record_leaves_mir` (in-field
   leaves, declared order) + `record_out_conns_mir` (`field => target` via
   `projected_leaves_mir`). Wired `expr_leaves_mir` Record + the record handling
