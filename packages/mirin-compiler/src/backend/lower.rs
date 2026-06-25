@@ -1328,6 +1328,45 @@ impl<'db> SvLower<'_, 'db> {
         SvExpr::Lit(format!("{fname}({})", args.join(", ")))
     }
 
+    /// MIR twin of `const_rhs`.
+    #[allow(dead_code)]
+    fn const_rhs_mir(&mut self, value: MExprId) -> SvExpr {
+        if self.is_instance_call_mir(value) {
+            return self.emit_const_call_mir(value);
+        }
+        self.expr_value_mir(value)
+    }
+
+    /// MIR twin of `emit_const_call`.
+    #[allow(dead_code)]
+    fn emit_const_call_mir(&mut self, m: MExprId) -> SvExpr {
+        let MExprKind::Call {
+            callee,
+            substs,
+            args,
+            ..
+        } = &self.mir.expr(m).kind
+        else {
+            unreachable!("emit_const_call_mir on a non-Call node");
+        };
+        let (callee, substs, args) = (*callee, substs.clone(), args.clone());
+        let (def, _) = self.mir_call_target(callee, &substs);
+        let fname = module_name(self.map, def);
+        if self.fns_emitted.insert(fname.clone())
+            && let Some(fun) = build_const_function(self.db, self.krate, def, &fname)
+        {
+            self.items.push(SvItem::Function(fun));
+        }
+        let arg_strs: Vec<String> = args
+            .iter()
+            .filter_map(|a| match a {
+                Conn::In(e) => Some(self.expr_value_mir(*e).to_string()),
+                Conn::Out(_) => None,
+            })
+            .collect();
+        SvExpr::Lit(format!("{fname}({})", arg_strs.join(", ")))
+    }
+
     /// Replace each promoted-local `ConstArg::Local(l)` in a type with its
     /// `localparam` name (`uint(w)` → `[w-1:0]`), so a body var sized by a
     /// promoted const renders against the localparam rather than panicking on
@@ -1706,7 +1745,18 @@ impl<'db> SvLower<'_, 'db> {
     #[allow(dead_code)]
     fn lower_let_mir(&mut self, local: LocalId, value: MExprId) {
         if self.is_integer_local(local) {
-            todo!("S3.2e: lower_let_mir integer/symbolic-const local (localparam)");
+            // A symbolic const local (e.g. `let w = f(N)`) that sizes a signal
+            // becomes a `localparam`; a concrete one folds to literals (nothing).
+            if self.is_symbolic_const(local) {
+                let name = self.local_name(local);
+                let val = self.const_rhs_mir(value);
+                self.items.push(SvItem::LocalParam {
+                    name: name.clone(),
+                    value: val,
+                });
+                self.promoted.insert(local, name);
+            }
+            return;
         }
         if let Some((d_input, reset, init)) = self.as_reg_mir(value) {
             // A register is typed by its D-input.
@@ -2070,9 +2120,10 @@ impl<'db> SvLower<'_, 'db> {
         match s {
             MStmt::VarDecl { .. } => true,
             MStmt::Let { local, value } => {
-                !mir.local(*local).mutable
-                    && !self.is_integer_local(*local)
-                    && self.mir_ok_value(mir, *value)
+                // (A mutable let is a fold — handled by mir_ok_stmts' run-aware
+                // check; here it stays on HIR. An integer/const local promotes to
+                // a localparam or folds away.)
+                !mir.local(*local).mutable && self.mir_ok_value(mir, *value)
             }
             MStmt::Equation { lhs, rhs } => {
                 self.mir_ok_place(mir, lhs) && self.mir_ok_value(mir, *rhs)
@@ -2185,8 +2236,9 @@ impl<'db> SvLower<'_, 'db> {
                         Conn::Out(_) => false,
                     })
             }
-            // A `reg` builtin (value or let/equation position) is walked; its
-            // D/reset/init must be walkable. Other builtins are not yet.
+            // A `reg` builtin (D/reset/init walkable) or `v.replace(i, x)`
+            // (receiver + in-args walkable) is walked; posedge/enumerate are not
+            // value-position.
             MExprKind::Builtin {
                 method: BuiltinMethod::Reg,
                 ..
@@ -2196,6 +2248,16 @@ impl<'db> SvLower<'_, 'db> {
                 }
                 None => false,
             },
+            MExprKind::Builtin {
+                method: BuiltinMethod::Replace,
+                receiver,
+                args,
+            } if args.len() == 2 => {
+                self.mir_ok_expr(mir, *receiver)
+                    && args
+                        .iter()
+                        .all(|a| matches!(a, Conn::In(e) if self.mir_ok_expr(mir, *e)))
+            }
             MExprKind::If {
                 cond,
                 then_branch,
@@ -3498,7 +3560,53 @@ impl<'db> SvLower<'_, 'db> {
                     self.call_value_leaves_mir(m)
                 }
             }
-            MExprKind::Builtin { .. } => todo!("S3.2k: expr_leaves_mir Builtin (replace/reg)"),
+            // `v.replace(i, x)` — a combinational copy with element i swapped
+            // (`__repl = v; __repl[i] = x;` per leaf).
+            MExprKind::Builtin {
+                method: BuiltinMethod::Replace,
+                receiver,
+                args,
+            } if args.len() == 2 => {
+                let receiver = *receiver;
+                let (Conn::In(i_e), Conn::In(x_e)) = (&args[0], &args[1]) else {
+                    return Vec::new();
+                };
+                let (i_e, x_e) = (*i_e, *x_e);
+                let synth = self.fresh_block();
+                let idx = self.expr_value_mir(i_e);
+                self.index_bounds_assert_mir(receiver, i_e, &idx);
+                let recv_leaves = self.expr_leaves_mir(receiver);
+                let x_leaves = self.expr_leaves_mir(x_e);
+                let tys = self.expr_type_leaves_mir(receiver);
+                let mut out = Vec::new();
+                let mut body = Vec::new();
+                for (k, (suffix, rv)) in recv_leaves.into_iter().enumerate() {
+                    let name = join(&synth, &suffix);
+                    let ty = tys.get(k).map(|l| l.ty.clone()).unwrap_or_else(SvType::bit);
+                    self.items.push(SvItem::Logic(SvLogicDecl {
+                        ty,
+                        name: name.clone(),
+                    }));
+                    body.push(SvCombStmt::Assign {
+                        lhs: SvExpr::Ident(name.clone()),
+                        rhs: rv,
+                    });
+                    let xv = x_leaves
+                        .get(k)
+                        .map(|(_, e)| e.clone())
+                        .unwrap_or_else(|| SvExpr::Lit("0".to_owned()));
+                    body.push(SvCombStmt::Assign {
+                        lhs: SvExpr::Lit(format!("{name}[{idx}]")),
+                        rhs: xv,
+                    });
+                    out.push((suffix, SvExpr::Ident(name)));
+                }
+                self.items.push(SvItem::AlwaysComb(SvAlwaysComb { body }));
+                out
+            }
+            // A scalar builtin in leaf position (a `reg`) — one leaf via the value
+            // twin (which handles the register synthesis).
+            MExprKind::Builtin { .. } => vec![(String::new(), self.expr_value_mir(m))],
             MExprKind::ConstIf { .. } => todo!("S3.2l: expr_leaves_mir ConstIf"),
             MExprKind::If {
                 cond,

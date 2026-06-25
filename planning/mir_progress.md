@@ -213,7 +213,20 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
-- 2026-06-25: **S3.2r — runtime-index reads on MIR.** Refactored
+- 2026-06-25: **S3.2s — const-fn localparams + `replace`; CORPUS-COMPLETE.**
+  Ported the integer/symbolic-const let (localparam promotion via
+  `const_rhs_mir`/`emit_const_call_mir`; the const-*function* emission stays on
+  its own `build_const_function` path) and `v.replace(i,x)` in `expr_leaves_mir`.
+  Predicate widened (Let allows integer/const locals; Builtin allows Replace).
+  **Diagnostic: with the predicate forced true (`MIR_FORCE`), the golden gate is
+  byte-for-byte green over the whole corpus** — every construct the corpus uses
+  now lowers identically through the native MIR walker. Reverted the force hack;
+  the predicate-gated path is green too (89), 127 lib.
+  Remaining for full HIR-core deletion (untested edges, kept on HIR by the
+  predicate): runtime-index *writes* (projected-place bounds-assert), symbolic
+  `const if` (generate-if, unbuilt), slice (S4). These never occur in the clean
+  corpus. Next: decide HIR-core deletion (handle the edges, or keep the predicate
+  as a permanent fallback) — then S4 slicing on the MIR walker. Refactored
   `index_bounds_assert` into a type-taking core + `index_bounds_assert_mir`;
   the Index read arms now emit the bounds-assert, so the static-index restriction
   is lifted for *reads* (`v[sel]` with a uint `sel`). Place *writes* stay
