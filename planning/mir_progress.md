@@ -213,6 +213,14 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2j — `if`/`Block` on MIR.** Added `block_value_mir`/
+  `block_leaves_mir`/`expr_leaf_types_mir`/`lower_if_mir`/`lower_if_leaves_mir`;
+  wired the `If` and `Block` arms in `expr_value_mir`/`expr_leaves_mir`; predicate
+  admits `If` (cond + both blocks walkable) and `Block` via a new `mir_ok_block`.
+  Golden byte-for-byte green (89), 127 lib green. Remaining control flow: `when`
+  (register; needs `clock_of_event_mir`), `for` (generate), when-RAM, `const if`
+  (needs const-eval on the MIR cond), plus place projections, records, let-mut
+  fold, unit-return call statements; then delete the HIR core.
 - 2026-06-25: **S3.2i — registers on MIR.** Split `emit_registers` into a
   resolved core (`emit_registers_parts`) + `emit_registers_mir`; extracted
   `sv_type_of` and `expr_type_leaves_mir`. Wired the reg branch of `lower_let_mir`

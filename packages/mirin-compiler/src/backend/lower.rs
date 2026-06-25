@@ -1736,10 +1736,26 @@ impl<'db> SvLower<'_, 'db> {
                 }
                 None => false,
             },
-            // Index, Slice, When, If, ConstIf, Block, other Builtins, Record,
-            // Def: not yet walked.
+            MExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                self.mir_ok_expr(mir, *cond)
+                    && self.mir_ok_block(mir, then_branch)
+                    && self.mir_ok_block(mir, else_branch)
+            }
+            MExprKind::Block(b) => self.mir_ok_block(mir, b),
+            // Index, Slice, When, ConstIf, other Builtins, Record, Def: not yet
+            // walked.
             _ => false,
         }
+    }
+
+    /// Whether every statement and the tail of a block is walkable.
+    fn mir_ok_block(&self, mir: &Mir<'db>, b: &MBlock) -> bool {
+        b.stmts.iter().all(|s| self.mir_ok_stmt(mir, s))
+            && b.tail.is_none_or(|t| self.mir_ok_expr(mir, t))
     }
 
     /// Declare a `logic` for each of a local's leaves, once per local.
@@ -2584,11 +2600,21 @@ impl<'db> SvLower<'_, 'db> {
             MExprKind::Index { .. } => {
                 todo!("S3.2d: expr_value_mir Index (+ index_bounds_assert on MIR)")
             }
-            MExprKind::When { .. } => todo!("S3.2e: expr_value_mir When"),
-            MExprKind::If { .. } => todo!("S3.2e: expr_value_mir If"),
-            MExprKind::ConstIf { .. } => todo!("S3.2e: expr_value_mir ConstIf"),
+            MExprKind::When { .. } => todo!("S3.2k: expr_value_mir When"),
+            MExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let (cond, tb, eb) = (*cond, then_branch.clone(), else_branch.clone());
+                self.lower_if_mir(m, cond, &tb, &eb)
+            }
+            MExprKind::ConstIf { .. } => todo!("S3.2l: expr_value_mir ConstIf (const-eval on MIR)"),
             MExprKind::Slice { .. } => todo!("S4: expr_value_mir Slice (part-select desugar)"),
-            MExprKind::Block(_) => todo!("S3.2e: expr_value_mir Block"),
+            MExprKind::Block(b) => {
+                let b = b.clone();
+                self.block_value_mir(&b)
+            }
             // An aggregate/field/record in scalar position reduces to its single
             // leaf if it has one (`one_leaf_mir` emits a failing marker, never a
             // silent `0`, when it flattens to several).
@@ -2943,11 +2969,21 @@ impl<'db> SvLower<'_, 'db> {
                     self.call_value_leaves_mir(m)
                 }
             }
-            MExprKind::Builtin { .. } => todo!("S3.2e: expr_leaves_mir Builtin (replace/reg)"),
-            MExprKind::ConstIf { .. } => todo!("S3.2e: expr_leaves_mir ConstIf"),
-            MExprKind::If { .. } => todo!("S3.2e: expr_leaves_mir If"),
-            MExprKind::When { .. } => todo!("S3.2e: expr_leaves_mir When"),
-            MExprKind::Block(_) => todo!("S3.2e: expr_leaves_mir Block"),
+            MExprKind::Builtin { .. } => todo!("S3.2k: expr_leaves_mir Builtin (replace/reg)"),
+            MExprKind::ConstIf { .. } => todo!("S3.2l: expr_leaves_mir ConstIf"),
+            MExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let (cond, tb, eb) = (*cond, then_branch.clone(), else_branch.clone());
+                self.lower_if_leaves_mir(m, cond, &tb, &eb)
+            }
+            MExprKind::When { .. } => todo!("S3.2k: expr_leaves_mir When"),
+            MExprKind::Block(b) => {
+                let b = b.clone();
+                self.block_leaves_mir(&b)
+            }
             // Scalars: a single empty-suffix leaf via the value twin.
             MExprKind::Number(..)
             | MExprKind::Bool(_)
@@ -3147,6 +3183,120 @@ impl<'db> SvLower<'_, 'db> {
             Some(tail) => self.expr_value(tail),
             None => SvExpr::Lit("0".to_owned()),
         }
+    }
+
+    // ----- MIR walker: control flow (S3.2j) -----
+
+    #[allow(dead_code)]
+    fn block_value_mir(&mut self, block: &MBlock) -> SvExpr {
+        self.lower_stmts_mir(&block.stmts);
+        match block.tail {
+            Some(tail) => self.expr_value_mir(tail),
+            None => SvExpr::Lit("0".to_owned()),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn block_leaves_mir(&mut self, block: &MBlock) -> Vec<(String, SvExpr)> {
+        self.lower_stmts_mir(&block.stmts);
+        match block.tail {
+            Some(tail) => self.expr_leaves_mir(tail),
+            None => Vec::new(),
+        }
+    }
+
+    /// MIR twin of `expr_leaf_types`: the SV types of a node's leaves.
+    #[allow(dead_code)]
+    fn expr_leaf_types_mir(&self, m: MExprId) -> Vec<SvType> {
+        let t = ground_widths(
+            self.db,
+            self.krate,
+            self.def,
+            &subst_type(&self.mir.expr(m).ty, &self.self_subst),
+        );
+        flatten_leaves(
+            self.db,
+            self.krate,
+            self.def,
+            &t,
+            true,
+            &self.sig.generic_params,
+        )
+        .into_iter()
+        .map(|l| l.ty)
+        .collect()
+    }
+
+    /// MIR twin of `lower_if` — a scalar `if` mux into a fresh `__block_N`.
+    #[allow(dead_code)]
+    fn lower_if_mir(&mut self, m: MExprId, cond: MExprId, tb: &MBlock, eb: &MBlock) -> SvExpr {
+        let synth = self.fresh_block();
+        let ty = self.sv_type_of(&self.mir.expr(m).ty.clone());
+        self.items.push(SvItem::Logic(SvLogicDecl {
+            ty,
+            name: synth.clone(),
+        }));
+        let cond = self.expr_value_mir(cond);
+        let then_v = self.block_value_mir(tb);
+        let else_v = self.block_value_mir(eb);
+        self.items.push(SvItem::AlwaysComb(SvAlwaysComb {
+            body: vec![SvCombStmt::If(SvCombIf {
+                cond,
+                then_branch: vec![SvCombStmt::Assign {
+                    lhs: SvExpr::Ident(synth.clone()),
+                    rhs: then_v,
+                }],
+                else_branch: vec![SvCombStmt::Assign {
+                    lhs: SvExpr::Ident(synth.clone()),
+                    rhs: else_v,
+                }],
+            })],
+        }));
+        SvExpr::Ident(synth)
+    }
+
+    /// MIR twin of the aggregate `if` in `expr_leaves` — a per-leaf mux.
+    #[allow(dead_code)]
+    fn lower_if_leaves_mir(
+        &mut self,
+        m: MExprId,
+        cond: MExprId,
+        tb: &MBlock,
+        eb: &MBlock,
+    ) -> Vec<(String, SvExpr)> {
+        let synth = self.fresh_block();
+        let c = self.expr_value_mir(cond);
+        let then_leaves = self.block_leaves_mir(tb);
+        let else_leaves = self.block_leaves_mir(eb);
+        let tys = self.expr_leaf_types_mir(m);
+        let mut out = Vec::new();
+        let mut body = Vec::new();
+        for (k, (suffix, tv)) in then_leaves.into_iter().enumerate() {
+            let name = join(&synth, &suffix);
+            let ty = tys.get(k).cloned().unwrap_or_else(SvType::bit);
+            self.items.push(SvItem::Logic(SvLogicDecl {
+                ty,
+                name: name.clone(),
+            }));
+            let ev = else_leaves
+                .get(k)
+                .map(|(_, e)| e.clone())
+                .unwrap_or_else(|| SvExpr::Lit("0".to_owned()));
+            body.push(SvCombStmt::If(SvCombIf {
+                cond: c.clone(),
+                then_branch: vec![SvCombStmt::Assign {
+                    lhs: SvExpr::Ident(name.clone()),
+                    rhs: tv,
+                }],
+                else_branch: vec![SvCombStmt::Assign {
+                    lhs: SvExpr::Ident(name.clone()),
+                    rhs: ev,
+                }],
+            }));
+            out.push((suffix, SvExpr::Ident(name)));
+        }
+        self.items.push(SvItem::AlwaysComb(SvAlwaysComb { body }));
+        out
     }
 
     /// The clock signal name for a value's domain (a `Domain::Param` resolves to
