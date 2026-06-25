@@ -213,6 +213,13 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2k — `for` (generate) on MIR.** Added `lower_for_mir`
+  (bound from the iterable's MIR-node type; genvar or `assign x = v[i]` binding),
+  wired `MStmt::For`, predicate admits a for whose iter + body are walkable.
+  Golden green (89), 127 lib. (Indexed-body drives `out[i] = …` still rejected —
+  they need place projections, next.) Remaining: `when` (register; several
+  sites), when-RAM, `const if`, place projections, records, let-mut fold,
+  unit-return call statements; then delete the HIR core.
 - 2026-06-25: **S3.2j — `if`/`Block` on MIR.** Added `block_value_mir`/
   `block_leaves_mir`/`expr_leaf_types_mir`/`lower_if_mir`/`lower_if_leaves_mir`;
   wired the `If` and `Block` arms in `expr_value_mir`/`expr_leaves_mir`; predicate

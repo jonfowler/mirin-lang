@@ -1160,6 +1160,78 @@ impl<'db> SvLower<'_, 'db> {
         }));
     }
 
+    /// MIR twin of `lower_for` — a named generate-for. The bound comes from the
+    /// iterable's MIR-node type; the elem is the genvar (a `range`) or an
+    /// `assign x = v[i]` binding. Reuses the id-agnostic helpers and the `_mir`
+    /// value/leaves/stmt twins.
+    #[allow(dead_code)]
+    fn lower_for_mir(
+        &mut self,
+        index: Option<LocalId>,
+        elem: LocalId,
+        iter: MExprId,
+        body: &MBlock,
+    ) {
+        let it = {
+            let t = ground_widths(
+                self.db,
+                self.krate,
+                self.def,
+                &subst_type(&self.mir.expr(iter).ty, &self.self_subst),
+            );
+            self.subst_promoted(&t)
+        };
+        let (len, is_bits) = match &it {
+            Type::Vec { len, .. } => (len.clone(), false),
+            Type::Value {
+                kind: ValueKind::Bits { width },
+                ..
+            } => (width.clone(), true),
+            _ => return,
+        };
+        let bound = width_expr(&len, &self.sig.generic_params);
+        let elem_is_genvar = matches!(self.mir.local(elem).kind, LocalKind::ForBound);
+        let var = match (elem_is_genvar, index) {
+            (true, _) => self.local_name(elem),
+            (false, Some(i)) => self.local_name(i),
+            (false, None) => {
+                let v = format!("__i{}", self.synth);
+                self.synth += 1;
+                v
+            }
+        };
+        let label = format!("g_{}", self.local_name(elem));
+        let saved = std::mem::take(&mut self.items);
+        if elem_is_genvar {
+            // no binding — the genvar is the element
+        } else if is_bits {
+            let base = self.expr_value_mir(iter);
+            self.declare_local(elem);
+            let name = self.local_name(elem);
+            self.items.push(SvItem::Assign {
+                lhs: SvExpr::Ident(name),
+                rhs: SvExpr::Lit(format!("{base}[{var}]")),
+            });
+        } else {
+            self.declare_local(elem);
+            let elem_base = self.local_name(elem);
+            for (suffix, e) in self.expr_leaves_mir(iter) {
+                self.items.push(SvItem::Assign {
+                    lhs: SvExpr::Ident(join(&elem_base, &suffix)),
+                    rhs: SvExpr::Lit(format!("{e}[{var}]")),
+                });
+            }
+        }
+        self.lower_stmts_mir(&body.stmts);
+        let items = std::mem::replace(&mut self.items, saved);
+        self.items.push(SvItem::GenerateFor(SvGenerateFor {
+            var,
+            bound,
+            label,
+            items,
+        }));
+    }
+
     /// `let x = value;`. A builtin `.reg` makes the let the register itself
     /// (per field); otherwise the local's leaves are declared and each driven by
     /// the corresponding leaf of the value.
@@ -1466,9 +1538,18 @@ impl<'db> SvLower<'_, 'db> {
                 self.lower_equation_mir(&lhs, rhs);
             }
             MStmt::Return { value } => self.drive_result_mir(*value),
-            MStmt::Expr(_) => todo!("S3.2e: lower_one_stmt_mir Expr (call statement)"),
-            MStmt::When { .. } => todo!("S3.2e: lower_one_stmt_mir When"),
-            MStmt::For { .. } => todo!("S3.2e: lower_one_stmt_mir For"),
+            MStmt::Expr(_) => todo!("S3.2k: lower_one_stmt_mir Expr (call statement)"),
+            MStmt::When { .. } => todo!("S3.2k: lower_one_stmt_mir When"),
+            MStmt::For {
+                index,
+                elem,
+                iter,
+                body,
+            } => {
+                let (index, elem, iter) = (*index, *elem, *iter);
+                let body = body.clone();
+                self.lower_for_mir(index, elem, iter, &body);
+            }
         }
     }
 
@@ -1664,7 +1745,13 @@ impl<'db> SvLower<'_, 'db> {
                 lhs.projections.is_empty() && self.mir_ok_value(mir, *rhs)
             }
             MStmt::Return { value } => self.mir_ok_value(mir, *value),
-            MStmt::Expr(_) | MStmt::When { .. } | MStmt::For { .. } => false,
+            // A generate-for: the iterable and the whole body must be walkable.
+            // (An indexed body drive `out[i] = …` has projections, which
+            // mir_ok_stmt's Equation arm still rejects — so it stays on HIR.)
+            MStmt::For { iter, body, .. } => {
+                self.mir_ok_expr(mir, *iter) && self.mir_ok_block(mir, body)
+            }
+            MStmt::Expr(_) | MStmt::When { .. } => false,
         }
     }
 
