@@ -266,11 +266,23 @@ scope a literal). This landed naively (no assertion-map factoring yet):
   does not ground, so it does not fire — the existing `initial assert` fallback in
   `build_module` still guards equality residuals. Negative space: no silent pass.
 
-Scope of this slice: **direct** call sites only. A *transitive* obligation (the
-callee calls another generic with the caller's param) grounds only when that inner
-call is itself literal — cross-module **composition** (substituting the callee's
-summary into the caller's frame, per "Cross-module composition" above) is the next
-step, not yet built.
+Scope: **depth-1** composition. Besides the immediate callee's obligations, an
+inner call inside the callee whose subst was symbolic in the callee's frame but
+grounds once this call's args are substituted in is checked too (the thin-wrapper
+case: `wrap{k}(x){ inner(x) }` where `inner`'s signature has the bad width, not
+`wrap`'s). Inner calls already ground on their own are left to the walk over the
+callee as a def (so they are not double-reported). Implemented by `compose_term`
+substituting the enclosing instantiation into each recorded inner-call term, then
+re-running `check_obligations`; output is deduped by `(span, message)`.
+
+**General N-level composition is deliberately not built this way.** Recursing the
+worklist unbounded needs: (a) **sound dedup** — a const-only key is unsound
+because a *type* arg can drive a width via an assoc const, so two const-equal
+instantiations with different type args can differ; (b) **termination** — `f(n)`
+calling `f(n - 1)` generates unbounded distinct instantiations (a recursion-limit
+/ fuel problem); (c) avoiding **exponential diamonds** without memoisation. Those
+are exactly what the assertion-map + support-factoring design above buys; depth-1
+is the safe, bounded subset that covers the common wrapper case meanwhile.
 
 Reported via `main.rs`'s `collect_diagnostics`, gated on a clean front end (an
 ill-typed body's residuals would cascade). Tested by

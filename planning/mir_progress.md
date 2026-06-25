@@ -164,6 +164,17 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 
 ## Status log (newest first)
 
+- 2026-06-25: **mono_check — depth-1 cross-module composition.** Besides the
+  immediate callee, an inner call inside the callee whose subst was symbolic in
+  the callee's frame but grounds once the outer call's args are substituted is now
+  checked (`compose_term` + re-run `check_obligations`; output deduped). Catches a
+  bad width in an inner callee's signature invisible in the wrapper's own sig
+  (`wrap{k}(x){ inner(x) }` → `inner: uint(k-10)` → -6 at k=4). Tested:
+  `mono_check_composes_one_level` + `fail-expected/mono-compose-depth1.mrn`.
+  General N-level deferred — unbounded recursion needs sound dedup (a type arg can
+  drive a width via assoc const), termination (`f(n)→f(n-1)`), and diamond
+  memoisation, i.e. the assertion-map design (`planning/mono_check.md`).
+
 - 2026-06-25: **mono_check — width positivity added.** Extended the ground check
   beyond residuals: collect the width/length `ConstArg`s from the callee's
   signature (param + return, nested via a `Folder`), substitute with the call

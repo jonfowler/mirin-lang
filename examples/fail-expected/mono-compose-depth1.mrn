@@ -1,0 +1,18 @@
+// Depth-1 composition: the bad width lives in `inner`'s signature
+// (`uint(k - 10)`), not in `wrap`'s (which is `uint(k) -> uint(k)`, always
+// positive). So checking `wrap`'s own obligations is not enough — `mono_check`
+// must substitute `wrap`'s instantiation (k=4, from `use_bad`) into `wrap`'s
+// call to `inner`, grounding `inner`'s return to `uint(-6)`. Reported at the
+// root `wrap(x)` call site.
+fn inner {dom clk: Clock, const k: integer} (x: uint(k) @clk) -> uint(k - 10) @clk {
+    x.resize()
+}
+
+fn wrap {dom clk: Clock, const k: integer} (x: uint(k) @clk) -> uint(k) @clk {
+    let tmp = inner(x);
+    x.resize()
+}
+
+fn use_bad {dom clk: Clock} (x: uint(4) @clk) -> uint(4) @clk {
+    wrap(x)
+}

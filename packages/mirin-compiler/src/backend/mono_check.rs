@@ -13,21 +13,23 @@
 //! evaluate it and turn a violation into a real compile-time diagnostic at the
 //! call, instead of deferring it to a silent sim-time assert.
 //!
-//! First slice (deliberately naive — see the doc's scaling design for the
-//! assertion-map/support-factoring that optimises this later *without changing
-//! the diagnostics*):
-//! - **Direct call sites only.** Each `Call` is checked against its immediate
-//!   callee's residuals under the call's recorded subst (`MExpr` `Call.substs`,
-//!   the same per-call instantiation the backend renders as `#(.n(8))`). A
-//!   transitive obligation (callee calls a generic with the caller's param) only
-//!   grounds once the enclosing call is itself literal — that cross-module
-//!   *composition* is future work.
-//! - **Ground only.** A residual that stays symbolic after substitution (a
-//!   non-literal arg) is left to the existing `initial assert` fallback.
+//! Obligations checked, each under the call's recorded subst (`MExpr`
+//! `Call.substs`, the same per-call instantiation the backend renders as
+//! `#(.n(8))`): width-equality residuals (`n == m`), literal-fit residuals
+//! (`value` fits `width`), and width positivity (a parametric `uint(n - m)`
+//! grounding `< 1`).
 //!
-//! Negative space: a residual shape we cannot evaluate after substitution simply
-//! does not fire here (it is not a ground decision) — never a silent wrong pass,
-//! because the symbolic `initial assert` still guards it downstream.
+//! Composition is **depth-1**: besides the immediate callee, an inner call whose
+//! subst was symbolic in the callee's frame but grounds once this call's args are
+//! substituted in is checked too (the thin-wrapper case: `wrap{n}(x){ inner(n) }`
+//! called with a literal width). Inner calls already ground on their own are left
+//! to the walk over the callee as a def. General N-level composition — and the
+//! dedup / termination / support-factoring an unbounded worklist needs — is the
+//! assertion-map scaling design in `planning/mono_check.md`.
+//!
+//! Negative space: a residual/width that stays symbolic after substitution simply
+//! does not fire (not a ground decision) — never a silent wrong pass, because the
+//! symbolic `initial assert` still guards equality residuals downstream.
 
 use std::collections::HashSet;
 
@@ -65,6 +67,15 @@ impl<'db> MonoDiagnostic<'db> {
 /// `sv_file`: it does NOT gate emission (a ground violation is a hard error to
 /// the user, but the other modules still render). The caller (CLI/LSP) reports
 /// these alongside the front-end diagnostics.
+///
+/// Coverage: **depth-1** call composition. For each call site `D → C(args)`:
+/// - depth-0: `C`'s own obligations under `args`;
+/// - depth-1: an inner call `C → E(iargs)` whose `iargs` were symbolic in `C`'s
+///   frame but ground once `args` is substituted in (the thin-wrapper case:
+///   `wrap{n}(x){ inner(n) }` called `wrap()` with a literal width). Inner calls
+///   already ground on their own are skipped here — they are checked when `C` is
+///   walked as a def. General N-level composition (with the dedup/termination/
+///   factoring the unbounded worklist needs) is `planning/mono_check.md`.
 #[salsa::tracked(returns(ref))]
 pub fn mono_check<'db>(
     db: &'db dyn salsa::Database,
@@ -73,52 +84,88 @@ pub fn mono_check<'db>(
     let map = crate_def_map(db, krate);
     let mut out = Vec::new();
     for def in map.defs().collect::<Vec<_>>() {
-        match map.def_data(def).map(|d| d.kind) {
-            Some(DefKind::Fn | DefKind::Method) => {}
-            _ => continue,
+        if !matches!(
+            map.def_data(def).map(|d| d.kind),
+            Some(DefKind::Fn | DefKind::Method)
+        ) {
+            continue;
         }
-        let mir = mir_of(db, krate, def);
-        for mexpr in mir.exprs() {
-            if let MExprKind::Call { callee, substs, .. } = &mexpr.kind {
-                check_call(db, krate, def, *callee, substs, mexpr.span, &mut out);
+        for mexpr in mir_of(db, krate, def).exprs() {
+            let MExprKind::Call { callee, substs, .. } = &mexpr.kind else {
+                continue;
+            };
+            let span = mexpr.span;
+            // depth-0: the callee's obligations under this call's subst.
+            let subst: Vec<Option<Term<'db>>> = substs.iter().cloned().map(Some).collect();
+            check_obligations(db, krate, *callee, &subst, def, span, &mut out);
+
+            // depth-1: inner calls of the callee that this call's subst grounds.
+            for inner in mir_of(db, krate, *callee).exprs() {
+                let MExprKind::Call {
+                    callee: inner_callee,
+                    substs: inner_substs,
+                    ..
+                } = &inner.kind
+                else {
+                    continue;
+                };
+                // Already ground in the callee's frame → handled when we walk the
+                // callee as a def; composing here would only double-report.
+                if consts_closed(inner_substs) {
+                    continue;
+                }
+                let composed: Vec<Option<Term<'db>>> = inner_substs
+                    .iter()
+                    .map(|t| Some(compose_term(t, &subst)))
+                    .collect();
+                check_obligations(db, krate, *inner_callee, &composed, def, span, &mut out);
             }
         }
     }
+    // Distinct paths can reach the same obligation at the same call; dedup.
+    out.sort_by(|a, b| {
+        (a.span.start, a.span.end, &a.message).cmp(&(b.span.start, b.span.end, &b.message))
+    });
+    out.dedup();
     out
 }
 
-/// Check one call site's immediate callee residuals under the call's subst.
-fn check_call<'db>(
+/// Check a callee's deferred obligations under a (possibly composed) subst,
+/// reporting any ground violation at `report_def`/`span`. Each check self-filters
+/// via [`is_closed`], so a still-symbolic instantiation simply produces nothing.
+fn check_obligations<'db>(
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
-    caller: DefId<'db>,
     callee: DefId<'db>,
-    substs: &[Term<'db>],
+    subst: &[Option<Term<'db>>],
+    report_def: DefId<'db>,
     span: Span,
     out: &mut Vec<MonoDiagnostic<'db>>,
 ) {
     let inf = infer(db, krate, callee);
     let residuals = inf.const_residuals();
     let fits = inf.fit_residuals();
-    // Nothing to ground: a monomorphic callee (no subst) whose widths are already
-    // literal and infer-checked, with no deferred obligations.
-    if substs.is_empty() && residuals.is_empty() && fits.is_empty() {
+    let any_bound = subst.iter().any(Option::is_some);
+    if residuals.is_empty() && fits.is_empty() && !any_bound {
         return;
     }
-    // `Call.substs` is in the callee's declared generic-param order, the same
-    // index `ConstArg::Param(i)` uses. Lift to the `Option`-subst the folder
-    // wants; a Param with no entry stays symbolic and simply will not ground.
-    let subst: Vec<Option<Term<'db>>> = substs.iter().cloned().map(Some).collect();
 
     let name = crate_def_map(db, krate)
         .def_data(callee)
         .map(|d| d.name.clone())
         .unwrap_or_default();
+    let mut report = |message: String| {
+        out.push(MonoDiagnostic {
+            def: report_def,
+            span,
+            message,
+        });
+    };
 
     // Width-equality residuals (`uint(a)` vs `uint(b)`): ground both, compare.
     for (a, b) in residuals {
-        let a = subst_const_opt(a, &subst);
-        let b = subst_const_opt(b, &subst);
+        let a = subst_const_opt(a, subst);
+        let b = subst_const_opt(b, subst);
         if is_closed(&a)
             && is_closed(&b)
             && let (Some(va), Some(vb)) = (
@@ -127,43 +174,36 @@ fn check_call<'db>(
             )
             && va != vb
         {
-            out.push(MonoDiagnostic {
-                def: caller,
-                span,
-                message: format!("instantiating `{name}`: mismatched widths ({va} != {vb})"),
-            });
+            report(format!(
+                "instantiating `{name}`: mismatched widths ({va} != {vb})"
+            ));
         }
     }
 
-    // Literal-fit residuals (`value` must fit in `width` bits): ground the
-    // width, check the literal fits. A width outside `[0, 127)` is left to the
-    // symbolic fallback (no i128 shift to decide it with).
+    // Literal-fit residuals (`value` must fit in `width` bits): ground the width,
+    // check the literal fits. A width outside `[0, 127)` is left to the symbolic
+    // fallback (no i128 shift to decide it with).
     for fit in fits {
-        let width = subst_const_opt(&fit.width, &subst);
+        let width = subst_const_opt(&fit.width, subst);
         if is_closed(&width)
             && let Some(w) = eval_const(db, krate, callee, &width)
             && (0..127).contains(&w)
             && fit.value >= (1i128 << w)
         {
-            out.push(MonoDiagnostic {
-                def: caller,
-                span,
-                message: format!(
-                    "instantiating `{name}`: literal {} does not fit in width {w}",
-                    fit.value
-                ),
-            });
+            report(format!(
+                "instantiating `{name}`: literal {} does not fit in width {w}",
+                fit.value
+            ));
         }
     }
 
     // Width positivity. A parametric width/len (`uint(n - m)`, `Vec(k, …)`) that
-    // grounds to `< 1` at this instantiation is invalid SV (`logic [-5:0]`).
-    // infer defers parametric widths, so this is their ground decision; a
-    // monomorphic callee's widths are already literal and infer-checked, so skip.
-    // Covers the callee signature's own widths (param/return, nested through
-    // Vec/Tuple) — struct/port *field* widths resolve elsewhere and are not
-    // walked here yet. Dedup by value so repeated widths report once per call.
-    if !substs.is_empty() {
+    // grounds to `< 1` at this instantiation is invalid SV (`logic [-5:0]`). infer
+    // defers parametric widths, so this is their ground decision. Covers the
+    // callee signature's own widths (param/return, nested through Vec/Tuple) —
+    // struct/port *field* widths resolve elsewhere and are not walked here yet.
+    // Dedup by value so repeated widths report once per call.
+    if any_bound {
         let sig = sig_of(db, krate, callee);
         let tys = sig
             .params
@@ -173,23 +213,40 @@ fn check_call<'db>(
         let mut reported: HashSet<i128> = HashSet::new();
         for ty in tys {
             let mut collector = WidthCollector(Vec::new());
-            collector.fold_type(&subst_type_opt(ty, &subst));
+            collector.fold_type(&subst_type_opt(ty, subst));
             for w in &collector.0 {
                 if is_closed(w)
                     && let Some(v) = eval_const(db, krate, callee, w)
                     && v < 1
                     && reported.insert(v)
                 {
-                    out.push(MonoDiagnostic {
-                        def: caller,
-                        span,
-                        message: format!(
-                            "instantiating `{name}`: width evaluates to {v} (must be >= 1)"
-                        ),
-                    });
+                    report(format!(
+                        "instantiating `{name}`: width evaluates to {v} (must be >= 1)"
+                    ));
                 }
             }
         }
+    }
+}
+
+/// Are all Const-kind entries of a recorded call subst closed (literal-evaluable)
+/// — i.e. is the call already ground on its own, independent of any enclosing
+/// instantiation? Type/Domain entries do not bear on const obligations.
+fn consts_closed(substs: &[Term<'_>]) -> bool {
+    substs.iter().all(|t| match t {
+        Term::Const(c) => is_closed(c),
+        _ => true,
+    })
+}
+
+/// Substitute an enclosing instantiation's `subst` into one of a callee's
+/// recorded subst terms (composition for depth-1). Const/Type terms fold through;
+/// a Domain term is irrelevant to const obligations and passes through.
+fn compose_term<'db>(t: &Term<'db>, subst: &[Option<Term<'db>>]) -> Term<'db> {
+    match t {
+        Term::Const(c) => Term::Const(subst_const_opt(c, subst)),
+        Term::Type(ty) => Term::Type(subst_type_opt(ty, subst)),
+        Term::Domain(d) => Term::Domain(d.clone()),
     }
 }
 
