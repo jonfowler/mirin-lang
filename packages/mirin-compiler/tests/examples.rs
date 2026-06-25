@@ -615,6 +615,27 @@ fn mono_check_decides_ground_residuals() {
     );
 }
 
+/// `mono_check`'s literal-fit check is sign-aware: `128` fits `uint(8)` but not
+/// `sint(8)` (max 127). The earlier unsigned-only bound (`value >= 2^w`) missed
+/// the signed-overflow case.
+#[test]
+fn mono_check_fit_is_sign_aware() {
+    let src = "fn f {const n: integer} (x: sint(n)) -> sint(n) { sint(n)::128 }\n\
+        fn use_bad (x: sint(8)) -> sint(8) { f(x) }\n";
+    let mut db = RootDatabase::default();
+    let mut vfs = Vfs::new();
+    vfs.set_file_text(&mut db, "t.mrn", src);
+    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+    let diags = mono_check(&db, krate);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message().contains("sint(8)") && d.message().contains("128")),
+        "expected a sign-aware fit diagnostic: {:?}",
+        diags.iter().map(|d| d.message()).collect::<Vec<_>>()
+    );
+}
+
 /// `mono_check` composes one level: a bad width in an inner callee's signature
 /// (`inner: uint(k - 10)`), invisible in the wrapper's own signature
 /// (`wrap: uint(k) -> uint(k)`), is caught by substituting the wrapper's

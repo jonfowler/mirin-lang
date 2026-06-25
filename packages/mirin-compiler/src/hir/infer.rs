@@ -327,12 +327,15 @@ impl InferDiagnostic {
 }
 
 /// A literal-fit check that survived inference against a still-symbolic
-/// width: `value` must fit `uint(width)` — the backend emits an
-/// elaboration-time assert.
+/// width: `value` must fit a `width`-bit integer — the backend emits an
+/// elaboration-time assert. `signed` distinguishes `sint` (two's-complement
+/// range `-2^(w-1) ..< 2^(w-1)`) from `uint`/`bits` (`0 ..< 2^w`); without it a
+/// ground check (`mono_check`) cannot decide the bound.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct FitResidual<'db> {
     pub value: i128,
     pub width: ConstArg<'db>,
+    pub signed: bool,
 }
 
 /// The result of inferring one def: a type per expression and per local, the
@@ -1105,17 +1108,19 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     // A fit against a still-symbolic width survives as a
                     // residual (→ elaboration-time assert); a never-resolved
                     // width means the value never reaches hardware.
-                    if let Type::Value {
-                        kind:
-                            ValueKind::UInt { width }
-                            | ValueKind::SInt { width }
-                            | ValueKind::Bits { width },
-                        ..
-                    } = &ty
+                    if let Type::Value { kind, .. } = &ty
+                        && let ValueKind::UInt { width }
+                        | ValueKind::SInt { width }
+                        | ValueKind::Bits { width } = kind
                     {
+                        let signed = matches!(kind, ValueKind::SInt { .. });
                         let w = self.resolve_const(width);
                         if !matches!(w, ConstArg::Infer(_)) {
-                            self.fit_residuals.push(FitResidual { value, width: w });
+                            self.fit_residuals.push(FitResidual {
+                                value,
+                                width: w,
+                                signed,
+                            });
                         }
                     }
                 }

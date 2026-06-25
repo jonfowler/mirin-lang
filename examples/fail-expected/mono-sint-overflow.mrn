@@ -1,0 +1,12 @@
+// Sign-aware literal-fit at a ground instantiation. `128` fits `uint(8)`
+// (0..256) but NOT `sint(8)` (two's complement -128..128, max 127). The width is
+// symbolic in `f`'s frame, so infer defers it as a fit residual; the caller
+// grounds n=8, and `mono_check` decides it sign-aware. (The earlier unsigned-only
+// bound `value >= 2^w` missed this — 128 >= 256 is false.)
+fn f {const n: integer} (x: sint(n)) -> sint(n) {
+    sint(n)::128
+}
+
+fn use_bad (x: sint(8)) -> sint(8) {
+    f(x)
+}

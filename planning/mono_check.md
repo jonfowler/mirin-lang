@@ -254,7 +254,11 @@ scope a literal). This landed naively (no assertion-map factoring yet):
   with `eval_const`:
   - `const_residuals` (`n == m`) → ground both sides, compare; unequal ⇒
     diagnostic.
-  - `fit_residuals` (`value` fits `width` bits) → ground the width, check the fit.
+  - `fit_residuals` (`value` fits `width` bits) → ground the width, check the fit
+    **sign-aware** (`FitResidual` carries `signed`): `sint` uses `-2^(w-1) ..<
+    2^(w-1)`, `uint`/`bits` use `0 ..< 2^w`, mirroring infer's ground bounds. (An
+    unsigned-only `value >= 2^w` bound silently missed `sint` overflow and
+    negative `uint` literals — found in adversarial review.)
   - **width positivity** → collect the width/length `ConstArg`s from the callee's
     signature (param + return types, nested through `Vec`/`Tuple`/`Port` args via a
     `Folder`), substitute, and flag any that grounds `< 1` (e.g. a `uint(n - m)`

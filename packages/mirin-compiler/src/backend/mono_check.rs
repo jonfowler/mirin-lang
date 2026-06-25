@@ -180,20 +180,30 @@ fn check_obligations<'db>(
         }
     }
 
-    // Literal-fit residuals (`value` must fit in `width` bits): ground the width,
-    // check the literal fits. A width outside `[0, 127)` is left to the symbolic
-    // fallback (no i128 shift to decide it with).
+    // Literal-fit residuals (`value` must fit `width` bits): ground the width,
+    // check the literal fits — sign-aware, mirroring infer's ground bounds
+    // (`sint`: `-2^(w-1) ..< 2^(w-1)`; `uint`/`bits`: `0 ..< 2^w`). A width `< 1`
+    // is the positivity check's job; a width `>= 127` is left to the fallback (no
+    // i128 shift to decide it with).
     for fit in fits {
         let width = subst_const_opt(&fit.width, subst);
         if is_closed(&width)
             && let Some(w) = eval_const(db, krate, callee, &width)
-            && (0..127).contains(&w)
-            && fit.value >= (1i128 << w)
+            && (1..127).contains(&w)
         {
-            report(format!(
-                "instantiating `{name}`: literal {} does not fit in width {w}",
-                fit.value
-            ));
+            let fits = if fit.signed {
+                let half = 1i128 << (w - 1);
+                fit.value >= -half && fit.value < half
+            } else {
+                fit.value >= 0 && fit.value < (1i128 << w)
+            };
+            if !fits {
+                let ty = if fit.signed { "sint" } else { "uint" };
+                report(format!(
+                    "instantiating `{name}`: literal {} does not fit in {ty}({w})",
+                    fit.value
+                ));
+            }
         }
     }
 
