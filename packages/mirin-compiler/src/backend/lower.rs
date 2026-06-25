@@ -1481,7 +1481,11 @@ impl<'db> SvLower<'_, 'db> {
             todo!("S3.2e: lower_let_mir reg");
         }
         if self.is_instance_call_mir(value) {
-            todo!("S3.2e: lower_let_mir instance call (emit_instance on MIR)");
+            // `let x = f(args)` — `x` is the callee's (flattened) result.
+            self.declare_local(local);
+            let target = self.local_leaves(local);
+            self.emit_instance_from_mir(value, target);
+            return;
         }
         if matches!(self.mir.expr(value).kind, MExprKind::Record { .. }) {
             todo!("S3.2e: lower_let_mir record out-conns");
@@ -1507,7 +1511,10 @@ impl<'db> SvLower<'_, 'db> {
             todo!("S3.2e: lower_equation_mir when-RAM");
         }
         if bare_local && self.is_instance_call_mir(rhs) {
-            todo!("S3.2e: lower_equation_mir instance");
+            // `place = f(args)` — the callee's result drives `place`.
+            let target = self.local_leaves(lhs.base);
+            self.emit_instance_from_mir(rhs, target);
+            return;
         }
         if matches!(self.mir.expr(rhs).kind, MExprKind::Record { .. }) {
             todo!("S3.2e: lower_equation_mir record");
@@ -1531,12 +1538,6 @@ impl<'db> SvLower<'_, 'db> {
         let Some(rt) = self.sig.return_type.clone() else {
             todo!("S3.2e: drive_result_mir unit return (call statement)");
         };
-        if self.is_instance_call_mir(value) {
-            todo!("S3.2e: drive_result_mir instance call");
-        }
-        if matches!(self.mir.expr(value).kind, MExprKind::Record { .. }) {
-            todo!("S3.2e: drive_result_mir record out-conns");
-        }
         let rt = subst_type(&rt, &self.self_subst);
         let result_leaves = flatten_leaves(
             self.db,
@@ -1546,6 +1547,18 @@ impl<'db> SvLower<'_, 'db> {
             true,
             &self.sig.generic_params,
         );
+        // `return f(args)` — connect the callee's result straight to `result`.
+        if self.is_instance_call_mir(value) {
+            let target = result_leaves
+                .into_iter()
+                .map(|l| (l.suffix.clone(), SvExpr::Ident(join("result", &l.suffix))))
+                .collect();
+            self.emit_instance_from_mir(value, target);
+            return;
+        }
+        if matches!(self.mir.expr(value).kind, MExprKind::Record { .. }) {
+            todo!("S3.2e: drive_result_mir record out-conns");
+        }
         let value_leaves = self.expr_leaves_mir(value);
         for rl in result_leaves {
             if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == rl.suffix) {
@@ -1625,20 +1638,42 @@ impl<'db> SvLower<'_, 'db> {
                 !mir.local(*local).mutable
                     && !self.is_integer_local(*local)
                     && self.as_reg_mir(*value).is_none()
-                    && !self.is_instance_call_mir(*value)
-                    && self.mir_ok_expr(mir, *value)
+                    && self.mir_ok_value(mir, *value)
             }
             MStmt::Equation { lhs, rhs } => {
                 lhs.projections.is_empty()
                     && self.as_reg_mir(*rhs).is_none()
-                    && !self.is_instance_call_mir(*rhs)
-                    && self.mir_ok_expr(mir, *rhs)
+                    && self.mir_ok_value(mir, *rhs)
             }
-            MStmt::Return { value } => {
-                !self.is_instance_call_mir(*value) && self.mir_ok_expr(mir, *value)
-            }
+            MStmt::Return { value } => self.mir_ok_value(mir, *value),
             MStmt::Expr(_) | MStmt::When { .. } | MStmt::For { .. } => false,
         }
+    }
+
+    /// A statement-position value: like `mir_ok_expr`, but a *top-level* call may
+    /// be a (non-inline) module instance — the statement lowerers handle that —
+    /// provided its connections are themselves walkable in-values.
+    fn mir_ok_value(&self, mir: &Mir<'db>, m: MExprId) -> bool {
+        if let MExprKind::Call {
+            callee,
+            substs,
+            receiver,
+            args,
+            named,
+        } = &mir.expr(m).kind
+        {
+            let (def, _) = self.mir_call_target(*callee, substs);
+            if !self.splices_inline(def) {
+                return receiver.is_none_or(|r| self.mir_ok_expr(mir, r))
+                    && args
+                        .iter()
+                        .all(|a| matches!(a, Conn::In(e) if self.mir_ok_expr(mir, *e)))
+                    && named
+                        .iter()
+                        .all(|n| matches!(&n.conn, Conn::In(e) if self.mir_ok_expr(mir, *e)));
+            }
+        }
+        self.mir_ok_expr(mir, m)
     }
 
     fn mir_ok_expr(&self, mir: &Mir<'db>, m: MExprId) -> bool {
@@ -3368,6 +3403,57 @@ impl<'db> SvLower<'_, 'db> {
     /// params match the call's named section by name.
     fn emit_instance(&mut self, uc: UserCall<'db>, result_target: Vec<(String, SvExpr)>) {
         let csig = sig_of(self.db, self.krate, uc.def);
+        // Resolve each value param to its caller arg (positional zip with
+        // `[receiver?] ++ args`, named by name), flattening the arg to its leaves
+        // and recording its actual type — the HIR-id-specific half. The core then
+        // builds the instance from these resolved slots.
+        let mut positional: Vec<ExprId> = uc.receiver.into_iter().collect();
+        positional.extend(uc.args.iter().map(|a| a.expr));
+        let mut pos_i = 0;
+        let slots: Vec<CallSlot<'db>> = csig
+            .params
+            .iter()
+            .map(|p| {
+                let caller_expr = if p.from_named_section {
+                    uc.named.iter().find(|n| n.name == p.name).map(|n| n.expr)
+                } else {
+                    let e = positional.get(pos_i).copied();
+                    pos_i += 1;
+                    e
+                };
+                let (caller_leaves, actual_ty) = match caller_expr {
+                    Some(e) => (Some(self.expr_leaves(e)), self.actual_type(e)),
+                    None => (None, None),
+                };
+                CallSlot {
+                    name: p.name.clone(),
+                    ty: p.ty.clone(),
+                    caller_leaves,
+                    actual_ty,
+                    default: p.default.clone(),
+                }
+            })
+            .collect();
+        let recorded: Vec<Term<'db>> = self
+            .inf
+            .call_subst(uc.expr)
+            .map(|ts| ts.to_vec())
+            .unwrap_or_default();
+        self.emit_instance_core(uc.def, uc.subst_override, recorded, slots, result_target);
+    }
+
+    /// Id-agnostic core of `emit_instance`: build the SV module instance from the
+    /// callee def, the recorded/overridden subst, and the resolved [`CallSlot`]s.
+    /// Shared by the HIR path and the MIR walker (S3.2g).
+    fn emit_instance_core(
+        &mut self,
+        def: DefId<'db>,
+        subst_override: Option<Vec<Option<Term<'db>>>>,
+        recorded: Vec<Term<'db>>,
+        slots: Vec<CallSlot<'db>>,
+        result_target: Vec<(String, SvExpr)>,
+    ) {
+        let csig = sig_of(self.db, self.krate, def);
         let doms: Vec<String> = csig
             .generic_params
             .iter()
@@ -3379,13 +3465,9 @@ impl<'db> SvLower<'_, 'db> {
         // call's recorded instantiation (`#(.n(8))`; a still-symbolic value
         // renders against the caller's own SV parameters; an evaluable local
         // grounds through const_eval).
-        let node_subst: Vec<Option<Term<'db>>> = match &uc.subst_override {
+        let node_subst: Vec<Option<Term<'db>>> = match &subst_override {
             Some(ov) => ov.clone(),
-            None => self
-                .inf
-                .call_subst(uc.expr)
-                .map(|ts| ts.iter().cloned().map(Some).collect())
-                .unwrap_or_default(),
+            None => recorded.iter().cloned().map(Some).collect(),
         };
         // A const arg recorded against this generic def is in the def's own
         // term space: ground its type-param projections through the enclosing
@@ -3442,38 +3524,16 @@ impl<'db> SvLower<'_, 'db> {
             })
             .collect();
 
-        // Resolve each value param to its caller expression (positional zip with
-        // `[receiver?] ++ args`; named by name) — `(pname, pty, caller_expr)`.
-        let mut positional: Vec<ExprId> = uc.receiver.into_iter().collect();
-        positional.extend(uc.args.iter().map(|a| a.expr));
-        let mut pos_i = 0;
-        let slots: Vec<(String, Type<'db>, Option<ExprId>, Option<String>)> = csig
-            .params
-            .iter()
-            .map(|p| {
-                let ty = p.ty.clone();
-                let caller_expr = if p.from_named_section {
-                    uc.named.iter().find(|n| n.name == p.name).map(|n| n.expr)
-                } else {
-                    let e = positional.get(pos_i).copied();
-                    pos_i += 1;
-                    e
-                };
-                (p.name.clone(), ty, caller_expr, p.default.clone())
-            })
-            .collect();
-
         // A type-generic callee is monomorphised: bind its Type params from the
-        // actual arg types, name the copy `Callee__Arg`, and request its emission.
-        let mut subst: Vec<Option<Term<'db>>> = if let Some(ov) = &uc.subst_override {
+        // actual arg types (recorded on each slot), name the copy `Callee__Arg`,
+        // and request its emission.
+        let mut subst: Vec<Option<Term<'db>>> = if let Some(ov) = &subst_override {
             ov.clone()
         } else if is_type_generic(csig) {
             let mut subst = vec![None; csig.generic_params.len()];
-            for (_, pty, caller_expr, _) in &slots {
-                if let Some(e) = caller_expr
-                    && let Some(at) = self.actual_type(*e)
-                {
-                    match_type(pty, &at, &mut subst);
+            for slot in &slots {
+                if let Some(at) = &slot.actual_ty {
+                    match_type(&slot.ty, at, &mut subst);
                 }
             }
             subst
@@ -3503,15 +3563,15 @@ impl<'db> SvLower<'_, 'db> {
                 g.kind == TermKind::Type && subst.get(i).is_some_and(Option::is_some)
             });
         let module = if needs_mono {
-            let name = mono_name(self.map, uc.def, csig, &subst);
+            let name = mono_name(self.map, def, csig, &subst);
             self.mono_reqs.push(MonoReq {
-                callee: uc.def,
+                callee: def,
                 subst: subst.clone(),
                 name: name.clone(),
             });
             name
         } else {
-            module_name(self.map, uc.def)
+            module_name(self.map, def)
         };
 
         // To flatten the callee's types to connection leaves, substitute BOTH
@@ -3539,8 +3599,8 @@ impl<'db> SvLower<'_, 'db> {
         }
         // 2. value/out params (flattened through the mono subst), each connected
         //    to its caller expression's leaves.
-        for (pname, pty, caller_expr, default) in &slots {
-            let pty = subst_type(pty, &flatten_subst);
+        for slot in &slots {
+            let pty = subst_type(&slot.ty, &flatten_subst);
             let callee_leaves = flatten_leaves(
                 self.db,
                 self.krate,
@@ -3557,9 +3617,9 @@ impl<'db> SvLower<'_, 'db> {
             // `= default` (a deliberate feature: named params can be signals/
             // ports, not just generics) would mis-wire — each leaf needs the
             // corresponding leaf of a flattened default, not the whole scalar.
-            let caller_leaves: Vec<(String, SvExpr)> = match caller_expr {
-                Some(e) => self.expr_leaves(*e),
-                None => match default {
+            let caller_leaves: Vec<(String, SvExpr)> = match &slot.caller_leaves {
+                Some(ls) => ls.clone(),
+                None => match &slot.default {
                     Some(d) => callee_leaves
                         .iter()
                         .map(|_| (String::new(), default_value(d)))
@@ -3574,7 +3634,7 @@ impl<'db> SvLower<'_, 'db> {
             // `rl.drives`); revisit if/when named port params with mixed
             // in/out fields are exercised.
             for (cl, (_, cv)) in callee_leaves.into_iter().zip(caller_leaves) {
-                connections.push((join(pname, &cl.suffix), cv));
+                connections.push((join(&slot.name, &cl.suffix), cv));
             }
         }
         // 3. return → the result target, by the CALLEE's result places: an
@@ -3617,6 +3677,90 @@ impl<'db> SvLower<'_, 'db> {
             ExprKind::Local(l) => self.local_ty(l),
             _ => self.mir_expr_type(e),
         }
+    }
+
+    /// MIR twin of `actual_type`.
+    #[allow(dead_code)]
+    fn actual_type_mir(&self, m: MExprId) -> Option<Type<'db>> {
+        if let MExprKind::Local(l) = self.mir.expr(m).kind {
+            self.local_ty(l)
+        } else {
+            Some(self.mir.expr(m).ty.clone())
+        }
+    }
+
+    /// MIR twin of `emit_instance`: resolve each value param's caller arg off the
+    /// MIR `Call` node (leaves via `expr_leaves_mir`, type via `actual_type_mir`)
+    /// into [`CallSlot`]s, then share `emit_instance_core`.
+    #[allow(dead_code)]
+    fn emit_instance_mir(
+        &mut self,
+        def: DefId<'db>,
+        recorded: &[Term<'db>],
+        subst_override: Option<Vec<Option<Term<'db>>>>,
+        receiver: Option<MExprId>,
+        args: &[Conn],
+        named: &[MNamedArg],
+        result_target: Vec<(String, SvExpr)>,
+    ) {
+        let csig = sig_of(self.db, self.krate, def);
+        let mut positional: Vec<MExprId> = receiver.into_iter().collect();
+        positional.extend(args.iter().filter_map(|a| match a {
+            Conn::In(e) => Some(*e),
+            Conn::Out(_) => None,
+        }));
+        let mut pos_i = 0;
+        let slots: Vec<CallSlot<'db>> = csig
+            .params
+            .iter()
+            .map(|p| {
+                let caller = if p.from_named_section {
+                    named
+                        .iter()
+                        .find(|n| n.name == p.name)
+                        .and_then(|n| match &n.conn {
+                            Conn::In(e) => Some(*e),
+                            Conn::Out(_) => None,
+                        })
+                } else {
+                    let e = positional.get(pos_i).copied();
+                    pos_i += 1;
+                    e
+                };
+                let (caller_leaves, actual_ty) = match caller {
+                    Some(e) => (Some(self.expr_leaves_mir(e)), self.actual_type_mir(e)),
+                    None => (None, None),
+                };
+                CallSlot {
+                    name: p.name.clone(),
+                    ty: p.ty.clone(),
+                    caller_leaves,
+                    actual_ty,
+                    default: p.default.clone(),
+                }
+            })
+            .collect();
+        self.emit_instance_core(def, subst_override, recorded.to_vec(), slots, result_target);
+    }
+
+    /// Emit a module instance for a MIR `Call` node (resolving the trait
+    /// instance), driving `result_target` from its return.
+    #[allow(dead_code)]
+    fn emit_instance_from_mir(&mut self, m: MExprId, result_target: Vec<(String, SvExpr)>) {
+        let MExprKind::Call {
+            callee,
+            substs,
+            receiver,
+            args,
+            named,
+        } = &self.mir.expr(m).kind
+        else {
+            unreachable!("emit_instance_from_mir on a non-Call node");
+        };
+        let (callee, substs) = (*callee, substs.clone());
+        let (receiver, args, named) = (*receiver, args.clone(), named.clone());
+        let (def, ov) = self.mir_call_target(callee, &substs);
+        self.emit_instance_mir(def, &substs, ov, receiver, &args, &named, result_target);
     }
 
     /// A user call in value position: instantiate into a fresh `__call_N`
@@ -3717,6 +3861,17 @@ struct UserCall<'db> {
     receiver: Option<ExprId>,
     args: Vec<ConnArg>,
     named: Vec<NamedArg>,
+}
+
+/// A value param resolved to its caller argument, ready for `emit_instance_core`
+/// — the id-agnostic hand-off between the HIR/MIR call paths and instance
+/// emission. `caller_leaves` is `None` when the arg was omitted (use `default`).
+struct CallSlot<'db> {
+    name: String,
+    ty: Type<'db>,
+    caller_leaves: Option<Vec<(String, SvExpr)>>,
+    actual_ty: Option<Type<'db>>,
+    default: Option<String>,
 }
 
 /// The decomposed parts of a `receiver.reg(reset, init)` method call.

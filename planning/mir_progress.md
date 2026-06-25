@@ -213,6 +213,17 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2g — instances on MIR.** Refactored `emit_instance` into a
+  `CallSlot` (resolved caller leaves + actual type) + an id-agnostic
+  `emit_instance_core` (pure extraction, golden-validated identity). Added
+  `emit_instance_mir`/`emit_instance_from_mir`/`actual_type_mir` and wired the
+  instance branch of `lower_let_mir`/`lower_equation_mir`/`drive_result_mir`.
+  Widened the predicate (`mir_ok_value`) to admit top-level (statement-position)
+  module-instance calls whose connections are walkable. Golden byte-for-byte
+  green (89 cases) + 127 lib — defs with `let x = f(args)` / `place = f(args)` /
+  `return f(args)` now lower through MIR. Remaining: value-position instances
+  (`call_value_leaves` on MIR), reg/when/if/for, place projections, records,
+  let-mut fold — then delete the HIR core.
 - 2026-06-25: **S3.2e+f — first validated flip.** Built the statement twins
   (`lower_top_block_mir`/`lower_stmts_mir`/`lower_one_stmt_mir`/`lower_let_mir`/
   `lower_equation_mir`/`drive_result_mir` + `value_leaves_dir_mir`/
