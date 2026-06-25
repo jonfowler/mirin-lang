@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use mirin_compiler::{
     DefKind, RootDatabase, Span, Vfs, ast_id_map, body, check_drivers, completeness, crate_def_map,
-    directions, infer, sig_of,
+    directions, infer, mono_check, sig_of,
 };
 use ropey::Rope;
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Range, Uri};
@@ -115,6 +115,26 @@ pub fn diagnostics(
             out.push(make_diag(rope, enc, Some(abs(d.span)), d.message()));
         }
     }
+
+    // Monomorphisation-time (ground-residual) diagnostics, keyed by the caller
+    // def whose call site they sit on. Gated on a clean file (an ill-typed body's
+    // residuals would cascade), matching the CLI.
+    if out.is_empty() {
+        for d in mono_check(db, krate) {
+            if cur_file.is_some() && Some(d.def.file(db)) != cur_file {
+                continue;
+            }
+            let Some((def_start, _)) = ast_id_map(db, d.def.file(db)).range_of(d.def.ast_id(db))
+            else {
+                continue;
+            };
+            let range = (
+                def_start + d.span.start as usize,
+                def_start + d.span.end as usize,
+            );
+            out.push(make_diag(rope, enc, Some(range), d.message().to_owned()));
+        }
+    }
     out
 }
 
@@ -165,6 +185,22 @@ mod tests {
             return count;\n  }\n";
         let diags = run(src);
         assert!(diags.is_empty(), "clean source flagged: {diags:?}");
+    }
+
+    #[test]
+    fn ground_width_mismatch_is_reported() {
+        // `add_mismatch`'s `n == m` residual grounds false at the literal-arg
+        // call (8 vs 4) — a mono-check diagnostic surfaced through the LSP.
+        let src = "fn add_mismatch { const n: integer, const m: integer } \
+            ( a: uint(n), b: uint(m) ) -> uint(n) { a + b }\n\
+            fn use_bad ( a: uint(8), b: uint(4) ) -> uint(8) { add_mismatch(a, b) }\n";
+        let diags = run(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("add_mismatch") && d.message.contains("!=")),
+            "no mono-check diagnostic: {diags:?}"
+        );
     }
 
     #[test]

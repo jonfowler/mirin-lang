@@ -286,8 +286,8 @@ factoring (above) later optimises **without changing the diagnostics**.
 - **Where mono diagnostics surface.** A new query, **separate from
   `crate_emittable`**: front-end diagnostics still gate emission; `mono_check`
   diagnostics are reported alongside them but do **not** block `sv_file`. Wired
-  into `main.rs`'s `collect_diagnostics` (gated on a clean front end to avoid
-  cascade). **TODO: wire into the LSP** (`mirin-lsp`) the same way.
+  into `main.rs`'s `collect_diagnostics` and `mirin-lsp`'s `semantic::diagnostics`
+  (both gated on a clean front end to avoid cascade).
 
 ### Test on-ramp
 

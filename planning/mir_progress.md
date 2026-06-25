@@ -169,7 +169,8 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   `mono_check_decides_ground_residuals` + `fail-expected/mono-width-mismatch.mrn`;
   folded into the fail-expected + CLEAN ratchets (`mono_diag_count`). Scope:
   direct calls only — cross-module composition is next. Doc:
-  `planning/mono_check.md` "Implementation plan". TODO: LSP wiring.
+  `planning/mono_check.md` "Implementation plan". Also wired into `mirin-lsp`
+  (`semantic::diagnostics`) so ground violations surface in the editor.
 
 - 2026-06-25: **S6 design landed (mono + mono_check).** Researched the rustc
   analogy (collector dedup, `Instance`=`DefId`+substs, lazy
