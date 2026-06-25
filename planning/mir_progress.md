@@ -57,8 +57,16 @@
   verilator-clean. Slice-set (lvalue): bits `word[hi..lo] = …` via a
   `Projection::BitRange` + a distinct partial-drive path in completeness.
   Remaining: zero-width const-if guard, vec slice-set range coverage.
-- [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass.
-- [ ] **S6 — Mono + mono_check on MIR.** "apply recorded substs" + ground-regime check.
+- [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass. (Deferred:
+  flatten stays type-keyed (`flatten_leaves` reads `mexpr.ty`); fine as-is.)
+- [~] **S6 — Mono + mono_check on MIR.** Emission already monomorphises lazily
+  (the `MonoReq` worklist collector + `ground_widths` on read — see "HIR-core"
+  notes). `mono_check` BUILT (`backend/mono_check.rs`): ground-regime check over
+  MIR call sites — width-equality residuals, literal-fit residuals, and width
+  positivity — frame-safe (`is_closed`), wired to CLI + LSP. **Remaining:**
+  cross-module **composition** (transitive ground obligations through a chain of
+  generic calls); the symbolic assertion-map/support-factoring scaling design in
+  `planning/mono_check.md`.
 - [ ] **S7 — Inline on MIR.** rustc-Integrator-style splice (subsumes inline_bodies.md).
 - [ ] **S8 — Re-add const-eval during infer** via the per-item anon-const units.
 
