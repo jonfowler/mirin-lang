@@ -36,7 +36,9 @@
   out-record / out-arg targets → places; the connection-unification payoff) and
   **slice-set BitRange** (S4) still pending.
 - [ ] **S3 — Retarget emission onto MIR.** `sv_module`/`build_module` read `mir_of`
-  instead of `body`+`infer`. Parity gate against current backend + `mirin-compiler-old`.
+  instead of `body`+`infer`. Parity gate: `golden_sv_snapshot` (built, 89 cases).
+  Planning-reviewed; ordered sub-steps + invariants in the design note below.
+  - [x] S3.0 — golden-SV byte-for-byte gate (`tests/golden/`).
 - [ ] **S4 — Slice desugar on MIR.** Type-directed `x[a..b]` → part-select
   primitive + zero-width `const if` guard (retires SliceNotImplemented).
 - [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass.
@@ -78,21 +80,63 @@ test only checks no-panic). Mitigation: the S3 emission retarget is the real
 parity gate; until then keep S2 mechanical and add a debug dump (below) so MIR
 is at least inspectable.
 
-### S3 — Retarget emission onto MIR (the parity gate)
+### S3 — Retarget emission onto MIR (planning-reviewed 2026-06-25)
 
 `backend/lower.rs` is ~4.2k lines reading `body` + `infer` directly. Retargeting
-is the high-value, high-risk step that proves MIR is correct/complete. Strategy:
-- **Do NOT big-bang.** First add a MIR **debug dump** (`mir/pretty.rs` + a
-  `--emit mir` hook mirroring `--emit cst`) — a cheap real consumer to eyeball
-  structure on the corpus.
-- Then move `build_module` to read `mir_of(def)` instead of `body`+`inf`,
-  function by function, gating each on:
-  1. the existing `examples` CLEAN/VERILATOR_CLEAN tests (byte-for-byte SV), and
-  2. the `mirin-compiler-old` parity oracle.
-- The call sites that read `self.inf.call_subst` / `method_resolution` /
-  `expr_type` become reads off the MIR node (types-on-node) — this is where MIR
-  earns its keep and where the named-args/connection logic unifies.
-- Const-eval-in-infer may be dropped during this (per Jon); re-add as S8.
+is the high-value, high-risk step that proves MIR is correct/complete. The S3
+planning review corrected two false premises and refined the order.
+
+**Invariants to hold (do not violate these during S3/S8):**
+- **Backend-time const-eval is UNCHANGED by the migration and unrelated to the
+  S8 const-eval-in-infer drop.** `ground_widths`, `eval_const_cond`,
+  `emit_instance` `#(.N(…))` params, and `ConstAssoc` value all call
+  `const_eval::eval_const/eval_cond(self.db, self.krate, self.def, …)` at *emit*.
+  The retarget changes *which node the `ConstArg`/`Type` came from*, not *who
+  evaluates it*. Keep these calls as-is.
+- **`MExpr.ty` is inference-recorded, NOT mono-ground.** It still carries the
+  def's own generic `Param`s and ungrounded widths. The backend MUST keep
+  applying `self_subst` + `ground_widths` to `mexpr.ty` (as it does to
+  `inf.expr_type(e)` today via `expr_type`/`expr_type_width`). A retarget that
+  trusts `mexpr.ty` as a final width miscompiles every parametric example.
+- **"Drop const-eval-in-infer" (S8) means ONLY: stop dispatch-grounding /
+  `const if`-folding during infer.** It must NOT drop `call_subst` recording
+  (MIR copies it into `Call.substs`; the backend reads it everywhere) nor the
+  `const_residuals`/`fit_residuals` side-tables (emit `initial assert`s; MIR has
+  nowhere to put them yet).
+
+**Parity gate — built (commit):** `golden_sv_snapshot` compares byte-for-byte
+against `tests/golden/*.sv` (89 cases). This is the real gate; VERILATOR_CLEAN
+only lints (would pass a miscompile silently). The old oracle is a bonus, not
+wired up — don't block on it.
+
+**Flatten stays type-keyed (S5 decoupled from S3).** `flatten_leaves` reads only
+`Type` + `sig.fields`, which MIR carries on every node — keep calling it with
+`mexpr.ty`. Do NOT move flatten onto MIR before emission reads MIR.
+
+**Ordered S3 sub-steps (from the review):**
+1. `mir/pretty.rs` + `--emit mir` (eyeball aid; NOT the gate).
+2. First subtarget: route `expr_value`'s scalar cases (Number/Bool/Local/
+   ConstParam/ConstAssoc/Index) + the unified operator `Call` through the MIR
+   node. Validate on `add_constant` (Local read + operator-Call + let + tail; no
+   flatten/instance/places). This exercises the riskiest representational change
+   (four-call-shapes → one `Call`) against a golden.
+3. Statement lowering: use `Place.base` (S2) to replace `backend_root_local`;
+   translate `as_reg` MethodCall-match → `Builtin::Reg` (carries receiver+args,
+   indices line up).
+4. `expr_leaves`/flatten callers read `MExpr.ty` (flatten unchanged).
+5. Call emission (`emit_instance`/`call_value_leaves`) read `Call.substs`/
+   `receiver`/`args`/`named` off MIR; keep `resolve_trait_instance` + inline on
+   HIR/`crate_def_map` (inline is S7 — do not MIR-ify it yet).
+6. **Then S2b** (out-arg/out-named/out-record → places) to retire
+   `place_leaves_dir`/`value_leaves_dir` HIR matches + the emit_instance
+   direction TODOs.
+7. Drop S8 only after the retarget is green, and only the dispatch/`const if`
+   grounding (never `call_subst`/residuals).
+
+Highest risk per the review: the *absence* of a byte-for-byte gate — now retired
+by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
+(keep it reading the recorded subst off the MIR `Call`; `df_example_poly`/
+`trait_*` goldens catch mistakes) and trusting `MExpr.ty` as ground.
 
 ## Status log (newest first)
 
@@ -109,3 +153,10 @@ is the high-value, high-risk step that proves MIR is correct/complete. Strategy:
   (5) reworded `Call.substs` doc — it is the inference-recorded subst, not the
   ground/mono subst (S6 resolves trait-instance overrides + fills generics).
   Next: S2b (out-targets → places) or begin S3 (emission retarget) + MIR dump.
+- 2026-06-25: S3 planning-reviewed (fresh context). Corrected two false
+  premises: (1) no byte-for-byte SV gate existed — BUILT it (`golden_sv_snapshot`,
+  89 cases, committed); (2) backend const-eval is backend-*time*, not infer-time,
+  so the S8 drop doesn't break emission. Folded the reviewed invariants +
+  ordered S3 sub-steps into the S3 design note above. Next loop iteration:
+  S3.1 — `mir/pretty.rs` + `--emit mir`, then S3.2 first scalar subtarget on
+  `add_constant` behind the golden gate.
