@@ -388,11 +388,19 @@ impl<'a, 'db> Lower<'a, 'db> {
                 projs.push(Projection::Index(mi));
                 self.collect_place(base, projs)
             }
-            // Slice-set (`x[a..b] = y`) needs a BitRange projection — S4. Slicing
-            // is still diagnosed, so a slice LHS only reaches here on an
-            // ill-typed body today; once S4 lands this becomes the BitRange case.
-            ExprKind::Slice { .. } if self.well_typed => {
-                panic!("MIR lowering: slice-set place not yet supported (S4)")
+            // Slice-set (`x[a..b] = y`): a `BitRange` projection (the lvalue dual
+            // of a slice read).
+            ExprKind::Slice {
+                base,
+                lo,
+                hi,
+                width,
+            } => {
+                let lo = lo.map(|e| self.lower_expr(e));
+                let hi = hi.map(|e| self.lower_expr(e));
+                let width = width.map(|e| self.lower_expr(e));
+                projs.push(Projection::BitRange { lo, hi, width });
+                self.collect_place(base, projs)
             }
             other if self.well_typed => panic!(
                 "MIR lowering: equation LHS is not a place ({:?}-shaped)",

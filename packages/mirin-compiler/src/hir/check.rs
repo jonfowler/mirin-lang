@@ -181,7 +181,35 @@ fn place_of(body: &Body, expr: ExprId) -> Option<(LocalId, Vec<String>)> {
                 _ => None,
             }
         }
+        // A slice-set `x[a..b] = …` partially drives its base over the slice's
+        // run — a DISTINCT partial-drive path per range, so tiling slices don't
+        // false-conflict. Range coverage is not verified (deferred, like the
+        // genvar-index case) — planning/slicing.md.
+        ExprKind::Slice {
+            base,
+            lo,
+            hi,
+            width,
+        } => {
+            let (l, mut path) = place_of(body, *base)?;
+            path.push(slice_seg(body, *lo, *hi, *width));
+            Some((l, path))
+        }
         _ => None,
+    }
+}
+
+/// A syntactic segment identifying a slice-set's range (`[8..0]`, `[?..+4]` for a
+/// runtime base) — distinguishes tiling slices for conflict detection.
+fn slice_seg(body: &Body, lo: Option<ExprId>, hi: Option<ExprId>, width: Option<ExprId>) -> String {
+    let part = |o: Option<ExprId>| match o.map(|e| &body.expr(e).kind) {
+        Some(ExprKind::Number(v, _)) => v.to_string(),
+        Some(_) => "?".to_owned(),
+        None => String::new(),
+    };
+    match width {
+        Some(_) => format!("[{}..+{}]", part(lo), part(width)),
+        None => format!("[{}..{}]", part(lo), part(hi)),
     }
 }
 

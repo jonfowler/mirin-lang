@@ -1,0 +1,9 @@
+// Slice-set (lvalue): assign into a bit range of a `var`. Two tiling slice-sets
+// build a 16-bit word from two bytes (planning/slicing.md). Each `word[hi..lo]`
+// lowers to a part-select on the LHS: `word[7:0] = lo_byte`, `word[15:8] = hi_byte`.
+fn concat(lo_byte: bits(8), hi_byte: bits(8)) -> bits(16) {
+    var word: bits(16);
+    word[8..0] = lo_byte;
+    word[16..8] = hi_byte;
+    return word;
+}

@@ -1899,6 +1899,51 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
+    /// The SV part-select range string for a slice/slice-set of base type
+    /// `base_ty`. Offset form (`width` set) → the uniform indexed part-select
+    /// `[off +: w]` (base may be runtime). Two-endpoint → type-directed:
+    /// `bits` packed `[high-1:low]`, `Vec` unpacked ascending `[low:high-1]`;
+    /// an elided end defaults from the base length. Shared by slice reads
+    /// (`MExprKind::Slice`) and slice-sets (`Projection::BitRange`).
+    fn slice_range_sv(
+        &mut self,
+        base_ty: &Type<'db>,
+        lo: Option<MExprId>,
+        hi: Option<MExprId>,
+        width: Option<MExprId>,
+    ) -> String {
+        if let Some(w_e) = width {
+            let off = self.expr_value_mir(lo.expect("slice offset base"));
+            let w = self.mir_lit(w_e);
+            return format!("[{off} +: {w}]");
+        }
+        let (n, is_bits) = match base_ty {
+            Type::Value {
+                kind:
+                    ValueKind::Bits {
+                        width: ConstArg::Lit(n),
+                    },
+                ..
+            } => (*n, true),
+            Type::Vec {
+                len: ConstArg::Lit(n),
+                ..
+            } => (*n, false),
+            _ => panic!("MIR: slice base length is not a literal"),
+        };
+        let a = lo
+            .map(|e| self.mir_lit(e))
+            .unwrap_or(if is_bits { n } else { 0 });
+        let b = hi
+            .map(|e| self.mir_lit(e))
+            .unwrap_or(if is_bits { 0 } else { n });
+        if is_bits {
+            format!("[{}:{}]", a - 1, b) // bits: a=high, b=low
+        } else {
+            format!("[{}:{}]", a, b - 1) // vec: a=low, b=high
+        }
+    }
+
     /// A MIR node's literal value (a `Number`). Used for literal slice endpoints.
     fn mir_lit(&self, m: MExprId) -> i128 {
         match self.mir.expr(m).kind {
@@ -1956,6 +2001,18 @@ impl<'db> SvLower<'_, 'db> {
                 };
                 vec![(one, true)]
             }
+            // Slice-set `x[a..b] = …`: each base leaf gets the part-select range
+            // appended, all driven. Only a sole BitRange (bare-local base) is
+            // supported (the predicate enforces it).
+            Some(Projection::BitRange { lo, hi, width }) => {
+                let (lo, hi, width) = (*lo, *hi, *width);
+                let bt = self.mir.local(place.base).ty.clone();
+                let range = self.slice_range_sv(&bt, lo, hi, width);
+                self.local_leaves(place.base)
+                    .into_iter()
+                    .map(|(_, e)| (SvExpr::Lit(format!("{e}{range}")), true))
+                    .collect()
+            }
         }
     }
 
@@ -1978,6 +2035,12 @@ impl<'db> SvLower<'_, 'db> {
                         .into_iter()
                         .map(|(suf, e)| (suf, SvExpr::Lit(format!("{e}[{idx}]"))))
                         .collect();
+                }
+                // A sole BitRange is handled directly in `place_leaves_dir_mir`;
+                // a BitRange composed with other projections is not supported
+                // (the predicate keeps it on HIR).
+                Projection::BitRange { .. } => {
+                    panic!("MIR: BitRange is only supported as a sole place projection")
                 }
             }
         }
@@ -2277,27 +2340,14 @@ impl<'db> SvLower<'_, 'db> {
                 Conn::In(e) => self.mir_ok_expr(mir, *e),
                 Conn::Out(p) => self.mir_ok_place(mir, p),
             }),
-            // A slice. Two-endpoint: both endpoints literal. Offset `x[off..+w]`:
-            // a walkable (possibly runtime) base + a literal width.
+            // A slice read: walkable base + lowerable endpoints (shared with the
+            // BitRange slice-set place check).
             MExprKind::Slice {
                 base,
                 lo,
                 hi,
                 width,
-            } => {
-                let is_num = |e: MExprId| matches!(mir.expr(e).kind, MExprKind::Number(..));
-                let num_or_elided = |o: &Option<MExprId>| o.is_none_or(is_num);
-                self.mir_ok_expr(mir, *base)
-                    && match width {
-                        // Two-endpoint (possibly elided): not both elided; each
-                        // present end a literal.
-                        None => {
-                            (lo.is_some() || hi.is_some()) && num_or_elided(lo) && num_or_elided(hi)
-                        }
-                        // Offset: a walkable base (runtime ok) + a literal width.
-                        Some(w) => lo.is_some_and(|e| self.mir_ok_expr(mir, e)) && is_num(*w),
-                    }
-            }
+            } => self.mir_ok_expr(mir, *base) && self.mir_ok_slice_endpoints(mir, *lo, *hi, *width),
             // ConstIf, other Builtins, Def: not walked.
             _ => false,
         }
@@ -2308,10 +2358,34 @@ impl<'db> SvLower<'_, 'db> {
     /// bounds-assert the MIR `place_leaves_dir_mir` does not yet emit, so it
     /// stays on HIR. Field projections are always fine.
     fn mir_ok_place(&self, mir: &Mir<'db>, place: &Place) -> bool {
+        // A slice-set BitRange is only walked as the sole projection (bare-local
+        // base); composed with other projections it stays on HIR.
+        if let [Projection::BitRange { lo, hi, width }] = place.projections.as_slice() {
+            return self.mir_ok_slice_endpoints(mir, *lo, *hi, *width);
+        }
         place.projections.iter().all(|proj| match proj {
             Projection::Field(_) => true,
             Projection::Index(i) => self.mir_ok_expr(mir, *i) && self.mir_static_index(mir, *i),
+            Projection::BitRange { .. } => false, // only as a sole projection
         })
+    }
+
+    /// Slice endpoints the walker can lower: two-endpoint (each end a literal or
+    /// elided, not both elided), or offset (walkable base + literal width).
+    fn mir_ok_slice_endpoints(
+        &self,
+        mir: &Mir<'db>,
+        lo: Option<MExprId>,
+        hi: Option<MExprId>,
+        width: Option<MExprId>,
+    ) -> bool {
+        let is_num = |e: MExprId| matches!(mir.expr(e).kind, MExprKind::Number(..));
+        match width {
+            None => {
+                (lo.is_some() || hi.is_some()) && lo.is_none_or(is_num) && hi.is_none_or(is_num)
+            }
+            Some(w) => lo.is_some_and(|e| self.mir_ok_expr(mir, e)) && is_num(w),
+        }
     }
 
     /// A static (compile-time) index: integer-typed (a genvar/const). A runtime
@@ -3645,42 +3719,8 @@ impl<'db> SvLower<'_, 'db> {
                 width,
             } => {
                 let (base, lo, hi, width) = (*base, *lo, *hi, *width);
-                let range = if let Some(w_e) = width {
-                    // Offset form: the indexed part-select `[off +: w]` — uniform
-                    // for bits (packed) and Vec (unpacked), base may be runtime.
-                    let off = self.expr_value_mir(lo.expect("slice offset base"));
-                    let w = self.mir_lit(w_e);
-                    format!("[{off} +: {w}]")
-                } else {
-                    // Two-endpoint, type-directed range direction; an elided end
-                    // defaults from the base length `N` (bits: lo→N, hi→0; vec:
-                    // lo→0, hi→N).
-                    let (n, is_bits) = match &self.mir.expr(base).ty {
-                        Type::Value {
-                            kind:
-                                ValueKind::Bits {
-                                    width: ConstArg::Lit(n),
-                                },
-                            ..
-                        } => (*n, true),
-                        Type::Vec {
-                            len: ConstArg::Lit(n),
-                            ..
-                        } => (*n, false),
-                        _ => panic!("MIR: slice base length is not a literal"),
-                    };
-                    let a = lo
-                        .map(|e| self.mir_lit(e))
-                        .unwrap_or(if is_bits { n } else { 0 });
-                    let b = hi
-                        .map(|e| self.mir_lit(e))
-                        .unwrap_or(if is_bits { 0 } else { n });
-                    if is_bits {
-                        format!("[{}:{}]", a - 1, b) // bits: a=high, b=low
-                    } else {
-                        format!("[{}:{}]", a, b - 1) // vec: a=low, b=high
-                    }
-                };
+                let bt = self.mir.expr(base).ty.clone();
+                let range = self.slice_range_sv(&bt, lo, hi, width);
                 self.expr_leaves_mir(base)
                     .into_iter()
                     .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}{range}"))))

@@ -237,6 +237,13 @@ pub enum Projection {
     /// `[index]` — an element index. In a drive target this is a genvar/const
     /// (or a runtime index for a partial drive); kept as an expression.
     Index(MExprId),
+    /// `[a..b]` / `[off..+w]` — a slice-set bit/element range (the lvalue dual of
+    /// `MExprKind::Slice`). Same fields; emission reuses the read part-select.
+    BitRange {
+        lo: Option<MExprId>,
+        hi: Option<MExprId>,
+        width: Option<MExprId>,
+    },
 }
 
 /// One connection at a call/record site, carrying its direction. `In` flows a

@@ -57,9 +57,11 @@
     `actual_type`. Golden-SV byte-for-byte unchanged → MIR is load-bearing for
     types. (Local-type reads deferred — `self`-param + `Option`/`Error` subtlety.)
   - [ ] S3.2c..e — `as_reg`→`Builtin`, calls, control flow onto MIR. (Plan below.)
-- [ ] **S4 — Slice desugar on MIR.** Type-directed `x[a..b]` → part-select
-  primitive + zero-width `const if` guard (retires SliceNotImplemented).
-  Implementation plan below ("S4 — slicing on the MIR walker").
+- [~] **S4 — Slicing on MIR.** Reads: two-endpoint / offset / elision, over
+  bits + Vec, literal + runtime base — all end-to-end, verilator-clean. Slice-set
+  (lvalue): bits `word[hi..lo] = …` via a `Projection::BitRange` + a distinct
+  partial-drive path in completeness. Remaining: zero-width const-if guard,
+  param/const-expr endpoints, vec slice-set range coverage.
 - [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass.
 - [ ] **S6 — Mono + mono_check on MIR.** "apply recorded substs" + ground-regime check.
 - [ ] **S7 — Inline on MIR.** rustc-Integrator-style splice (subsumes inline_bodies.md).
@@ -214,6 +216,15 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S4 step 5 — slice-set (lvalue, bits).** `word[8..0] = lo;
+  word[16..8] = hi;` on a `var bits(16)` → `word[7:0]=…; word[15:8]=…`,
+  verilator-clean. `Projection::BitRange` (lvalue dual of the read Slice); the
+  shared `slice_range_sv` emits the part-select target; `place_of` gives a
+  DISTINCT partial-drive path per range (`[8..0]`), so tiling slices don't
+  false-conflict and (for bits) completeness imposes no range coverage (deferred).
+  `slice_set.mrn` in CLEAN+VERILATOR_CLEAN+golden. **Both halves of the original
+  "slice and slice setting" ask are now delivered.** Remaining S4: zero-width
+  const-if guard, param/const-expr endpoints, vec slice-set range coverage.
 - 2026-06-25: **S4 step 4 — slice elision.** An elided endpoint defaults from
   the base length `N` (literal): bits `x[8..]`→`x[7:0]`, `x[..4]`→`x[15:4]`; vec
   dual; bare `x[..]` rejected. infer + walker read `N` from the base type;

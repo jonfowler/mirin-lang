@@ -119,6 +119,15 @@ impl<'a, 'db> Printer<'a, 'db> {
                 Projection::Index(i) => {
                     let _ = write!(s, "[{}]", self.expr(*i));
                 }
+                Projection::BitRange { lo, hi, width } => {
+                    let o = |e: &Option<MExprId>| e.map(|e| self.expr(e)).unwrap_or_default();
+                    let tail = match (hi, width) {
+                        (Some(_), _) => format!("..{}", o(hi)),
+                        (_, Some(_)) => format!("..+{}", o(width)),
+                        _ => "..".to_owned(),
+                    };
+                    let _ = write!(s, "[{}{tail}]", o(lo));
+                }
             }
         }
         s
