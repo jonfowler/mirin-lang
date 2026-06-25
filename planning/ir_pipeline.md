@@ -23,6 +23,7 @@ for reference only.)
        check_drivers(def) var driver counts       hir/check.rs
        directions(def)    port-direction checks   hir/check.rs
        mir_of(def)        typed mid-IR            mir/lower.rs
+  ─► mono_check(crate)    ground-instantiation checks  backend/mono_check.rs
   ─► sv_module(def)       per-def SV lowering     backend/lower.rs
   ─► sv_file / verilog    assemble + emit         backend/lower.rs, backend/ir.rs
 ```
@@ -102,6 +103,7 @@ reserved-word collisions.
 | `directions(def)` | `hir/check.rs` | Connection operators agree with port-field / param direction (`=` in, `=>` out). |
 | `mir_of(def)` | `mir/lower.rs` | Lower `body(def)` + `infer(def)` to the typed MIR: bake types onto every node, unify the four HIR call shapes into one `Call`, resolve drive targets to `Place`s (slices → `BitRange` projections), reduce builtins to the closed `Builtin` set, fold `const if` to the taken branch. The single source the backend lowers from. |
 | `sv_module(def)` | `backend/lower.rs` | Per-def lowering to one SV module: register recognition (`.reg`), verbatim emission of inline-verilog templates, block/if/when statement-forming, method-call rewriting, out-arg desugaring, aggregate flattening (structs/ports → per-field leaves, domain stamping, direction-aware equation splitting), type-generic monomorphisation at call sites; Const-kind generics bind as instance parameters (`#(.n(8))`) from the per-call instantiations `infer` records (rustc's node substs); a call recorded against a trait-method DECL re-selects to the unique matching impl once the self type is concrete (`Instance::resolve`, `planning/traits.md`). Widths ground through `const_eval` at the type chokepoints; `integer`-typed locals/ports and const-only fns are elided (compile-time only). Width residuals emit as `initial assert`. |
+| `mono_check(crate)` | `backend/mono_check.rs` | Ground-regime monomorphisation checks (`planning/mono_check.md`). Walks every def's MIR call sites; for a call whose recorded subst makes a callee obligation **ground**, decides it and emits a diagnostic: width-equality residuals (`n == m`), sign-aware literal-fit, and width positivity (`>= 1`). Depth-1 composition catches an inner call grounded by the outer subst. Does NOT gate `sv_file` — reported by CLI/LSP alongside the front end; the symbolic cases stay the `initial assert` fallback. |
 | `sv_file` / `verilog(crate)` | `backend/lower.rs` | Assemble modules deterministically; pretty-print. |
 | `reserved_words(crate)` | `backend/reserved.rs` | SV reserved-word table for the emitter's collision check. |
 
