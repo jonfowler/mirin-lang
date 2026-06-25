@@ -39,7 +39,8 @@ use crate::hir::const_eval::eval_const;
 use crate::hir::infer::infer;
 use crate::hir::sig::sig_of;
 use crate::hir::types::{
-    ConstArg, Folder, Term, Type, ValueKind, subst_const_opt, subst_type_opt, super_fold_type,
+    ConstArg, Folder, Term, Type, ValueKind, subst_const_opt, subst_type_opt, super_fold_const,
+    super_fold_type,
 };
 use crate::mir::ir::MExprKind;
 use crate::mir::lower::mir_of;
@@ -221,32 +222,76 @@ fn check_obligations<'db>(
             .map(|p| &p.ty)
             .chain(sig.return_type.as_ref());
         let mut reported: HashSet<i128> = HashSet::new();
+        let mut failed_reported = false;
         for ty in tys {
             let mut collector = WidthCollector(Vec::new());
             collector.fold_type(&subst_type_opt(ty, subst));
             for w in &collector.0 {
-                if is_closed(w)
-                    && let Some(v) = eval_const(db, krate, callee, w)
-                    && v < 1
-                    && reported.insert(v)
-                {
-                    report(format!(
+                if !is_closed(w) {
+                    continue;
+                }
+                match eval_const(db, krate, callee, w) {
+                    Some(v) if v < 1 && reported.insert(v) => report(format!(
                         "instantiating `{name}`: width evaluates to {v} (must be >= 1)"
-                    ));
+                    )),
+                    Some(_) => {}
+                    // Closed but unevaluable ⇒ a genuine arithmetic failure
+                    // (divide-by-zero or i128 overflow) — `arith` only returns
+                    // `None` for those, and a symbolic part would fail `is_closed`.
+                    None if !failed_reported => {
+                        failed_reported = true;
+                        report(format!(
+                            "instantiating `{name}`: width is not a valid constant \
+                             (division by zero or overflow)"
+                        ));
+                    }
+                    None => {}
                 }
             }
         }
     }
 }
 
-/// Are all Const-kind entries of a recorded call subst closed (literal-evaluable)
-/// — i.e. is the call already ground on its own, independent of any enclosing
-/// instantiation? Type/Domain entries do not bear on const obligations.
+/// Is a recorded inner call already ground on its own (independent of any
+/// enclosing instantiation)? If so, depth-1 skips it — the walk over the callee
+/// as a def covers it, so composing would only double-report. A const entry must
+/// be closed; a *type* entry must carry no `Param` (a type param can drive a
+/// width via an assoc const, so a type-grounding wrapper must NOT be skipped).
 fn consts_closed(substs: &[Term<'_>]) -> bool {
     substs.iter().all(|t| match t {
         Term::Const(c) => is_closed(c),
-        _ => true,
+        Term::Type(ty) => !type_has_param(ty),
+        Term::Domain(_) => true,
     })
+}
+
+/// Does a type carry any generic `Param` (type- or const-position)? Used to tell
+/// a self-ground type arg from one that an enclosing instantiation still grounds.
+fn type_has_param(ty: &Type<'_>) -> bool {
+    struct Scan(bool);
+    impl<'db> Folder<'db> for Scan {
+        fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
+            if matches!(
+                t,
+                Type::Value {
+                    kind: ValueKind::Param(_),
+                    ..
+                }
+            ) {
+                self.0 = true;
+            }
+            super_fold_type(self, t)
+        }
+        fn fold_const(&mut self, c: &ConstArg<'db>) -> ConstArg<'db> {
+            if matches!(c, ConstArg::Param(_)) {
+                self.0 = true;
+            }
+            super_fold_const(self, c)
+        }
+    }
+    let mut s = Scan(false);
+    s.fold_type(ty);
+    s.0
 }
 
 /// Substitute an enclosing instantiation's `subst` into one of a callee's

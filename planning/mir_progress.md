@@ -164,6 +164,20 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 
 ## Status log (newest first)
 
+- 2026-06-25: **mono_check — adversarial review + fixes.** Fresh-context review of
+  the whole pass. Confirmed the safety-critical parts sound (the `is_closed` gate
+  guarantees frame-independent eval — no false positives, no recurrence of the
+  prior locals-index panic; `substs`/`Param(i)` index alignment holds incl. method
+  calls). Found + fixed three unsound *misses* (never false positives): (1)
+  **sign-aware fit** — `FitResidual` dropped the kind, so the unsigned bound
+  `value >= 2^w` missed `sint` overflow / negative `uint` literals; now carries
+  `signed` and applies two-sided bounds. (2) a **closed-but-unevaluable width**
+  (div-by-zero / i128 overflow) was silently dropped; now reported. (3) `depth-1`
+  **skipped type-param-grounding** inner calls (a type arg can drive a width via
+  an assoc const); `consts_closed` now also rejects type args carrying a `Param`.
+  Tests: `mono_check_fit_is_sign_aware` + `fail-expected/mono-sint-overflow.mrn`.
+  Clean + fail-expected ratchets green.
+
 - 2026-06-25: **mono_check — depth-1 cross-module composition.** Besides the
   immediate callee, an inner call inside the callee whose subst was symbolic in
   the callee's frame but grounds once the outer call's args are substituted is now
