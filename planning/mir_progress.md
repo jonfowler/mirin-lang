@@ -210,6 +210,16 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: S3.2d started — `expr_leaves_mir` (aggregate arms ported off the
+  MIR node, reusing id-agnostic `local_leaves`/`strip_field`/`eval_const`;
+  Record/Index/Call/control-flow `todo!`) + `one_leaf_mir`; `expr_value_mir`
+  aggregate arm now reduces via `one_leaf_mir`. All dead code (golden untouched),
+  127 lib green. The big remaining piece is the **call/inline machinery on MIR**
+  (`inline_call`/`as_user_call`/`render_inline`/`call_value_leaves`/
+  `emit_instance` + `UserCall` carrying MIR data) — that unblocks the Call arms
+  in both value/leaves twins and is the bulk of S3.2d. Then `block_leaves_mir`,
+  `index_bounds_assert`/`record_leaves` on MIR, then S3.2e statements + flip.
+
 ## S3.2 entry plan (next fire)
 
 The backend keys every read on a HIR `ExprId`; MIR has its own arena. The bridge
@@ -248,6 +258,11 @@ the HIR path stays wired), each its own commit:
   leaf arms done — Number/Bool/Local/ConstParam/ConstAssoc/Missing; cross-method
   arms `todo!`. Extracted id-agnostic `width_of_ty` shared with `expr_type_width`.]
 - S3.2d — `expr_leaves_mir` / `block_leaves_mir` (aggregates, calls-as-values).
+  [started: `expr_leaves_mir` aggregate arms (Local/Field/VecLit/TupleLit/
+  VecRepeat/scalar-fallback) + `one_leaf_mir` done; Record/Index/Call/control-flow
+  arms `todo!`. `expr_value_mir` aggregate arm wired to `one_leaf_mir`. Still
+  needs: call/inline machinery on MIR (the big piece), `block_leaves_mir`,
+  `record_leaves`/`index_bounds_assert` on MIR.]
 - S3.2e — `lower_stmts_mir` / `drive_result_mir` (Let/Equation(Place)/When/For,
   `Builtin::Reg` for registers).
 - S3.2f — **wire-up**: `lower_top_block` calls the `_mir` twins; delete the HIR

@@ -2103,14 +2103,17 @@ impl<'db> SvLower<'_, 'db> {
             MExprKind::ConstIf { .. } => todo!("S3.2e: expr_value_mir ConstIf"),
             MExprKind::Slice { .. } => todo!("S4: expr_value_mir Slice (part-select desugar)"),
             MExprKind::Block(_) => todo!("S3.2e: expr_value_mir Block"),
-            MExprKind::Def(_)
-            | MExprKind::VecLit(_)
+            // An aggregate/field/record in scalar position reduces to its single
+            // leaf if it has one (`one_leaf_mir` emits a failing marker, never a
+            // silent `0`, when it flattens to several).
+            MExprKind::VecLit(_)
             | MExprKind::TupleLit(_)
             | MExprKind::VecRepeat { .. }
             | MExprKind::Field { .. }
-            | MExprKind::Record { .. } => {
-                todo!("S3.2d: expr_value_mir aggregates/field/record (one_leaf on MIR)")
-            }
+            | MExprKind::Record { .. } => self.one_leaf_mir(m),
+            // A bare `Def` in value position is not a value (matches the HIR
+            // path's defensive `0`); never reached on a clean body.
+            MExprKind::Def(_) => SvExpr::Lit("0".to_owned()),
         }
     }
 
@@ -2355,6 +2358,109 @@ impl<'db> SvLower<'_, 'db> {
                 self.record_leaves(ctor, &fields)
             }
             _ => vec![(String::new(), self.expr_value(expr))],
+        }
+    }
+
+    /// MIR twin of [`expr_leaves`](Self::expr_leaves) (S3.2d). Aggregate arms are
+    /// ported off the MIR node, reusing the id-agnostic helpers (`local_leaves`,
+    /// `strip_field`, `eval_const`); cross-method arms (calls, control flow,
+    /// `replace`/`reg`, record) are `todo!` until their twins land. Dead code
+    /// until `lower_top_block` is flipped (S3.2f).
+    #[allow(dead_code)]
+    fn expr_leaves_mir(&mut self, m: MExprId) -> Vec<(String, SvExpr)> {
+        match &self.mir.expr(m).kind {
+            MExprKind::Local(l) => self.local_leaves(*l),
+            MExprKind::Field { receiver, field } => {
+                let (receiver, field) = (*receiver, field.clone());
+                self.expr_leaves_mir(receiver)
+                    .into_iter()
+                    .filter_map(|(suf, e)| strip_field(&suf, &field).map(|rest| (rest, e)))
+                    .collect()
+            }
+            MExprKind::VecLit(elems) => {
+                let elems = elems.clone();
+                let per_elem: Vec<Vec<(String, SvExpr)>> =
+                    elems.iter().map(|e| self.expr_leaves_mir(*e)).collect();
+                let Some(first) = per_elem.first() else {
+                    return vec![(String::new(), SvExpr::Lit("'{}".to_owned()))];
+                };
+                first
+                    .iter()
+                    .enumerate()
+                    .map(|(li, (suffix, _))| {
+                        let parts: Vec<String> = per_elem
+                            .iter()
+                            .map(|leaves| {
+                                leaves
+                                    .get(li)
+                                    .map(|(_, e)| e.to_string())
+                                    .unwrap_or_else(|| "0".to_owned())
+                            })
+                            .collect();
+                        (
+                            suffix.clone(),
+                            SvExpr::Lit(format!("'{{{}}}", parts.join(", "))),
+                        )
+                    })
+                    .collect()
+            }
+            MExprKind::TupleLit(elems) => {
+                let elems = elems.clone();
+                let mut out = Vec::new();
+                for (i, e) in elems.iter().enumerate() {
+                    for (suf, v) in self.expr_leaves_mir(*e) {
+                        out.push((join(&i.to_string(), &suf), v));
+                    }
+                }
+                out
+            }
+            MExprKind::VecRepeat { elem, len } => {
+                let (elem, len) = (*elem, len.clone());
+                let n =
+                    match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &len) {
+                        Some(v) => v.to_string(),
+                        None => render_const_sv(&len, self.sig),
+                    };
+                self.expr_leaves_mir(elem)
+                    .into_iter()
+                    .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("'{{{n}{{{e}}}}}"))))
+                    .collect()
+            }
+            // Cross-method twins pending (each its own S3.2 sub-step):
+            MExprKind::Record { .. } => {
+                todo!("S3.2d: expr_leaves_mir Record (record_leaves on MIR)")
+            }
+            MExprKind::Index { .. } => todo!("S3.2d: expr_leaves_mir Index"),
+            MExprKind::Call { .. } => {
+                todo!("S3.2d: expr_leaves_mir Call (inline/instance leaves)")
+            }
+            MExprKind::Builtin { .. } => todo!("S3.2e: expr_leaves_mir Builtin (replace/reg)"),
+            MExprKind::ConstIf { .. } => todo!("S3.2e: expr_leaves_mir ConstIf"),
+            MExprKind::If { .. } => todo!("S3.2e: expr_leaves_mir If"),
+            MExprKind::When { .. } => todo!("S3.2e: expr_leaves_mir When"),
+            MExprKind::Block(_) => todo!("S3.2e: expr_leaves_mir Block"),
+            // Scalars: a single empty-suffix leaf via the value twin.
+            MExprKind::Number(..)
+            | MExprKind::Bool(_)
+            | MExprKind::ConstParam(_)
+            | MExprKind::ConstAssoc { .. }
+            | MExprKind::Def(_)
+            | MExprKind::Slice { .. }
+            | MExprKind::Missing => vec![(String::new(), self.expr_value_mir(m))],
+        }
+    }
+
+    /// MIR twin of [`one_leaf`](Self::one_leaf) (S3.2d).
+    #[allow(dead_code)]
+    fn one_leaf_mir(&mut self, m: MExprId) -> SvExpr {
+        let mut leaves = self.expr_leaves_mir(m);
+        if leaves.len() == 1 {
+            leaves.pop().unwrap().1
+        } else {
+            SvExpr::Lit(format!(
+                "/* mirin: non-scalar value ({} leaves) in scalar position */",
+                leaves.len()
+            ))
         }
     }
 
