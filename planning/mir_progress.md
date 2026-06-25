@@ -201,6 +201,15 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   committable dead code (S3.2c→f), flipping the entry point last. Next: S3.2c
   `expr_value_mir`.
 
+- 2026-06-25: S3.2c started — `expr_value_mir` dead-code twin: leaf arms
+  (Number/Bool/Local/ConstParam/ConstAssoc/Missing) ported faithfully off the MIR
+  node; cross-method arms (Call/Builtin/Index/When/If/ConstIf/Block/aggregates)
+  are explicit `todo!`s naming their sub-step. Extracted id-agnostic
+  `width_of_ty` (cleanup) shared by `expr_type_width` and the walker. Compiles
+  (dead code); live path provably identity (refactor only) — lib green +
+  add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
+  call/inline machinery on MIR (S3.2d).
+
 ## S3.2 entry plan (next fire)
 
 The backend keys every read on a HIR `ExprId`; MIR has its own arena. The bridge
@@ -235,7 +244,9 @@ would walk — porting is mechanical: `ExprKind::X`→`MExprKind::X`,
 `Call`; builtins via `Builtin`; equation LHS via `Place`. Build the `_mir`
 twins one at a time as `#[allow(dead_code)]` (compiles, golden untouched since
 the HIR path stays wired), each its own commit:
-- S3.2c — `expr_value_mir(MExprId)` (scalar + call + index + field).
+- S3.2c — `expr_value_mir(MExprId)` (scalar + call + index + field). [started:
+  leaf arms done — Number/Bool/Local/ConstParam/ConstAssoc/Missing; cross-method
+  arms `todo!`. Extracted id-agnostic `width_of_ty` shared with `expr_type_width`.]
 - S3.2d — `expr_leaves_mir` / `block_leaves_mir` (aggregates, calls-as-values).
 - S3.2e — `lower_stmts_mir` / `drive_result_mir` (Let/Equation(Place)/When/For,
   `Builtin::Reg` for registers).

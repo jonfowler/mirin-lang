@@ -52,7 +52,7 @@ use crate::hir::types::{
     ConstArg, ConstOp, Direction, Domain, Folder, GenericArgs, GenericParam, LocalId, Term,
     TermKind, Type, ValueKind, subst_const_opt,
 };
-use crate::mir::ir::Mir;
+use crate::mir::ir::{MExprId, MExprKind, Mir};
 use crate::mir::lower::mir_of;
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -1549,11 +1549,19 @@ impl<'db> SvLower<'_, 'db> {
     /// (planning/bits.md).
     fn expr_type_width(&mut self, expr: ExprId) -> Option<(u32, bool)> {
         let t = self.mir_expr_type(expr)?;
+        self.width_of_ty(&t)
+    }
+
+    /// The ground (literal) bit-width of a type, with the "prefer hex" flag, if
+    /// it has one. Id-agnostic core shared by the HIR-id `expr_type_width` and
+    /// the MIR walker — both resolve a `Type`, then ask this. Applies
+    /// `self_subst` + `ground_widths` (the type is not mono-ground on its own).
+    fn width_of_ty(&self, t: &Type<'db>) -> Option<(u32, bool)> {
         let t = ground_widths(
             self.db,
             self.krate,
             self.def,
-            &subst_type(&t, &self.self_subst),
+            &subst_type(t, &self.self_subst),
         );
         match t {
             Type::Value {
@@ -2031,6 +2039,78 @@ impl<'db> SvLower<'_, 'db> {
             // CLI refuses to emit SV when any diagnostic exists — so this
             // placeholder never reaches written output.
             _ => SvExpr::Lit("0".to_owned()),
+        }
+    }
+
+    /// MIR twin of [`expr_value`](Self::expr_value) (S3.2c). Walks a MIR node
+    /// directly — the destination of the emission retarget. Dead code until the
+    /// entry point (`lower_top_block`) is flipped to the `_mir` walker; the
+    /// cross-method arms (calls, registers, control flow, aggregates) await
+    /// their own twins, each marked with a `todo!` in negative-space style so the
+    /// remaining work is explicit rather than a silent wrong default.
+    #[allow(dead_code)]
+    fn expr_value_mir(&mut self, m: MExprId) -> SvExpr {
+        match &self.mir.expr(m).kind {
+            // A literal emits in its source base; sized form when its type has a
+            // ground width (`8'hFF`). MIR folded TypedLiteral into Number.
+            MExprKind::Number(n, base) => {
+                let (n, base) = (*n, *base);
+                let ty = self.mir.expr(m).ty.clone();
+                SvExpr::Lit(render_literal(n, base, self.width_of_ty(&ty)))
+            }
+            MExprKind::Bool(b) => SvExpr::Lit(if *b { "1'b1" } else { "1'b0" }.to_owned()),
+            MExprKind::Local(l) => SvExpr::Ident(self.local_name(*l)),
+            // A const generic renders as the SV `#(…)` parameter name; an
+            // out-of-range index is a leaked foreign param — surface it loudly.
+            MExprKind::ConstParam(i) => match self.sig.generic_params.get(*i as usize) {
+                Some(g) => SvExpr::Ident(g.name.clone()),
+                None => panic!(
+                    "ConstParam({i}) indexes no generic of the emitted module on \
+                     a clean crate — a foreign param leaked into rendering."
+                ),
+            },
+            // `A::bit_size`: ground Self with the instance subst, then evaluate.
+            MExprKind::ConstAssoc { item, self_ty } => {
+                let (item, self_ty) = (*item, self_ty.clone());
+                let self_ty = ground_widths(
+                    self.db,
+                    self.krate,
+                    self.def,
+                    &subst_type(&self_ty, &self.self_subst),
+                );
+                let c = ConstArg::Assoc {
+                    item,
+                    self_ty: Box::new(self_ty),
+                };
+                match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &c) {
+                    Some(v) => SvExpr::Lit(v.to_string()),
+                    None => SvExpr::Lit(render_const_sv(&c, self.sig)),
+                }
+            }
+            MExprKind::Missing => SvExpr::Lit("0".to_owned()),
+            // Cross-method twins pending (each is its own S3.2 sub-step):
+            MExprKind::Call { .. } => {
+                todo!("S3.2d: expr_value_mir Call (inline-splice / module instance on MIR)")
+            }
+            MExprKind::Builtin { .. } => {
+                todo!("S3.2e: expr_value_mir Builtin (reg in value position)")
+            }
+            MExprKind::Index { .. } => {
+                todo!("S3.2d: expr_value_mir Index (+ index_bounds_assert on MIR)")
+            }
+            MExprKind::When { .. } => todo!("S3.2e: expr_value_mir When"),
+            MExprKind::If { .. } => todo!("S3.2e: expr_value_mir If"),
+            MExprKind::ConstIf { .. } => todo!("S3.2e: expr_value_mir ConstIf"),
+            MExprKind::Slice { .. } => todo!("S4: expr_value_mir Slice (part-select desugar)"),
+            MExprKind::Block(_) => todo!("S3.2e: expr_value_mir Block"),
+            MExprKind::Def(_)
+            | MExprKind::VecLit(_)
+            | MExprKind::TupleLit(_)
+            | MExprKind::VecRepeat { .. }
+            | MExprKind::Field { .. }
+            | MExprKind::Record { .. } => {
+                todo!("S3.2d: expr_value_mir aggregates/field/record (one_leaf on MIR)")
+            }
         }
     }
 
