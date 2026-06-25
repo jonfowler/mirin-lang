@@ -41,10 +41,7 @@ use crate::backend::ir::{
     SvSeqAssign, SvType,
 };
 use crate::base::db::SourceRoot;
-use crate::hir::body::{
-    Block, Body, ConnArg, ExprId, ExprKind, LocalKind, NamedArg, RecordField, Stmt, VerilogSegment,
-    VerilogTemplate, body,
-};
+use crate::hir::body::{Body, LocalKind, VerilogSegment, VerilogTemplate, body};
 use crate::hir::check::{check_drivers, completeness, directions};
 use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::{Signature, sig_of};
@@ -306,7 +303,7 @@ fn build_const_function<'db>(
         let arg = lower.local_names[p.local.0 as usize].clone();
         lower.promoted.insert(p.local, arg);
     }
-    Some(lower.lower_const_function(name))
+    Some(lower.lower_const_function_mir(name))
 }
 
 /// `true` if a def has any Type-kind generic param (so it is not emitted
@@ -624,190 +621,34 @@ struct SvLower<'a, 'db> {
 }
 
 impl<'db> SvLower<'_, 'db> {
+    // --- const-fn lowering, MIR twins ---------------------------------------
+    // Twins of `lower_const_function` / `const_stmts` / `const_fold_steps` /
+    // `result_equation_rhs` walking MIR (`mir_of`) instead of HIR. The const-fn
+    // SV-`function` builder is the last consumer of the HIR value lowering; once
+    // it walks MIR, the whole HIR lowering core is dead and deletable.
 
-    fn lower_stmts(&mut self, stmts: &[Stmt]) {
-        let mut i = 0;
-        while i < stmts.len() {
-            // A `let mut acc = init;` immediately followed by `for` loop(s) that
-            // reassign it is a loop-carried fold → one procedural `always_comb`
-            // (proposals/compile_mutable.md), not a continuous assign + a
-            // structural generate-for. Consume the run together.
-            if let Stmt::Let { local, value } = &stmts[i]
-                && self.body.local(*local).mutable
-            {
-                let (acc, init) = (*local, *value);
-                // The contiguous run of statements that reassign `acc` — a
-                // straight-line `acc = …` or a carrying `for`. (A statement that
-                // only reads `acc`, or anything else, ends the run; the mid-read
-                // fold is a later refinement.)
-                let mut steps: Vec<Stmt> = Vec::new();
-                let mut j = i + 1;
-                while let Some(stmt) = stmts.get(j) {
-                    let carries = match stmt {
-                        Stmt::Equation { lhs, .. } => {
-                            backend_root_local(self.body, *lhs) == Some(acc)
-                        }
-                        Stmt::For { body, .. } => self.for_carries(body, acc),
-                        _ => false,
-                    };
-                    if !carries {
-                        break;
-                    }
-                    steps.push(stmt.clone());
-                    j += 1;
-                }
-                if !steps.is_empty() {
-                    self.lower_mut_fold(acc, init, &steps);
-                    i = j;
-                    continue;
-                }
-            }
-            self.lower_one_stmt(&stmts[i]);
-            i += 1;
-        }
-    }
-
-    fn lower_one_stmt(&mut self, stmt: &Stmt) {
-        match stmt {
-            Stmt::Let { local, value } => self.lower_let(*local, *value),
-            Stmt::VarDecl { local } => self.declare_local(*local),
-            Stmt::Equation { lhs, rhs } => {
-                if let ExprKind::Local(l) = self.body.expr(*lhs).kind
-                    && self.is_integer_local(l)
-                {
-                    return;
-                }
-                self.lower_equation(*lhs, *rhs)
-            }
-            Stmt::Return { value } => self.drive_result(*value),
-            Stmt::For {
-                index,
-                elem,
-                iter,
-                body,
-            } => {
-                let (index, elem, iter) = (*index, *elem, *iter);
-                let body = body.clone();
-                self.lower_for(index, elem, iter, &body);
-            }
-            // A bare call statement: a (void) submodule instantiation whose
-            // out-arg connections bind callee `out` params to caller places.
-            Stmt::Expr(e) => self.lower_call_stmt(*e),
-            Stmt::When { event, body, init } => {
-                let (event, body) = (*event, body.clone());
-                let init = init.clone();
-                self.lower_when_stmt(event, &body, init.as_ref());
-            }
-        }
-    }
-
-    /// Does this `for` body reassign `acc` (a loop-carried fold)?
-    fn for_carries(&self, body: &Block, acc: LocalId) -> bool {
-        body.stmts.iter().any(|s| {
-            matches!(s, Stmt::Equation { lhs, .. } if backend_root_local(self.body, *lhs) == Some(acc))
-        })
-    }
-
-    /// Lower `let mut acc = init;` + carrying `for`(s) to one procedural
-    /// `always_comb`: `acc = init;` then a procedural `for` per loop whose body
-    /// reassigns `acc` with blocking assignments (the synthesiser unrolls; the
-    /// recurrence rides procedural execution order, like LLVM after mem2reg).
-    /// First cut: scalar accumulator and scalar element.
-    fn lower_mut_fold(&mut self, acc: LocalId, init: ExprId, steps: &[Stmt]) {
-        self.declare_local(acc);
-        let mut comb: Vec<SvCombStmt> = Vec::new();
-        // The init `acc = …;` per leaf — handles scalars, a Vec (`'{…}`), and
-        // multi-leaf tuples/structs (`acc__0 = …; acc__1 = …;`), consistent
-        // with the carry's per-leaf assigns.
-        let acc_leaves = self.local_leaves(acc);
-        let init_leaves = self.expr_leaves(init);
-        for ((_, lp), (_, rv)) in acc_leaves.into_iter().zip(init_leaves) {
-            comb.push(SvCombStmt::Assign { lhs: lp, rhs: rv });
-        }
-        for step in steps {
-            match step {
-                // A straight-line reassignment `acc = …;` → a blocking assign.
-                Stmt::Equation { lhs, rhs } => {
-                    for a in self.blocking_assigns(*lhs, *rhs) {
-                        comb.push(a);
-                    }
-                }
-                // A carrying `for` → a procedural `for` with blocking body.
-                Stmt::For {
-                    index,
-                    elem,
-                    iter,
-                    body,
-                } => {
-                    let Some((bound, var)) = self.loop_bound_var(*index, *elem, *iter) else {
-                        continue;
-                    };
-                    let mut inner: Vec<SvCombStmt> = Vec::new();
-                    // Element binding `x = v[i];` unless the element IS the
-                    // genvar (a `range(n)` loop).
-                    let elem_is_genvar = matches!(
-                        self.body.local(*elem).kind,
-                        crate::hir::body::LocalKind::ForBound
-                    );
-                    if !elem_is_genvar {
-                        self.declare_local(*elem);
-                        let elem_base = self.local_name(*elem);
-                        for (suffix, e) in self.expr_leaves(*iter) {
-                            inner.push(SvCombStmt::Assign {
-                                lhs: SvExpr::Ident(join(&elem_base, &suffix)),
-                                rhs: SvExpr::Lit(format!("{e}[{var}]")),
-                            });
-                        }
-                    }
-                    for stmt in &body.stmts {
-                        if let Stmt::Equation { lhs, rhs } = stmt {
-                            for a in self.blocking_assigns(*lhs, *rhs) {
-                                inner.push(a);
-                            }
-                        }
-                    }
-                    comb.push(SvCombStmt::For {
-                        var,
-                        bound,
-                        body: inner,
-                    });
-                }
-                _ => {}
-            }
-        }
-        self.items
-            .push(SvItem::AlwaysComb(SvAlwaysComb { body: comb }));
-    }
-
-    /// Lower this (const-only) def's body to an SV `function automatic int`.
-    /// Integer params → input args; `let`/accumulator locals → `int` locals; the
-    /// body's procedural shape (assigns, a loop-carried fold) → `SvCombStmt`s;
-    /// the tail/`return` → the function's return expression. First cut: scalar
-    /// integer bodies (the common width-computing helper).
-    fn lower_const_function(&mut self, name: &str) -> SvFunction {
+    /// MIR twin of [`Self::lower_const_function`].
+    fn lower_const_function_mir(&mut self, name: &str) -> SvFunction {
         let params: Vec<String> = self
             .sig
             .params
             .iter()
             .map(|p| self.local_name(p.local))
             .collect();
-        let block = self.body.block().clone();
+        let block = self.mir.block().clone();
         let mut locals = Vec::new();
         let mut body = Vec::new();
-        self.const_stmts(&block.stmts, &mut locals, &mut body);
-        // The return value: an explicit tail, a `return`, or — most commonly —
-        // the whole-result equation `body()` folds the tail into (`result = acc`,
-        // where `result` is the unnamed return place).
+        self.const_stmts_mir(&block.stmts, &mut locals, &mut body);
         let ret = if let Some(t) = block.tail {
-            self.expr_value(t)
-        } else if let Some(rhs) = self.result_equation_rhs(&block) {
-            self.expr_value(rhs)
-        } else if let Some(Stmt::Return { value }) = block
+            self.expr_value_mir(t)
+        } else if let Some(rhs) = self.result_equation_rhs_mir(&block) {
+            self.expr_value_mir(rhs)
+        } else if let Some(MStmt::Return { value }) = block
             .stmts
             .iter()
-            .find(|s| matches!(s, Stmt::Return { .. }))
+            .find(|s| matches!(s, MStmt::Return { .. }))
         {
-            self.expr_value(*value)
+            self.expr_value_mir(*value)
         } else {
             SvExpr::Lit("0".to_owned())
         };
@@ -820,37 +661,46 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
-    /// The RHS of the whole-result equation (`result = EXPR`) a body's tail is
-    /// folded into — the const fn's return value when there is no literal tail.
-    fn result_equation_rhs(&self, block: &Block) -> Option<ExprId> {
+    /// MIR twin of [`Self::result_equation_rhs`]: the RHS of the whole-result
+    /// equation (`result = EXPR`) — a const fn's return value with no tail.
+    fn result_equation_rhs_mir(&self, block: &MBlock) -> Option<MExprId> {
         block.stmts.iter().find_map(|s| match s {
-            Stmt::Equation { lhs, rhs } => match self.body.expr(*lhs).kind {
-                ExprKind::Local(l) if self.body.local(l).result_base.is_some() => Some(*rhs),
-                _ => None,
-            },
+            MStmt::Equation { lhs, rhs }
+                if lhs.projections.is_empty() && self.mir.local(lhs.base).result_base.is_some() =>
+            {
+                Some(*rhs)
+            }
             _ => None,
         })
     }
 
-    /// Lower a const fn's statements to procedural `SvCombStmt`s, collecting the
-    /// `int` locals declared. Mirrors [`Self::lower_stmts`]'s fold detection but
-    /// scalar-integer-only (no flatten, no clocks).
-    fn const_stmts(&mut self, stmts: &[Stmt], locals: &mut Vec<String>, out: &mut Vec<SvCombStmt>) {
+    /// MIR twin of [`Self::for_carries`]: does a loop body reassign `acc`?
+    fn for_carries_mir(&self, body: &MBlock, acc: LocalId) -> bool {
+        body.stmts
+            .iter()
+            .any(|s| matches!(s, MStmt::Equation { lhs, .. } if lhs.base == acc))
+    }
+
+    /// MIR twin of [`Self::const_stmts`].
+    fn const_stmts_mir(
+        &mut self,
+        stmts: &[MStmt],
+        locals: &mut Vec<String>,
+        out: &mut Vec<SvCombStmt>,
+    ) {
         let mut i = 0;
         while i < stmts.len() {
             // `let mut acc = init;` + carrying `for`/assigns → an accumulator.
-            if let Stmt::Let { local, value } = &stmts[i]
-                && self.body.local(*local).mutable
+            if let MStmt::Let { local, value } = &stmts[i]
+                && self.mir.local(*local).mutable
             {
                 let (acc, init) = (*local, *value);
-                let mut steps: Vec<Stmt> = Vec::new();
+                let mut steps: Vec<MStmt> = Vec::new();
                 let mut j = i + 1;
                 while let Some(stmt) = stmts.get(j) {
                     let carries = match stmt {
-                        Stmt::Equation { lhs, .. } => {
-                            backend_root_local(self.body, *lhs) == Some(acc)
-                        }
-                        Stmt::For { body, .. } => self.for_carries(body, acc),
+                        MStmt::Equation { lhs, .. } => lhs.base == acc,
+                        MStmt::For { body, .. } => self.for_carries_mir(body, acc),
                         _ => false,
                     };
                     if !carries {
@@ -862,21 +712,21 @@ impl<'db> SvLower<'_, 'db> {
                 if !steps.is_empty() {
                     let acc_name = self.local_name(acc);
                     locals.push(acc_name.clone());
-                    let init_val = self.expr_value(init);
+                    let init_val = self.expr_value_mir(init);
                     out.push(SvCombStmt::Assign {
                         lhs: SvExpr::Ident(acc_name),
                         rhs: init_val,
                     });
-                    self.const_fold_steps(&steps, out);
+                    self.const_fold_steps_mir(&steps, out);
                     i = j;
                     continue;
                 }
             }
             // A plain `let x = e;` → `int x; x = e;`.
-            if let Stmt::Let { local, value } = &stmts[i] {
+            if let MStmt::Let { local, value } = &stmts[i] {
                 let nm = self.local_name(*local);
                 locals.push(nm.clone());
-                let v = self.expr_value(*value);
+                let v = self.expr_value_mir(*value);
                 out.push(SvCombStmt::Assign {
                     lhs: SvExpr::Ident(nm),
                     rhs: v,
@@ -886,29 +736,30 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
-    /// The accumulator's reassignment steps (a straight-line `acc = …` or a
-    /// `for`) as procedural `SvCombStmt`s — the const-fn analogue of the fold
-    /// in [`Self::lower_mut_fold`], scalar-integer.
-    fn const_fold_steps(&mut self, steps: &[Stmt], out: &mut Vec<SvCombStmt>) {
+    /// MIR twin of [`Self::const_fold_steps`]. The LHS is a [`Place`]; a const
+    /// fold is scalar so it is a bare local (no projections).
+    fn const_fold_steps_mir(&mut self, steps: &[MStmt], out: &mut Vec<SvCombStmt>) {
         for step in steps {
             match step {
-                Stmt::Equation { lhs, rhs } => {
-                    let (lhs, rhs) = (self.expr_value(*lhs), self.expr_value(*rhs));
+                MStmt::Equation { lhs, rhs } => {
+                    let lhs = SvExpr::Ident(self.local_name(lhs.base));
+                    let rhs = self.expr_value_mir(*rhs);
                     out.push(SvCombStmt::Assign { lhs, rhs });
                 }
-                Stmt::For {
+                MStmt::For {
                     index,
                     elem,
                     iter,
                     body,
                 } => {
-                    let Some((bound, var)) = self.loop_bound_var(*index, *elem, *iter) else {
+                    let Some((bound, var)) = self.loop_bound_var_mir(*index, *elem, *iter) else {
                         continue;
                     };
                     let mut inner = Vec::new();
                     for stmt in &body.stmts {
-                        if let Stmt::Equation { lhs, rhs } = stmt {
-                            let (lhs, rhs) = (self.expr_value(*lhs), self.expr_value(*rhs));
+                        if let MStmt::Equation { lhs, rhs } = stmt {
+                            let lhs = SvExpr::Ident(self.local_name(lhs.base));
+                            let rhs = self.expr_value_mir(*rhs);
                             inner.push(SvCombStmt::Assign { lhs, rhs });
                         }
                     }
@@ -921,235 +772,6 @@ impl<'db> SvLower<'_, 'db> {
                 _ => {}
             }
         }
-    }
-
-    /// Per-leaf blocking assignments for one `lhs = rhs` equation (used inside a
-    /// procedural fold `always_comb`).
-    fn blocking_assigns(&mut self, lhs: ExprId, rhs: ExprId) -> Vec<SvCombStmt> {
-        let lhs_leaves = self.place_leaves_dir(lhs);
-        let rhs_leaves = self.value_leaves_dir(rhs);
-        lhs_leaves
-            .into_iter()
-            .zip(rhs_leaves)
-            .map(|((lp, _), (rp, _))| SvCombStmt::Assign { lhs: lp, rhs: rp })
-            .collect()
-    }
-
-    /// The (bound, genvar-name) for a loop's iterable, mirroring `lower_for`.
-    fn loop_bound_var(
-        &mut self,
-        index: Option<LocalId>,
-        elem: LocalId,
-        iter: ExprId,
-    ) -> Option<(SvExpr, String)> {
-        let it = self
-            .inf
-            .expr_type(iter)
-            .cloned()
-            .map(|t| {
-                let t = ground_widths(
-                    self.db,
-                    self.krate,
-                    self.def,
-                    &subst_type(&t, &self.self_subst),
-                );
-                // A const fn's `range(n)` bound is the param local `n` — render
-                // it as the function arg name (promoted), not a panicking Local.
-                self.subst_promoted(&t)
-            })
-            .unwrap_or(Type::Error);
-        let len = match &it {
-            Type::Vec { len, .. } => len.clone(),
-            Type::Value {
-                kind: ValueKind::Bits { width },
-                ..
-            } => width.clone(),
-            _ => return None,
-        };
-        // The loop bound renders like any width/length: literal, generic param,
-        // or symbolic compound expr — never a silent `0` default.
-        let bound = width_expr(&len, &self.sig.generic_params);
-        let elem_is_genvar = matches!(
-            self.body.local(elem).kind,
-            crate::hir::body::LocalKind::ForBound
-        );
-        let var = match (elem_is_genvar, index) {
-            (true, _) => self.local_name(elem),
-            (false, Some(i)) => self.local_name(i),
-            (false, None) => {
-                let v = format!("__i{}", self.synth);
-                self.synth += 1;
-                v
-            }
-        };
-        Some((bound, var))
-    }
-
-    /// Statement-form `when` (proposals/when_binding.md): the body's drives
-    /// become nonblocking assignments in one `always_ff` — `if`-guarded drives
-    /// render as `if (g) leaf <= d;` (unwritten/false → the register holds, no
-    /// else). An optional `init` block becomes an SV `initial` (power-on, not
-    /// reset). The register IS the driven `var`'s own leaves.
-    fn lower_when_stmt(&mut self, event: ExprId, body: &Block, init: Option<&Block>) {
-        let clock = self.clock_of_event(event);
-        if let Some(init) = init {
-            let mut assigns = Vec::new();
-            for stmt in &init.stmts {
-                if let Stmt::Equation { lhs, rhs } = stmt {
-                    let lhs_leaves = self.place_leaves_dir(*lhs);
-                    let rhs_leaves = self.value_leaves_dir(*rhs);
-                    for ((lp, _), (rp, _)) in lhs_leaves.into_iter().zip(rhs_leaves) {
-                        assigns.push((lp, rp));
-                    }
-                }
-            }
-            if !assigns.is_empty() {
-                self.items.push(SvItem::Initial(assigns));
-            }
-        }
-        let mut seq = Vec::new();
-        self.when_body_seq(body, None, &mut seq);
-        self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
-            clock,
-            reset: None,
-            reset_body: Vec::new(),
-            clocked_body: seq,
-        }));
-    }
-
-    /// Flatten a `when` body into guarded nonblocking assignments. Each `if`
-    /// narrows the guard (`g && cond` on the then-branch, `g && !cond` on the
-    /// else-branch); unwritten leaves hold by virtue of being a register.
-    fn when_body_seq(&mut self, block: &Block, guard: Option<SvExpr>, seq: &mut Vec<SvSeqAssign>) {
-        for stmt in &block.stmts {
-            match stmt {
-                Stmt::Equation { lhs, rhs } => {
-                    let lhs_leaves = self.place_leaves_dir(*lhs);
-                    let rhs_leaves = self.value_leaves_dir(*rhs);
-                    for ((lp, _), (rp, _)) in lhs_leaves.into_iter().zip(rhs_leaves) {
-                        seq.push(SvSeqAssign {
-                            lhs: lp,
-                            rhs: rp,
-                            guard: guard.clone(),
-                        });
-                    }
-                }
-                Stmt::Expr(e) => {
-                    if let ExprKind::If {
-                        cond,
-                        then_branch,
-                        else_branch,
-                    } = &self.body.expr(*e).kind
-                    {
-                        let (cond, then_b, else_b) =
-                            (*cond, then_branch.clone(), else_branch.clone());
-                        let c = self.expr_value(cond);
-                        self.when_body_seq(&then_b, Some(and_guard(&guard, c.clone())), seq);
-                        if !else_b.stmts.is_empty() {
-                            // `!c` as `c == 1'b0` (SvExpr has no logical not).
-                            let not_c = SvExpr::BinOp(
-                                SvBinOp::Eq,
-                                Box::new(c),
-                                Box::new(SvExpr::Lit("1'b0".to_owned())),
-                            );
-                            self.when_body_seq(&else_b, Some(and_guard(&guard, not_c)), seq);
-                        }
-                    }
-                }
-                Stmt::Let { local, value } => self.lower_let(*local, *value),
-                _ => {}
-            }
-        }
-    }
-
-    /// `for x in v { … }` → a NAMED generate-for (planning/for_loops.md):
-    /// the genvar is the (elided, integer-typed) index local; the elem local
-    /// is an ordinary per-iteration binding `assign x = v[i];` inside the
-    /// block, so hierarchy is recoverable as `label[i].name`.
-    fn lower_for(
-        &mut self,
-        index: Option<LocalId>,
-        elem: LocalId,
-        iter: ExprId,
-        body: &crate::hir::body::Block,
-    ) {
-        // The loop bound, from the iterable's type.
-        let it = self
-            .inf
-            .expr_type(iter)
-            .cloned()
-            .map(|t| {
-                let t = ground_widths(
-                    self.db,
-                    self.krate,
-                    self.def,
-                    &subst_type(&t, &self.self_subst),
-                );
-                // A bound that is a promoted const local (`range(w)`) renders as
-                // its `localparam` name, not a panicking ungrounded `Local`.
-                self.subst_promoted(&t)
-            })
-            .unwrap_or(Type::Error);
-        let (len, is_bits) = match &it {
-            Type::Vec { len, .. } => (len.clone(), false),
-            Type::Value {
-                kind: ValueKind::Bits { width },
-                ..
-            } => (width.clone(), true),
-            _ => return,
-        };
-        let bound = width_expr(&len, &self.sig.generic_params);
-        // A `range(n)` iterable never materialises: the ELEM local is the
-        // genvar itself and no binding is emitted. Keyed off the SYNTACTIC
-        // range call (lowering marks its elem ForBound) — the type alone
-        // (Vec(N, integer)) is not enough: `[3, 1, 2]` has the same type
-        // but its values are not 0..N-1 (infer rejects those for now).
-        let elem_is_genvar = matches!(
-            self.body.local(elem).kind,
-            crate::hir::body::LocalKind::ForBound
-        );
-        let var = match (elem_is_genvar, index) {
-            (true, _) => self.local_name(elem),
-            (false, Some(i)) => self.local_name(i),
-            (false, None) => {
-                let v = format!("__i{}", self.synth);
-                self.synth += 1;
-                v
-            }
-        };
-        let label = format!("g_{}", self.local_name(elem));
-
-        // Body items collect into the generate block.
-        let saved = std::mem::take(&mut self.items);
-        // The elem binding: `assign x = v[i];` per leaf (or the bit).
-        if elem_is_genvar {
-            // no binding — the genvar is the element
-        } else if is_bits {
-            let base = self.expr_value(iter);
-            self.declare_local(elem);
-            let name = self.local_name(elem);
-            self.items.push(SvItem::Assign {
-                lhs: SvExpr::Ident(name),
-                rhs: SvExpr::Lit(format!("{base}[{var}]")),
-            });
-        } else {
-            self.declare_local(elem);
-            let elem_base = self.local_name(elem);
-            for (suffix, e) in self.expr_leaves(iter) {
-                self.items.push(SvItem::Assign {
-                    lhs: SvExpr::Ident(join(&elem_base, &suffix)),
-                    rhs: SvExpr::Lit(format!("{e}[{var}]")),
-                });
-            }
-        }
-        self.lower_stmts(&body.stmts);
-        let items = std::mem::replace(&mut self.items, saved);
-        self.items.push(SvItem::GenerateFor(SvGenerateFor {
-            var,
-            bound,
-            label,
-            items,
-        }));
     }
 
     /// MIR twin of `lower_for` — a named generate-for. The bound comes from the
@@ -1223,58 +845,6 @@ impl<'db> SvLower<'_, 'db> {
         }));
     }
 
-    /// `let x = value;`. A builtin `.reg` makes the let the register itself
-    /// (per field); otherwise the local's leaves are declared and each driven by
-    /// the corresponding leaf of the value.
-    fn lower_let(&mut self, local: LocalId, value: ExprId) {
-        if self.is_integer_local(local) {
-            // A *symbolic* const local (one that can't fold to a literal, e.g.
-            // `let w = f(N)` with `N` a module parameter) that sizes a signal
-            // becomes a `localparam` — the value computed by the SV elaborator.
-            // A concrete one needs nothing (its widths fold to literals).
-            if self.is_symbolic_const(local) {
-                let name = self.local_name(local);
-                let val = self.const_rhs(value);
-                self.items.push(SvItem::LocalParam {
-                    name: name.clone(),
-                    value: val,
-                });
-                self.promoted.insert(local, name);
-            }
-            return;
-        }
-        if let Some(reg) = self.as_reg(value) {
-            // A register is typed by its D-input (also covers a target whose own
-            // type inference left unknown).
-            let leaves = self.expr_type_leaves(reg.d_input);
-            let base = self.local_name(local);
-            let clock = self.clock_of_type(self.inf.local_type(local));
-            self.emit_registers(&base, &leaves, reg, clock, true);
-            return;
-        }
-        // `let x = f(args)` — `x` is the callee's (flattened) result.
-        if let Some(uc) = self.as_user_call(value) {
-            self.declare_local(local);
-            let target = self.local_leaves(local);
-            self.emit_instance(uc, target);
-            return;
-        }
-        self.declare_local(local);
-        let target = self.local_leaves(local);
-        let value_leaves = self.expr_leaves(value);
-        // Match leaves by suffix, not position: a record's `=>` fields are
-        // absent from its forward leaves, which would shift a positional zip.
-        for (suf, place) in target {
-            if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == suf) {
-                self.push_assign(place, v.clone());
-            }
-        }
-        let base = self.local_name(local);
-        for (suf, target) in self.record_out_conns(value) {
-            self.push_assign(target, SvExpr::Ident(join(&base, &suf)));
-        }
-    }
-
     /// True if a const (`integer`) local is symbolic — its value depends on a
     /// generic param, so it cannot fold to a literal and must ride a
     /// `localparam` / the SV elaborator (vs. a concrete one folded inline).
@@ -1288,35 +858,6 @@ impl<'db> SvLower<'_, 'db> {
             ),
             crate::hir::const_eval::WidthEval::Symbolic,
         )
-    }
-
-    /// Render the RHS of a promoted `localparam` as an SV constant expression.
-    /// A call to a const-only `fn` lowers to an in-module SV `function` and a
-    /// `name(args)` call (the function deferred to the elaborator); any other
-    /// const expression (`N + N`, `N`) renders inline via [`Self::expr_value`].
-    fn const_rhs(&mut self, value: ExprId) -> SvExpr {
-        if let Some(uc) = self.as_user_call(value) {
-            return self.emit_const_call(uc);
-        }
-        self.expr_value(value)
-    }
-
-    /// Emit (once) the in-module `function` for a const-only callee and return
-    /// a `name(args)` call expression. Args render as SV constant expressions.
-    fn emit_const_call(&mut self, uc: UserCall<'db>) -> SvExpr {
-        let fname = module_name(self.map, uc.def);
-        if self.fns_emitted.insert(fname.clone())
-            && let Some(fun) = build_const_function(self.db, self.krate, uc.def, &fname)
-        {
-            self.items.push(SvItem::Function(fun));
-        }
-        let args: Vec<String> = uc
-            .args
-            .iter()
-            .filter(|a| !a.out)
-            .map(|a| self.expr_value(a.expr).to_string())
-            .collect();
-        SvExpr::Lit(format!("{fname}({})", args.join(", ")))
     }
 
     /// MIR twin of `const_rhs`.
@@ -1380,151 +921,6 @@ impl<'db> SvLower<'_, 'db> {
             promoted: &self.promoted,
         }
         .fold_const(c)
-    }
-
-    /// A driving equation `lhs = rhs`, per field. A builtin `.reg` on the RHS
-    /// makes the (already-declared) LHS local the register; otherwise each field
-    /// is a connection whose sink is chosen by the leaves' module direction.
-    fn lower_equation(&mut self, lhs: ExprId, rhs: ExprId) {
-        if let (ExprKind::Local(l), Some(reg)) = (&self.body.expr(lhs).kind, self.as_reg(rhs)) {
-            let l = *l;
-            let leaves = self.local_type_leaves(l);
-            let base = self.local_name(l);
-            let clock = self.clock_of_type(self.inf.local_type(l));
-            self.emit_registers(&base, &leaves, reg, clock, false);
-            return;
-        }
-        // `mem = when E { tail };` — the local IS the register: always_ff
-        // directly on its leaves (no synthetic, no continuous assign), so
-        // `init mem = …` (an SV initial block) actually takes effect and
-        // the RAM idiom stays one array (planning/when_ram.md).
-        if let ExprKind::Local(l) = self.body.expr(lhs).kind
-            && let ExprKind::When { event, body, init } = &self.body.expr(rhs).kind
-        {
-            let (event, b, init) = (*event, body.clone(), *init);
-            let clock = self.clock_of_event(event);
-            let base = self.local_name(l);
-            if let Some(init) = init {
-                let init_leaves = self.expr_leaves(init);
-                let assigns = init_leaves
-                    .into_iter()
-                    .map(|(suffix, v)| (SvExpr::Ident(join(&base, &suffix)), v))
-                    .collect();
-                self.items.push(SvItem::Initial(assigns));
-            }
-            let d = self.block_leaves(&b);
-            let clocked_body = d
-                .into_iter()
-                .map(|(suffix, dv)| SvSeqAssign::new(SvExpr::Ident(join(&base, &suffix)), dv))
-                .collect();
-            self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
-                clock,
-                reset: None,
-                reset_body: Vec::new(),
-                clocked_body,
-            }));
-            return;
-        }
-        // `place = f(args)` — the callee's result drives `place`.
-        if let ExprKind::Local(l) = self.body.expr(lhs).kind
-            && let Some(uc) = self.as_user_call(rhs)
-        {
-            let target = self.local_leaves(l);
-            self.emit_instance(uc, target);
-            return;
-        }
-        if let ExprKind::Local(l) = self.body.expr(lhs).kind {
-            let base = self.local_name(l);
-            for (suf, target) in self.record_out_conns(rhs) {
-                self.push_assign(target, SvExpr::Ident(join(&base, &suf)));
-            }
-            // A record RHS assigns suffix-matched (its `=>` fields are absent
-            // from the forward leaves — a positional zip would shift).
-            if matches!(self.body.expr(rhs).kind, ExprKind::Record { .. }) {
-                let target = self.local_leaves(l);
-                let value_leaves = self.expr_leaves(rhs);
-                for (suf, place) in target {
-                    if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == suf) {
-                        self.push_assign(place, v.clone());
-                    }
-                }
-                return;
-            }
-        }
-        let lhs_leaves = self.place_leaves_dir(lhs);
-        let rhs_leaves = self.value_leaves_dir(rhs);
-        for ((lp, ld), (rp, rd)) in lhs_leaves.into_iter().zip(rhs_leaves) {
-            // The leaf the body drives is the sink (LHS of the `assign`).
-            let (sink, src) = match (ld, rd) {
-                (true, _) => (lp, rp),
-                (false, true) => (rp, lp),
-                (false, false) => (lp, rp),
-            };
-            self.push_assign(sink, src);
-        }
-    }
-
-    /// A side-effecting call in statement position (`f();`, or the tail/`return`
-    /// of a unit-returning fn): a (void) submodule instantiation whose out-arg
-    /// connections bind callee `out` params to caller places. A non-call
-    /// statement expression has no effect and is dropped.
-    fn lower_call_stmt(&mut self, e: ExprId) {
-        if let Some(uc) = self.as_user_call(e) {
-            if self.is_const_only_call(&uc) {
-                return; // results reached via const_eval
-            }
-            self.declare_out_targets(&uc);
-            self.emit_instance(uc, Vec::new());
-        }
-    }
-
-    /// Drive `result` (the return port) per field from `value`'s leaves.
-    fn drive_result(&mut self, value: ExprId) {
-        let Some(rt) = self.sig.return_type.clone() else {
-            // No result port: a unit-returning fn whose tail (or `return`) is a
-            // side-effecting call still needs its instance emitted. Without
-            // this the call — and the drives it carries (`self.ready = …`) —
-            // silently vanishes.
-            self.lower_call_stmt(value);
-            return;
-        };
-        let rt = subst_type(&rt, &self.self_subst);
-        let result_leaves = flatten_leaves(
-            self.db,
-            self.krate,
-            self.def,
-            &rt,
-            true,
-            &self.sig.generic_params,
-        );
-        // `return f(args)` — connect the callee's result straight to `result`.
-        if let Some(uc) = self.as_user_call(value) {
-            let target = result_leaves
-                .into_iter()
-                .map(|l| (l.suffix.clone(), SvExpr::Ident(join("result", &l.suffix))))
-                .collect();
-            self.emit_instance(uc, target);
-            return;
-        }
-        let value_leaves = self.expr_leaves(value);
-        for rl in result_leaves {
-            if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == rl.suffix) {
-                let result_leaf = SvExpr::Ident(join("result", &rl.suffix));
-                if rl.drives {
-                    // A produced (`out`) field: the result drives the value.
-                    self.push_assign(result_leaf, v.clone());
-                } else {
-                    // A consumer-side (`in`) field of a returned port: the
-                    // module RECEIVES `result__<field>`, and the value's own
-                    // place (e.g. `up__ready`) is driven from it — the reverse
-                    // direction, like a record `field => target` binding.
-                    self.push_assign(v.clone(), result_leaf);
-                }
-            }
-        }
-        for (suf, target) in self.record_out_conns(value) {
-            self.push_assign(target, SvExpr::Ident(join("result", &suf)));
-        }
     }
 
     // ----- MIR walker: statements (S3.2e, dead code until the entry flips) -----
@@ -2138,20 +1534,6 @@ impl<'db> SvLower<'_, 'db> {
         })
     }
 
-    /// A literal expr's GROUND uint width, if its inferred type has one —
-    /// drives sized SV literal forms (`8'hFF`).
-    /// A DYNAMIC (uint-typed) index gets a simulation-time bounds assert
-    /// (`always_comb assert (sel < 3);`) unless the width provably cannot
-    /// express an out-of-range value (2^w ≤ N — note a non-power-of-two
-    /// length always leaves a gap). Synthesis ignores it; simulation fires
-    /// at the access. planning/vectors.md.
-    fn index_bounds_assert(&mut self, base: ExprId, index: ExprId, idx_sv: &SvExpr) {
-        let (Some(it), Some(bt)) = (self.mir_expr_type(index), self.mir_expr_type(base)) else {
-            return;
-        };
-        self.index_bounds_assert_tys(&it, &bt, idx_sv);
-    }
-
     /// MIR twin: the index/base types come from the MIR nodes.
     fn index_bounds_assert_mir(&mut self, base: MExprId, index: MExprId, idx_sv: &SvExpr) {
         let (it, bt) = (
@@ -2208,13 +1590,6 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
-    /// The bool is "prefer hex": bits-typed literals print hex by default
-    /// (planning/bits.md).
-    fn expr_type_width(&mut self, expr: ExprId) -> Option<(u32, bool)> {
-        let t = self.mir_expr_type(expr)?;
-        self.width_of_ty(&t)
-    }
-
     /// The ground (literal) bit-width of a type, with the "prefer hex" flag, if
     /// it has one. Id-agnostic core shared by the HIR-id `expr_type_width` and
     /// the MIR walker — both resolve a `Type`, then ask this. Applies
@@ -2243,19 +1618,6 @@ impl<'db> SvLower<'_, 'db> {
             } if (1..=4096).contains(&w) => Some((w as u32, true)),
             _ => None,
         }
-    }
-
-    /// rustc's `Instance::resolve`, minimal form: a call recorded against a
-    /// trait method DECL is re-selected to the unique matching impl once the
-    /// self type is concrete (after applying this module's own mono subst).
-    /// Returns the impl method plus its substitution: the header binding for
-    /// the impl's binder prefix, then the decl's own generic args.
-    fn resolve_trait_instance(
-        &self,
-        expr: ExprId,
-        decl: DefId<'db>,
-    ) -> Option<(DefId<'db>, Vec<Option<Term<'db>>>)> {
-        self.resolve_trait_instance_with(decl, self.inf.call_subst(expr)?)
     }
 
     /// `resolve_trait_instance`, but taking the recorded decl substitution
@@ -2317,13 +1679,6 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
-    /// A statement-position call is const-only when the callee's every value
-    /// param and return are `integer` — nothing of it is hardware; its outputs
-    /// are reached by `const_eval` through the width trees.
-    fn is_const_only_call(&self, uc: &UserCall<'db>) -> bool {
-        is_const_only_fn(sig_of(self.db, self.krate, uc.def))
-    }
-
     /// `integer` values are compile-time only — they never become hardware.
     /// Locals of integer type get no `logic`, no assigns, and a call whose
     /// connections are all integers gets no instance (its results are reached
@@ -2351,52 +1706,6 @@ impl<'db> SvLower<'_, 'db> {
                 !sig.fields.is_empty() && sig.fields.iter().all(|f| self.is_const_only_ty(&f.ty))
             }
             _ => false,
-        }
-    }
-
-    /// The scalar leaves (suffix + type) of an expression's type. Mirrors
-    /// [`Self::expr_leaves`] but yields field types — used to type a register
-    /// from its D-input (a register is the same type as what feeds it), which
-    /// also covers `self.field` where `self` is untyped in inference.
-    fn expr_type_leaves(&self, expr: ExprId) -> Vec<Leaf> {
-        match &self.body.expr(expr).kind {
-            ExprKind::Local(l) => self.local_type_leaves(*l),
-            ExprKind::Field { receiver, field } => self
-                .expr_type_leaves(*receiver)
-                .into_iter()
-                .filter_map(|leaf| {
-                    strip_field(&leaf.suffix, field).map(|rest| Leaf {
-                        suffix: rest,
-                        ..leaf
-                    })
-                })
-                .collect(),
-            ExprKind::Record { ctor, .. } => {
-                match ctor.and_then(|c| self.map.def_data(c).and_then(|d| d.owner)) {
-                    Some(owner) => flatten_leaves(
-                        self.db,
-                        self.krate,
-                        self.def,
-                        &Type::Port {
-                            def: owner,
-                            args: GenericArgs(Vec::new()),
-                            domain: Domain::Unspecified,
-                        },
-                        true,
-                        &self.sig.generic_params,
-                    ),
-                    None => vec![Leaf {
-                        suffix: String::new(),
-                        ty: SvType::bit(),
-                        drives: true,
-                    }],
-                }
-            }
-            _ => vec![Leaf {
-                suffix: String::new(),
-                ty: self.expr_type(expr),
-                drives: true,
-            }],
         }
     }
 
@@ -2511,55 +1820,6 @@ impl<'db> SvLower<'_, 'db> {
             .map_or(true, |p| p.direction == Some(Direction::Out))
     }
 
-    /// The leaves of an equation place (`lhs`/`rhs`): a local carries its
-    /// direction; anything else is a single driven scalar.
-    fn place_leaves_dir(&mut self, e: ExprId) -> Vec<(SvExpr, bool)> {
-        match self.body.expr(e).kind {
-            ExprKind::Local(l) => self.local_leaves_dir(l),
-            // An indexed place fans out per element-type leaf
-            // (`whole[i] = x` → whole__valid[i], whole__val[i], …).
-            ExprKind::Index { .. } => self
-                .expr_leaves(e)
-                .into_iter()
-                .map(|(_, v)| (v, true))
-                .collect(),
-            _ => vec![(self.expr_value(e), true)],
-        }
-    }
-
-    /// The leaves of an equation's RHS value: a local carries its direction;
-    /// anything else (field access, record) is flattened as a driven source.
-    fn value_leaves_dir(&mut self, e: ExprId) -> Vec<(SvExpr, bool)> {
-        match self.body.expr(e).kind {
-            ExprKind::Local(l) => self.local_leaves_dir(l),
-            _ => self
-                .expr_leaves(e)
-                .into_iter()
-                .map(|(_, v)| (v, true))
-                .collect(),
-        }
-    }
-
-    /// An expression's SV type, falling back to 1-bit.
-    /// The inference-recorded type of a HIR expr, **sourced from MIR**
-    /// (types-on-node) via the `of_hir` bridge, falling back to the infer
-    /// side-table only for exprs MIR did not lower (a call's callee sub-expr).
-    /// On a well-typed body the two agree by construction — this is the
-    /// migration's type-source swap (planning/mir_progress.md S3.2b). The type
-    /// is NOT mono-ground: callers still apply `self_subst` + `ground_widths`.
-    fn mir_expr_type(&self, e: ExprId) -> Option<Type<'db>> {
-        match self.mir.of_hir(e) {
-            Some(m) => Some(self.mir.expr(m).ty.clone()),
-            None => self.inf.expr_type(e).cloned(),
-        }
-    }
-
-    fn expr_type(&self, expr: ExprId) -> SvType {
-        self.mir_expr_type(expr)
-            .map(|t| self.sv_type_of(&t))
-            .unwrap_or_else(SvType::bit)
-    }
-
     /// A type's SV type (ground widths, then lower). Id-agnostic core of
     /// `expr_type`, also used by the MIR walker which resolves the type itself.
     fn sv_type_of(&self, ty: &Type<'db>) -> SvType {
@@ -2567,41 +1827,6 @@ impl<'db> SvLower<'_, 'db> {
             &ground_widths(self.db, self.krate, self.def, ty),
             &self.sig.generic_params,
         )
-    }
-
-    /// `Some(reg)` if `expr` is a `e.reg(rst, init)` method call.
-    fn as_reg(&self, expr: ExprId) -> Option<RegCall> {
-        match &self.body.expr(expr).kind {
-            ExprKind::MethodCall {
-                receiver,
-                method,
-                args,
-            } if method == "reg" && args.len() == 2 => Some(RegCall {
-                d_input: *receiver,
-                reset: args[0].expr,
-                init: args[1].expr,
-            }),
-            _ => None,
-        }
-    }
-
-    /// Emit one `always_ff @(posedge clock)` per leaf of a `.reg` target,
-    /// synchronous active-low reset. The D-input and init are flattened in the
-    /// same field order as the target's leaves. `declare` emits each leaf's
-    /// `logic` immediately before its block (the let form); an equation form
-    /// leaves declaration to the preceding `var`.
-    fn emit_registers(
-        &mut self,
-        base: &str,
-        leaves: &[Leaf],
-        reg: RegCall,
-        clock: String,
-        declare: bool,
-    ) {
-        let reset = self.reset_name(reg.reset);
-        let d = self.expr_leaves(reg.d_input);
-        let init = self.expr_leaves(reg.init);
-        self.emit_registers_parts(base, leaves, reset, d, init, clock, declare);
     }
 
     /// Id-agnostic core of `emit_registers`: emit one reset/clocked `always_ff`
@@ -2638,24 +1863,6 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
-    /// The reset signal's name (a bare ident, else its rendered form).
-    fn reset_name(&mut self, reset: ExprId) -> String {
-        match self.expr_value(reset) {
-            SvExpr::Ident(s) => s,
-            other => other.to_string(),
-        }
-    }
-
-    /// Emit a single scalar register into an already-declared `target`.
-    fn emit_reg(&mut self, target: String, clock: String, reg: RegCall) {
-        let leaf = Leaf {
-            suffix: String::new(),
-            ty: SvType::bit(),
-            drives: true,
-        };
-        self.emit_registers(&target, std::slice::from_ref(&leaf), reg, clock, false);
-    }
-
     /// MIR twin of `emit_registers`: resolve the reset name and D/init leaves
     /// from MIR nodes, then share `emit_registers_parts`.
     #[allow(clippy::too_many_arguments)]
@@ -2682,142 +1889,6 @@ impl<'db> SvLower<'_, 'db> {
         let n = self.synth;
         self.synth += 1;
         format!("__block_{n}")
-    }
-
-    /// Lower an expression to its SV value, emitting any items its evaluation
-    /// requires (registers / combinational blocks for `reg`/`when`/`if`).
-    fn expr_value(&mut self, expr: ExprId) -> SvExpr {
-        // An `#[inline]` call splices its body in place (planning/attributes.md).
-        if let Some(uc) = self.inline_call(expr) {
-            return self.render_inline(uc);
-        }
-        // A user call in scalar value position: instantiate, take the one leaf.
-        if let Some(uc) = self.as_user_call(expr) {
-            return self
-                .call_value_leaves(uc)
-                .into_iter()
-                .next()
-                .map(|(_, e)| e)
-                .unwrap_or_else(|| SvExpr::Lit("0".to_owned()));
-        }
-        match &self.body.expr(expr).kind {
-            // A literal emits in its source base; when its type carries a
-            // ground width, sized SV form (`8'hFF`) — planning/numeric_literals.md L6.
-            ExprKind::Number(n, base) => {
-                SvExpr::Lit(render_literal(*n, *base, self.expr_type_width(expr)))
-            }
-            ExprKind::TypedLiteral { value, base, .. } => {
-                SvExpr::Lit(render_literal(*value, *base, self.expr_type_width(expr)))
-            }
-            ExprKind::Bool(b) => SvExpr::Lit(if *b { "1'b1" } else { "1'b0" }.to_owned()),
-            ExprKind::Local(l) => SvExpr::Ident(self.local_name(*l)),
-            // A const generic used as a value renders as the SV `#(…)` parameter
-            // name — legal in widths, bounds, and ordinary expressions alike. An
-            // out-of-range index means a foreign param leaked into rendering: an
-            // invariant violation, not a `0` value — surface it loudly.
-            ExprKind::ConstParam(i) => match self.sig.generic_params.get(*i as usize) {
-                Some(g) => SvExpr::Ident(g.name.clone()),
-                None => panic!(
-                    "ConstParam({i}) indexes no generic of the emitted module \
-                     (it has {} generic params) on a clean crate — a foreign \
-                     param leaked into rendering. Do not default to `0`.",
-                    self.sig.generic_params.len(),
-                ),
-            },
-            // An associated-const projection as a value (`A::bit_size`): ground
-            // Self with the instance substitution (concrete at emit), then
-            // evaluate through `eval_assoc` → a literal.
-            ExprKind::ConstAssoc { item, self_ty } => {
-                let self_ty = ground_widths(
-                    self.db,
-                    self.krate,
-                    self.def,
-                    &subst_type(self_ty, &self.self_subst),
-                );
-                let c = ConstArg::Assoc {
-                    item: *item,
-                    self_ty: Box::new(self_ty),
-                };
-                match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &c) {
-                    Some(v) => SvExpr::Lit(v.to_string()),
-                    None => SvExpr::Lit(render_const_sv(&c, self.sig)),
-                }
-            }
-            ExprKind::Call { .. } => {
-                // User-fn calls become module instances (Q5d).
-                SvExpr::Lit("0".to_owned())
-            }
-            // `v[i]` in scalar position.
-            ExprKind::Index { base, index } => {
-                let (base, index) = (*base, *index);
-                let b = self.expr_value(base);
-                let i = self.expr_value(index);
-                self.index_bounds_assert(base, index, &i);
-                SvExpr::Lit(format!("{b}[{i}]"))
-            }
-            // `e.reg(rst, init)` in value position: a register into a fresh local.
-            ExprKind::MethodCall { .. } if self.as_reg(expr).is_some() => {
-                let reg = self.as_reg(expr).unwrap();
-                let synth = self.fresh_block();
-                let ty = self.expr_type(expr);
-                self.items.push(SvItem::Logic(SvLogicDecl {
-                    ty,
-                    name: synth.clone(),
-                }));
-                let clock = self.clock_of_type(self.mir_expr_type(reg.d_input).as_ref());
-                self.emit_reg(synth.clone(), clock, reg);
-                SvExpr::Ident(synth)
-            }
-            ExprKind::When { event, body, init } => {
-                let (event, init) = (*event, *init);
-                let body = body.clone();
-                self.lower_when(expr, event, &body, init)
-            }
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                let cond = *cond;
-                let then_branch = then_branch.clone();
-                let else_branch = else_branch.clone();
-                self.lower_if(expr, cond, &then_branch, &else_branch)
-            }
-            // `const if`: fold to the selected arm at elaboration — only it is
-            // emitted, so the discarded arm's (possibly invalid) SV is never
-            // produced (planning/comptime_if.md).
-            ExprKind::ConstIf {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                let (tb, eb) = (then_branch.clone(), else_branch.clone());
-                match self.eval_const_cond(*cond) {
-                    true => self.block_value(&tb),
-                    false => self.block_value(&eb),
-                }
-            }
-            ExprKind::Block(b) => {
-                let b = b.clone();
-                self.block_value(&b)
-            }
-            // An aggregate or field/record in scalar value position: reduce to
-            // its single SV leaf if it has one (a scalar, or a Vec → `'{…}`).
-            // A value that flattens to SEVERAL signals (a tuple, a multi-field
-            // struct, a Vec-of-struct) has no scalar form — `one_leaf` emits a
-            // marker that fails downstream rather than silently dropping leaves
-            // or scalarising an array to `0`.
-            ExprKind::VecLit(_)
-            | ExprKind::TupleLit(_)
-            | ExprKind::VecRepeat { .. }
-            | ExprKind::Field { .. }
-            | ExprKind::Record { .. } => self.one_leaf(expr),
-            // Defensive only: every shape that lands here (user method calls
-            // pending Q5d-2, malformed exprs) is diagnosed by `infer`, and the
-            // CLI refuses to emit SV when any diagnostic exists — so this
-            // placeholder never reaches written output.
-            _ => SvExpr::Lit("0".to_owned()),
-        }
     }
 
     /// MIR twin of [`expr_value`](Self::expr_value) (S3.2c). Walks a MIR node
@@ -2958,250 +2029,6 @@ impl<'db> SvLower<'_, 'db> {
             // A bare `Def` in value position is not a value (matches the HIR
             // path's defensive `0`); never reached on a clean body.
             MExprKind::Def(_) => SvExpr::Lit("0".to_owned()),
-        }
-    }
-
-    /// Reduce an expression to a single scalar SV value. A value that flattens
-    /// to one SV signal (a scalar, or a Vec → `'{…}` assignment pattern) is
-    /// returned directly; one that flattens to several (a tuple, a multi-field
-    /// struct/port) has no scalar representation, so emit a marker that fails
-    /// downstream (verilator) — never a silent `0`, which would scalarise an
-    /// aggregate. (`expr_leaves` resolves these constructors itself, so this
-    /// does not recurse back through `expr_value`'s fallback.)
-    fn one_leaf(&mut self, expr: ExprId) -> SvExpr {
-        let mut leaves = self.expr_leaves(expr);
-        if leaves.len() == 1 {
-            leaves.pop().unwrap().1
-        } else {
-            SvExpr::Lit(format!(
-                "/* mirin: non-scalar value ({} leaves) in scalar position */",
-                leaves.len()
-            ))
-        }
-    }
-
-    /// An expression's scalar leaves as `(suffix, value)`, in struct-field order.
-    /// Aggregates expand (a struct local → one leaf per field, a field access
-    /// projects, a record literal rebuilds); scalars are a single empty-suffix
-    /// leaf via [`Self::expr_value`].
-    fn expr_leaves(&mut self, expr: ExprId) -> Vec<(String, SvExpr)> {
-        // An `#[inline]` call splices its (scalar) body in place. Aggregate
-        // inline results are future work (planning/attributes.md).
-        if let Some(uc) = self.inline_call(expr) {
-            return vec![(String::new(), self.render_inline(uc))];
-        }
-        // A user call in value position instantiates into a fresh `__call_N`.
-        if let Some(uc) = self.as_user_call(expr) {
-            return self.call_value_leaves(uc);
-        }
-        match &self.body.expr(expr).kind {
-            ExprKind::Local(l) => self.local_leaves(*l),
-            ExprKind::Field { receiver, field } => {
-                let receiver = *receiver;
-                let field = field.clone();
-                self.expr_leaves(receiver)
-                    .into_iter()
-                    .filter_map(|(suf, e)| strip_field(&suf, &field).map(|rest| (rest, e)))
-                    .collect()
-            }
-            // `[a, b, c]` per element-type leaf: an SV assignment pattern
-            // over the elements' corresponding leaves.
-            ExprKind::VecLit(elems) => {
-                let elems = elems.clone();
-                let per_elem: Vec<Vec<(String, SvExpr)>> =
-                    elems.iter().map(|e| self.expr_leaves(*e)).collect();
-                let Some(first) = per_elem.first() else {
-                    return vec![(String::new(), SvExpr::Lit("'{}".to_owned()))];
-                };
-                first
-                    .iter()
-                    .enumerate()
-                    .map(|(li, (suffix, _))| {
-                        let parts: Vec<String> = per_elem
-                            .iter()
-                            .map(|leaves| {
-                                leaves
-                                    .get(li)
-                                    .map(|(_, e)| e.to_string())
-                                    .unwrap_or_else(|| "0".to_owned())
-                            })
-                            .collect();
-                        (
-                            suffix.clone(),
-                            SvExpr::Lit(format!("'{{{}}}", parts.join(", "))),
-                        )
-                    })
-                    .collect()
-            }
-            // `(a, b)`: element leaves prefixed with their index — the
-            // anonymous-struct shape (planning/tuples.md).
-            ExprKind::TupleLit(elems) => {
-                let elems = elems.clone();
-                let mut out = Vec::new();
-                for (i, e) in elems.iter().enumerate() {
-                    for (suf, v) in self.expr_leaves(*e) {
-                        out.push((join(&i.to_string(), &suf), v));
-                    }
-                }
-                out
-            }
-            // `[e; N]`: SV replication pattern per leaf.
-            ExprKind::VecRepeat { elem, len } => {
-                let len = len.clone();
-                let n =
-                    match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &len) {
-                        Some(v) => v.to_string(),
-                        None => render_const_sv(&len, self.sig),
-                    };
-                self.expr_leaves(*elem)
-                    .into_iter()
-                    .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("'{{{n}{{{e}}}}}"))))
-                    .collect()
-            }
-            // `v[i]`: each base leaf, selected.
-            ExprKind::Index { base, index } => {
-                let (base, index) = (*base, *index);
-                let idx = self.expr_value(index);
-                self.index_bounds_assert(base, index, &idx);
-                self.expr_leaves(base)
-                    .into_iter()
-                    .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}[{idx}]"))))
-                    .collect()
-            }
-            // An aggregate-valued `const if`: fold to the selected arm's leaves.
-            ExprKind::ConstIf {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                let (tb, eb) = (then_branch.clone(), else_branch.clone());
-                match self.eval_const_cond(*cond) {
-                    true => self.block_leaves(&tb),
-                    false => self.block_leaves(&eb),
-                }
-            }
-            // An aggregate-valued `if`: per-leaf mux into a synthetic.
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                let (cond, tb, eb) = (*cond, then_branch.clone(), else_branch.clone());
-                let synth = self.fresh_block();
-                let c = self.expr_value(cond);
-                let then_leaves = self.block_leaves(&tb);
-                let else_leaves = self.block_leaves(&eb);
-                let tys = self.expr_leaf_types(expr);
-                let mut out = Vec::new();
-                let mut body = Vec::new();
-                for (k, (suffix, tv)) in then_leaves.into_iter().enumerate() {
-                    let name = join(&synth, &suffix);
-                    let ty = tys.get(k).cloned().unwrap_or_else(SvType::bit);
-                    self.items.push(SvItem::Logic(SvLogicDecl {
-                        ty,
-                        name: name.clone(),
-                    }));
-                    let ev = else_leaves
-                        .get(k)
-                        .map(|(_, e)| e.clone())
-                        .unwrap_or_else(|| SvExpr::Lit("0".to_owned()));
-                    body.push(SvCombStmt::If(SvCombIf {
-                        cond: c.clone(),
-                        then_branch: vec![SvCombStmt::Assign {
-                            lhs: SvExpr::Ident(name.clone()),
-                            rhs: tv,
-                        }],
-                        else_branch: vec![SvCombStmt::Assign {
-                            lhs: SvExpr::Ident(name.clone()),
-                            rhs: ev,
-                        }],
-                    }));
-                    out.push((suffix, SvExpr::Ident(name)));
-                }
-                self.items.push(SvItem::AlwaysComb(SvAlwaysComb { body }));
-                out
-            }
-            // An aggregate-valued `when`: per-leaf register of the tail.
-            ExprKind::When { event, body, init } => {
-                let (event, b, init) = (*event, body.clone(), *init);
-                let synth = self.fresh_block();
-                let clock = self.clock_of_event(event);
-                if let Some(init) = init {
-                    let init_leaves = self.expr_leaves(init);
-                    let assigns = init_leaves
-                        .into_iter()
-                        .map(|(suffix, v)| (SvExpr::Ident(join(&synth, &suffix)), v))
-                        .collect();
-                    self.items.push(SvItem::Initial(assigns));
-                }
-                let d_leaves = self.block_leaves(&b);
-                let tys = self.expr_leaf_types(expr);
-                let mut out = Vec::new();
-                let mut seq = Vec::new();
-                for (k, (suffix, d)) in d_leaves.into_iter().enumerate() {
-                    let name = join(&synth, &suffix);
-                    let ty = tys.get(k).cloned().unwrap_or_else(SvType::bit);
-                    self.items.push(SvItem::Logic(SvLogicDecl {
-                        ty,
-                        name: name.clone(),
-                    }));
-                    seq.push(SvSeqAssign::new(SvExpr::Ident(name.clone()), d));
-                    out.push((suffix, SvExpr::Ident(name)));
-                }
-                self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
-                    clock,
-                    reset: None,
-                    reset_body: Vec::new(),
-                    clocked_body: seq,
-                }));
-                out
-            }
-            // `v.replace(i, x)`: a combinational copy with one element
-            // swapped — `__repl = v; __repl[i] = x;` per leaf.
-            ExprKind::MethodCall {
-                receiver,
-                method,
-                args,
-            } if method == "replace" && args.len() == 2 => {
-                let (receiver, i_e, x_e) = (*receiver, args[0].expr, args[1].expr);
-                let synth = self.fresh_block();
-                let idx = self.expr_value(i_e);
-                self.index_bounds_assert(receiver, i_e, &idx);
-                let recv_leaves = self.expr_leaves(receiver);
-                let x_leaves = self.expr_leaves(x_e);
-                let tys = self.expr_leaf_types(receiver);
-                let mut out = Vec::new();
-                let mut body = Vec::new();
-                for (k, (suffix, rv)) in recv_leaves.into_iter().enumerate() {
-                    let name = join(&synth, &suffix);
-                    let ty = tys.get(k).cloned().unwrap_or_else(SvType::bit);
-                    self.items.push(SvItem::Logic(SvLogicDecl {
-                        ty,
-                        name: name.clone(),
-                    }));
-                    body.push(SvCombStmt::Assign {
-                        lhs: SvExpr::Ident(name.clone()),
-                        rhs: rv,
-                    });
-                    let xv = x_leaves
-                        .get(k)
-                        .map(|(_, e)| e.clone())
-                        .unwrap_or_else(|| SvExpr::Lit("0".to_owned()));
-                    body.push(SvCombStmt::Assign {
-                        lhs: SvExpr::Lit(format!("{name}[{idx}]")),
-                        rhs: xv,
-                    });
-                    out.push((suffix, SvExpr::Ident(name)));
-                }
-                self.items.push(SvItem::AlwaysComb(SvAlwaysComb { body }));
-                out
-            }
-            ExprKind::Record { ctor, fields } => {
-                let ctor = *ctor;
-                let fields = fields.clone();
-                self.record_leaves(ctor, &fields)
-            }
-            _ => vec![(String::new(), self.expr_value(expr))],
         }
     }
 
@@ -3414,57 +2241,6 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
-    /// The leaves of a record literal, in the constructor's declared field order
-    /// (each field's value flattened and prefixed with the field name).
-    fn record_leaves(
-        &mut self,
-        ctor: Option<DefId<'db>>,
-        fields: &[RecordField],
-    ) -> Vec<(String, SvExpr)> {
-        // The constructor's fields live on the struct/port it is owned by.
-        let owner = ctor.and_then(|c| self.map.def_data(c).and_then(|d| d.owner));
-        let Some(owner) = owner else {
-            return vec![(String::new(), SvExpr::Lit("0".to_owned()))];
-        };
-        let order: Vec<String> = sig_of(self.db, self.krate, owner)
-            .fields
-            .iter()
-            .map(|f| f.name.clone())
-            .collect();
-        let mut out = Vec::new();
-        for fname in &order {
-            if let Some(rf) = fields.iter().find(|rf| &rf.name == fname) {
-                if rf.out {
-                    continue; // `field => target` flows the other way
-                }
-                for (suf, e) in self.expr_leaves(rf.value) {
-                    out.push((join(fname, &suf), e));
-                }
-            }
-        }
-        out
-    }
-
-    /// A record constructor's `field => target` connections as
-    /// `(field_suffix, target_place)` pairs — the constructed value's field
-    /// drives the target (`assign target = <base>__field`).
-    fn record_out_conns(&mut self, expr: ExprId) -> Vec<(String, SvExpr)> {
-        let ExprKind::Record { fields, .. } = &self.body.expr(expr).kind else {
-            return Vec::new();
-        };
-        let fields = fields.clone();
-        let mut out = Vec::new();
-        for rf in &fields {
-            if !rf.out {
-                continue;
-            }
-            for (tsuf, target) in self.expr_leaves(rf.value) {
-                out.push((join(&rf.name, &tsuf), target));
-            }
-        }
-        out
-    }
-
     /// MIR twin of `record_leaves`: the in-field leaves in declared field order.
     fn record_leaves_mir(
         &mut self,
@@ -3509,131 +2285,6 @@ impl<'db> SvLower<'_, 'db> {
             }
         }
         out
-    }
-
-    /// `when ev { … d }` → a reset-less `always_ff @(posedge <ev-clock>)` whose
-    /// single clocked assignment drives a synthetic `__block_N` with the body's
-    /// tail value `d`. The expression's value is that held register output.
-    fn lower_when(
-        &mut self,
-        when_expr: ExprId,
-        event: ExprId,
-        body: &Block,
-        init: Option<ExprId>,
-    ) -> SvExpr {
-        let synth = self.fresh_block();
-        let ty = self.expr_type(when_expr);
-        self.items.push(SvItem::Logic(SvLogicDecl {
-            ty,
-            name: synth.clone(),
-        }));
-        if let Some(init) = init {
-            let v = self.expr_value(init);
-            self.items
-                .push(SvItem::Initial(vec![(SvExpr::Ident(synth.clone()), v)]));
-        }
-        let clock = self.clock_of_event(event);
-        let d = self.block_value(body);
-        self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
-            clock,
-            reset: None,
-            reset_body: Vec::new(),
-            clocked_body: vec![SvSeqAssign::new(SvExpr::Ident(synth.clone()), d)],
-        }));
-        SvExpr::Ident(synth)
-    }
-
-    /// Fold a `const if` condition at elaboration. The grounded case — the
-    /// condition closes to a constant (literal bounds, or a const generic that
-    /// was inlined to a concrete value). A still-symbolic condition (a const
-    /// generic riding as an SV `#()` parameter) needs the `generate if` lowering
-    /// (planning/comptime_if.md), which is not yet built; since emission only
-    /// runs on a diagnostic-free crate, that gap is a hard stop, not a silent
-    /// mux (which would wrongly elaborate both arms).
-    fn eval_const_cond(&self, cond: ExprId) -> bool {
-        match crate::hir::const_eval::eval_cond(self.db, self.krate, self.def, cond) {
-            Some(b) => b,
-            None => panic!(
-                "const if: condition did not fold to a constant — the symbolic \
-                 `generate if` lowering is not yet implemented (planning/comptime_if.md)"
-            ),
-        }
-    }
-
-    /// `if c { a } else { b }` → an `always_comb` mux driving a synthetic
-    /// `__block_N`; the expression's value is that local.
-    fn lower_if(
-        &mut self,
-        if_expr: ExprId,
-        cond: ExprId,
-        then_branch: &Block,
-        else_branch: &Block,
-    ) -> SvExpr {
-        let synth = self.fresh_block();
-        let ty = self.expr_type(if_expr);
-        self.items.push(SvItem::Logic(SvLogicDecl {
-            ty,
-            name: synth.clone(),
-        }));
-        let cond = self.expr_value(cond);
-        let then_v = self.block_value(then_branch);
-        let else_v = self.block_value(else_branch);
-        self.items.push(SvItem::AlwaysComb(SvAlwaysComb {
-            body: vec![SvCombStmt::If(SvCombIf {
-                cond,
-                then_branch: vec![SvCombStmt::Assign {
-                    lhs: SvExpr::Ident(synth.clone()),
-                    rhs: then_v,
-                }],
-                else_branch: vec![SvCombStmt::Assign {
-                    lhs: SvExpr::Ident(synth.clone()),
-                    rhs: else_v,
-                }],
-            })],
-        }));
-        SvExpr::Ident(synth)
-    }
-
-    /// Lower a block's statements (combinationally) and return its tail value.
-    /// A block's value as leaves (statements lower; the tail fans out).
-    fn block_leaves(&mut self, block: &Block) -> Vec<(String, SvExpr)> {
-        self.lower_stmts(&block.stmts);
-        match block.tail {
-            Some(tail) => self.expr_leaves(tail),
-            None => Vec::new(),
-        }
-    }
-
-    /// The SV types of an expression's leaves, in leaf order.
-    fn expr_leaf_types(&mut self, expr: ExprId) -> Vec<SvType> {
-        let Some(t) = self.mir_expr_type(expr) else {
-            return Vec::new();
-        };
-        let t = ground_widths(
-            self.db,
-            self.krate,
-            self.def,
-            &subst_type(&t, &self.self_subst),
-        );
-        flatten_leaves(
-            self.db,
-            self.krate,
-            self.def,
-            &t,
-            true,
-            &self.sig.generic_params,
-        )
-        .into_iter()
-        .map(|l| l.ty)
-        .collect()
-    }
-
-    fn block_value(&mut self, block: &Block) -> SvExpr {
-        self.lower_stmts(&block.stmts);
-        match block.tail {
-            Some(tail) => self.expr_value(tail),
-            None => SvExpr::Lit("0".to_owned()),
-        }
     }
 
     // ----- MIR walker: control flow (S3.2j) -----
@@ -3928,16 +2579,6 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
-    /// The clock of a `when` event `clk.posedge()` — the receiver local's name.
-    fn clock_of_event(&self, event: ExprId) -> String {
-        if let ExprKind::MethodCall { receiver, .. } = &self.body.expr(event).kind
-            && let ExprKind::Local(l) = &self.body.expr(*receiver).kind
-        {
-            return self.local_name(*l);
-        }
-        self.first_clock()
-    }
-
     /// Fallback clock: the first `dom` generic parameter's name, else `clk`.
     fn first_clock(&self) -> String {
         self.sig
@@ -3970,142 +2611,6 @@ impl<'db> SvLower<'_, 'db> {
     /// explicit `#[inline]`, or a `verilog expr` body.
     fn splices_inline(&self, def: DefId) -> bool {
         self.map.def_data(def).is_some_and(|d| d.inline) || self.is_inline_expr_body(def)
-    }
-
-    /// `Some(call)` if `expr` is a call that splices inline (an `#[inline]`
-    /// fn/method, or a `verilog expr`-bodied fn such as a prelude operator) —
-    /// the body is rendered at the call site instead of instantiating a module.
-    /// `.reg` is handled by its own inline path.
-    fn inline_call(&self, expr: ExprId) -> Option<UserCall<'db>> {
-        match &self.body.expr(expr).kind {
-            ExprKind::Call {
-                callee,
-                args,
-                named,
-            } => {
-                let ExprKind::Def(def) = self.body.expr(*callee).kind else {
-                    return None;
-                };
-                if !self.splices_inline(def) {
-                    return None;
-                }
-                Some(UserCall {
-                    def,
-                    expr,
-                    subst_override: None,
-                    receiver: None,
-                    args: args.clone(),
-                    named: named.clone(),
-                })
-            }
-            ExprKind::MethodCall { receiver, args, .. } if self.as_reg(expr).is_none() => {
-                let decl = self.inf.method_resolution(expr)?;
-                let (def, subst_override) = match self.resolve_trait_instance(expr, decl) {
-                    Some((m, ov)) => (m, Some(ov)),
-                    None => (decl, None),
-                };
-                if !self.splices_inline(def) {
-                    return None;
-                }
-                Some(UserCall {
-                    def,
-                    expr,
-                    subst_override,
-                    receiver: Some(*receiver),
-                    args: args.clone(),
-                    named: Vec::new(),
-                })
-            }
-            // `uint(8)::unpack(b)` — a receiver-less associated call. Same as a
-            // method call minus the receiver (planning/pack_resize.md).
-            ExprKind::TypePathCall { args, .. } => {
-                let decl = self.inf.method_resolution(expr)?;
-                let (def, subst_override) = match self.resolve_trait_instance(expr, decl) {
-                    Some((m, ov)) => (m, Some(ov)),
-                    None => (decl, None),
-                };
-                if !self.splices_inline(def) {
-                    return None;
-                }
-                Some(UserCall {
-                    def,
-                    expr,
-                    subst_override,
-                    receiver: None,
-                    args: args.clone(),
-                    named: Vec::new(),
-                })
-            }
-            _ => None,
-        }
-    }
-
-    /// Splice an `#[inline]` call's body as an SV expression. v1 supports a
-    /// verilog body of the single-assign shape `assign ${result} = EXPR;`: the
-    /// callee's value params resolve to the call's argument expressions, its
-    /// const generics to the call's instantiation, and `EXPR` is returned
-    /// (parenthesised) for the caller to use in place.
-    fn render_inline(&mut self, uc: UserCall<'db>) -> SvExpr {
-        let csig = sig_of(self.db, self.krate, uc.def);
-        let Some(template) = body(self.db, self.krate, uc.def).verilog().cloned() else {
-            // A non-verilog `#[inline]` body (a Mirin-bodied `#[inline] fn`) is
-            // not yet spliced. Emission only runs on a diagnostic-free crate, so
-            // a hard stop here, never a silent `0` (a wrong-but-compiling result).
-            panic!(
-                "#[inline] on a Mirin-bodied fn `{}` is not yet supported (only \
-                 verilog-bodied inline splicing is implemented)",
-                self.map
-                    .def_data(uc.def)
-                    .map(|d| d.name.as_str())
-                    .unwrap_or("?"),
-            );
-        };
-
-        // Value params → the caller's argument expressions (positional zip with
-        // `[receiver?] ++ args`, named by name), keyed by the param's local.
-        let mut positional: Vec<ExprId> = uc.receiver.into_iter().collect();
-        positional.extend(uc.args.iter().map(|a| a.expr));
-        let mut pos_i = 0;
-        let mut val_map: HashMap<LocalId, String> = HashMap::new();
-        for p in &csig.params {
-            let caller_expr = if p.from_named_section {
-                uc.named.iter().find(|n| n.name == p.name).map(|n| n.expr)
-            } else {
-                let e = positional.get(pos_i).copied();
-                pos_i += 1;
-                e
-            };
-            // TODO(named-args): each param is rendered as ONE scalar string, so a
-            // multi-leaf SIGNAL/PORT param (named or positional) is not handled
-            // here — only scalar value params splice correctly. Named params may
-            // be signals/ports with per-field DIRECTIONS and a `= default`
-            // (a deliberate language feature, e.g. `rstn: Reset @clk = high`);
-            // an aggregate default is also rendered as a single scalar. Inline
-            // splicing of such params needs per-leaf handling (cf. emit_instance,
-            // which flattens) and direction folding (cf. drive_result).
-            let rendered = match caller_expr {
-                Some(e) => self.expr_value(e).to_string(),
-                None => match &p.default {
-                    Some(d) => default_value(d).to_string(),
-                    None => continue,
-                },
-            };
-            val_map.insert(p.local, rendered);
-        }
-
-        // Const generics bind from the call's recorded instantiation, rendered
-        // in the caller's terms (a ground value evaluates, a symbolic one
-        // renders against the caller's SV parameters) — as `emit_instance` does.
-        let node_subst: Vec<Option<Term<'db>>> = match &uc.subst_override {
-            Some(ov) => ov.clone(),
-            None => self
-                .inf
-                .call_subst(uc.expr)
-                .map(|ts| ts.iter().cloned().map(Some).collect())
-                .unwrap_or_default(),
-        };
-
-        self.render_inline_spliced(&template, &val_map, &node_subst)
     }
 
     /// Splice a verilog inline template given the resolved param→value map and
@@ -4226,130 +2731,6 @@ impl<'db> SvLower<'_, 'db> {
     }
 
     // ----- instantiation (user calls / methods → submodules) -----
-
-    /// `Some(call)` if `expr` is a user `fn` call or a resolved user method call
-    /// (not a prelude operator and not the builtin `.reg`).
-    fn as_user_call(&self, expr: ExprId) -> Option<UserCall<'db>> {
-        match &self.body.expr(expr).kind {
-            ExprKind::Call {
-                callee,
-                args,
-                named,
-            } => {
-                let ExprKind::Def(def) = self.body.expr(*callee).kind else {
-                    return None;
-                };
-                let data = self.map.def_data(def)?;
-                if data.module == self.map.prelude()
-                    || data.inline
-                    || !matches!(data.kind, DefKind::Fn | DefKind::Method)
-                {
-                    return None;
-                }
-                Some(UserCall {
-                    def,
-                    expr,
-                    subst_override: None,
-                    receiver: None,
-                    args: args.clone(),
-                    named: named.clone(),
-                })
-            }
-            ExprKind::MethodCall { receiver, args, .. } if self.as_reg(expr).is_none() => {
-                {
-                    let decl = self.inf.method_resolution(expr)?;
-                    // A trait-method DECL (picked through a `T: Trait` bound)
-                    // re-selects to the matching impl with the now-concrete
-                    // self type — rustc's Instance::resolve at mono time.
-                    let (def, subst_override) = match self.resolve_trait_instance(expr, decl) {
-                        Some((m, ov)) => (m, Some(ov)),
-                        None => (decl, None),
-                    };
-                    // A method that splices inline (`#[inline]`, or a prelude
-                    // operator's `verilog expr` body) is never an instance —
-                    // it lowers in place (`(a + b)`, `(-x)`).
-                    if self.splices_inline(def) {
-                        return None;
-                    }
-                    Some(UserCall {
-                        def,
-                        expr,
-                        subst_override,
-                        receiver: Some(*receiver),
-                        args: args.clone(),
-                        named: Vec::new(),
-                    })
-                }
-            }
-            // A receiver-less associated call (`uint(8)::unpack(b)`) that does
-            // not splice inline becomes an instance, like a method call.
-            ExprKind::TypePathCall { args, .. } => {
-                let decl = self.inf.method_resolution(expr)?;
-                let (def, subst_override) = match self.resolve_trait_instance(expr, decl) {
-                    Some((m, ov)) => (m, Some(ov)),
-                    None => (decl, None),
-                };
-                if self.splices_inline(def) {
-                    return None;
-                }
-                Some(UserCall {
-                    def,
-                    expr,
-                    subst_override,
-                    receiver: None,
-                    args: args.clone(),
-                    named: Vec::new(),
-                })
-            }
-            _ => None,
-        }
-    }
-
-    /// Emit a submodule instance for a user call, connecting `result_target` to
-    /// the callee's (flattened) return. Connection order is the callee's module
-    /// order: `dom` clocks, then params (named-then-positional, each flattened),
-    /// then the return. Positional params zip with `[receiver?] ++ args`; named
-    /// params match the call's named section by name.
-    fn emit_instance(&mut self, uc: UserCall<'db>, result_target: Vec<(String, SvExpr)>) {
-        let csig = sig_of(self.db, self.krate, uc.def);
-        // Resolve each value param to its caller arg (positional zip with
-        // `[receiver?] ++ args`, named by name), flattening the arg to its leaves
-        // and recording its actual type — the HIR-id-specific half. The core then
-        // builds the instance from these resolved slots.
-        let mut positional: Vec<ExprId> = uc.receiver.into_iter().collect();
-        positional.extend(uc.args.iter().map(|a| a.expr));
-        let mut pos_i = 0;
-        let slots: Vec<CallSlot<'db>> = csig
-            .params
-            .iter()
-            .map(|p| {
-                let caller_expr = if p.from_named_section {
-                    uc.named.iter().find(|n| n.name == p.name).map(|n| n.expr)
-                } else {
-                    let e = positional.get(pos_i).copied();
-                    pos_i += 1;
-                    e
-                };
-                let (caller_leaves, actual_ty) = match caller_expr {
-                    Some(e) => (Some(self.expr_leaves(e)), self.actual_type(e)),
-                    None => (None, None),
-                };
-                CallSlot {
-                    name: p.name.clone(),
-                    ty: p.ty.clone(),
-                    caller_leaves,
-                    actual_ty,
-                    default: p.default.clone(),
-                }
-            })
-            .collect();
-        let recorded: Vec<Term<'db>> = self
-            .inf
-            .call_subst(uc.expr)
-            .map(|ts| ts.to_vec())
-            .unwrap_or_default();
-        self.emit_instance_core(uc.def, uc.subst_override, recorded, slots, result_target);
-    }
 
     /// Id-agnostic core of `emit_instance`: build the SV module instance from the
     /// callee def, the recorded/overridden subst, and the resolved [`CallSlot`]s.
@@ -4579,15 +2960,6 @@ impl<'db> SvLower<'_, 'db> {
         }));
     }
 
-    /// The concrete type of a call argument (for binding a type-generic callee):
-    /// a local's resolved type, else the expression's inferred type.
-    fn actual_type(&self, e: ExprId) -> Option<Type<'db>> {
-        match self.body.expr(e).kind {
-            ExprKind::Local(l) => self.local_ty(l),
-            _ => self.mir_expr_type(e),
-        }
-    }
-
     /// MIR twin of `actual_type`.
     fn actual_type_mir(&self, m: MExprId) -> Option<Type<'db>> {
         if let MExprKind::Local(l) = self.mir.expr(m).kind {
@@ -4779,70 +3151,6 @@ impl<'db> SvLower<'_, 'db> {
         target
     }
 
-    /// A user call in value position: instantiate into a fresh `__call_N`
-    /// (declared per field) and return its leaves. A void callee yields a single
-    /// placeholder leaf.
-    fn call_value_leaves(&mut self, uc: UserCall<'db>) -> Vec<(String, SvExpr)> {
-        let Some(rt) = sig_of(self.db, self.krate, uc.def).return_type.clone() else {
-            self.emit_instance(uc, Vec::new());
-            return vec![(String::new(), SvExpr::Lit("0".to_owned()))];
-        };
-        // The return type is written in the CALLEE's generic-param space —
-        // substitute the call's recorded instantiation before flattening
-        // against the caller's generics (a parametric callee's `uint(n)`
-        // otherwise renders against the wrong index space).
-        let rt = match &uc.subst_override {
-            Some(ov) => ground_widths(self.db, self.krate, self.def, &subst_type(&rt, ov)),
-            None => match self.inf.call_subst(uc.expr) {
-                Some(ts) => {
-                    let opts: Vec<Option<Term<'db>>> = ts.iter().cloned().map(Some).collect();
-                    ground_widths(self.db, self.krate, self.def, &subst_type(&rt, &opts))
-                }
-                None => rt,
-            },
-        };
-        let base = self.fresh_call();
-        let target: Vec<(String, SvExpr)> = flatten_leaves(
-            self.db,
-            self.krate,
-            self.def,
-            &rt,
-            true,
-            &self.sig.generic_params,
-        )
-        .into_iter()
-        .map(|l| {
-            let name = join(&base, &l.suffix);
-            self.items.push(SvItem::Logic(SvLogicDecl {
-                ty: l.ty,
-                name: name.clone(),
-            }));
-            (l.suffix, SvExpr::Ident(name))
-        })
-        .collect();
-        self.emit_instance(uc, target.clone());
-        target
-    }
-
-    /// Declare each out-arg target that is a fresh implicit `var` (not a port),
-    /// so a `=> ds` binding gets its `logic` before the instance that drives it.
-    fn declare_out_targets(&mut self, uc: &UserCall<'db>) {
-        let targets: Vec<ExprId> = uc
-            .named
-            .iter()
-            .filter(|n| n.out)
-            .map(|n| n.expr)
-            .chain(uc.args.iter().filter(|a| a.out).map(|a| a.expr))
-            .collect();
-        for e in targets {
-            if let ExprKind::Local(l) = self.body.expr(e).kind
-                && self.body.local(l).kind != LocalKind::Param
-            {
-                self.declare_local(l);
-            }
-        }
-    }
-
     fn fresh_call(&mut self) -> String {
         let n = self.synth;
         self.synth += 1;
@@ -4863,22 +3171,6 @@ impl<'db> SvLower<'_, 'db> {
     }
 }
 
-/// A user `fn`/method call decomposed for instantiation.
-struct UserCall<'db> {
-    def: DefId<'db>,
-    /// The call expression itself — keys `Inference::call_subst`.
-    expr: ExprId,
-    /// Present when `def` was re-selected from a trait-method DECL to an
-    /// impl method (Instance::resolve): the impl method's substitution
-    /// (header binding ++ the decl's own generic tail), already in the
-    /// CALLER's value space. Overrides both the mono subst and the
-    /// `#(...)` parameter source.
-    subst_override: Option<Vec<Option<Term<'db>>>>,
-    receiver: Option<ExprId>,
-    args: Vec<ConnArg>,
-    named: Vec<NamedArg>,
-}
-
 /// A value param resolved to its caller argument, ready for `emit_instance_core`
 /// — the id-agnostic hand-off between the HIR/MIR call paths and instance
 /// emission. `caller_leaves` is `None` when the arg was omitted (use `default`).
@@ -4888,13 +3180,6 @@ struct CallSlot<'db> {
     caller_leaves: Option<Vec<(String, SvExpr)>>,
     actual_ty: Option<Type<'db>>,
     default: Option<String>,
-}
-
-/// The decomposed parts of a `receiver.reg(reset, init)` method call.
-struct RegCall {
-    d_input: ExprId,
-    reset: ExprId,
-    init: ExprId,
 }
 
 /// One scalar leaf of a (possibly aggregate) value: its `__`-suffix relative to
@@ -5151,17 +3436,6 @@ fn render_verilog(template: &crate::hir::body::VerilogTemplate, sig: &Signature<
         }
     }
     out
-}
-
-/// The base local of a place expression (`acc`, `acc.f`, `acc[i]` all root at
-/// the same local).
-fn backend_root_local(body: &Body, expr: ExprId) -> Option<LocalId> {
-    match &body.expr(expr).kind {
-        ExprKind::Local(l) => Some(*l),
-        ExprKind::Field { receiver, .. } => backend_root_local(body, *receiver),
-        ExprKind::Index { base, .. } => backend_root_local(body, *base),
-        _ => None,
-    }
 }
 
 /// Combine an outer `when` guard with an inner condition (`g && c`), or just the

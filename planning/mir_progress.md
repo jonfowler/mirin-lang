@@ -161,6 +161,13 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 
 ## Status log (newest first)
 
+- 2026-06-25: **HIR-core deletion DONE.** Ported the const-fn SV-`function`
+  builder to MIR (`lower_const_function_mir` + twins), which was the last root
+  keeping the HIR value lowering alive. The whole HIR lowering core then went dead
+  and was deleted: ~50 methods + `UserCall`/`RegCall` + `backend_root_local`,
+  ~1720 net lines from `backend/lower.rs`. Single lowering path now (MIR). Build
+  warning-clean, golden byte-for-byte green, lib 127. See section above.
+
 - 2026-06-25: **always-MIR flip LANDED.** `build_module` now unconditionally
   walks MIR; deleted the `mir_walk_*`/`mir_ok_*` predicate cluster + dead
   `lower_top_block`. golden byte-for-byte green, lib 127. Corrected the earlier
@@ -490,6 +497,37 @@ Ordered steps (each golden-gated; add slice examples as they work):
 Hardest part: step 1 (const-width derivation + direction). Step 5 (slice-set) is
 separable. The whole feature is the payoff of the MIR migration — it lands as one
 clean MIR-walker desugar instead of touching two backends.
+
+## HIR-core deletion — DONE (2026-06-25)
+
+The const-fn SV-`function` builder is the last consumer of the HIR value
+lowering, so porting it to MIR (`lower_const_function_mir` / `const_stmts_mir` /
+`const_fold_steps_mir` / `result_equation_rhs_mir` / `for_carries_mir`, walking
+`mir_of`'s block via the existing `expr_value_mir` / `expr_leaves_mir` /
+`loop_bound_var_mir` twins) cut the last root keeping the HIR lowering core alive.
+With that root gone, the **entire HIR lowering core became dead** and was deleted:
+~50 methods (`lower_stmts`/`lower_one_stmt`/`lower_let`/`lower_equation`/
+`lower_when`/`lower_when_stmt`/`when_body_seq`/`lower_for`/`lower_mut_fold`/
+`lower_if`/`block_value`/`block_leaves`/`drive_result`/`lower_call_stmt`/
+`expr_value`/`expr_leaves`/`one_leaf`/`as_user_call`/`inline_call`/`render_inline`/
+`call_value_leaves`/`emit_instance`/`emit_registers`/`emit_reg`/`as_reg`/
+`record_leaves`/`record_out_conns`/`place_leaves_dir`/`value_leaves_dir`/
+`blocking_assigns`/`index_bounds_assert`/`resolve_trait_instance`/`actual_type`/
+`expr_type`/`expr_type_width`/`expr_type_leaves`/`expr_leaf_types`/`mir_expr_type`/
+`clock_of_event`/`declare_out_targets`/`reset_name`/`is_const_only_call`/
+`eval_const_cond`/`const_rhs`/`emit_const_call`/`loop_bound_var`/
+`lower_const_function`/`const_stmts`/`const_fold_steps`/`result_equation_rhs`/
+`for_carries`) + the `UserCall`/`RegCall` decomposition structs + the
+`backend_root_local` free fn. **~1720 net lines removed** from `backend/lower.rs`
+(now ~4285). Build is warning-clean; `golden_sv_snapshot` byte-for-byte green;
+lib 127. The backend now has a **single lowering path** (MIR); the `of_hir`
+bridge + `ExprId`-keyed reads are gone from the live path.
+
+What remains HIR-shaped in the backend: the `mir_of` lowering itself reads HIR
+(`body`+`infer`) — that's by design (MIR is derived from HIR). The salsa queries
+upstream of MIR (`body`, `infer`, `sig_of`, name resolution) are unchanged.
+
+### Earlier note (superseded by the above)
 
 ## HIR-core deletion — flip DONE; statement lowering stays for now (2026-06-25)
 
