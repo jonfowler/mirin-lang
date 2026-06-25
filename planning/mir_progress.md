@@ -213,6 +213,16 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2m — `when` on MIR (register / RAM).** Added
+  `clock_of_event_mir`, `lower_when_mir` (value), `lower_when_leaves_mir`
+  (aggregate), `lower_when_stmt_mir` + `when_body_seq_mir` (statement, guarded),
+  and the when-RAM branch in `lower_equation_mir` (`mem = when E {…}`). Wired all
+  four sites. Predicate: `mir_ok_event` (posedge on a local), `mir_ok_when_body`
+  (Equation / guarded `Expr(If)` / let), and a `When` arm in both `mir_ok_stmt`
+  (guarded body) and `mir_ok_expr` (normal body, for value/aggregate/RAM). Golden
+  green (89), 127 lib. Clocked `when` defs (when_counter, ram, ram_write, …) now
+  lower on MIR. Remaining: records, let-mut fold, `const if`, unit-return call
+  statements, runtime-index bounds-assert; then delete the HIR core.
 - 2026-06-25: **S3.2l — indexing on MIR (place projections + reads).**
   `place_leaves_dir_mir` now handles projected places (`projected_leaves_mir`
   applies Field/Index base→leaf; outermost-projection discriminator mirrors HIR:

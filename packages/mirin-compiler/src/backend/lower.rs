@@ -1539,7 +1539,11 @@ impl<'db> SvLower<'_, 'db> {
             }
             MStmt::Return { value } => self.drive_result_mir(*value),
             MStmt::Expr(_) => todo!("S3.2k: lower_one_stmt_mir Expr (call statement)"),
-            MStmt::When { .. } => todo!("S3.2k: lower_one_stmt_mir When"),
+            MStmt::When { event, body, init } => {
+                let (event, body) = (*event, body.clone());
+                let init = init.clone();
+                self.lower_when_stmt_mir(event, &body, init.as_ref());
+            }
             MStmt::For {
                 index,
                 elem,
@@ -1598,8 +1602,33 @@ impl<'db> SvLower<'_, 'db> {
             self.emit_registers_mir(&base, &leaves, d_input, reset, init, clock, false);
             return;
         }
-        if bare_local && matches!(self.mir.expr(rhs).kind, MExprKind::When { .. }) {
-            todo!("S3.2e: lower_equation_mir when-RAM");
+        // `mem = when E { … }` — the local IS the register: always_ff directly on
+        // its leaves so `init mem = …` takes effect and the RAM stays one array.
+        if bare_local && let MExprKind::When { event, body, init } = &self.mir.expr(rhs).kind {
+            let (event, b, init) = (*event, body.clone(), *init);
+            let l = lhs.base;
+            let clock = self.clock_of_event_mir(event);
+            let base = self.local_name(l);
+            if let Some(init) = init {
+                let init_leaves = self.expr_leaves_mir(init);
+                let assigns = init_leaves
+                    .into_iter()
+                    .map(|(suffix, v)| (SvExpr::Ident(join(&base, &suffix)), v))
+                    .collect();
+                self.items.push(SvItem::Initial(assigns));
+            }
+            let d = self.block_leaves_mir(&b);
+            let clocked_body = d
+                .into_iter()
+                .map(|(suffix, dv)| SvSeqAssign::new(SvExpr::Ident(join(&base, &suffix)), dv))
+                .collect();
+            self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
+                clock,
+                reset: None,
+                reset_body: Vec::new(),
+                clocked_body,
+            }));
+            return;
         }
         if bare_local && self.is_instance_call_mir(rhs) {
             // `place = f(args)` — the callee's result drives `place`.
@@ -1797,8 +1826,46 @@ impl<'db> SvLower<'_, 'db> {
             MStmt::For { iter, body, .. } => {
                 self.mir_ok_expr(mir, *iter) && self.mir_ok_block(mir, body)
             }
-            MStmt::Expr(_) | MStmt::When { .. } => false,
+            // Statement `when`: clocked partial drives, guarded by `if`s. The
+            // body uses the guarded-sequence lowering, so check it as a when-body
+            // (not a normal block). `init` is a normal equation block.
+            MStmt::When { event, body, init } => {
+                self.mir_ok_event(mir, *event)
+                    && self.mir_ok_when_body(mir, body)
+                    && init.as_ref().is_none_or(|b| self.mir_ok_block(mir, b))
+            }
+            MStmt::Expr(_) => false,
         }
+    }
+
+    /// A valid `when` event: a `clk.posedge()` builtin on a local receiver.
+    fn mir_ok_event(&self, mir: &Mir<'db>, e: MExprId) -> bool {
+        matches!(
+            &mir.expr(e).kind,
+            MExprKind::Builtin { method: BuiltinMethod::Posedge, receiver, .. }
+                if matches!(mir.expr(*receiver).kind, MExprKind::Local(_))
+        )
+    }
+
+    /// A statement-`when` body: each statement is a clocked drive (`Equation`),
+    /// a guard (`Expr(If)` whose branches are themselves when-bodies), or a
+    /// (combinational) `let` — everything else stays on HIR.
+    fn mir_ok_when_body(&self, mir: &Mir<'db>, block: &MBlock) -> bool {
+        block.stmts.iter().all(|s| match s {
+            MStmt::Expr(e) => match &mir.expr(*e).kind {
+                MExprKind::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } => {
+                    self.mir_ok_expr(mir, *cond)
+                        && self.mir_ok_when_body(mir, then_branch)
+                        && self.mir_ok_when_body(mir, else_branch)
+                }
+                _ => false,
+            },
+            other => self.mir_ok_stmt(mir, other),
+        }) && block.tail.is_none_or(|t| self.mir_ok_expr(mir, t))
     }
 
     /// A statement-position value: like `mir_ok_expr`, but a *top-level* call may
@@ -1885,7 +1952,14 @@ impl<'db> SvLower<'_, 'db> {
                     && self.mir_ok_expr(mir, *index)
                     && self.mir_static_index(mir, *index)
             }
-            // Slice, When, ConstIf, other Builtins, Record, Def: not yet walked.
+            // A value/aggregate `when` (also the `mem = when …` RAM RHS): the
+            // body is a normal block here (not guarded), `init` is an expr.
+            MExprKind::When { event, body, init } => {
+                self.mir_ok_event(mir, *event)
+                    && self.mir_ok_block(mir, body)
+                    && init.is_none_or(|e| self.mir_ok_expr(mir, e))
+            }
+            // Slice, ConstIf, other Builtins, Record, Def: not yet walked.
             _ => false,
         }
     }
@@ -2766,7 +2840,10 @@ impl<'db> SvLower<'_, 'db> {
                 let i = self.expr_value_mir(index);
                 SvExpr::Lit(format!("{b}[{i}]"))
             }
-            MExprKind::When { .. } => todo!("S3.2k: expr_value_mir When"),
+            MExprKind::When { event, body, init } => {
+                let (event, b, init) = (*event, body.clone(), *init);
+                self.lower_when_mir(m, event, &b, init)
+            }
             MExprKind::If {
                 cond,
                 then_branch,
@@ -3152,7 +3229,10 @@ impl<'db> SvLower<'_, 'db> {
                 let (cond, tb, eb) = (*cond, then_branch.clone(), else_branch.clone());
                 self.lower_if_leaves_mir(m, cond, &tb, &eb)
             }
-            MExprKind::When { .. } => todo!("S3.2k: expr_leaves_mir When"),
+            MExprKind::When { event, body, init } => {
+                let (event, b, init) = (*event, body.clone(), *init);
+                self.lower_when_leaves_mir(m, event, &b, init)
+            }
             MExprKind::Block(b) => {
                 let b = b.clone();
                 self.block_leaves_mir(&b)
@@ -3470,6 +3550,175 @@ impl<'db> SvLower<'_, 'db> {
         }
         self.items.push(SvItem::AlwaysComb(SvAlwaysComb { body }));
         out
+    }
+
+    /// The clock of a MIR `when` event (`clk.posedge()` builtin) — the receiver
+    /// local's name.
+    #[allow(dead_code)]
+    fn clock_of_event_mir(&self, event: MExprId) -> String {
+        if let MExprKind::Builtin {
+            method: BuiltinMethod::Posedge,
+            receiver,
+            ..
+        } = &self.mir.expr(event).kind
+            && let MExprKind::Local(l) = &self.mir.expr(*receiver).kind
+        {
+            return self.local_name(*l);
+        }
+        self.first_clock()
+    }
+
+    /// MIR twin of `lower_when` — a value-position `when` register into a fresh
+    /// `__block_N`.
+    #[allow(dead_code)]
+    fn lower_when_mir(
+        &mut self,
+        m: MExprId,
+        event: MExprId,
+        body: &MBlock,
+        init: Option<MExprId>,
+    ) -> SvExpr {
+        let synth = self.fresh_block();
+        let ty = self.sv_type_of(&self.mir.expr(m).ty.clone());
+        self.items.push(SvItem::Logic(SvLogicDecl {
+            ty,
+            name: synth.clone(),
+        }));
+        if let Some(init) = init {
+            let v = self.expr_value_mir(init);
+            self.items
+                .push(SvItem::Initial(vec![(SvExpr::Ident(synth.clone()), v)]));
+        }
+        let clock = self.clock_of_event_mir(event);
+        let d = self.block_value_mir(body);
+        self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
+            clock,
+            reset: None,
+            reset_body: Vec::new(),
+            clocked_body: vec![SvSeqAssign::new(SvExpr::Ident(synth.clone()), d)],
+        }));
+        SvExpr::Ident(synth)
+    }
+
+    /// MIR twin of the aggregate `when` in `expr_leaves` — a per-leaf register.
+    #[allow(dead_code)]
+    fn lower_when_leaves_mir(
+        &mut self,
+        m: MExprId,
+        event: MExprId,
+        body: &MBlock,
+        init: Option<MExprId>,
+    ) -> Vec<(String, SvExpr)> {
+        let synth = self.fresh_block();
+        let clock = self.clock_of_event_mir(event);
+        if let Some(init) = init {
+            let init_leaves = self.expr_leaves_mir(init);
+            let assigns = init_leaves
+                .into_iter()
+                .map(|(suffix, v)| (SvExpr::Ident(join(&synth, &suffix)), v))
+                .collect();
+            self.items.push(SvItem::Initial(assigns));
+        }
+        let d_leaves = self.block_leaves_mir(body);
+        let tys = self.expr_leaf_types_mir(m);
+        let mut out = Vec::new();
+        let mut seq = Vec::new();
+        for (k, (suffix, d)) in d_leaves.into_iter().enumerate() {
+            let name = join(&synth, &suffix);
+            let ty = tys.get(k).cloned().unwrap_or_else(SvType::bit);
+            self.items.push(SvItem::Logic(SvLogicDecl {
+                ty,
+                name: name.clone(),
+            }));
+            seq.push(SvSeqAssign::new(SvExpr::Ident(name.clone()), d));
+            out.push((suffix, SvExpr::Ident(name)));
+        }
+        self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
+            clock,
+            reset: None,
+            reset_body: Vec::new(),
+            clocked_body: seq,
+        }));
+        out
+    }
+
+    /// MIR twin of `lower_when_stmt` — statement-form `when` (clocked partial
+    /// drives, optional `init`).
+    #[allow(dead_code)]
+    fn lower_when_stmt_mir(&mut self, event: MExprId, body: &MBlock, init: Option<&MBlock>) {
+        let clock = self.clock_of_event_mir(event);
+        if let Some(init) = init {
+            let mut assigns = Vec::new();
+            for stmt in &init.stmts {
+                if let MStmt::Equation { lhs, rhs } = stmt {
+                    let lhs_leaves = self.place_leaves_dir_mir(lhs);
+                    let rhs_leaves = self.value_leaves_dir_mir(*rhs);
+                    for ((lp, _), (rp, _)) in lhs_leaves.into_iter().zip(rhs_leaves) {
+                        assigns.push((lp, rp));
+                    }
+                }
+            }
+            if !assigns.is_empty() {
+                self.items.push(SvItem::Initial(assigns));
+            }
+        }
+        let mut seq = Vec::new();
+        self.when_body_seq_mir(body, None, &mut seq);
+        self.items.push(SvItem::AlwaysFf(SvAlwaysFf {
+            clock,
+            reset: None,
+            reset_body: Vec::new(),
+            clocked_body: seq,
+        }));
+    }
+
+    /// MIR twin of `when_body_seq` — flatten a `when` body into guarded
+    /// nonblocking assignments (an `if` narrows the guard).
+    #[allow(dead_code)]
+    fn when_body_seq_mir(
+        &mut self,
+        block: &MBlock,
+        guard: Option<SvExpr>,
+        seq: &mut Vec<SvSeqAssign>,
+    ) {
+        for stmt in &block.stmts {
+            match stmt {
+                MStmt::Equation { lhs, rhs } => {
+                    let lhs_leaves = self.place_leaves_dir_mir(lhs);
+                    let rhs_leaves = self.value_leaves_dir_mir(*rhs);
+                    for ((lp, _), (rp, _)) in lhs_leaves.into_iter().zip(rhs_leaves) {
+                        seq.push(SvSeqAssign {
+                            lhs: lp,
+                            rhs: rp,
+                            guard: guard.clone(),
+                        });
+                    }
+                }
+                MStmt::Expr(e) => {
+                    if let MExprKind::If {
+                        cond,
+                        then_branch,
+                        else_branch,
+                    } = &self.mir.expr(*e).kind
+                    {
+                        let (cond, then_b, else_b) =
+                            (*cond, then_branch.clone(), else_branch.clone());
+                        let c = self.expr_value_mir(cond);
+                        self.when_body_seq_mir(&then_b, Some(and_guard(&guard, c.clone())), seq);
+                        if !else_b.stmts.is_empty() {
+                            let not_c = SvExpr::BinOp(
+                                SvBinOp::Eq,
+                                Box::new(c),
+                                Box::new(SvExpr::Lit("1'b0".to_owned())),
+                            );
+                            self.when_body_seq_mir(&else_b, Some(and_guard(&guard, not_c)), seq);
+                        }
+                    }
+                }
+                MStmt::Let { local, value } => self.lower_let_mir(*local, *value),
+                _ => {}
+            }
+        }
     }
 
     /// The clock signal name for a value's domain (a `Domain::Param` resolves to
