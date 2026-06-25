@@ -181,6 +181,21 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 
 ## Status log (newest first)
 
+- 2026-06-25: **MIR const evaluator + const-expr slice endpoints.** New
+  `src/mir/const_eval.rs` — a MIR-native const interpreter (twin of
+  `hir::const_eval`, shared `Value`/`arith`/`project` core), the S8 substrate
+  introduced early for the MIR/backend side. Slice endpoints now accept const
+  *expressions* (a const `let`, width arithmetic, and let-bound const-fn results),
+  folded by it: `let lo=4; v[lo+4..lo]` → `v[7:4]`. infer's `const_arg_of` extended
+  to build the richer `ConstArg` (Local/Op/Field), with the slice arm gated so a
+  width whose `Local` leaf doesn't fold (a runtime/value endpoint) is rejected,
+  not emitted as an illegal runtime-width part-select. Examples:
+  `working/slice_const_expr.mrn` + `fail-expected/slice-runtime-width.mrn`.
+  Constraints kept: `infer` + the type-level `ConstArg` width axis stay on the HIR
+  evaluator until S8 (mir_of depends on infer); `const if` folds at mir_of via the
+  HIR `eval_cond` (using `mir::const_eval` there would be a `mir_of` salsa cycle —
+  it needs a separate post-lowering fold pass).
+
 - 2026-06-25: **slice-set overlap conflict-check LANDED.** Overlapping slice-sets
   (`v[0..2]` + `v[1..3]`, both driving index 1) were an uncaught multi-driver —
   the prefix-only conflict test treated distinct range strings as disjoint. Now

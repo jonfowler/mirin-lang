@@ -1,0 +1,9 @@
+// A slice whose width depends on a RUNTIME value is rejected: `idx` is a value
+// param, so `v[idx + 8 .. idx]` has a width that doesn't fold to a compile-time
+// constant. (The offset form `v[idx +: 8]` — runtime base, constant width — is
+// the way to index at a runtime offset.) The width's local must const-fold;
+// here it can't, so infer rejects rather than emit an illegal runtime-width
+// part-select.
+fn pick(v: bits(16), idx: uint(4)) -> bits(8) {
+    v[idx + 8 .. idx]
+}

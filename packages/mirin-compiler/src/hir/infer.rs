@@ -202,7 +202,10 @@ impl InferDiagnostic {
                     .to_owned()
             }
             InferDiagnosticKind::SliceNotImplemented => {
-                "slicing is not yet implemented (planning/slicing.md)".to_owned()
+                "unsupported slice: the width must be a positive compile-time constant \
+                 (a literal, const generic, or const-folding expression) over a `bits`/`Vec` \
+                 base — for a runtime offset use `x[off +: width]` (planning/slicing.md)"
+                    .to_owned()
             }
             InferDiagnosticKind::TypeMismatch => "type mismatch".to_owned(),
             InferDiagnosticKind::WidthMismatch => "mismatched `uint` widths".to_owned(),
@@ -1786,10 +1789,48 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     /// A slice endpoint as a const arg: a literal or a const generic param. Other
     /// shapes (a runtime value, arithmetic) are not const endpoints here.
     fn const_arg_of(&self, body: &Body<'db>, e: ExprId) -> Option<ConstArg<'db>> {
-        match body.expr(e).kind {
-            ExprKind::Number(v, _) => Some(ConstArg::Lit(v)),
-            ExprKind::TypedLiteral { value, .. } => Some(ConstArg::Lit(value)),
-            ExprKind::ConstParam(i) => Some(ConstArg::Param(i)),
+        match &body.expr(e).kind {
+            ExprKind::Number(v, _) => Some(ConstArg::Lit(*v)),
+            ExprKind::TypedLiteral { value, .. } => Some(ConstArg::Lit(*value)),
+            ExprKind::ConstParam(i) => Some(ConstArg::Param(*i)),
+            // A const local (`let lo = …; v[lo..]`): a `ConstArg::Local` leaf —
+            // `const_eval` resolves it, and infer's `@const` check rejects a
+            // non-const local in this width position.
+            ExprKind::Local(l) => Some(ConstArg::Local(*l)),
+            ExprKind::Field { receiver, field } => Some(ConstArg::Field(
+                Box::new(self.const_arg_of(body, *receiver)?),
+                field.clone(),
+            )),
+            ExprKind::ConstAssoc { item, self_ty } => Some(ConstArg::Assoc {
+                item: *item,
+                self_ty: Box::new(self_ty.clone()),
+            }),
+            // Width arithmetic (`v[lo + 4 .. lo]`): operators desugar to method
+            // calls, folded to a `ConstArg::Op`. A *plain* call stays unrepresentable
+            // (`Deferred`) — bind it with a `let` first (planning/const_eval.md).
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                let op = match method.as_str() {
+                    "add" => ConstOp::Add,
+                    "sub" => ConstOp::Sub,
+                    "mul" => ConstOp::Mul,
+                    "div" => ConstOp::Div,
+                    "rem" => ConstOp::Rem,
+                    _ => return None,
+                };
+                let [a] = args.as_slice() else { return None };
+                if a.out {
+                    return None;
+                }
+                Some(ConstArg::Op(
+                    op,
+                    Box::new(self.const_arg_of(body, *receiver)?),
+                    Box::new(self.const_arg_of(body, a.expr)?),
+                ))
+            }
             _ => None,
         }
     }
@@ -2003,8 +2044,25 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     self.infer_expr(body, e);
                 }
                 match self.slice_literal(body, &bt, lo, hi, width) {
-                    Some(ty) => ty,
-                    None => {
+                    // A slice's width must be elaboration-constant. A const generic
+                    // `Param` leaf is fine (it renders as an SV `#()` expression);
+                    // a `Local` leaf must fold to a literal (`let lo = 4`). A
+                    // value/runtime local endpoint folds to nothing — reject it
+                    // rather than emit an illegal runtime-width slice.
+                    Some(ty)
+                        if width_locals(&ty).into_iter().all(|l| {
+                            crate::hir::const_eval::eval_const(
+                                self.db,
+                                self.krate,
+                                self.def,
+                                &ConstArg::Local(l),
+                            )
+                            .is_some()
+                        }) =>
+                    {
+                        ty
+                    }
+                    _ => {
                         self.diag(InferDiagnosticKind::SliceNotImplemented);
                         Type::Error
                     }

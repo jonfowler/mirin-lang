@@ -1,0 +1,9 @@
+// Slice endpoints that are const *expressions*, not just literals or params: a
+// const `let` and width arithmetic over it, folded by the MIR const evaluator
+// (`planning/const_eval.md`, `src/mir/const_eval.rs`). `lo = 4`, so
+// `v[lo + 4 .. lo]` is the half-open bit interval [4, 8) → the SV part-select
+// `v[7:4]`. A non-const (runtime) endpoint is rejected — the width must fold.
+fn pick(v: bits(16)) -> bits(4) {
+    let lo = 4;
+    v[lo + 4..lo]
+}

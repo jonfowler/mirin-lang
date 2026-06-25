@@ -1329,12 +1329,59 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
-    /// A slice endpoint as a const arg (a literal or const generic param).
+    /// A slice endpoint as a `ConstArg` for rendering. First try to **ground** it
+    /// through the MIR const evaluator (so arithmetic, const `let`s, and const-fn
+    /// calls all reduce — `v[w..]`, `v[n+1..]`, `v[f()..]`); if it stays symbolic
+    /// (a const generic, possibly in arithmetic), lower its structural shape so
+    /// `render_const` prints the parametric SV expression (and a mono copy grounds
+    /// it via `self_subst`).
     fn mir_const_arg(&self, m: MExprId) -> ConstArg<'db> {
+        if let Some(v) = crate::mir::const_eval::eval_int(self.db, self.krate, self.def, m) {
+            return ConstArg::Lit(v);
+        }
+        self.mir_const_structural(m)
+    }
+
+    /// The structural symbolic lowering of a const-width MExpr to a `ConstArg`
+    /// (`render_const_sv`'s input): const param, width arithmetic, field/assoc.
+    /// A shape that is not a const width expression — notably a *symbolic* call
+    /// (`Deferred`; bind it with a `let` first) — is a hard error.
+    fn mir_const_structural(&self, m: MExprId) -> ConstArg<'db> {
         match &self.mir.expr(m).kind {
             MExprKind::Number(v, _) => ConstArg::Lit(*v),
             MExprKind::ConstParam(i) => ConstArg::Param(*i),
-            _ => panic!("MIR: slice endpoint is not a const (literal/param)"),
+            MExprKind::ConstAssoc { item, self_ty } => ConstArg::Assoc {
+                item: *item,
+                self_ty: Box::new(self_ty.clone()),
+            },
+            MExprKind::Field { receiver, field } => ConstArg::Field(
+                Box::new(self.mir_const_structural(*receiver)),
+                field.clone(),
+            ),
+            MExprKind::Call {
+                callee,
+                receiver: Some(r),
+                args,
+                ..
+            } => {
+                let op = match self.map.def_data(*callee).map(|d| d.name.as_str()) {
+                    Some("add") => ConstOp::Add,
+                    Some("sub") => ConstOp::Sub,
+                    Some("mul") => ConstOp::Mul,
+                    Some("div") => ConstOp::Div,
+                    Some("rem") => ConstOp::Rem,
+                    _ => panic!("MIR: slice endpoint is not a const width expression"),
+                };
+                let [Conn::In(b)] = args.as_slice() else {
+                    panic!("MIR: slice endpoint operator has unexpected arity");
+                };
+                ConstArg::Op(
+                    op,
+                    Box::new(self.mir_const_structural(*r)),
+                    Box::new(self.mir_const_structural(*b)),
+                )
+            }
+            _ => panic!("MIR: slice endpoint is not a const width expression"),
         }
     }
 
