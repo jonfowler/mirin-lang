@@ -216,6 +216,13 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: HIR-core deletion — VALIDATED the always-MIR flip (golden
+  byte-for-byte green with every def routed through the walker), then found the
+  dead cluster is mutually-referencing + interspersed with kept const-fn methods,
+  so it needs a single careful Edit-based pass (a piecemeal sed attempt errored
+  on a still-referenced `lower_stmts`; reverted). Documented the exact dead/kept
+  method lists + plan above ("HIR-core deletion — VALIDATED"). No code change
+  this fire; the cleanup is now de-risked and ready to execute.
 - 2026-06-25: **S4 step 6 — const-param slice endpoints (symbolic widths).**
   `slice_literal`/`sliced_ty` now build a `ConstArg` width (literals fold to
   `Lit`, a const generic param yields a symbolic `Op(Sub,…)`); the walker's
@@ -476,6 +483,40 @@ Ordered steps (each golden-gated; add slice examples as they work):
 Hardest part: step 1 (const-width derivation + direction). Step 5 (slice-set) is
 separable. The whole feature is the payoff of the MIR migration — it lands as one
 clean MIR-walker desugar instead of touching two backends.
+
+## HIR-core deletion — VALIDATED & ready to execute (2026-06-25)
+
+The flip to **always-MIR** is proven safe: replacing `build_module`'s
+`else if mir_walk_supported(mir) { …_mir } else { …hir }` with an unconditional
+`lower_top_block_mir(mir.block())` keeps `golden_sv_snapshot` **byte-for-byte
+green** over the whole corpus. No regression: runtime-index *writes* are already
+completeness-rejected (`place_of` → `None`), and symbolic generate-if panics on
+both paths.
+
+**Dead once flipped** (delete as ONE pass — they mutually reference, and are
+interspersed with kept const-fn methods, so piecemeal/range deletion breaks the
+build):
+- predicate: `mir_walk_supported`, `mir_ok_stmts`, `mir_ok_fold_step`,
+  `mir_ok_result_value`, `mir_ok_call_or_noop`, `mir_ok_call_stmt`, `mir_ok_stmt`,
+  `mir_ok_event`, `mir_ok_when_body`, `mir_ok_value`, `mir_ok_expr`,
+  `mir_ok_place`, `mir_ok_slice_endpoints`, `mir_static_index`, `mir_ok_block`
+  (contiguous block — easy).
+- HIR statement lowering: `lower_top_block`, `lower_stmts`, `lower_one_stmt`,
+  `lower_mut_fold`, `blocking_assigns`, `lower_when_stmt`, `when_body_seq`,
+  `lower_for`, `lower_let`, `lower_equation`, `lower_call_stmt`, `drive_result`.
+
+**KEPT** (the const-fn SV-`function` path via `build_const_function` still uses
+the HIR value lowering): `for_carries`, `lower_const_function`, `const_stmts`,
+`const_fold_steps`, `loop_bound_var`, and `expr_value`/`expr_leaves`/`as_user_call`/
+`inline_call`/`render_inline`/`call_value_leaves`/`one_leaf`/`record_leaves`/
+`record_out_conns`/`index_bounds_assert`/`expr_type_leaves`/`place_leaves_dir`/
+`value_leaves_dir`/`block_value`/`block_leaves`/`lower_when`/`lower_if`/`as_reg`.
+Fully deleting the HIR *value* lowering needs the const-fn path ported to MIR too
+(a separate step). So this first deletion removes the predicate + HIR *statement*
+lowering only.
+
+Execute as a single Edit-based pass (each method = doc + body), then build (clean,
+no dead_code) + golden + lib. ~600 lines removed.
 
 ## HIR-core deletion (deferred cleanup)
 
