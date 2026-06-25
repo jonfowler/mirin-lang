@@ -2285,12 +2285,17 @@ impl<'db> SvLower<'_, 'db> {
                 hi,
                 width,
             } => {
-                let is_num = |e: &MExprId| matches!(mir.expr(*e).kind, MExprKind::Number(..));
+                let is_num = |e: MExprId| matches!(mir.expr(e).kind, MExprKind::Number(..));
+                let num_or_elided = |o: &Option<MExprId>| o.is_none_or(is_num);
                 self.mir_ok_expr(mir, *base)
-                    && match (lo, hi, width) {
-                        (Some(lo), Some(hi), None) => is_num(lo) && is_num(hi),
-                        (Some(lo), None, Some(w)) => self.mir_ok_expr(mir, *lo) && is_num(w),
-                        _ => false,
+                    && match width {
+                        // Two-endpoint (possibly elided): not both elided; each
+                        // present end a literal.
+                        None => {
+                            (lo.is_some() || hi.is_some()) && num_or_elided(lo) && num_or_elided(hi)
+                        }
+                        // Offset: a walkable base (runtime ok) + a literal width.
+                        Some(w) => lo.is_some_and(|e| self.mir_ok_expr(mir, e)) && is_num(*w),
                     }
             }
             // ConstIf, other Builtins, Def: not walked.
@@ -3647,15 +3652,33 @@ impl<'db> SvLower<'_, 'db> {
                     let w = self.mir_lit(w_e);
                     format!("[{off} +: {w}]")
                 } else {
-                    // Two-endpoint, type-directed range direction.
-                    let (a, b) = (self.mir_lit(lo.unwrap()), self.mir_lit(hi.unwrap()));
-                    match &self.mir.expr(base).ty {
+                    // Two-endpoint, type-directed range direction; an elided end
+                    // defaults from the base length `N` (bits: lo→N, hi→0; vec:
+                    // lo→0, hi→N).
+                    let (n, is_bits) = match &self.mir.expr(base).ty {
                         Type::Value {
-                            kind: ValueKind::Bits { .. },
+                            kind:
+                                ValueKind::Bits {
+                                    width: ConstArg::Lit(n),
+                                },
                             ..
-                        } => format!("[{}:{}]", a - 1, b), // bits: lo=high, hi=low
-                        Type::Vec { .. } => format!("[{}:{}]", a, b - 1), // vec: lo=low, hi=high
-                        _ => panic!("MIR: slice base is neither bits nor vec"),
+                        } => (*n, true),
+                        Type::Vec {
+                            len: ConstArg::Lit(n),
+                            ..
+                        } => (*n, false),
+                        _ => panic!("MIR: slice base length is not a literal"),
+                    };
+                    let a = lo
+                        .map(|e| self.mir_lit(e))
+                        .unwrap_or(if is_bits { n } else { 0 });
+                    let b = hi
+                        .map(|e| self.mir_lit(e))
+                        .unwrap_or(if is_bits { 0 } else { n });
+                    if is_bits {
+                        format!("[{}:{}]", a - 1, b) // bits: a=high, b=low
+                    } else {
+                        format!("[{}:{}]", a, b - 1) // vec: a=low, b=high
                     }
                 };
                 self.expr_leaves_mir(base)

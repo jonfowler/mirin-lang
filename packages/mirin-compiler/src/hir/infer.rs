@@ -1808,18 +1808,49 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             return self.sliced_ty(bt, w);
         }
-        // Two-endpoint form `x[a..b]`: both endpoints literal. `bits` is
-        // high-first (`a`=high), `Vec` is low-first (`a`=low).
-        let a = self.lit_val(body, lo?)?;
-        let b = self.lit_val(body, hi?)?;
-        let w = match bt {
+        // Two-endpoint form `x[a..b]`, possibly elided. The base's length `N`
+        // (literal) supplies an elided end: bits `x[hi..]`→`x[hi..0]`,
+        // `x[..lo]`→`x[N..lo]`; vec `v[lo..]`→`v[lo..N]`, `v[..hi]`→`v[0..hi]`.
+        // Bare `x[..]` (both elided) is rejected. `bits` is high-first (`a`=high),
+        // `Vec` is low-first (`a`=low).
+        if lo.is_none() && hi.is_none() {
+            return None; // bare `x[..]` is redundant
+        }
+        let (n, is_bits) = match bt {
             Type::Value {
-                kind: ValueKind::Bits { .. },
+                kind:
+                    ValueKind::Bits {
+                        width: ConstArg::Lit(n),
+                    },
                 ..
-            } => a - b,
-            Type::Vec { .. } => b - a,
-            _ => return None,
+            } => (*n, true),
+            Type::Vec {
+                len: ConstArg::Lit(n),
+                ..
+            } => (*n, false),
+            _ => return None, // non-literal length / wrong base
         };
+        let a = match lo {
+            Some(e) => self.lit_val(body, e)?,
+            None => {
+                if is_bits {
+                    n
+                } else {
+                    0
+                }
+            }
+        };
+        let b = match hi {
+            Some(e) => self.lit_val(body, e)?,
+            None => {
+                if is_bits {
+                    0
+                } else {
+                    n
+                }
+            }
+        };
+        let w = if is_bits { a - b } else { b - a };
         if w <= 0 {
             return None; // wrong order / zero-width — not this cut
         }

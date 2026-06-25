@@ -214,6 +214,14 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S4 step 4 — slice elision.** An elided endpoint defaults from
+  the base length `N` (literal): bits `x[8..]`→`x[7:0]`, `x[..4]`→`x[15:4]`; vec
+  dual; bare `x[..]` rejected. infer + walker read `N` from the base type;
+  predicate admits None-or-literal endpoints (not both elided). `slice_elide.mrn`
+  verilator-clean, in CLEAN+VERILATOR_CLEAN+golden. The slice *read* syntax is
+  now complete (two-endpoint, offset, elision; bits + vec; literal + runtime
+  base). Next S4: zero-width const-if guard, param/const-expr endpoints,
+  slice-set (lvalue).
 - 2026-06-25: **S4 step 3 — offset form / runtime-base slices.** `x[off..+w]`
   (width const, base may be RUNTIME) → the SV indexed part-select `x[off +: w]`,
   uniform for bits (packed) and Vec (unpacked) — no direction branch. infer:
