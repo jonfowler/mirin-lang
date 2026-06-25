@@ -670,6 +670,33 @@ fn mono_check_composes_one_level() {
     );
 }
 
+/// Transitive (depth-2) composition: the bad width is two call levels below the
+/// ground root (`use_bad` → `wrap` → `mid` → `inner`), and neither `wrap` nor
+/// `mid` has a failing width of its own — only the composed k=4 grounds `inner`'s
+/// `uint(k - 10)` to -6. Depth-1 composition would miss this.
+#[test]
+fn mono_check_composes_n_levels() {
+    let src = "fn inner {dom clk: Clock, const k: integer} (x: uint(k) @clk) \
+        -> uint(k - 10) @clk { x.resize() }\n\
+        fn mid {dom clk: Clock, const k: integer} (x: uint(k) @clk) -> uint(k) @clk \
+        { let tmp = inner(x); x.resize() }\n\
+        fn wrap {dom clk: Clock, const k: integer} (x: uint(k) @clk) -> uint(k) @clk \
+        { let tmp = mid(x); x.resize() }\n\
+        fn use_bad {dom clk: Clock} (x: uint(4) @clk) -> uint(4) @clk { wrap(x) }\n";
+    let mut db = RootDatabase::default();
+    let mut vfs = Vfs::new();
+    vfs.set_file_text(&mut db, "t.mrn", src);
+    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+    let diags = mono_check(&db, krate);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message().contains("inner") && d.message().contains("-6")),
+        "expected a depth-2 composed diagnostic: {:?}",
+        diags.iter().map(|d| d.message()).collect::<Vec<_>>()
+    );
+}
+
 /// `mono_check` catches a parametric width that grounds non-positive at a
 /// literal instantiation — a `uint(n - m)` return with n=4, m=8 → width -4,
 /// which infer leaves symbolic (decided only at the call).

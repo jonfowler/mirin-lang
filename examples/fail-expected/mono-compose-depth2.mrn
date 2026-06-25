@@ -1,0 +1,23 @@
+// Depth-2 composition: the bad width lives in `inner`'s signature
+// (`uint(k - 10)`), two call levels below the ground root. `wrap` and `mid` both
+// have only positive widths (`uint(k) -> uint(k)`), so neither's own obligations
+// fail — `mono_check` must compose `use_bad`'s k=4 down through `wrap -> mid ->
+// inner`, grounding `inner`'s return to `uint(-6)`. Depth-1 composition would
+// miss this; the transitive walk catches it. Reported at the root `wrap(x)` call.
+fn inner {dom clk: Clock, const k: integer} (x: uint(k) @clk) -> uint(k - 10) @clk {
+    x.resize()
+}
+
+fn mid {dom clk: Clock, const k: integer} (x: uint(k) @clk) -> uint(k) @clk {
+    let tmp = inner(x);
+    x.resize()
+}
+
+fn wrap {dom clk: Clock, const k: integer} (x: uint(k) @clk) -> uint(k) @clk {
+    let tmp = mid(x);
+    x.resize()
+}
+
+fn use_bad {dom clk: Clock} (x: uint(4) @clk) -> uint(4) @clk {
+    wrap(x)
+}

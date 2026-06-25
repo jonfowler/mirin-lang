@@ -1,12 +1,15 @@
 # Monomorphisation-time checking (`mono_check`)
 
-> **Status: first slice BUILT (2026-06-25); scaling design not yet.** The ground
-> direct-call check is live in `backend/mono_check.rs` (the `mono_check(krate)`
-> query) — a literal-arg call that grounds a callee residual false is now a
-> compile-time diagnostic. The scaling design below (assertion maps, support
-> factoring, family dedup) and cross-module composition are the *destination*,
-> not yet built. **See "## Implementation plan" at the end** for what landed and
-> what remains.
+> **Status: ground check BUILT incl. transitive composition (2026-06-25); the
+> cost-factoring scaling design not yet.** The `mono_check(krate)` query
+> (`backend/mono_check.rs`) decides ground obligations at instantiation — a
+> literal-arg call that grounds a callee residual/width false is a compile-time
+> diagnostic — and composes **transitively (bounded N-level)** down a call chain,
+> so a bad width N levels below the ground root (`outer → inner → foo`) is caught.
+> What remains is purely **cost**: the assertion-map / support-factoring / family
+> dedup below turns the correct-but-`O(call sites × obligations × depth)` walk
+> into a factored one **without changing the diagnostics**. **See "## Implementation
+> plan" at the end** for what landed and what remains.
 
 ## Why it exists
 
@@ -270,23 +273,28 @@ scope a literal). This landed naively (no assertion-map factoring yet):
   does not ground, so it does not fire — the existing `initial assert` fallback in
   `build_module` still guards equality residuals. Negative space: no silent pass.
 
-Scope: **depth-1** composition. Besides the immediate callee's obligations, an
-inner call inside the callee whose subst was symbolic in the callee's frame but
-grounds once this call's args are substituted in is checked too (the thin-wrapper
-case: `wrap{k}(x){ inner(x) }` where `inner`'s signature has the bad width, not
-`wrap`'s). Inner calls already ground on their own are left to the walk over the
-callee as a def (so they are not double-reported). Implemented by `compose_term`
-substituting the enclosing instantiation into each recorded inner-call term, then
-re-running `check_obligations`; output is deduped by `(span, message)`.
+Scope: **transitive (bounded N-level)** composition (`compose_check`). For each
+root call `D → C(args)` the walk checks `C`'s obligations under `args`, then
+recurses into each inner call `C → E(iargs)` that is *not* already self-ground
+(those are covered when `C` is walked as a def — recursing them would
+double-report), composing `args` into `iargs` via `compose_term`, and descends.
+So a bad width N levels down that only grounds once the root's literals flow
+through (`outer → inner → foo`) is decided, reported at the root call site;
+output is deduped by `(span, message)`.
 
-**General N-level composition is deliberately not built this way.** Recursing the
-worklist unbounded needs: (a) **sound dedup** — a const-only key is unsound
-because a *type* arg can drive a width via an assoc const, so two const-equal
-instantiations with different type args can differ; (b) **termination** — `f(n)`
-calling `f(n - 1)` generates unbounded distinct instantiations (a recursion-limit
-/ fuel problem); (c) avoiding **exponential diamonds** without memoisation. Those
-are exactly what the assertion-map + support-factoring design above buys; depth-1
-is the safe, bounded subset that covers the common wrapper case meanwhile.
+The termination/diamond concerns are handled **without** a per-instantiation
+dedup key: a per-path **fuel** cap (`COMPOSE_FUEL`) bounds descent depth — so
+`f(n)` calling `f(n - 1)` stops rather than hanging — and a shared **work budget**
+(`COMPOSE_BUDGET`) per root bounds total work, capping a diamond (many paths to
+the same instantiation) without needing `Term` to be hashable. The earlier
+soundness worry about a const-only dedup key (a *type* arg can drive a width via
+an assoc const) is moot: there is no key; duplicate diagnostics from two paths
+collapse in the final `(span, message)` dedup, and the budget — not a key — caps
+diamonds. If the budget is ever exhausted (far beyond any real generic call
+graph), the uncovered deep obligations fall back to the symbolic `initial assert`
+(sound — incompleteness, not a wrong pass). What the assertion-map design adds on
+top is **cost factoring** (loop-axis support, family dedup, range reasoning) —
+the same diagnostics for far less work on deep/loopy trees.
 
 Reported via `main.rs`'s `collect_diagnostics`, gated on a clean front end (an
 ill-typed body's residuals would cascade). Tested by

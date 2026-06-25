@@ -19,13 +19,17 @@
 //! (`value` fits `width`), and width positivity (a parametric `uint(n - m)`
 //! grounding `< 1`).
 //!
-//! Composition is **depth-1**: besides the immediate callee, an inner call whose
-//! subst was symbolic in the callee's frame but grounds once this call's args are
-//! substituted in is checked too (the thin-wrapper case: `wrap{n}(x){ inner(n) }`
-//! called with a literal width). Inner calls already ground on their own are left
-//! to the walk over the callee as a def. General N-level composition — and the
-//! dedup / termination / support-factoring an unbounded worklist needs — is the
-//! assertion-map scaling design in `planning/mono_check.md`.
+//! Composition is **transitive (bounded N-level)**: the walk recurses through a
+//! call chain, composing each call's subst into the next, so an obligation buried
+//! N levels down that only grounds once the root's literals flow through is still
+//! decided (`outer → inner → foo`). Soundness of the recursion: it dedups
+//! instantiations (diamonds) by `(callee, composed subst)` — type args included,
+//! since a type arg can drive a width via an assoc const — and bounds genuine
+//! recursion (`f(n)` → `f(n-1)`) with a fuel cap. Inner calls already ground on
+//! their own are left to the walk over the callee as a def (no double-report).
+//! This is the correct-but-unfactored ground check; the assertion-map /
+//! support-factoring design in `planning/mono_check.md` later cuts its *cost*
+//! (loop-axis factoring, family dedup) **without changing the diagnostics**.
 //!
 //! Negative space: a residual/width that stays symbolic after substitution simply
 //! does not fire (not a ground decision) — never a silent wrong pass, because the
@@ -69,14 +73,13 @@ impl<'db> MonoDiagnostic<'db> {
 /// the user, but the other modules still render). The caller (CLI/LSP) reports
 /// these alongside the front-end diagnostics.
 ///
-/// Coverage: **depth-1** call composition. For each call site `D → C(args)`:
-/// - depth-0: `C`'s own obligations under `args`;
-/// - depth-1: an inner call `C → E(iargs)` whose `iargs` were symbolic in `C`'s
-///   frame but ground once `args` is substituted in (the thin-wrapper case:
-///   `wrap{n}(x){ inner(n) }` called `wrap()` with a literal width). Inner calls
-///   already ground on their own are skipped here — they are checked when `C` is
-///   walked as a def. General N-level composition (with the dedup/termination/
-///   factoring the unbounded worklist needs) is `planning/mono_check.md`.
+/// Coverage: **transitive (bounded N-level)** call composition. For each call
+/// site `D → C(args)`, [`compose_check`] checks `C`'s obligations under `args`,
+/// then recurses through `C`'s inner calls that `args` grounds further, composing
+/// substs down the chain (`outer → inner → foo`). Diamonds dedup by
+/// `(callee, composed subst)`; a fuel cap bounds recursion. The cost-factoring
+/// (assertion maps, support factoring) remains the destination in
+/// `planning/mono_check.md` — it lowers cost, not the diagnostics.
 #[salsa::tracked(returns(ref))]
 pub fn mono_check<'db>(
     db: &'db dyn salsa::Database,
@@ -96,31 +99,22 @@ pub fn mono_check<'db>(
                 continue;
             };
             let span = mexpr.span;
-            // depth-0: the callee's obligations under this call's subst.
+            // Walk the ground instantiation tree rooted at this call: check the
+            // callee's obligations under this subst, then recurse into its inner
+            // calls that this subst grounds further (transitive composition).
             let subst: Vec<Option<Term<'db>>> = substs.iter().cloned().map(Some).collect();
-            check_obligations(db, krate, *callee, &subst, def, span, &mut out);
-
-            // depth-1: inner calls of the callee that this call's subst grounds.
-            for inner in mir_of(db, krate, *callee).exprs() {
-                let MExprKind::Call {
-                    callee: inner_callee,
-                    substs: inner_substs,
-                    ..
-                } = &inner.kind
-                else {
-                    continue;
-                };
-                // Already ground in the callee's frame → handled when we walk the
-                // callee as a def; composing here would only double-report.
-                if consts_closed(inner_substs) {
-                    continue;
-                }
-                let composed: Vec<Option<Term<'db>>> = inner_substs
-                    .iter()
-                    .map(|t| Some(compose_term(t, &subst)))
-                    .collect();
-                check_obligations(db, krate, *inner_callee, &composed, def, span, &mut out);
-            }
+            let mut budget = COMPOSE_BUDGET;
+            compose_check(
+                db,
+                krate,
+                *callee,
+                &subst,
+                def,
+                span,
+                COMPOSE_FUEL,
+                &mut budget,
+                &mut out,
+            );
         }
     }
     // Distinct paths can reach the same obligation at the same call; dedup.
@@ -129,6 +123,80 @@ pub fn mono_check<'db>(
     });
     out.dedup();
     out
+}
+
+/// Per-path depth bound for transitive composition — turns an accidental
+/// recursive chain (`f(n)` → `f(n - 1)` → …) into a bounded descent rather than a
+/// hang. Real generic call trees are far shallower.
+const COMPOSE_FUEL: u32 = 16;
+/// Shared total-work bound per root call — caps a diamond (many paths to the same
+/// instantiation) without needing a hashable dedup key. Huge relative to any real
+/// generic call graph; if ever exhausted, the uncovered deep obligations simply
+/// fall back to the symbolic `initial assert` (sound — incompleteness, not a
+/// wrong pass).
+const COMPOSE_BUDGET: u32 = 10_000;
+
+/// Walk the ground instantiation tree rooted at a call `→ callee(subst)`: check
+/// `callee`'s own obligations under `subst`, then recurse into each inner call
+/// `callee → inner(iargs)` whose `iargs` are *not* already self-ground (those are
+/// covered when `callee` is walked as a def — recursing them would double-report),
+/// composing `subst` into `iargs` so an obligation buried N levels down that only
+/// grounds once this root's literals flow through is still decided.
+///
+/// Bounds: `fuel` caps descent depth (recursion), `budget` caps total work
+/// (diamonds) — together they make the walk terminate on any graph without a
+/// per-instantiation dedup key. A still-symbolic composition decides nothing; a
+/// duplicate diagnostic from two paths is removed by the caller's final dedup.
+#[allow(clippy::too_many_arguments)]
+fn compose_check<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    callee: DefId<'db>,
+    subst: &[Option<Term<'db>>],
+    report_def: DefId<'db>,
+    span: Span,
+    fuel: u32,
+    budget: &mut u32,
+    out: &mut Vec<MonoDiagnostic<'db>>,
+) {
+    if *budget == 0 {
+        return;
+    }
+    *budget -= 1;
+    check_obligations(db, krate, callee, subst, report_def, span, out);
+    if fuel == 0 {
+        return;
+    }
+    for inner in mir_of(db, krate, callee).exprs() {
+        let MExprKind::Call {
+            callee: inner_callee,
+            substs: inner_substs,
+            ..
+        } = &inner.kind
+        else {
+            continue;
+        };
+        // Already ground in `callee`'s own frame → handled when `callee` is walked
+        // as a def; composing here would only double-report.
+        if consts_closed(inner_substs) {
+            continue;
+        }
+        let composed: Vec<Option<Term<'db>>> = inner_substs
+            .iter()
+            .map(|t| Some(compose_term(t, subst)))
+            .collect();
+        compose_check(
+            db,
+            krate,
+            *inner_callee,
+            &composed,
+            report_def,
+            span,
+            fuel - 1,
+            budget,
+            out,
+        );
+    }
 }
 
 /// Check a callee's deferred obligations under a (possibly composed) subst,

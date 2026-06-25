@@ -86,10 +86,16 @@
   (the `MonoReq` worklist collector + `ground_widths` on read — see "HIR-core"
   notes). `mono_check` BUILT (`backend/mono_check.rs`): ground-regime check over
   MIR call sites — width-equality residuals, literal-fit residuals, and width
-  positivity — frame-safe (`is_closed`), wired to CLI + LSP. **Remaining:**
-  cross-module **composition** (transitive ground obligations through a chain of
-  generic calls); the symbolic assertion-map/support-factoring scaling design in
-  `planning/mono_check.md`.
+  positivity — frame-safe (`is_closed`), wired to CLI + LSP. **Cross-module
+  composition is now transitive (bounded N-level)** (`compose_check`): a bad
+  width N levels below the ground root (`use_bad → wrap → mid → inner` →
+  `uint(-6)`) is caught, reported at the root call. Termination/diamonds bounded
+  by per-path fuel + a shared work budget (no hashable dedup key needed); a
+  still-symbolic composition decides nothing, and budget-exhaustion falls back to
+  the `initial assert` (sound). `fail-expected/mono-compose-depth2.mrn` +
+  `mono_check_composes_n_levels`. **Remaining (cost only, NOT correctness):** the
+  assertion-map / support-factoring / family-dedup scaling design in
+  `planning/mono_check.md` — same diagnostics, far less work on deep/loopy trees.
 - [~] **S7 — Inline on MIR (v1 combinational splice LANDED).** Mirin-bodied
   `#[inline]` fns now splice at the call site (`splice_inline_body`,
   `backend/lower.rs`): a fresh prefix-scoped nested `SvLower` over the callee's
