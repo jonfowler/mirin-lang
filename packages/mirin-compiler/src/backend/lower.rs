@@ -2822,10 +2822,14 @@ impl<'db> SvLower<'_, 'db> {
         args: &[Conn],
         named: &[MNamedArg],
     ) -> Vec<(String, SvExpr)> {
-        const MAX_INLINE_DEPTH: u32 = 16;
+        // A generous backstop: `inline_check` already rejects inline *cycles* at
+        // the front end, so this only guards an exotic uncaught cycle (e.g. one
+        // through method dispatch) — set well above any real inline nesting depth
+        // so a legitimate deep-but-finite chain never trips it.
+        const MAX_INLINE_DEPTH: u32 = 64;
         assert!(
             self.inline_depth < MAX_INLINE_DEPTH,
-            "inline splice depth exceeded — a recursive `#[inline]` cycle?"
+            "inline splice depth exceeded — an uncaught recursive `#[inline]` cycle?"
         );
 
         // The call's generic args, grounded through the caller's mono subst, are
@@ -2887,13 +2891,20 @@ impl<'db> SvLower<'_, 'db> {
                 pos_i += 1;
                 e
             };
-            let Some(caller_expr) = caller_expr else {
-                continue; // omitted (defaulted) param — defaults are not v1 wired
-            };
             let base = sub.local_name(p.local);
             let param_leaves = sub.local_type_leaves(p.local);
-            let caller_leaves = self.expr_leaves(caller_expr);
-            for (leaf, (_, cv)) in param_leaves.into_iter().zip(caller_leaves) {
+            // Caller-side value per param leaf: the argument's leaves, or — for an
+            // omitted param with a default — the default broadcast to each leaf
+            // (matching `emit_instance_core`'s scalar-default broadcast). A param
+            // with neither is an arity error reported by the front end.
+            let caller_vals: Vec<SvExpr> = match caller_expr {
+                Some(e) => self.expr_leaves(e).into_iter().map(|(_, v)| v).collect(),
+                None => match &p.default {
+                    Some(d) => param_leaves.iter().map(|_| default_value(d)).collect(),
+                    None => continue,
+                },
+            };
+            for (leaf, cv) in param_leaves.into_iter().zip(caller_vals) {
                 let name = join(&base, &leaf.suffix);
                 self.items.push(SvItem::Logic(SvLogicDecl {
                     ty: leaf.ty,

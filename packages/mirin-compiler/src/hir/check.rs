@@ -808,6 +808,10 @@ pub enum InlineDiagnosticKind {
     /// An `integer`-typed value parameter — compile-time only, not a wire; v1
     /// binds value params as caller-side wires, so an integer param is deferred.
     IntegerParam { name: String },
+    /// The inline fn calls itself (directly or transitively through other inline
+    /// fns) — splicing would not terminate. Rejected cleanly here rather than at
+    /// the backend splice's depth guard.
+    Recursive,
 }
 
 impl InlineDiagnostic {
@@ -838,6 +842,11 @@ impl InlineDiagnostic {
                     "an `#[inline]` fn cannot take an `integer` parameter (`{name}`) yet \
                      (value params splice as wires; an `integer` is compile-time only)"
                 )
+            }
+            InlineDiagnosticKind::Recursive => {
+                "an `#[inline]` fn cannot call itself (directly or through other \
+                 inline fns) — splicing it would not terminate"
+                    .to_owned()
             }
         }
     }
@@ -936,7 +945,65 @@ pub fn inline_check<'db>(
         });
     }
 
+    // Inline recursion: a fn that calls itself (directly or transitively through
+    // other inline fns) would splice forever. Reject up front.
+    if inline_recurses(db, krate, def) {
+        out.push(InlineDiagnostic {
+            span: Span::default(),
+            kind: InlineDiagnosticKind::Recursive,
+        });
+    }
+
     out
+}
+
+/// The direct, inline, Mirin-bodied callees of `def` (the calls that the backend
+/// would splice). Only `Call { callee: Def(d) }` is followed — a method-dispatched
+/// callee is exotic enough to leave to the backend's depth-guard backstop.
+fn inline_mirin_callees<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+) -> Vec<DefId<'db>> {
+    let map = crate_def_map(db, krate);
+    let body = body(db, krate, def);
+    let mut out = Vec::new();
+    for e in body.exprs() {
+        let ExprKind::Call { callee, .. } = &e.kind else {
+            continue;
+        };
+        let ExprKind::Def(d) = body.expr(*callee).kind else {
+            continue;
+        };
+        if map.def_data(d).is_some_and(|data| data.inline) && body_is_mirin(db, krate, d) {
+            out.push(d);
+        }
+    }
+    out
+}
+
+fn body_is_mirin<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db>) -> bool {
+    body(db, krate, def).verilog().is_none()
+}
+
+/// Does following inline-callee edges from `start` lead back to `start` (a splice
+/// cycle)? A bounded DFS over the inline call graph.
+fn inline_recurses<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    start: DefId<'db>,
+) -> bool {
+    let mut seen: std::collections::HashSet<DefId<'db>> = std::collections::HashSet::new();
+    let mut stack = inline_mirin_callees(db, krate, start);
+    while let Some(d) = stack.pop() {
+        if d == start {
+            return true;
+        }
+        if seen.insert(d) {
+            stack.extend(inline_mirin_callees(db, krate, d));
+        }
+    }
+    false
 }
 
 /// Is there a statement-form `when` anywhere in `block`'s tree?
@@ -1197,6 +1264,29 @@ mod tests {
                 .any(|d| matches!(&d.kind, InlineDiagnosticKind::IntegerParam { name } if name == "n")),
             "{ds:?}"
         );
+    }
+
+    #[test]
+    fn inline_check_rejects_direct_and_indirect_recursion() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        // direct: `f` calls `f`; indirect: `g` -> `h` -> `g`.
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "#[inline]\nfn f(a: uint(8)) -> uint(8) { f(a) }\n\
+             #[inline]\nfn g(a: uint(8)) -> uint(8) { h(a) }\n\
+             #[inline]\nfn h(a: uint(8)) -> uint(8) { g(a) }",
+        );
+        for name in ["f", "g", "h"] {
+            assert!(
+                inline_diags(&db, krate, name)
+                    .iter()
+                    .any(|d| matches!(d.kind, InlineDiagnosticKind::Recursive)),
+                "{name}: {:?}",
+                inline_diags(&db, krate, name)
+            );
+        }
     }
 
     #[test]

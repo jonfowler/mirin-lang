@@ -1,0 +1,8 @@
+// A recursive `#[inline]` fn would splice forever (each splice re-enters the
+// body, which calls the fn again). `inline_check` rejects it up front with a
+// clean diagnostic rather than letting the backend splice hit its depth guard
+// (planning/inline_bodies.md "Nested/recursive inline").
+#[inline]
+fn loop_forever(a: uint(8)) -> uint(8) {
+    loop_forever(a)
+}
