@@ -61,6 +61,31 @@ Tree-sitter owns concrete syntax; Rust owns CST-to-AST lowering, elaboration, an
 - Before making design decisions, read the relevant file in `planning/`. `planning/ir_pipeline.md` is the source of truth for compiler stages.
 - Keep `planning/ir_pipeline.md` in sync when you edit the compiler — adding/removing a pass, introducing a new IR type, or otherwise changing stage shape. Keep the doc concise: one paragraph per IR, one row per pass, no implementation details that live in the code.
 
+## Negative-space programming
+
+Make the shapes you *don't* handle as explicit as the ones you do. The compiler
+distinguishes two failure modes and must keep them distinct:
+
+- **Well-formed but unhandled / asserted-impossible** → `panic!`/`todo!`/
+  `unreachable!` (loud). If a body is type-correct and the input invariant holds,
+  any shape the code doesn't cover is a *compiler bug*, not a user error — fail
+  loudly at the exact site rather than emitting wrong output or silently falling
+  through. Example: a drive-target root that isn't a `Local` after pattern
+  desugaring cannot occur, so `place_of` panics instead of guessing.
+- **Ill-typed / unsupported-by-design** → soft, clean rejection (`None`,
+  `Missing`, a diagnostic). Anything reachable from malformed user input must
+  degrade gracefully. The gate is "is the body well-typed?" (body + infer
+  diagnostics clean): once past it, switch to loud panics; before it, stay soft.
+  Example: MIR lowering returns `Missing` on a body that already has diagnostics,
+  but panics on an unhandled well-typed shape.
+
+In practice: don't write a silent `_ => fallthrough` or a default that papers
+over an unexpected case. State the assumption in code so a violated invariant
+surfaces immediately and pins down where the model broke. Guard the loud panics
+behind the well-typed gate so they never fire on user error. When you add a new
+shape you can't lower yet, prefer an explicit `todo!("S4: slice-set")` naming the
+slice/step over a quiet `0`/empty that miscompiles.
+
 ## Commit cadence
 
 Commit after every self-contained chunk of work — a finished pass, a passing
