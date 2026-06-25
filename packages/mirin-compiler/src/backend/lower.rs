@@ -585,10 +585,9 @@ struct SvLower<'a, 'db> {
     map: &'a CrateDefMap<'db>,
     body: &'a Body<'db>,
     inf: &'a Inference<'db>,
-    /// The def's MIR — the migration type-source (types-on-node). Read via
-    /// `mir_expr_type`/`mir_local_type`, which bridge HIR ids through `of_hir`.
-    /// Note: MIR types are inference-recorded, NOT mono-ground — callers still
-    /// apply `self_subst` + `ground_widths` (planning/mir_progress.md S3).
+    /// The def's MIR — the single lowering source (types-on-node, resolved
+    /// dispatch and places). Note: MIR types are inference-recorded, NOT
+    /// mono-ground — callers still apply `self_subst` + `ground_widths`.
     mir: &'a Mir<'db>,
     sig: &'a Signature<'db>,
     /// Substitution for the def's own generics (a Type-kind binding when lowering
