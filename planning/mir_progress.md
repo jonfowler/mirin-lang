@@ -6,10 +6,15 @@
 
 ## Migration plan (from mir.md §"Incremental migration")
 
-1. Introduce `mir(def)` + HIR→MIR lowering, types baked in; nothing consumes it. ← **in progress**
-2. Make emission read MIR instead of HIR+side-table (parity gate vs current backend + old oracle).
-3. Move passes onto MIR one at a time: slice desugar → flatten → mono+mono_check → inline.
-4. Keep the during-infer `ConstArg` path throughout; revisit subsume-vs-keep last.
+1. Introduce `mir(def)` + HIR→MIR lowering, types baked in; nothing consumes it. ← **DONE**
+2. Make emission read MIR instead of HIR+side-table (parity gate vs current backend + old oracle). ← **DONE** (golden byte-for-byte; HIR lowering core deleted)
+3. Move passes onto MIR one at a time: slice desugar → flatten → mono+mono_check → inline. ← **DONE** (slice S4; flatten stays type-keyed by design S5; mono_check S6 incl. N-level; inline v1 S7)
+4. Keep the during-infer `ConstArg` path throughout; revisit subsume-vs-keep last. ← **kept**; the re-representation is S8, deferred by decision (no functional gap).
+
+**Status: the migration is complete.** Every slice (S1–S8) is built or carries a
+documented decision to defer (S5 closed as a no-op; S6 cost-factoring, S7
+const-if, and S8 anon-const units deferred as future work whose value is cost or
+uniformity, not correctness — see the per-slice notes + the status log).
 
 ## Decisions taken for this run (per Jon, 2026-06-24)
 
@@ -126,12 +131,27 @@
   zero-width guards are **backend-synthesised**, not inline Mirin primitives — so
   const-if-in-inline is off the slicing critical path. Reopen alongside the
   `generate if` workstream; until then `inline_check` rejects it cleanly.
-- [ ] **S8 — const-eval during infer via per-item anon-const units.** NB (verified
-  2026-06-25): const-eval-in-infer is *not* a functional gap — `infer` calls the
-  `const_eval` helper (`try_eval`/`eval_width`/`eval_cond`) throughout obligation
-  resolution. S8 is the *architectural* refinement (route through per-item
-  anon-const units, the rustc model; `const_eval` is a helper, not yet a query),
-  not a regression to restore. No forcing function — pure uniformity; low priority.
+- [defer] **S8 — const-eval during infer via per-item anon-const units (DEFERRED
+  by decision, 2026-06-25).** const-eval-in-infer is *not* a functional gap —
+  `infer` calls the `const_eval` helper (`try_eval`/`eval_width`/`eval_cond`)
+  throughout obligation resolution, and the MIR-native twin (`mir::const_eval`)
+  is built and load-bearing for the backend (slice endpoints, const-if folding).
+  S8 is a pure *architectural-uniformity* refinement: re-represent the type-level
+  width axis (`ConstArg`) and route `infer` through the MIR evaluator via
+  per-item **anon-const units** (the rustc `ty::Const::Unevaluated` model — see
+  the design discussion: keep `Type`'s const compact, reference a body-derived
+  anon-const DefId, evaluate that through the one MIR evaluator; the anon-const
+  being a *separate* DefId is what breaks the `infer ↔ mir_of` salsa cycle that
+  currently forces the two-evaluator split). **Why deferred, not built:** (a) no
+  functional gap closes — it is uniformity, not capability; (b) no forcing
+  function — nothing downstream needs it; (c) the substrate already exists
+  (`mir::const_eval`), so the eventual change is additive, not a prerequisite for
+  anything; (d) it is the single largest remaining refactor (touches `Type`,
+  `infer`, `sig`, the backend, and retires the HIR evaluator), and forcing it
+  with no payoff would be churn against the "readability first / earn the churn"
+  conventions. Reopen when a feature actually needs a *call* in width position
+  (the one thing `ConstArg` can't represent — `planning/const_eval.md`), which is
+  the forcing function the anon-const model is for.
 
 ## Design notes for upcoming slices
 
@@ -226,6 +246,37 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 `trait_*` goldens catch mistakes) and trusting `MExpr.ty` as ground.
 
 ## Status log (newest first)
+
+- 2026-06-25: **MIR workplan resolved — every slice built or consciously
+  deferred with rationale.** S1–S4 built (skeleton, places, emission retarget +
+  HIR-core deletion, slicing). S5 closed (flatten is type-keyed by design — a
+  MIR pass would relocate code without removing HIR coupling). S6: ground
+  `mono_check` + **transitive N-level composition** built; the assertion-map
+  cost-factoring is reframed as a pure optimisation (same diagnostics), deferred.
+  S7: **v1 combinational inline splice** built (scalar/nested/aggregate) with the
+  `inline_check` guard; const-if-in-inline deferred (needs the compiler-wide,
+  unbuilt `generate if`; off the slicing critical path). S8 deferred by decision
+  (no functional gap — pure architectural uniformity; substrate `mir::const_eval`
+  already exists; reopen when a *call* in width position forces the anon-const
+  model). The deferred items are all genuine future work whose value is cost or
+  uniformity, not correctness — forcing them now would be churn, not "done right".
+
+- 2026-06-25: **S6 transitive (N-level) mono_check composition.** `compose_check`
+  recurses a ground instantiation chain composing substs, catching a bad width N
+  levels below the root (`use_bad → wrap → mid → inner` → `uint(-6)`), reported at
+  the root call. Bounded by per-path fuel + a shared work budget (no hashable
+  dedup key); symbolic compositions decide nothing; budget exhaustion falls back
+  to `initial assert` (sound). `fail-expected/mono-compose-depth2.mrn` +
+  `mono_check_composes_n_levels`.
+
+- 2026-06-25: **S7 v1 — Mirin-bodied `#[inline]` splice.** `splice_inline_body`
+  sub-lowers the callee in a fresh prefix-scoped `SvLower`, value params bound to
+  caller wires, items merged into the caller (top-level `prefix == ""` keeps
+  emission byte-identical). Scalar + nested + aggregate. Blanket
+  `InlineNonVerilogBody` rejection retired for the finer `inline_check` query
+  (clocked / `var` / out-param / `const if` / integer params). Examples
+  `working/inline_mirin_body.mrn` + `working/inline_aggregate.mrn`;
+  `fail-expected/inline-var.mrn`. const-if-in-inline deferred (see S7 slice note).
 
 - 2026-06-25: **S5 CLOSED — flatten stays type-keyed by design.** Verified
   `flatten_leaves` has zero HIR coupling (reads only `Type` + `sig.fields` +
