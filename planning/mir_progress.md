@@ -54,9 +54,20 @@
     deleted (commits e0f1c26, 6dac940).
 - [~] **S4 — Slicing on MIR.** Reads: two-endpoint / offset / elision, over
   bits + Vec, literal / runtime / **const-param** endpoints — all end-to-end,
-  verilator-clean. Slice-set (lvalue): bits `word[hi..lo] = …` via a
-  `Projection::BitRange` + a distinct partial-drive path in completeness.
-  Remaining: zero-width const-if guard, vec slice-set range coverage.
+  verilator-clean. Slice-set (lvalue): **bits** `word[hi..lo] = …` works (via a
+  `Projection::BitRange` + a distinct partial-drive path in completeness).
+  Remaining (both niche; the bits ask is delivered):
+  - **vec slice-set** is half-wired — `v[0..2] = [a,b]` parses + lowers, but is
+    currently *rejected* (completeness reports each element "never driven": a
+    `[0..2]` drive path doesn't prefix-match element leaves `[0]`,`[1]`). Two
+    things are needed, NOT just one: (a) completeness must credit a constant vec
+    slice-set over its element range, and (b) **backend emission must be verified**
+    — `place_leaves_dir`'s BitRange arm appends the range to every base leaf,
+    correct only if a Vec var is one leaf; if it flattens to per-element leaves it
+    would double-index (`v[0][0:1]`). Until (b) is confirmed, leave it rejected
+    (errors, not a miscompile — safe). See `backend/lower.rs` `place_leaves_dir` /
+    `slice_range_sv` (which already handles the Vec ascending range for reads).
+  - zero-width `const if` guard.
 - [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass. (Deferred:
   flatten stays type-keyed (`flatten_leaves` reads `mexpr.ty`); fine as-is.)
 - [~] **S6 — Mono + mono_check on MIR.** Emission already monomorphises lazily
@@ -68,7 +79,12 @@
   generic calls); the symbolic assertion-map/support-factoring scaling design in
   `planning/mono_check.md`.
 - [ ] **S7 — Inline on MIR.** rustc-Integrator-style splice (subsumes inline_bodies.md).
-- [ ] **S8 — Re-add const-eval during infer** via the per-item anon-const units.
+- [ ] **S8 — const-eval during infer via per-item anon-const units.** NB (verified
+  2026-06-25): const-eval-in-infer is *not* a functional gap — `infer` calls the
+  `const_eval` helper (`try_eval`/`eval_width`/`eval_cond`) throughout obligation
+  resolution. S8 is the *architectural* refinement (route through per-item
+  anon-const units, the rustc model; `const_eval` is a helper, not yet a query),
+  not a regression to restore. No forcing function — pure uniformity; low priority.
 
 ## Design notes for upcoming slices
 
