@@ -193,6 +193,14 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   read MIR nodes incrementally before it walks MIR natively. Holds 1:1 at birth;
   retires once S4/S7 add nodes and emission reads MIR natively.
 
+- 2026-06-25: S3.2b landed — backend expr-type reads source from MIR
+  (`mir_expr_type` via `of_hir`); golden byte-for-byte unchanged, 127 lib green.
+  MIR is now load-bearing for types. Realized the `of_hir` bridge only covers
+  value-position exprs, so the rest (recognition/places/call-children) needs a
+  native MIR walker — revised the plan to build `_mir` lowering twins as
+  committable dead code (S3.2c→f), flipping the entry point last. Next: S3.2c
+  `expr_value_mir`.
+
 ## S3.2 entry plan (next fire)
 
 The backend keys every read on a HIR `ExprId`; MIR has its own arena. The bridge
@@ -208,11 +216,31 @@ control-flow, each gated by `golden_sv_snapshot` (regenerate only on an
    byte-for-byte. This proves types-on-node end-to-end with no control-flow
    churn. Watch: exprs with no `of_hir` entry (callee sub-exprs) — those reads
    should not have needed a type anyway; assert/fallback.
-2. **S3.2c — `as_reg` → `Builtin::Reg`** at its 3 call sites (read the MIR node
-   via `of_hir`); use `Place.base` instead of `backend_root_local`.
-3. **S3.2d — calls** read `Call.substs`/`receiver`/`args`(`Conn`)/`named` off the
-   MIR node; keep `resolve_trait_instance` + inline on HIR (`trait_*`/
-   `df_example_poly` goldens catch trait-instance mistakes).
-4. **S3.2e — statements/expr control flow** walk MIR `MStmt`/`MExprKind` directly;
-   at this point `of_hir` is only needed at the few remaining HIR seams.
-5. Once emission reads MIR natively, S4 (slice desugar) / S5 / S6 / S7 follow.
+**Realization (2026-06-25, after S3.2b):** the `of_hir` bridge only covers
+*value-position exprs* — types are leaf data sourced cleanly. But `as_reg`
+recognition, `backend_root_local`→`Place.base`, and call children need
+*statements/places*, which the bridge does NOT expose: an equation-LHS root
+(`Local`/`Field`) is lowered via `lower_place`, not `lower_expr`, so it has no
+`of_hir` entry; statements aren't keyed at all. And the consumers
+(`emit_registers`, `expr_value`, `lower_stmts`) all take HIR `ExprId`, whereas
+MIR children are `MExprId`. So S3.2c/d are NOT clean isolated swaps. The type
+swap (S3.2b) was the one clean leaf-level win the bridge enables.
+
+**Revised path — a native MIR walker, built as committable dead code:**
+The backend lowering core (`lower_stmts`, `drive_result`, `expr_value`,
+`expr_leaves`, `block_leaves`, …) is structurally near-identical to the MIR it
+would walk — porting is mechanical: `ExprKind::X`→`MExprKind::X`,
+`ExprId`→`MExprId`, `self.body.expr(e)`→`self.mir.expr(e)`,
+`self.inf.expr_type(e)`→`self.mir.expr(e).ty`; the four call arms collapse to one
+`Call`; builtins via `Builtin`; equation LHS via `Place`. Build the `_mir`
+twins one at a time as `#[allow(dead_code)]` (compiles, golden untouched since
+the HIR path stays wired), each its own commit:
+- S3.2c — `expr_value_mir(MExprId)` (scalar + call + index + field).
+- S3.2d — `expr_leaves_mir` / `block_leaves_mir` (aggregates, calls-as-values).
+- S3.2e — `lower_stmts_mir` / `drive_result_mir` (Let/Equation(Place)/When/For,
+  `Builtin::Reg` for registers).
+- S3.2f — **wire-up**: `lower_top_block` calls the `_mir` twins; delete the HIR
+  lowering core and `mir_expr_type`'s inf-fallback becomes native. Golden must
+  stay byte-for-byte at the flip. `resolve_trait_instance` + inline stay on
+  `crate_def_map`/HIR until S7.
+Once emission walks MIR natively, S4 (slice desugar) / S5 / S6 / S7 follow.
