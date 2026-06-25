@@ -54,20 +54,17 @@
     deleted (commits e0f1c26, 6dac940).
 - [~] **S4 — Slicing on MIR.** Reads: two-endpoint / offset / elision, over
   bits + Vec, literal / runtime / **const-param** endpoints — all end-to-end,
-  verilator-clean. Slice-set (lvalue): **bits** `word[hi..lo] = …` works (via a
-  `Projection::BitRange` + a distinct partial-drive path in completeness).
-  Remaining (both niche; the bits ask is delivered):
-  - **vec slice-set** is half-wired — `v[0..2] = [a,b]` parses + lowers, but is
-    currently *rejected* (completeness reports each element "never driven": a
-    `[0..2]` drive path doesn't prefix-match element leaves `[0]`,`[1]`). Two
-    things are needed, NOT just one: (a) completeness must credit a constant vec
-    slice-set over its element range, and (b) **backend emission must be verified**
-    — `place_leaves_dir`'s BitRange arm appends the range to every base leaf,
-    correct only if a Vec var is one leaf; if it flattens to per-element leaves it
-    would double-index (`v[0][0:1]`). Until (b) is confirmed, leave it rejected
-    (errors, not a miscompile — safe). See `backend/lower.rs` `place_leaves_dir` /
-    `slice_range_sv` (which already handles the Vec ascending range for reads).
-  - zero-width `const if` guard.
+  verilator-clean. Slice-set (lvalue): **bits** `word[hi..lo] = …` AND **vec**
+  `v[0..2] = [a,b]` both work, verilator-clean (`slice_set.mrn` /
+  `slice_vec_set.mrn`). Vec slice-set needed a completeness fix (`vec_slice_covers`
+  credits a constant slice-set over its element range) — emission was already
+  correct: a Vec is one struct-of-arrays leaf per element-TYPE field, so the
+  `BitRange` range appends to the unpacked dimension (`v[0:1] = '{a,b}`;
+  `v__valid[0:1] = …` for aggregate elements), verified for both scalar and
+  struct element types.
+  Remaining (niche): zero-width `const if` guard; conflict detection does not
+  verify slice-set range *overlap* (`v[0..2]` and `v[1..3]` both drive index 1 but
+  carry distinct path segs — a deferred double-drive gap, same as bits today).
 - [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass. (Deferred:
   flatten stays type-keyed (`flatten_leaves` reads `mexpr.ty`); fine as-is.)
 - [~] **S6 — Mono + mono_check on MIR.** Emission already monomorphises lazily
@@ -179,6 +176,16 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 `trait_*` goldens catch mistakes) and trusting `MExpr.ty` as ground.
 
 ## Status log (newest first)
+
+- 2026-06-25: **vec slice-set LANDED.** `v[lo..hi] = […]` now works (was
+  half-wired: parsed + lowered but completeness rejected it as "never driven").
+  Fix was completeness-only — `vec_slice_covers` (check.rs) credits a constant
+  slice-set over its element index range; emission was *already* correct because a
+  Vec flattens to struct-of-arrays (one leaf per element-TYPE field with an
+  unpacked dimension), so the `BitRange` range lands on the array (`v[0:1] =
+  '{a,b}`). Verified verilator-clean for scalar (`uint`) and aggregate (struct)
+  element types. New `examples/working/slice_vec_set.mrn` + golden + CLEAN +
+  VERILATOR_CLEAN. Closes the main remaining S4 item.
 
 - 2026-06-25: **mono_check — adversarial review + fixes.** Fresh-context review of
   the whole pass. Confirmed the safety-critical parts sound (the `is_closed` gate

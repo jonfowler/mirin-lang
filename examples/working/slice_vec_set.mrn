@@ -1,0 +1,11 @@
+// Vec slice-set (lvalue): assign into an element RANGE of a `Vec` var. Two
+// tiling slice-sets build a 4-element vector from pairs (planning/slicing.md).
+// Each `v[hi..lo]` lowers to an unpacked-array slice on the LHS:
+// `v[0:1] = '{a, b}`. Completeness credits the constant ranges as covering
+// indices 0..4 (the dual of the `bits` slice-set in slice_set.mrn).
+fn build(a: uint(8), b: uint(8)) -> Vec(4, uint(8)) {
+    var v: Vec(4, uint(8));
+    v[0..2] = [a, b];
+    v[2..4] = [b, a];
+    return v;
+}

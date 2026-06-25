@@ -213,6 +213,36 @@ fn slice_seg(body: &Body, lo: Option<ExprId>, hi: Option<ExprId>, width: Option<
     }
 }
 
+/// Does a constant vec slice-set segment (`[lo..hi]` or `[lo..+w]`, as produced
+/// by [`slice_seg`]) cover element index `k` of a length-`n` vector? An elided
+/// endpoint defaults (lo→0, hi→n); a runtime endpoint (`?`) can't be credited,
+/// so it returns `false` (the index stays uncovered — coverage must be provable).
+fn vec_slice_covers(seg: &str, k: i128, n: i128) -> bool {
+    let parse = |s: &str, default: i128| -> Option<i128> {
+        match s {
+            "" => Some(default),
+            "?" => None,
+            v => v.parse().ok(),
+        }
+    };
+    let Some(inner) = seg.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+        return false;
+    };
+    if let Some((lo_s, w_s)) = inner.split_once("..+") {
+        match (parse(lo_s, 0), parse(w_s, 0).filter(|_| w_s != "")) {
+            (Some(lo), Some(w)) => k >= lo && k < lo + w,
+            _ => false,
+        }
+    } else if let Some((lo_s, hi_s)) = inner.split_once("..") {
+        match (parse(lo_s, 0), parse(hi_s, n)) {
+            (Some(lo), Some(hi)) => k >= lo && k < hi,
+            _ => false,
+        }
+    } else {
+        false
+    }
+}
+
 /// Does an index expression reference a `for`-bound genvar? (`i`, `i*a + j`,
 /// …) — used to recognise a loop-spanning partial drive whose index is a
 /// genvar *expression*, not a bare genvar.
@@ -312,7 +342,15 @@ pub fn completeness<'db>(
             if let ConstArg::Lit(n) = len {
                 for k in 0..*n {
                     let seg = format!("[{k}]");
-                    if !paths.iter().any(|p| p.first() == Some(&seg)) {
+                    // An index is covered by an exact element drive (`v[k] = …`)
+                    // or by a constant slice-set whose range spans it
+                    // (`v[lo..hi] = …`). A runtime-endpoint slice can't be
+                    // credited for a specific index (stays uncovered).
+                    let covered = paths.iter().any(|p| {
+                        p.first()
+                            .is_some_and(|f| *f == seg || vec_slice_covers(f, k, *n))
+                    });
+                    if !covered {
                         out.push(DriverDiagnostic {
                             span,
                             kind: DriverDiagnosticKind::UndrivenField {
