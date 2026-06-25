@@ -213,6 +213,13 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2r — runtime-index reads on MIR.** Refactored
+  `index_bounds_assert` into a type-taking core + `index_bounds_assert_mir`;
+  the Index read arms now emit the bounds-assert, so the static-index restriction
+  is lifted for *reads* (`v[sel]` with a uint `sel`). Place *writes* stay
+  static-index (the projected-place bounds-assert is the only remaining tail).
+  Golden green (89), 127 lib. Next: confirm corpus coverage (how many defs still
+  fall to HIR) → then delete the HIR lowering core.
 - 2026-06-25: **S3.2q — `const if` folded at lowering.** The `mir_of` lowering
   has the HIR cond id, so it calls `eval_cond` and keeps only the taken branch as
   a `Block` (foldable case) — `ConstIf` disappears from MIR for the common case,

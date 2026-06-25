@@ -2206,11 +2206,10 @@ impl<'db> SvLower<'_, 'db> {
                     && self.mir_ok_block(mir, else_branch)
             }
             MExprKind::Block(b) => self.mir_ok_block(mir, b),
-            // `v[i]` read: base + index walkable, and the index must be static.
+            // `v[i]` read: base + index walkable (a runtime uint index gets a
+            // bounds-assert via `index_bounds_assert_mir`).
             MExprKind::Index { base, index } => {
-                self.mir_ok_expr(mir, *base)
-                    && self.mir_ok_expr(mir, *index)
-                    && self.mir_static_index(mir, *index)
+                self.mir_ok_expr(mir, *base) && self.mir_ok_expr(mir, *index)
             }
             // A value/aggregate `when` (also the `mem = when …` RAM RHS): the
             // body is a normal block here (not guarded), `init` is an expr.
@@ -2334,14 +2333,30 @@ impl<'db> SvLower<'_, 'db> {
     /// length always leaves a gap). Synthesis ignores it; simulation fires
     /// at the access. planning/vectors.md.
     fn index_bounds_assert(&mut self, base: ExprId, index: ExprId, idx_sv: &SvExpr) {
-        let Some(it) = self.mir_expr_type(index) else {
+        let (Some(it), Some(bt)) = (self.mir_expr_type(index), self.mir_expr_type(base)) else {
             return;
         };
+        self.index_bounds_assert_tys(&it, &bt, idx_sv);
+    }
+
+    /// MIR twin: the index/base types come from the MIR nodes.
+    #[allow(dead_code)]
+    fn index_bounds_assert_mir(&mut self, base: MExprId, index: MExprId, idx_sv: &SvExpr) {
+        let (it, bt) = (
+            self.mir.expr(index).ty.clone(),
+            self.mir.expr(base).ty.clone(),
+        );
+        self.index_bounds_assert_tys(&it, &bt, idx_sv);
+    }
+
+    /// Id-agnostic core: a dynamic (uint) index gets a simulation-time bounds
+    /// assert unless its width provably cannot exceed the length.
+    fn index_bounds_assert_tys(&mut self, it: &Type<'db>, bt: &Type<'db>, idx_sv: &SvExpr) {
         let it = ground_widths(
             self.db,
             self.krate,
             self.def,
-            &subst_type(&it, &self.self_subst),
+            &subst_type(it, &self.self_subst),
         );
         let Type::Value {
             kind: ValueKind::UInt { width: iw },
@@ -2350,14 +2365,11 @@ impl<'db> SvLower<'_, 'db> {
         else {
             return; // static (integer/literal) indexes are checked in infer
         };
-        let Some(bt) = self.mir_expr_type(base) else {
-            return;
-        };
         let bt = ground_widths(
             self.db,
             self.krate,
             self.def,
-            &subst_type(&bt, &self.self_subst),
+            &subst_type(bt, &self.self_subst),
         );
         let len = match bt {
             Type::Vec { len, .. } => len,
@@ -3098,12 +3110,12 @@ impl<'db> SvLower<'_, 'db> {
             MExprKind::Builtin { .. } => {
                 todo!("S3.2e: expr_value_mir Builtin (non-reg)")
             }
-            // `v[i]` in scalar position. (A runtime-index bounds-assert is not
-            // emitted; the predicate restricts walked indices to static ones.)
+            // `v[i]` in scalar position.
             MExprKind::Index { base, index } => {
                 let (base, index) = (*base, *index);
                 let b = self.expr_value_mir(base);
                 let i = self.expr_value_mir(index);
+                self.index_bounds_assert_mir(base, index, &i);
                 SvExpr::Lit(format!("{b}[{i}]"))
             }
             MExprKind::When { event, body, init } => {
@@ -3454,6 +3466,7 @@ impl<'db> SvLower<'_, 'db> {
             MExprKind::Index { base, index } => {
                 let (base, index) = (*base, *index);
                 let idx = self.expr_value_mir(index);
+                self.index_bounds_assert_mir(base, index, &idx);
                 self.expr_leaves_mir(base)
                     .into_iter()
                     .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}[{idx}]"))))
