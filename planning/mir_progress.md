@@ -62,9 +62,13 @@
   `BitRange` range appends to the unpacked dimension (`v[0:1] = '{a,b}`;
   `v__valid[0:1] = …` for aggregate elements), verified for both scalar and
   struct element types.
-  Remaining (niche): zero-width `const if` guard; conflict detection does not
-  verify slice-set range *overlap* (`v[0..2]` and `v[1..3]` both drive index 1 but
-  carry distinct path segs — a deferred double-drive gap, same as bits today).
+  Slice-set range **overlap** is now conflict-checked (`v[0..2]` + `v[1..3]` both
+  drive index 1 → multiple-drivers error): `seg_range` normalises each slice/index
+  segment to a direction-agnostic `[lo, hi)` (bits high-first and vec low-first
+  collapse to the same set; no type info needed), and `paths_conflict` flags a
+  proven overlap. Runtime/elided endpoints can't be proven, so they stay
+  non-conflicting (no false positives). Remaining (niche): zero-width `const if`
+  guard.
 - [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass. (Deferred:
   flatten stays type-keyed (`flatten_leaves` reads `mexpr.ty`); fine as-is.)
 - [~] **S6 — Mono + mono_check on MIR.** Emission already monomorphises lazily
@@ -176,6 +180,15 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 `trait_*` goldens catch mistakes) and trusting `MExpr.ty` as ground.
 
 ## Status log (newest first)
+
+- 2026-06-25: **slice-set overlap conflict-check LANDED.** Overlapping slice-sets
+  (`v[0..2]` + `v[1..3]`, both driving index 1) were an uncaught multi-driver —
+  the prefix-only conflict test treated distinct range strings as disjoint. Now
+  `seg_range` normalises a slice/index segment to a direction-agnostic `[lo,hi)`
+  (works for bits high-first + vec low-first, no type info) and `paths_conflict`
+  flags a proven range overlap; runtime/elided endpoints stay non-conflicting (no
+  false positives). Unit tests + `fail-expected/slice-set-overlap.mrn`. Closes a
+  real soundness gap (was deferred to verilator).
 
 - 2026-06-25: **vec slice-set LANDED.** `v[lo..hi] = […]` now works (was
   half-wired: parsed + lowered but completeness rejected it as "never driven").

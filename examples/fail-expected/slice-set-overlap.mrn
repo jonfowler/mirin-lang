@@ -1,0 +1,11 @@
+// Overlapping slice-sets are a multiple-driver error. `v[0..2]` drives indices
+// 0,1 and `v[1..4]` drives 1,2,3 — index 1 has two drivers. The ranges cover
+// every index (so completeness passes), but the overlap is a conflict: caught by
+// the driver check's range-overlap test (planning/slicing.md), not deferred to
+// the SV elaborator as a multi-driver.
+fn build(a: uint(8), b: uint(8)) -> Vec(4, uint(8)) {
+    var v: Vec(4, uint(8));
+    v[0..2] = [a, b];
+    v[1..4] = [b, a, b];
+    return v;
+}

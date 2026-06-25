@@ -127,14 +127,15 @@ pub fn check_drivers<'db>(
         // Two drives conflict when one path is a prefix of the other
         // (equality included): `x` + `x.a`, or `x.a` twice — for every local
         // kind (a param's fields are drivable too: `downstream.valid = …`).
-        // Disjoint field paths are fine — that's per-field wiring. (Whether
-        // the field drives *cover* the type needs type info — the typed
-        // completeness pass.)
-        let overlap = paths.iter().enumerate().any(|(i, a)| {
-            paths[i + 1..]
-                .iter()
-                .any(|b| a.starts_with(&b[..]) || b.starts_with(&a[..]))
-        });
+        // Disjoint field paths are fine — that's per-field wiring. Two slice/index
+        // segments at the same position conflict when their ranges OVERLAP
+        // (`v[0..2]` + `v[1..3]` both drive index 1), not just when one prefixes
+        // the other. (Whether the field drives *cover* the type needs type info —
+        // the typed completeness pass.)
+        let overlap = paths
+            .iter()
+            .enumerate()
+            .any(|(i, a)| paths[i + 1..].iter().any(|b| paths_conflict(a, b)));
         if overlap {
             out.push(DriverDiagnostic {
                 span,
@@ -240,6 +241,47 @@ fn vec_slice_covers(seg: &str, k: i128, n: i128) -> bool {
         }
     } else {
         false
+    }
+}
+
+/// Do two drive paths conflict? Walk segment by segment: equal segments agree;
+/// at the first differing pair, if both are concrete index/slice ranges they
+/// conflict iff the ranges OVERLAP, otherwise they are disjoint (different fields,
+/// or a range we can't prove — conservatively NOT a conflict, to avoid false
+/// positives). If no segment differs within the shorter path, one is a prefix of
+/// the other (`x` + `x.a`, or identical) — a conflict.
+fn paths_conflict(a: &[String], b: &[String]) -> bool {
+    for (sa, sb) in a.iter().zip(b.iter()) {
+        if sa == sb {
+            continue;
+        }
+        return match (seg_range(sa), seg_range(sb)) {
+            (Some((lo_a, hi_a)), Some((lo_b, hi_b))) => lo_a < hi_b && lo_b < hi_a,
+            _ => false,
+        };
+    }
+    true
+}
+
+/// The half-open integer range `[lo, hi)` a constant index/slice path segment
+/// covers, normalised so it is **direction-agnostic** — bits slices are written
+/// high-first (`[8..0]`) and vec slices low-first (`[0..2]`), but both cover the
+/// same integer set, and no type info is available here. `None` for an index
+/// using a genvar, an elided endpoint, or a runtime (`?`) endpoint — those can't
+/// be proven to overlap, so the caller treats them as non-conflicting.
+fn seg_range(seg: &str) -> Option<(i128, i128)> {
+    let inner = seg.strip_prefix('[')?.strip_suffix(']')?;
+    if let Some((lo_s, w_s)) = inner.split_once("..+") {
+        // Offset form `[off..+w]` — always low-first.
+        let (lo, w) = (lo_s.parse::<i128>().ok()?, w_s.parse::<i128>().ok()?);
+        Some((lo, lo + w))
+    } else if let Some((lo_s, hi_s)) = inner.split_once("..") {
+        let (a, b) = (lo_s.parse::<i128>().ok()?, hi_s.parse::<i128>().ok()?);
+        Some((a.min(b), a.max(b)))
+    } else {
+        // A bare index `[k]` covers the single element `[k, k+1)`.
+        let k = inner.parse::<i128>().ok()?;
+        Some((k, k + 1))
     }
 }
 
@@ -774,6 +816,29 @@ mod tests {
             .resolve_in_scope(map.root(), name, Namespace::Item)
             .expect("def");
         directions(db, krate, def)
+    }
+
+    #[test]
+    fn slice_seg_range_is_direction_agnostic() {
+        // vec low-first and bits high-first normalise to the same integer set.
+        assert_eq!(seg_range("[0..2]"), Some((0, 2)));
+        assert_eq!(seg_range("[8..0]"), Some((0, 8))); // bits high-first
+        assert_eq!(seg_range("[3]"), Some((3, 4))); // bare index
+        assert_eq!(seg_range("[2..+3]"), Some((2, 5))); // offset form
+        assert_eq!(seg_range("[?..4]"), None); // runtime endpoint — not provable
+        assert_eq!(seg_range("[2..]"), None); // elided endpoint — not provable
+    }
+
+    #[test]
+    fn overlapping_slice_paths_conflict_disjoint_dont() {
+        let p = |s: &str| vec![s.to_string()];
+        assert!(paths_conflict(&p("[0..2]"), &p("[1..3]"))); // overlap at index 1
+        assert!(!paths_conflict(&p("[0..2]"), &p("[2..4]"))); // disjoint (vec tiling)
+        assert!(!paths_conflict(&p("[8..0]"), &p("[16..8]"))); // disjoint (bits tiling)
+        assert!(paths_conflict(&p("[0..4]"), &p("[1]"))); // slice covers an index
+        assert!(paths_conflict(&[], &p("[0..2]"))); // whole-place vs a slice (prefix)
+        assert!(!paths_conflict(&["a".into()], &["b".into()])); // disjoint fields
+        assert!(!paths_conflict(&p("[?..2]"), &p("[1..3]"))); // runtime → not provable
     }
 
     #[test]
