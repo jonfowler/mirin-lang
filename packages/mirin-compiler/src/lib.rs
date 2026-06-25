@@ -46,6 +46,7 @@ pub use hir::types::{
     ConstArg, Direction, Domain, DomainSort, GenericArgs, GenericParam, InferVar, LocalId, Term,
     TermKind, Type, ValueKind,
 };
+pub use mir::const_eval::{eval_int as mir_eval_int, eval_return as mir_eval_return};
 pub use mir::ir::{MExpr, MExprId, MExprKind, Mir, Place, Projection};
 pub use mir::lower::mir_of;
 pub use mir::pretty::pretty as pretty_mir;

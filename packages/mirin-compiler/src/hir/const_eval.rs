@@ -112,8 +112,8 @@ pub enum Value<'db> {
     Record(DefId<'db>, Vec<(String, Value<'db>)>),
 }
 
-const MAX_DEPTH: u32 = 32;
-const MAX_STEPS: u32 = 10_000;
+pub(crate) const MAX_DEPTH: u32 = 32;
+pub(crate) const MAX_STEPS: u32 = 10_000;
 
 /// Evaluate a const-expression tree in `def`'s body with **no** parameter
 /// bindings (params stay symbolic — a tree over a free `Param` returns
@@ -643,7 +643,7 @@ impl<'db> Evaluator<'db> {
     }
 }
 
-fn arith<'db>(op: ConstOp, a: &Value<'db>, b: &Value<'db>) -> Option<Value<'db>> {
+pub(crate) fn arith<'db>(op: ConstOp, a: &Value<'db>, b: &Value<'db>) -> Option<Value<'db>> {
     let (Value::Int(a), Value::Int(b)) = (a, b) else {
         return None;
     };
@@ -659,7 +659,7 @@ fn arith<'db>(op: ConstOp, a: &Value<'db>, b: &Value<'db>) -> Option<Value<'db>>
     Some(Value::Int(v))
 }
 
-fn project<'db>(v: &Value<'db>, field: &str) -> Option<Value<'db>> {
+pub(crate) fn project<'db>(v: &Value<'db>, field: &str) -> Option<Value<'db>> {
     let Value::Record(_, fields) = v else {
         return None;
     };
