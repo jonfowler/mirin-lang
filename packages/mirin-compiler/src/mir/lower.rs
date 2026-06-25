@@ -285,8 +285,7 @@ impl<'a, 'db> Lower<'a, 'db> {
                     .iter()
                     .map(|f| MRecordField {
                         name: f.name.clone(),
-                        out: f.out,
-                        value: self.lower_expr(f.value),
+                        conn: self.lower_conn(f.out, f.value),
                     })
                     .collect(),
             },
@@ -390,12 +389,20 @@ impl<'a, 'db> Lower<'a, 'db> {
             .unwrap_or_default()
     }
 
-    fn lower_args(&mut self, args: &[ConnArg]) -> Vec<MArg> {
+    /// Lower a connection: an out-connection (`=> target`) is a drive target
+    /// (a [`Place`]), an in-connection is a value. This is the one place the
+    /// in/out split becomes the place/value split.
+    fn lower_conn(&mut self, out: bool, expr: ExprId) -> Conn {
+        if out {
+            Conn::Out(self.lower_place(expr))
+        } else {
+            Conn::In(self.lower_expr(expr))
+        }
+    }
+
+    fn lower_args(&mut self, args: &[ConnArg]) -> Vec<Conn> {
         args.iter()
-            .map(|a| MArg {
-                out: a.out,
-                expr: self.lower_expr(a.expr),
-            })
+            .map(|a| self.lower_conn(a.out, a.expr))
             .collect()
     }
 
@@ -404,8 +411,7 @@ impl<'a, 'db> Lower<'a, 'db> {
             .iter()
             .map(|n| MNamedArg {
                 name: n.name.clone(),
-                out: n.out,
-                expr: self.lower_expr(n.expr),
+                conn: self.lower_conn(n.out, n.expr),
             })
             .collect()
     }

@@ -137,7 +137,7 @@ pub enum MExprKind<'db> {
         callee: DefId<'db>,
         substs: Vec<Term<'db>>,
         receiver: Option<MExprId>,
-        args: Vec<MArg>,
+        args: Vec<Conn>,
         named: Vec<MNamedArg>,
     },
     /// A builtin method that is **not** a resolved def — `reg`, `posedge`,
@@ -147,7 +147,7 @@ pub enum MExprKind<'db> {
     Builtin {
         method: BuiltinMethod,
         receiver: MExprId,
-        args: Vec<MArg>,
+        args: Vec<Conn>,
     },
     /// `Ctor { field = value, field => target, … }`.
     Record {
@@ -223,27 +223,32 @@ pub enum Projection {
     Index(MExprId),
 }
 
-/// A positional connection argument. `out` marks a `=> target` reverse flow.
+/// One connection at a call/record site, carrying its direction. `In` flows a
+/// value into the callee/constructor; `Out` (`=> target`, or an `in`-direction
+/// record field) is a caller [`Place`] the callee drives back. This single
+/// direction-carrying model unifies every connection site (positional, named,
+/// record field) — the substrate the emission retarget (S3) and named-args
+/// handling build on, replacing the backend's per-site direction re-derivation.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
-pub struct MArg {
-    pub out: bool,
-    pub expr: MExprId,
+pub enum Conn {
+    /// A value flowing into the callee (`f(v)`, `f{ x = v }`).
+    In(MExprId),
+    /// A caller place the callee drives (`f{ x => target }`).
+    Out(Place),
 }
 
-/// A named-section argument (`f{ name = v, name => target, name }`).
+/// A named-section connection (`f{ name = v, name => target, name }`).
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct MNamedArg {
     pub name: String,
-    pub out: bool,
-    pub expr: MExprId,
+    pub conn: Conn,
 }
 
-/// A record/constructor field initialiser.
+/// A record/constructor field connection.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct MRecordField {
     pub name: String,
-    pub out: bool,
-    pub value: MExprId,
+    pub conn: Conn,
 }
 
 /// A block: a sequence of statements and an optional tail expression.
@@ -253,8 +258,7 @@ pub struct MBlock {
     pub tail: Option<MExprId>,
 }
 
-/// A MIR statement. Mirrors HIR `Stmt`; places are not yet introduced, so an
-/// equation's `lhs` is still a (typed) expression (S2 will make it a `Place`).
+/// A MIR statement. Mirrors HIR `Stmt`; an equation's `lhs` is a [`Place`] (S2).
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub enum MStmt {
     /// `let x = value;`

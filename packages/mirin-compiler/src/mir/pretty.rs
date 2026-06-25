@@ -179,10 +179,7 @@ impl<'a, 'db> Printer<'a, 'db> {
                 let name = ctor.map(|c| self.def_name(c)).unwrap_or("?".to_owned());
                 let fs: Vec<String> = fields
                     .iter()
-                    .map(|f| {
-                        let arrow = if f.out { "=>" } else { "=" };
-                        format!("{} {arrow} {}", f.name, self.expr(f.value))
-                    })
+                    .map(|f| self.named_conn(&f.name, &f.conn))
                     .collect();
                 format!("{name} {{ {} }}", fs.join(", "))
             }
@@ -255,12 +252,24 @@ impl<'a, 'db> Printer<'a, 'db> {
             .join(", ")
     }
 
-    fn args(&self, args: &[MArg]) -> String {
+    fn conn(&self, c: &Conn) -> String {
+        match c {
+            Conn::In(e) => self.expr(*e),
+            Conn::Out(p) => format!("=> {}", self.place(p)),
+        }
+    }
+
+    /// `name = value` for an in-connection, `name => place` for an out one.
+    fn named_conn(&self, name: &str, c: &Conn) -> String {
+        match c {
+            Conn::In(e) => format!("{name} = {}", self.expr(*e)),
+            Conn::Out(p) => format!("{name} => {}", self.place(p)),
+        }
+    }
+
+    fn args(&self, args: &[Conn]) -> String {
         args.iter()
-            .map(|a| {
-                let arrow = if a.out { "=> " } else { "" };
-                format!("{arrow}{}", self.expr(a.expr))
-            })
+            .map(|c| self.conn(c))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -271,10 +280,7 @@ impl<'a, 'db> Printer<'a, 'db> {
         }
         let body = named
             .iter()
-            .map(|n| {
-                let arrow = if n.out { "=>" } else { "=" };
-                format!("{} {arrow} {}", n.name, self.expr(n.expr))
-            })
+            .map(|n| self.named_conn(&n.name, &n.conn))
             .collect::<Vec<_>>()
             .join(", ");
         format!(" {{{body}}}")

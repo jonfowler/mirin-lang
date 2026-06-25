@@ -31,10 +31,15 @@
   (reg/posedge/replace/enumerate) as a closed `Builtin` node. Corpus smoke test.
   Reviewed (fresh context): no blockers; fixes applied (below). Nothing consumes it.
 - [x] **S2 — Places (equation LHS).** `Place { base: LocalId, projections }`,
-  `Projection = Field | Index` (BitRange in S4). `MStmt::Equation.lhs` is now a
-  `Place`. Aligns with the backend's `backend_root_local`. **S2b** (out-conn /
-  out-record / out-arg targets → places; the connection-unification payoff) and
-  **slice-set BitRange** (S4) still pending.
+  `Projection = Field | Index` (BitRange in S4). `MStmt::Equation.lhs` is a
+  `Place`. Aligns with the backend's `backend_root_local`.
+- [x] **S2b — Connection unification.** One `Conn { In(MExprId) | Out(Place) }`
+  for every connection site (positional args, named args, record fields),
+  replacing the `out: bool` + value-expr pair. Out-connections (`=> target`)
+  are places; in-connections are values — the in/out split *is* the place/value
+  split, lowered in one `lower_conn`. Validated via dump:
+  `stream8 { valid = …, data = …, ready => l5 }`. This retires the backend's
+  per-site direction re-derivation when S3 lands. **slice-set BitRange** (S4) pending.
 - [ ] **S3 — Retarget emission onto MIR.** `sv_module`/`build_module` read `mir_of`
   instead of `body`+`infer`. Parity gate: `golden_sv_snapshot` (built, 89 cases).
   Planning-reviewed; ordered sub-steps + invariants in the design note below.
@@ -169,3 +174,10 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   `backend/lower.rs`, which has uncommitted user WIP — cannot touch it without
   clobbering. S3.2+ is gated on that WIP landing/clearing. Until then, available
   MIR work is in `src/mir/` only: S2b (out-targets → places), cleanup, design.
+- 2026-06-25: S2b landed — `Conn { In | Out(Place) }` unifies all connection
+  sites. Out-connections place-ified (dump-validated on `record_out_conn`). All
+  unblocked MIR structure (S1, S2, S2b) is now in: types-on-node, unified
+  resolved calls, builtins, places for both equation LHS and out-connections.
+  Remaining MIR slices (S3.2 emission retarget, S4 slice desugar, S5 flatten,
+  S6 mono, S7 inline) all require editing `backend/lower.rs` (user WIP) or land
+  inside S3 — blocked until that WIP clears.
