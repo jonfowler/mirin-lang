@@ -376,6 +376,73 @@ fn projects_typecheck_clean() {
     }
 }
 
+fn golden_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
+}
+
+/// Byte-for-byte SystemVerilog parity gate. Emits SV for the VERILATOR_CLEAN
+/// corpus + projects and compares against committed snapshots under
+/// `tests/golden/`. This is the gate the MIR emission retarget
+/// (`planning/mir.md` S3) must reproduce exactly: lint-clean alone (the
+/// `corpus_is_verilator_clean` test) would pass a miscompile — wrong width,
+/// swapped leaf, mis-resolved trait instance — silently, because the output is
+/// never compared, only linted.
+///
+/// Regenerate after an *intended* emission change (review the diff!):
+///   MIRIN_UPDATE_GOLDEN=1 cargo test -p mirin-compiler --test examples golden_sv
+#[test]
+fn golden_sv_snapshot() {
+    let update = std::env::var_os("MIRIN_UPDATE_GOLDEN").is_some();
+    let dir = golden_dir();
+    if update {
+        std::fs::create_dir_all(&dir).unwrap();
+    }
+
+    // (name, emitted SV) for every gated case: single-file VERILATOR_CLEAN
+    // examples plus the multi-file projects.
+    let mut cases: Vec<(String, String)> = Vec::new();
+    for (name, src) in examples() {
+        if VERILATOR_CLEAN.contains(&name.as_str()) {
+            let mut db = RootDatabase::default();
+            let mut vfs = Vfs::new();
+            vfs.set_file_text(&mut db, "t.mrn", src);
+            let krate = vfs.source_root(&mut db, "t.mrn");
+            cases.push((
+                name.trim_end_matches(".mrn").to_owned(),
+                verilog(&db, krate).to_string(),
+            ));
+        }
+    }
+    for (name, main) in projects() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load_crate(&mut db, &mut vfs, &main).unwrap();
+        cases.push((format!("project_{name}"), verilog(&db, krate).to_string()));
+    }
+
+    assert!(!cases.is_empty(), "no golden cases found");
+    let mut mismatches = Vec::new();
+    for (name, sv) in cases {
+        let path = dir.join(format!("{name}.sv"));
+        if update {
+            std::fs::write(&path, &sv).unwrap();
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(want) if want == sv => {}
+            Ok(_) => mismatches.push(name),
+            Err(_) => panic!(
+                "missing golden {path:?} — run `MIRIN_UPDATE_GOLDEN=1 cargo test \
+                 -p mirin-compiler --test examples golden_sv` to create it"
+            ),
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "golden SV mismatch (run MIRIN_UPDATE_GOLDEN=1 to update, then review the diff): {mismatches:?}"
+    );
+}
+
 #[test]
 fn corpus_is_verilator_clean() {
     if std::process::Command::new("verilator")
