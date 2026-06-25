@@ -52,7 +52,9 @@ use crate::hir::types::{
     ConstArg, ConstOp, Direction, Domain, Folder, GenericArgs, GenericParam, LocalId, Term,
     TermKind, Type, ValueKind, subst_const_opt,
 };
-use crate::mir::ir::{Conn, MExprId, MExprKind, MNamedArg, Mir};
+use crate::mir::ir::{
+    BuiltinMethod, Conn, MBlock, MExprId, MExprKind, MNamedArg, MStmt, Mir, Place,
+};
 use crate::mir::lower::mir_of;
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
 use crate::nameres::ids::{DefId, DefKind, Namespace};
@@ -195,6 +197,11 @@ fn build_module<'db>(
         lower
             .items
             .push(SvItem::Verbatim(render_verilog(template, sig)));
+    } else if lower.mir_walk_supported(mir) {
+        // S3.2f: defs the MIR walker fully covers lower from MIR; the rest stay
+        // on the HIR path. The coverage predicate is strict, so this is
+        // byte-for-byte identical (golden-gated) — it widens as walker arms land.
+        lower.lower_top_block_mir(mir.block());
     } else {
         lower.lower_top_block(body.block());
     }
@@ -1417,6 +1424,259 @@ impl<'db> SvLower<'_, 'db> {
         }
         for (suf, target) in self.record_out_conns(value) {
             self.push_assign(target, SvExpr::Ident(join("result", &suf)));
+        }
+    }
+
+    // ----- MIR walker: statements (S3.2e, dead code until the entry flips) -----
+    // Twins of lower_top_block / lower_stmts / lower_let / lower_equation /
+    // drive_result. Simple paths are ported off the MIR node, reusing the
+    // id-agnostic helpers (declare_local, local_leaves[_dir], push_assign,
+    // flatten_leaves); complex sub-cases (let-mut fold, reg, instance, when,
+    // record, place projections) are todo!() — the coverage predicate (S3.2f)
+    // must keep such defs on the HIR path until these land.
+
+    #[allow(dead_code)]
+    fn lower_top_block_mir(&mut self, block: &MBlock) {
+        self.lower_stmts_mir(&block.stmts);
+        if let Some(tail) = block.tail {
+            self.drive_result_mir(tail);
+        }
+    }
+
+    #[allow(dead_code)]
+    fn lower_stmts_mir(&mut self, stmts: &[MStmt]) {
+        // NB: the let-mut-fold run-consumption is not ported; the predicate must
+        // reject mutable-local fns.
+        for stmt in stmts {
+            self.lower_one_stmt_mir(stmt);
+        }
+    }
+
+    #[allow(dead_code)]
+    fn lower_one_stmt_mir(&mut self, stmt: &MStmt) {
+        match stmt {
+            MStmt::Let { local, value } => self.lower_let_mir(*local, *value),
+            MStmt::VarDecl { local } => self.declare_local(*local),
+            MStmt::Equation { lhs, rhs } => {
+                // An integer (compile-time) bare-local drive is no hardware.
+                if lhs.projections.is_empty() && self.is_integer_local(lhs.base) {
+                    return;
+                }
+                let (lhs, rhs) = (lhs.clone(), *rhs);
+                self.lower_equation_mir(&lhs, rhs);
+            }
+            MStmt::Return { value } => self.drive_result_mir(*value),
+            MStmt::Expr(_) => todo!("S3.2e: lower_one_stmt_mir Expr (call statement)"),
+            MStmt::When { .. } => todo!("S3.2e: lower_one_stmt_mir When"),
+            MStmt::For { .. } => todo!("S3.2e: lower_one_stmt_mir For"),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn lower_let_mir(&mut self, local: LocalId, value: MExprId) {
+        if self.is_integer_local(local) {
+            todo!("S3.2e: lower_let_mir integer/symbolic-const local (localparam)");
+        }
+        if self.as_reg_mir(value).is_some() {
+            todo!("S3.2e: lower_let_mir reg");
+        }
+        if self.is_instance_call_mir(value) {
+            todo!("S3.2e: lower_let_mir instance call (emit_instance on MIR)");
+        }
+        if matches!(self.mir.expr(value).kind, MExprKind::Record { .. }) {
+            todo!("S3.2e: lower_let_mir record out-conns");
+        }
+        self.declare_local(local);
+        let target = self.local_leaves(local);
+        let value_leaves = self.expr_leaves_mir(value);
+        // Match by suffix, not position (a record's `=>` fields are absent).
+        for (suf, place) in target {
+            if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == suf) {
+                self.push_assign(place, v.clone());
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    fn lower_equation_mir(&mut self, lhs: &Place, rhs: MExprId) {
+        let bare_local = lhs.projections.is_empty();
+        if bare_local && self.as_reg_mir(rhs).is_some() {
+            todo!("S3.2e: lower_equation_mir reg");
+        }
+        if bare_local && matches!(self.mir.expr(rhs).kind, MExprKind::When { .. }) {
+            todo!("S3.2e: lower_equation_mir when-RAM");
+        }
+        if bare_local && self.is_instance_call_mir(rhs) {
+            todo!("S3.2e: lower_equation_mir instance");
+        }
+        if matches!(self.mir.expr(rhs).kind, MExprKind::Record { .. }) {
+            todo!("S3.2e: lower_equation_mir record");
+        }
+        // General: place leaves zipped with value leaves, direction-aware (the
+        // body-driven leaf is the sink).
+        let lhs_leaves = self.place_leaves_dir_mir(lhs);
+        let rhs_leaves = self.value_leaves_dir_mir(rhs);
+        for ((lp, ld), (rp, rd)) in lhs_leaves.into_iter().zip(rhs_leaves) {
+            let (sink, src) = match (ld, rd) {
+                (true, _) => (lp, rp),
+                (false, true) => (rp, lp),
+                (false, false) => (lp, rp),
+            };
+            self.push_assign(sink, src);
+        }
+    }
+
+    #[allow(dead_code)]
+    fn drive_result_mir(&mut self, value: MExprId) {
+        let Some(rt) = self.sig.return_type.clone() else {
+            todo!("S3.2e: drive_result_mir unit return (call statement)");
+        };
+        if self.is_instance_call_mir(value) {
+            todo!("S3.2e: drive_result_mir instance call");
+        }
+        if matches!(self.mir.expr(value).kind, MExprKind::Record { .. }) {
+            todo!("S3.2e: drive_result_mir record out-conns");
+        }
+        let rt = subst_type(&rt, &self.self_subst);
+        let result_leaves = flatten_leaves(
+            self.db,
+            self.krate,
+            self.def,
+            &rt,
+            true,
+            &self.sig.generic_params,
+        );
+        let value_leaves = self.expr_leaves_mir(value);
+        for rl in result_leaves {
+            if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == rl.suffix) {
+                let result_leaf = SvExpr::Ident(join("result", &rl.suffix));
+                if rl.drives {
+                    self.push_assign(result_leaf, v.clone());
+                } else {
+                    self.push_assign(v.clone(), result_leaf);
+                }
+            }
+        }
+    }
+
+    /// `Some((d_input, reset, init))` if a MIR node is a `.reg(rst, init)` builtin.
+    #[allow(dead_code)]
+    fn as_reg_mir(&self, m: MExprId) -> Option<(MExprId, MExprId, MExprId)> {
+        if let MExprKind::Builtin {
+            method: BuiltinMethod::Reg,
+            receiver,
+            args,
+        } = &self.mir.expr(m).kind
+            && let [Conn::In(rst), Conn::In(init)] = args.as_slice()
+        {
+            return Some((*receiver, *rst, *init));
+        }
+        None
+    }
+
+    /// True if a MIR node is a non-inline user call (→ a module instance).
+    #[allow(dead_code)]
+    fn is_instance_call_mir(&self, m: MExprId) -> bool {
+        if let MExprKind::Call { callee, substs, .. } = &self.mir.expr(m).kind {
+            let (def, _) = self.mir_call_target(*callee, substs);
+            return !self.splices_inline(def);
+        }
+        false
+    }
+
+    /// MIR twin of `place_leaves_dir`: a bare-local place fans out per leaf with
+    /// its direction; projected places (index/field) are not ported yet.
+    #[allow(dead_code)]
+    fn place_leaves_dir_mir(&mut self, place: &Place) -> Vec<(SvExpr, bool)> {
+        if place.projections.is_empty() {
+            return self.local_leaves_dir(place.base);
+        }
+        todo!("S3.2e: place_leaves_dir_mir with index/field projections");
+    }
+
+    /// MIR twin of `value_leaves_dir`: a local carries its direction; anything
+    /// else flattens as a driven source.
+    #[allow(dead_code)]
+    fn value_leaves_dir_mir(&mut self, m: MExprId) -> Vec<(SvExpr, bool)> {
+        if let MExprKind::Local(l) = self.mir.expr(m).kind {
+            return self.local_leaves_dir(l);
+        }
+        self.expr_leaves_mir(m)
+            .into_iter()
+            .map(|(_, v)| (v, true))
+            .collect()
+    }
+
+    /// Whether the whole def can be lowered by the MIR walker (S3.2f). Strictly
+    /// conservative: returns `false` for any construct/sub-case the walker
+    /// `todo!()`s, so admitted defs lower identically to the HIR path (the golden
+    /// gate proves it). As walker arms land, this widens. A `false` keeps the def
+    /// on the HIR path — never a wrong lowering.
+    fn mir_walk_supported(&self, mir: &Mir<'db>) -> bool {
+        let block = mir.block();
+        block.stmts.iter().all(|s| self.mir_ok_stmt(mir, s))
+            && block.tail.is_none_or(|t| self.mir_ok_expr(mir, t))
+    }
+
+    fn mir_ok_stmt(&self, mir: &Mir<'db>, s: &MStmt) -> bool {
+        match s {
+            MStmt::VarDecl { .. } => true,
+            MStmt::Let { local, value } => {
+                !mir.local(*local).mutable
+                    && !self.is_integer_local(*local)
+                    && self.as_reg_mir(*value).is_none()
+                    && !self.is_instance_call_mir(*value)
+                    && self.mir_ok_expr(mir, *value)
+            }
+            MStmt::Equation { lhs, rhs } => {
+                lhs.projections.is_empty()
+                    && self.as_reg_mir(*rhs).is_none()
+                    && !self.is_instance_call_mir(*rhs)
+                    && self.mir_ok_expr(mir, *rhs)
+            }
+            MStmt::Return { value } => {
+                !self.is_instance_call_mir(*value) && self.mir_ok_expr(mir, *value)
+            }
+            MStmt::Expr(_) | MStmt::When { .. } | MStmt::For { .. } => false,
+        }
+    }
+
+    fn mir_ok_expr(&self, mir: &Mir<'db>, m: MExprId) -> bool {
+        match &mir.expr(m).kind {
+            MExprKind::Number(..)
+            | MExprKind::Bool(_)
+            | MExprKind::Local(_)
+            | MExprKind::ConstParam(_)
+            | MExprKind::ConstAssoc { .. } => true,
+            MExprKind::Field { receiver, .. } => self.mir_ok_expr(mir, *receiver),
+            MExprKind::VecLit(es) | MExprKind::TupleLit(es) => {
+                es.iter().all(|e| self.mir_ok_expr(mir, *e))
+            }
+            MExprKind::VecRepeat { elem, .. } => self.mir_ok_expr(mir, *elem),
+            // Only inline calls are walked; instances are not ported yet. All
+            // connections must be in-values (no out-targets / record fields).
+            MExprKind::Call {
+                callee,
+                substs,
+                receiver,
+                args,
+                named,
+            } => {
+                let (def, _) = self.mir_call_target(*callee, substs);
+                self.splices_inline(def)
+                    && receiver.is_none_or(|r| self.mir_ok_expr(mir, r))
+                    && args.iter().all(|a| match a {
+                        Conn::In(e) => self.mir_ok_expr(mir, *e),
+                        Conn::Out(_) => false,
+                    })
+                    && named.iter().all(|n| match &n.conn {
+                        Conn::In(e) => self.mir_ok_expr(mir, *e),
+                        Conn::Out(_) => false,
+                    })
+            }
+            // Index, Slice, When, If, ConstIf, Block, Builtin, Record, Def: not
+            // yet walked.
+            _ => false,
         }
     }
 

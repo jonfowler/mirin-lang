@@ -40,9 +40,12 @@
   split, lowered in one `lower_conn`. Validated via dump:
   `stream8 { valid = …, data = …, ready => l5 }`. This retires the backend's
   per-site direction re-derivation when S3 lands. **slice-set BitRange** (S4) pending.
-- [ ] **S3 — Retarget emission onto MIR.** `sv_module`/`build_module` read `mir_of`
-  instead of `body`+`infer`. Parity gate: `golden_sv_snapshot` (built, 89 cases).
-  Planning-reviewed; ordered sub-steps + invariants in the design note below.
+- [~] **S3 — Retarget emission onto MIR.** `build_module` walks `mir_of` for the
+  defs the walker covers (parallel-entry behind a coverage predicate), the rest
+  on HIR. Parity gate: `golden_sv_snapshot` (89 cases). The walker now lowers
+  scalars/aggregates/inline-calls + Let/Equation(bare-local)/Return statements
+  end-to-end, **golden byte-for-byte green**. Widening the predicate (instances,
+  reg, when/if/for, projections) toward full coverage, then delete the HIR core.
   - [x] S3.0 — golden-SV byte-for-byte gate (`tests/golden/`).
   - [x] S3.1 — MIR debug dump (`mir/pretty.rs` + `--emit mir`); first real
     consumer. Validated: `value + 3` → `l0.call add<8, D0>(3)` (operator unified,
@@ -210,6 +213,18 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2e+f — first validated flip.** Built the statement twins
+  (`lower_top_block_mir`/`lower_stmts_mir`/`lower_one_stmt_mir`/`lower_let_mir`/
+  `lower_equation_mir`/`drive_result_mir` + `value_leaves_dir_mir`/
+  `place_leaves_dir_mir`/`as_reg_mir`/`is_instance_call_mir`), simple paths real,
+  complex sub-cases `todo!`. Added a strict coverage predicate
+  (`mir_walk_supported`) and flipped `build_module` to walk MIR for covered defs.
+  **The whole corpus emits byte-for-byte identical** (golden 89 cases green, 127
+  lib green) — `add_constant`-class defs now lower through the native MIR walker,
+  the rest stay on HIR. Emission walks MIR for real; the migration is validated
+  incrementally as the predicate widens. Next: widen coverage — instances
+  (`emit_instance` on MIR, the big one), then reg/when/if/for/projections, then
+  delete the HIR lowering core.
 - 2026-06-25: S3.2d cont(2) — inline call machinery on MIR. Added
   `resolve_trait_instance_with` (substs-taking, id-agnostic) + `mir_call_target`
   + `render_inline_mir` (prep from a MIR `Call` node, shares `render_inline_spliced`).
