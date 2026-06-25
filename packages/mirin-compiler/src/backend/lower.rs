@@ -53,7 +53,7 @@ use crate::hir::types::{
     TermKind, Type, ValueKind, subst_const_opt,
 };
 use crate::mir::ir::{
-    BuiltinMethod, Conn, MBlock, MExprId, MExprKind, MNamedArg, MStmt, Mir, Place,
+    BuiltinMethod, Conn, MBlock, MExprId, MExprKind, MNamedArg, MStmt, Mir, Place, Projection,
 };
 use crate::mir::lower::mir_of;
 use crate::nameres::def_map::{CrateDefMap, crate_def_map};
@@ -1688,14 +1688,60 @@ impl<'db> SvLower<'_, 'db> {
         false
     }
 
-    /// MIR twin of `place_leaves_dir`: a bare-local place fans out per leaf with
-    /// its direction; projected places (index/field) are not ported yet.
+    /// MIR twin of `place_leaves_dir`. Mirrors the HIR discriminator on the
+    /// *outermost* projection: a bare local fans out per leaf with its direction;
+    /// an Index-rooted place fans out per base-leaf, indexed (all drive); a
+    /// Field-rooted place is a single leaf (HIR's `expr_value` path). Runtime
+    /// (uint) index bounds-asserts are NOT replicated here — the predicate keeps
+    /// runtime-indexed places on HIR.
     #[allow(dead_code)]
     fn place_leaves_dir_mir(&mut self, place: &Place) -> Vec<(SvExpr, bool)> {
-        if place.projections.is_empty() {
-            return self.local_leaves_dir(place.base);
+        match place.projections.last() {
+            None => self.local_leaves_dir(place.base),
+            Some(Projection::Index(_)) => self
+                .projected_leaves_mir(place)
+                .into_iter()
+                .map(|(_, e)| (e, true))
+                .collect(),
+            Some(Projection::Field(_)) => {
+                let leaves = self.projected_leaves_mir(place);
+                let one = if leaves.len() == 1 {
+                    leaves.into_iter().next().unwrap().1
+                } else {
+                    SvExpr::Lit(format!(
+                        "/* mirin: non-scalar value ({} leaves) in scalar position */",
+                        leaves.len()
+                    ))
+                };
+                vec![(one, true)]
+            }
         }
-        todo!("S3.2e: place_leaves_dir_mir with index/field projections");
+    }
+
+    /// The `(suffix, SvExpr)` leaves of a projected place: start from the base
+    /// local's leaves, then apply each projection base→leaf (Field strips the
+    /// field prefix; Index appends `[idx]`).
+    #[allow(dead_code)]
+    fn projected_leaves_mir(&mut self, place: &Place) -> Vec<(String, SvExpr)> {
+        let mut leaves = self.local_leaves(place.base);
+        for proj in &place.projections {
+            match proj {
+                Projection::Field(f) => {
+                    leaves = leaves
+                        .into_iter()
+                        .filter_map(|(suf, e)| strip_field(&suf, f).map(|rest| (rest, e)))
+                        .collect();
+                }
+                Projection::Index(i) => {
+                    let idx = self.expr_value_mir(*i);
+                    leaves = leaves
+                        .into_iter()
+                        .map(|(suf, e)| (suf, SvExpr::Lit(format!("{e}[{idx}]"))))
+                        .collect();
+                }
+            }
+        }
+        leaves
     }
 
     /// MIR twin of `value_leaves_dir`: a local carries its direction; anything
@@ -1742,7 +1788,7 @@ impl<'db> SvLower<'_, 'db> {
                     && self.mir_ok_value(mir, *value)
             }
             MStmt::Equation { lhs, rhs } => {
-                lhs.projections.is_empty() && self.mir_ok_value(mir, *rhs)
+                self.mir_ok_place(mir, lhs) && self.mir_ok_value(mir, *rhs)
             }
             MStmt::Return { value } => self.mir_ok_value(mir, *value),
             // A generate-for: the iterable and the whole body must be walkable.
@@ -1833,10 +1879,38 @@ impl<'db> SvLower<'_, 'db> {
                     && self.mir_ok_block(mir, else_branch)
             }
             MExprKind::Block(b) => self.mir_ok_block(mir, b),
-            // Index, Slice, When, ConstIf, other Builtins, Record, Def: not yet
-            // walked.
+            // `v[i]` read: base + index walkable, and the index must be static.
+            MExprKind::Index { base, index } => {
+                self.mir_ok_expr(mir, *base)
+                    && self.mir_ok_expr(mir, *index)
+                    && self.mir_static_index(mir, *index)
+            }
+            // Slice, When, ConstIf, other Builtins, Record, Def: not yet walked.
             _ => false,
         }
+    }
+
+    /// Whether a drive-target place is walkable: each Index must be a *static*
+    /// (genvar/const, integer-typed) index — a runtime (uint) index needs the
+    /// bounds-assert the MIR `place_leaves_dir_mir` does not yet emit, so it
+    /// stays on HIR. Field projections are always fine.
+    fn mir_ok_place(&self, mir: &Mir<'db>, place: &Place) -> bool {
+        place.projections.iter().all(|proj| match proj {
+            Projection::Field(_) => true,
+            Projection::Index(i) => self.mir_ok_expr(mir, *i) && self.mir_static_index(mir, *i),
+        })
+    }
+
+    /// A static (compile-time) index: integer-typed (a genvar/const). A runtime
+    /// (uint) index needs the bounds-assert the MIR walker does not yet emit.
+    fn mir_static_index(&self, mir: &Mir<'db>, i: MExprId) -> bool {
+        matches!(
+            mir.expr(i).ty,
+            Type::Value {
+                kind: ValueKind::Integer,
+                ..
+            }
+        )
     }
 
     /// Whether every statement and the tail of a block is walkable.
@@ -2684,8 +2758,13 @@ impl<'db> SvLower<'_, 'db> {
             MExprKind::Builtin { .. } => {
                 todo!("S3.2e: expr_value_mir Builtin (non-reg)")
             }
-            MExprKind::Index { .. } => {
-                todo!("S3.2d: expr_value_mir Index (+ index_bounds_assert on MIR)")
+            // `v[i]` in scalar position. (A runtime-index bounds-assert is not
+            // emitted; the predicate restricts walked indices to static ones.)
+            MExprKind::Index { base, index } => {
+                let (base, index) = (*base, *index);
+                let b = self.expr_value_mir(base);
+                let i = self.expr_value_mir(index);
+                SvExpr::Lit(format!("{b}[{i}]"))
             }
             MExprKind::When { .. } => todo!("S3.2k: expr_value_mir When"),
             MExprKind::If {
@@ -3029,7 +3108,14 @@ impl<'db> SvLower<'_, 'db> {
             MExprKind::Record { .. } => {
                 todo!("S3.2d: expr_leaves_mir Record (record_leaves on MIR)")
             }
-            MExprKind::Index { .. } => todo!("S3.2d: expr_leaves_mir Index"),
+            MExprKind::Index { base, index } => {
+                let (base, index) = (*base, *index);
+                let idx = self.expr_value_mir(index);
+                self.expr_leaves_mir(base)
+                    .into_iter()
+                    .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}[{idx}]"))))
+                    .collect()
+            }
             MExprKind::Call {
                 callee,
                 substs,

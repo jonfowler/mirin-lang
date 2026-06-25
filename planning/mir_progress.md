@@ -213,6 +213,17 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2l — indexing on MIR (place projections + reads).**
+  `place_leaves_dir_mir` now handles projected places (`projected_leaves_mir`
+  applies Field/Index base→leaf; outermost-projection discriminator mirrors HIR:
+  Index→multi-leaf, Field→single-leaf). Wired the `Index` read arm in
+  `expr_value_mir`/`expr_leaves_mir`. Predicate: `mir_ok_place` + an `Index` arm,
+  both gated on `mir_static_index` (integer/genvar) — runtime (uint) indices stay
+  on HIR (no bounds-assert replicated). `v[i] = x`, `s.field = x`, `v[i]` reads,
+  and genvar-indexed for-bodies now lower on MIR. Golden green (89), 127 lib.
+  Remaining: `when` (register; several sites), when-RAM, `const if`, records,
+  let-mut fold, unit-return call statements, runtime-index bounds-assert; then
+  delete the HIR core.
 - 2026-06-25: **S3.2k — `for` (generate) on MIR.** Added `lower_for_mir`
   (bound from the iterable's MIR-node type; genvar or `assign x = v[i]` binding),
   wired `MStmt::For`, predicate admits a for whose iter + body are walkable.
