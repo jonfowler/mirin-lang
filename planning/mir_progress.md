@@ -40,23 +40,18 @@
   split, lowered in one `lower_conn`. Validated via dump:
   `stream8 { valid = …, data = …, ready => l5 }`. This retires the backend's
   per-site direction re-derivation when S3 lands. **slice-set BitRange** (S4) pending.
-- [~] **S3 — Retarget emission onto MIR.** `build_module` walks `mir_of` for the
-  defs the walker covers (parallel-entry behind a coverage predicate), the rest
-  on HIR. Parity gate: `golden_sv_snapshot` (89 cases). The walker now lowers
-  scalars/aggregates/inline-calls + Let/Equation(bare-local)/Return statements
-  end-to-end, **golden byte-for-byte green**. Widening the predicate (instances,
-  reg, when/if/for, projections) toward full coverage, then delete the HIR core.
+- [x] **S3 — Retarget emission onto MIR. DONE.** `build_module` walks `mir_of`
+  unconditionally — emission reads MIR, not HIR. Parity gate: `golden_sv_snapshot`
+  (94 cases) byte-for-byte green. The HIR lowering core (~50 methods + the
+  `of_hir` bridge + the coverage predicate) is deleted; the const-fn SV-`function`
+  builder walks MIR too. Single lowering path; the `_mir` method suffix retired.
   - [x] S3.0 — golden-SV byte-for-byte gate (`tests/golden/`).
-  - [x] S3.1 — MIR debug dump (`mir/pretty.rs` + `--emit mir`); first real
-    consumer. Validated: `value + 3` → `l0.call add<8, D0>(3)` (operator unified,
-    substs baked, `:uint(8)@D0` types on every node).
-  - [x] S3.2a — HIR↔MIR bridge (`Mir.of_hir`), the retarget seam.
-  - [x] S3.2b — type-source swap: the backend's expr-type reads now source from
-    MIR (`mir_expr_type` via `of_hir`), incl. the central `expr_type`,
-    `expr_type_width`, `index_bounds_assert`, reg-clock typing, leaf-typing, and
-    `actual_type`. Golden-SV byte-for-byte unchanged → MIR is load-bearing for
-    types. (Local-type reads deferred — `self`-param + `Option`/`Error` subtlety.)
-  - [ ] S3.2c..e — `as_reg`→`Builtin`, calls, control flow onto MIR. (Plan below.)
+  - [x] S3.1 — MIR debug dump (`mir/pretty.rs` + `--emit mir`).
+  - [x] S3.2a..b — bridge + type-source swap (both since deleted/folded: the
+    backend no longer reads HIR ids at all).
+  - [x] S3.2c..e — `Builtin` (reg/posedge/replace/enumerate), calls, control
+    flow (if/when/for), places/projections — all on MIR. Flip landed, HIR core
+    deleted (commits e0f1c26, 6dac940).
 - [~] **S4 — Slicing on MIR.** Reads: two-endpoint / offset / elision, over
   bits + Vec, literal / runtime / **const-param** endpoints — all end-to-end,
   verilator-clean. Slice-set (lvalue): bits `word[hi..lo] = …` via a
