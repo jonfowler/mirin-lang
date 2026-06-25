@@ -105,12 +105,21 @@
   unsupported shape never reaches the splice). `examples/working/inline_mirin_body.mrn`
   (id + let + nested inline) + golden + CLEAN + VERILATOR_CLEAN; the old
   `fail-expected/inline-mirin-body.mrn` promoted (now compiles);
-  `fail-expected/inline-var.mrn` for the check. **Remaining (next slice):**
-  `const if` folding in an inline body via call-site const generics bound on the
-  `const_eval` `Frame` (planning/alternative/inline_bodies-frame-constgen.md) —
-  the slice/pack-guard use case; then relax the `ConstIf`/`IntegerParam` checks.
-  Aggregate-returning inline bodies work through `expr_leaves` but want a
-  dedicated example.
+  `fail-expected/inline-var.mrn` for the check. Aggregate-returning inline
+  bodies splice per leaf (struct param → caller wires, record result → result
+  leaves) — `examples/working/inline_aggregate.mrn` + golden + CLEAN +
+  VERILATOR_CLEAN. **Const-generic widths/slices in an inline body already
+  ground** via the nested lower's composed `self_subst` (`render_const` applies
+  it), so a `slice{lo,hi}` helper's `x[hi-1..lo]`/`bits(hi-lo)` work at a literal
+  call site. **Deferred (documented decision, NOT a gap):** folding a `const if`
+  *condition* inside an inline body. The grounded case is mechanical (eval the
+  cond MExpr with the call's const generics — the `const_eval` `Frame`-binding
+  design in `alternative/inline_bodies-frame-constgen.md`), but the *symbolic*
+  case (a generic caller) needs the unbuilt `generate if` lowering (step-5,
+  compiler-wide, not inline-specific). Per `comptime_if.md` the slice/concat
+  zero-width guards are **backend-synthesised**, not inline Mirin primitives — so
+  const-if-in-inline is off the slicing critical path. Reopen alongside the
+  `generate if` workstream; until then `inline_check` rejects it cleanly.
 - [ ] **S8 — const-eval during infer via per-item anon-const units.** NB (verified
   2026-06-25): const-eval-in-infer is *not* a functional gap — `infer` calls the
   `const_eval` helper (`try_eval`/`eval_width`/`eval_cond`) throughout obligation

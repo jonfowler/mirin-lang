@@ -1,0 +1,17 @@
+// An aggregate-returning Mirin-bodied `#[inline]` fn splices per leaf: the
+// struct param `p` flattens to caller-side wires (`__inl0__p__a` / `__inl0__p__b`)
+// and the record result drives each result leaf directly — no submodule, no
+// packed bus (planning/inline_bodies.md "aggregate (leaf) results").
+struct Pair = pair {
+    a: uint(8),
+    b: uint(8),
+}
+
+#[inline]
+fn swap(p: Pair) -> Pair {
+    pair { a = p.b, b = p.a }
+}
+
+fn top {dom clk: Clock} (inp: Pair @clk) -> Pair @clk {
+    swap(inp)
+}
