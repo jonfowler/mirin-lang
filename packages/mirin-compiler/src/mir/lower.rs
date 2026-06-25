@@ -31,6 +31,9 @@ pub fn mir_of<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'
     let inf = infer(db, krate, def);
 
     let mut lower = Lower {
+        db,
+        krate,
+        def,
         body,
         inf,
         // A malformed body can carry shapes the lowering/inference left
@@ -93,6 +96,9 @@ fn builtin_method(name: &str) -> BuiltinMethod {
 }
 
 struct Lower<'a, 'db> {
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
     body: &'a crate::hir::body::Body<'db>,
     inf: &'a Inference<'db>,
     /// Whether the body type-checked (no infer diagnostics). Gates the
@@ -305,14 +311,23 @@ impl<'a, 'db> Lower<'a, 'db> {
                 then_branch: self.lower_block(then_branch),
                 else_branch: self.lower_block(else_branch),
             },
+            // `const if` folds at lowering: evaluate the (HIR) condition and keep
+            // only the taken branch as a block — the discarded arm's (possibly
+            // invalid) SV is never produced (planning/comptime_if.md). A
+            // still-symbolic condition (the `generate if` case, not yet built)
+            // keeps the structural `ConstIf` node; emission rejects it as today.
             ExprKind::ConstIf {
                 cond,
                 then_branch,
                 else_branch,
-            } => MExprKind::ConstIf {
-                cond: self.lower_expr(*cond),
-                then_branch: self.lower_block(then_branch),
-                else_branch: self.lower_block(else_branch),
+            } => match crate::hir::const_eval::eval_cond(self.db, self.krate, self.def, *cond) {
+                Some(true) => MExprKind::Block(self.lower_block(then_branch)),
+                Some(false) => MExprKind::Block(self.lower_block(else_branch)),
+                None => MExprKind::ConstIf {
+                    cond: self.lower_expr(*cond),
+                    then_branch: self.lower_block(then_branch),
+                    else_branch: self.lower_block(else_branch),
+                },
             },
             ExprKind::Slice {
                 base,

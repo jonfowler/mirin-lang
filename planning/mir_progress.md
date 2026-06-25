@@ -213,6 +213,14 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2q — `const if` folded at lowering.** The `mir_of` lowering
+  has the HIR cond id, so it calls `eval_cond` and keeps only the taken branch as
+  a `Block` (foldable case) — `ConstIf` disappears from MIR for the common case,
+  and the backend walker handles the resulting `Block`. A still-symbolic cond
+  (generate-if, not built) keeps the structural `ConstIf` (predicate rejects →
+  HIR, as today). Golden green (89), 127 lib, MIR smoke green. const_if.mrn now
+  walks MIR. **Only runtime-index bounds-asserts remain before every construct
+  lowers on MIR.**
 - 2026-06-25: **S3.2p — let-mut fold on MIR.** Added run-consumption to
   `lower_stmts_mir` (`let mut acc` + carrying steps → `lower_mut_fold_mir`, a
   procedural `always_comb`), plus `mir_carries`, `blocking_assigns_mir`,
