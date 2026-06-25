@@ -69,8 +69,19 @@
   proven overlap. Runtime/elided endpoints can't be proven, so they stay
   non-conflicting (no false positives). Remaining (niche): zero-width `const if`
   guard.
-- [ ] **S5 — Flatten on MIR.** Aggregates → leaves as a MIR pass. (Deferred:
-  flatten stays type-keyed (`flatten_leaves` reads `mexpr.ty`); fine as-is.)
+- [x] **S5 — Flatten stays type-keyed (CLOSED as a deliberate decision, not a
+  pass).** Investigated (2026-06-25): `flatten_leaves`/`flatten_leaves_inner`
+  read *only* `Type` + `sig.fields(def_in_the_type)` + the generics list — they
+  take no HIR `ExprId`, never touch `body(def)`/`infer(def)`. The outer `def`
+  parameter is used *solely* by `ground_widths` (backend-time const-eval of width
+  exprs that may reference a `ConstArg::Local`), which is a separate concern from
+  the flatten recursion. Since MIR already carries `Type` on every node (S3), a
+  standalone MIR→MIR flatten pass would be structurally identical (Type in,
+  leaves out) and remove *zero* HIR coupling — it would only relocate code and
+  add a pipeline stage for no benefit. The right outcome is therefore to keep
+  flatten as an on-demand, type-keyed helper invoked at the emission sites with
+  `mexpr.ty`. No `[ ]` work remains; revisit only as a pure refactor if code
+  organisation ever calls for it.
 - [~] **S6 — Mono + mono_check on MIR.** Emission already monomorphises lazily
   (the `MonoReq` worklist collector + `ground_widths` on read — see "HIR-core"
   notes). `mono_check` BUILT (`backend/mono_check.rs`): ground-regime check over
@@ -180,6 +191,12 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
 `trait_*` goldens catch mistakes) and trusting `MExpr.ty` as ground.
 
 ## Status log (newest first)
+
+- 2026-06-25: **S5 CLOSED — flatten stays type-keyed by design.** Verified
+  `flatten_leaves` has zero HIR coupling (reads only `Type` + `sig.fields` +
+  generics; the `def` param feeds only `ground_widths`). A MIR→MIR flatten pass
+  would relocate code without removing any HIR dependence, so S5 is resolved as
+  "keep the type-keyed helper" rather than built. See the S5 slice note above.
 
 - 2026-06-25: **MIR const evaluator + const-expr slice endpoints.** New
   `src/mir/const_eval.rs` — a MIR-native const interpreter (twin of
