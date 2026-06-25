@@ -1,0 +1,6 @@
+// Offset-form slice `x[i..+4]` — a fixed-size (constant-width) slice at a
+// RUNTIME base (planning/slicing.md): lowers to the SystemVerilog indexed
+// part-select `x[i +: 4]`.
+fn s(x: bits(16), i: uint(4)) -> bits(4) {
+    x[i..+4]
+}

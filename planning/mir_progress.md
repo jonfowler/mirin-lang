@@ -214,6 +214,15 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S4 step 3 — offset form / runtime-base slices.** `x[off..+w]`
+  (width const, base may be RUNTIME) → the SV indexed part-select `x[off +: w]`,
+  uniform for bits (packed) and Vec (unpacked) — no direction branch. infer:
+  `slice_literal` offset branch + `sliced_ty` helper; walker: offset branch in
+  the Slice arm; predicate: offset shape (walkable base + literal width). This is
+  the "fixed-size synthesisable runtime slice" from the original ask.
+  `slice_offset.mrn` (`x[i..+4]`→`x[i +: 4]`) verilator-clean, in
+  CLEAN+VERILATOR_CLEAN+golden. Next S4: elision defaults, zero-width const-if
+  guard, param/const-expr endpoints (const-eval), slice-set.
 - 2026-06-25: **S4 step 2 — vec slices.** Extended `slice_literal` to `Vec`
   (low-first: `v[2..5]` → `Vec(3,A)`). The MIR walker Slice arm is now
   type-directed in both endpoint order AND SV range direction: `bits` packed

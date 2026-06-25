@@ -2277,19 +2277,23 @@ impl<'db> SvLower<'_, 'db> {
                 Conn::In(e) => self.mir_ok_expr(mir, *e),
                 Conn::Out(p) => self.mir_ok_place(mir, p),
             }),
-            // A `bits` slice (S4 first cut): base walkable, both endpoints
-            // literal (infer only types this shape; the walker reads the lits).
+            // A slice. Two-endpoint: both endpoints literal. Offset `x[off..+w]`:
+            // a walkable (possibly runtime) base + a literal width.
             MExprKind::Slice {
                 base,
-                lo: Some(lo),
-                hi: Some(hi),
-                width: None,
+                lo,
+                hi,
+                width,
             } => {
+                let is_num = |e: &MExprId| matches!(mir.expr(*e).kind, MExprKind::Number(..));
                 self.mir_ok_expr(mir, *base)
-                    && matches!(mir.expr(*lo).kind, MExprKind::Number(..))
-                    && matches!(mir.expr(*hi).kind, MExprKind::Number(..))
+                    && match (lo, hi, width) {
+                        (Some(lo), Some(hi), None) => is_num(lo) && is_num(hi),
+                        (Some(lo), None, Some(w)) => self.mir_ok_expr(mir, *lo) && is_num(w),
+                        _ => false,
+                    }
             }
-            // ConstIf, other Builtins, Def, offset/non-literal slices: not walked.
+            // ConstIf, other Builtins, Def: not walked.
             _ => false,
         }
     }
@@ -3629,16 +3633,30 @@ impl<'db> SvLower<'_, 'db> {
             // `bits` is packed MSB:LSB (high-first: `lo`=high) → `[high-1:low]`;
             // `Vec` is an unpacked `[0:N-1]` array (low-first: `lo`=low) →
             // ascending `[low:high-1]`. One leaf for `bits`, N for a `Vec`.
-            MExprKind::Slice { base, lo, hi, .. } => {
-                let (base, lo, hi) = (*base, *lo, *hi);
-                let (a, b) = (self.mir_lit(lo.unwrap()), self.mir_lit(hi.unwrap()));
-                let range = match &self.mir.expr(base).ty {
-                    Type::Value {
-                        kind: ValueKind::Bits { .. },
-                        ..
-                    } => format!("[{}:{}]", a - 1, b), // bits: lo=high, hi=low
-                    Type::Vec { .. } => format!("[{}:{}]", a, b - 1), // vec: lo=low, hi=high
-                    _ => panic!("MIR: slice base is neither bits nor vec"),
+            MExprKind::Slice {
+                base,
+                lo,
+                hi,
+                width,
+            } => {
+                let (base, lo, hi, width) = (*base, *lo, *hi, *width);
+                let range = if let Some(w_e) = width {
+                    // Offset form: the indexed part-select `[off +: w]` — uniform
+                    // for bits (packed) and Vec (unpacked), base may be runtime.
+                    let off = self.expr_value_mir(lo.expect("slice offset base"));
+                    let w = self.mir_lit(w_e);
+                    format!("[{off} +: {w}]")
+                } else {
+                    // Two-endpoint, type-directed range direction.
+                    let (a, b) = (self.mir_lit(lo.unwrap()), self.mir_lit(hi.unwrap()));
+                    match &self.mir.expr(base).ty {
+                        Type::Value {
+                            kind: ValueKind::Bits { .. },
+                            ..
+                        } => format!("[{}:{}]", a - 1, b), // bits: lo=high, hi=low
+                        Type::Vec { .. } => format!("[{}:{}]", a, b - 1), // vec: lo=low, hi=high
+                        _ => panic!("MIR: slice base is neither bits nor vec"),
+                    }
                 };
                 self.expr_leaves_mir(base)
                     .into_iter()

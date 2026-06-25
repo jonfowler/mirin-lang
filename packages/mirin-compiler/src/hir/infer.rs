@@ -1798,39 +1798,50 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         hi: Option<ExprId>,
         width: Option<ExprId>,
     ) -> Option<Type<'db>> {
-        if width.is_some() {
-            return None; // offset form `..+w` not yet
+        // Offset form `x[off..+w]`: the base (`lo`) may be RUNTIME; only the
+        // width must be a constant — a fixed-size synthesisable runtime slice.
+        if let Some(w_e) = width {
+            lo?; // must have a base/offset
+            let w = self.lit_val(body, w_e)?;
+            if w <= 0 {
+                return None; // zero/neg width needs the const-if guard (later)
+            }
+            return self.sliced_ty(bt, w);
         }
+        // Two-endpoint form `x[a..b]`: both endpoints literal. `bits` is
+        // high-first (`a`=high), `Vec` is low-first (`a`=low).
         let a = self.lit_val(body, lo?)?;
         let b = self.lit_val(body, hi?)?;
+        let w = match bt {
+            Type::Value {
+                kind: ValueKind::Bits { .. },
+                ..
+            } => a - b,
+            Type::Vec { .. } => b - a,
+            _ => return None,
+        };
+        if w <= 0 {
+            return None; // wrong order / zero-width — not this cut
+        }
+        self.sliced_ty(bt, w)
+    }
+
+    /// The result type of a width-`w` slice of `bt` (`bits(w)` / `Vec(w, A)`).
+    fn sliced_ty(&self, bt: &Type<'db>, w: i128) -> Option<Type<'db>> {
         match bt {
-            // bits: first endpoint is the (exclusive) high, second the low.
             Type::Value {
                 kind: ValueKind::Bits { .. },
                 domain,
-            } => {
-                let (high, low) = (a, b);
-                if high <= low {
-                    return None; // ascending on bits / zero-width — not this cut
-                }
-                Some(Type::Value {
-                    kind: ValueKind::Bits {
-                        width: ConstArg::Lit(high - low),
-                    },
-                    domain: *domain,
-                })
-            }
-            // Vec: first endpoint is the (inclusive) low, second the high.
-            Type::Vec { elem, .. } => {
-                let (low, high) = (a, b);
-                if high <= low {
-                    return None; // descending on vec / zero-width — not this cut
-                }
-                Some(Type::Vec {
-                    len: ConstArg::Lit(high - low),
-                    elem: elem.clone(),
-                })
-            }
+            } => Some(Type::Value {
+                kind: ValueKind::Bits {
+                    width: ConstArg::Lit(w),
+                },
+                domain: *domain,
+            }),
+            Type::Vec { elem, .. } => Some(Type::Vec {
+                len: ConstArg::Lit(w),
+                elem: elem.clone(),
+            }),
             _ => None,
         }
     }
