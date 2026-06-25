@@ -213,6 +213,15 @@ by `golden_sv_snapshot`. Next-subtlest: `resolve_trait_instance` re-selection
   add_constant emit byte-identical. Next: `expr_value_mir` Call/Index + the
   call/inline machinery on MIR (S3.2d).
 
+- 2026-06-25: **S3.2n — records on MIR.** Added `record_leaves_mir` (in-field
+  leaves, declared order) + `record_out_conns_mir` (`field => target` via
+  `projected_leaves_mir`). Wired `expr_leaves_mir` Record + the record handling
+  in `lower_let_mir` / `lower_equation_mir` (bare-local record block) /
+  `drive_result_mir`. Predicate: a Record arm (in-fields walkable, out-targets
+  walkable places). Golden green (89), 127 lib. Record defs (packet_struct,
+  stream_connect, record_out_conn, parametric_struct, …) now lower on MIR.
+  Remaining: let-mut fold, `const if`, unit-return call statements,
+  runtime-index bounds-assert; then delete the HIR core.
 - 2026-06-25: **S3.2m — `when` on MIR (register / RAM).** Added
   `clock_of_event_mir`, `lower_when_mir` (value), `lower_when_leaves_mir`
   (aggregate), `lower_when_stmt_mir` + `when_body_seq_mir` (statement, guarded),

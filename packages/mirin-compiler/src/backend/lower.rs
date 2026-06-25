@@ -1577,9 +1577,6 @@ impl<'db> SvLower<'_, 'db> {
             self.emit_instance_from_mir(value, target);
             return;
         }
-        if matches!(self.mir.expr(value).kind, MExprKind::Record { .. }) {
-            todo!("S3.2e: lower_let_mir record out-conns");
-        }
         self.declare_local(local);
         let target = self.local_leaves(local);
         let value_leaves = self.expr_leaves_mir(value);
@@ -1588,6 +1585,12 @@ impl<'db> SvLower<'_, 'db> {
             if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == suf) {
                 self.push_assign(place, v.clone());
             }
+        }
+        // A record value's `field => target` out-connections drive their targets
+        // from the just-bound local's fields.
+        let base = self.local_name(local);
+        for (suf, target) in self.record_out_conns_mir(value) {
+            self.push_assign(target, SvExpr::Ident(join(&base, &suf)));
         }
     }
 
@@ -1636,8 +1639,24 @@ impl<'db> SvLower<'_, 'db> {
             self.emit_instance_from_mir(rhs, target);
             return;
         }
-        if matches!(self.mir.expr(rhs).kind, MExprKind::Record { .. }) {
-            todo!("S3.2e: lower_equation_mir record");
+        // A bare-local target driven by a record: its `=>` fields drive their
+        // targets, and (for a record RHS) the local's leaves are assigned
+        // suffix-matched (`=>` fields are absent from the forward leaves).
+        if bare_local {
+            let base = self.local_name(lhs.base);
+            for (suf, target) in self.record_out_conns_mir(rhs) {
+                self.push_assign(target, SvExpr::Ident(join(&base, &suf)));
+            }
+            if matches!(self.mir.expr(rhs).kind, MExprKind::Record { .. }) {
+                let target = self.local_leaves(lhs.base);
+                let value_leaves = self.expr_leaves_mir(rhs);
+                for (suf, place) in target {
+                    if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == suf) {
+                        self.push_assign(place, v.clone());
+                    }
+                }
+                return;
+            }
         }
         // General: place leaves zipped with value leaves, direction-aware (the
         // body-driven leaf is the sink).
@@ -1676,9 +1695,6 @@ impl<'db> SvLower<'_, 'db> {
             self.emit_instance_from_mir(value, target);
             return;
         }
-        if matches!(self.mir.expr(value).kind, MExprKind::Record { .. }) {
-            todo!("S3.2e: drive_result_mir record out-conns");
-        }
         let value_leaves = self.expr_leaves_mir(value);
         for rl in result_leaves {
             if let Some((_, v)) = value_leaves.iter().find(|(s, _)| *s == rl.suffix) {
@@ -1689,6 +1705,10 @@ impl<'db> SvLower<'_, 'db> {
                     self.push_assign(v.clone(), result_leaf);
                 }
             }
+        }
+        // A record return's `field => target` out-connections drive from result.
+        for (suf, target) in self.record_out_conns_mir(value) {
+            self.push_assign(target, SvExpr::Ident(join("result", &suf)));
         }
     }
 
@@ -1959,7 +1979,13 @@ impl<'db> SvLower<'_, 'db> {
                     && self.mir_ok_block(mir, body)
                     && init.is_none_or(|e| self.mir_ok_expr(mir, e))
             }
-            // Slice, ConstIf, other Builtins, Record, Def: not yet walked.
+            // A record: each in-field value walkable, each `=>` out-target a
+            // walkable place.
+            MExprKind::Record { fields, .. } => fields.iter().all(|f| match &f.conn {
+                Conn::In(e) => self.mir_ok_expr(mir, *e),
+                Conn::Out(p) => self.mir_ok_place(mir, p),
+            }),
+            // Slice, ConstIf, other Builtins, Def: not yet walked.
             _ => false,
         }
     }
@@ -3181,9 +3207,9 @@ impl<'db> SvLower<'_, 'db> {
                     .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("'{{{n}{{{e}}}}}"))))
                     .collect()
             }
-            // Cross-method twins pending (each its own S3.2 sub-step):
-            MExprKind::Record { .. } => {
-                todo!("S3.2d: expr_leaves_mir Record (record_leaves on MIR)")
+            MExprKind::Record { ctor, fields } => {
+                let (ctor, fields) = (*ctor, fields.clone());
+                self.record_leaves_mir(ctor, &fields)
             }
             MExprKind::Index { base, index } => {
                 let (base, index) = (*base, *index);
@@ -3308,6 +3334,54 @@ impl<'db> SvLower<'_, 'db> {
             }
             for (tsuf, target) in self.expr_leaves(rf.value) {
                 out.push((join(&rf.name, &tsuf), target));
+            }
+        }
+        out
+    }
+
+    /// MIR twin of `record_leaves`: the in-field leaves in declared field order.
+    #[allow(dead_code)]
+    fn record_leaves_mir(
+        &mut self,
+        ctor: Option<DefId<'db>>,
+        fields: &[crate::mir::ir::MRecordField],
+    ) -> Vec<(String, SvExpr)> {
+        let owner = ctor.and_then(|c| self.map.def_data(c).and_then(|d| d.owner));
+        let Some(owner) = owner else {
+            return vec![(String::new(), SvExpr::Lit("0".to_owned()))];
+        };
+        let order: Vec<String> = sig_of(self.db, self.krate, owner)
+            .fields
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        let mut out = Vec::new();
+        for fname in &order {
+            if let Some(rf) = fields.iter().find(|rf| &rf.name == fname)
+                && let Conn::In(e) = &rf.conn
+            {
+                for (suf, ev) in self.expr_leaves_mir(*e) {
+                    out.push((join(fname, &suf), ev));
+                }
+            }
+        }
+        out
+    }
+
+    /// MIR twin of `record_out_conns`: each `field => target` as
+    /// `(field_suffix, target_place_leaf)`.
+    #[allow(dead_code)]
+    fn record_out_conns_mir(&mut self, m: MExprId) -> Vec<(String, SvExpr)> {
+        let MExprKind::Record { fields, .. } = &self.mir.expr(m).kind else {
+            return Vec::new();
+        };
+        let fields = fields.clone();
+        let mut out = Vec::new();
+        for rf in &fields {
+            if let Conn::Out(place) = &rf.conn {
+                for (tsuf, target) in self.projected_leaves_mir(place) {
+                    out.push((join(&rf.name, &tsuf), target));
+                }
             }
         }
         out
