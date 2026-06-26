@@ -21,10 +21,16 @@
 > `(__inl0__self[4 +: 4])`. **Zero-width works:** `infer` allows a literal `h == l`
 > slice, and `x[4..4]` folds the guard's `const if w == 0` to `zero_bits()` → `'0`
 > into a `[-1:0]` effective-0-bit (`slice_zero_width.mrn`; verilator `-Wno-ASCRANGE`
-> added for the intentional ascending range). **Remaining (kept on the old structural `Slice` node /
-> `slice_range_sv`):** offset (`..+w`), elision, `Vec` slices, and **symbolic**
-> slices (a `ConstParam` base/endpoint), gated to the old path via `base_ground` +
-> `const_param_free`.
+> added for the intentional ascending range). **Offset form LANDED (2026-06-26):**
+> `x[lo..+w]` routes to `Slice::slice_from{w}(lo)` — the const width rides as the
+> `{w}` named arg, the runtime base `lo` as the value arg, and `slice_off_substs`
+> binds both the base width and `lo`'s `uint(L)` width so the splice can declare
+> the `lo` param wire. Ground (`slice_offset.mrn`) and symbolic-width
+> (`slice_offset_param.mrn`, a `generate if`) both work; `infer` now allows a
+> literal `w == 0` offset (mirrors the two-endpoint `h == l` allowance).
+> **Remaining (kept on the old structural `Slice` node / `slice_range_sv`):**
+> elision (`x[lo..]` / `x[..hi]`) and `Vec` slices (inherent, not yet a resolvable
+> method).
 >
 > **Symbolic slices — SOLVED + validated (2026-06-26).** Two blockers, both fixed:
 > (1) *cross-frame rendering* — the inline splice rendered a caller generic against

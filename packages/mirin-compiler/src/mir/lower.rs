@@ -92,6 +92,19 @@ fn slice_base_width<'db>(ty: &Type<'db>) -> Option<ConstArg<'db>> {
     }
 }
 
+/// The width `L` of a `uint(L)` — the type of an offset slice's runtime base
+/// (`x[lo..+w]`, `lo: uint(L)`). Binds `slice_from`'s `L` generic so the splice
+/// can declare the `lo` param wire.
+fn uint_width<'db>(ty: &Type<'db>) -> Option<ConstArg<'db>> {
+    match ty {
+        Type::Value {
+            kind: ValueKind::UInt { width },
+            ..
+        } => Some(width.clone()),
+        _ => None,
+    }
+}
+
 fn builtin_method(name: &str) -> BuiltinMethod {
     match name {
         "reg" => BuiltinMethod::Reg,
@@ -377,8 +390,26 @@ impl<'a, 'db> Lower<'a, 'db> {
                             ],
                         }
                     }
-                    // Offset / elision / vec / symbolic / unresolved: keep the
-                    // structural node (still emitted by the backend).
+                    // offset form `base.slice_from{w}(lo)` (`x[lo..+w]`): the
+                    // const width rides as the `{w}` named arg, the runtime base
+                    // `lo` as the value arg. The base width binds the impl generic
+                    // and the `lo` arg's `uint(L)` width binds `L` (both in
+                    // `substs`) so the splice can declare the `lo` param wire.
+                    (Some(callee), Some(w), Some(width), Some(lo), None) => {
+                        let lo_w = uint_width(&self.ty_of(lo));
+                        MExprKind::Call {
+                            callee,
+                            substs: self.slice_off_substs(callee, &w, lo_w.as_ref()),
+                            receiver: Some(self.lower_expr(*base)),
+                            args: vec![Conn::In(self.lower_expr(lo))],
+                            named: vec![MNamedArg {
+                                name: "w".to_owned(),
+                                conn: Conn::In(self.lower_expr(width)),
+                            }],
+                        }
+                    }
+                    // elision / vec / unresolved: keep the structural node (still
+                    // emitted by the backend).
                     _ => MExprKind::Slice {
                         base: self.lower_expr(*base),
                         lo: lo.map(|e| self.lower_expr(e)),
@@ -476,6 +507,26 @@ impl<'a, 'db> Lower<'a, 'db> {
             .iter()
             .map(|g| match g.name.as_str() {
                 "lo" | "hi" | "w" | "L" => Term::Const(ConstArg::Deferred),
+                _ => Term::Const(base_w.clone()),
+            })
+            .collect()
+    }
+
+    /// As [`Self::slice_impl_substs`], for the offset form: additionally bind `L`
+    /// (the `uint(L)` width of the runtime `lo` base) so the splice can render the
+    /// `lo` param wire. `w` stays `Deferred` (bound by the `{w}` named arg).
+    fn slice_off_substs(
+        &self,
+        callee: DefId<'db>,
+        base_w: &ConstArg<'db>,
+        lo_w: Option<&ConstArg<'db>>,
+    ) -> Vec<Term<'db>> {
+        sig_of(self.db, self.krate, callee)
+            .generic_params
+            .iter()
+            .map(|g| match g.name.as_str() {
+                "lo" | "hi" | "w" => Term::Const(ConstArg::Deferred),
+                "L" => Term::Const(lo_w.cloned().unwrap_or(ConstArg::Deferred)),
                 _ => Term::Const(base_w.clone()),
             })
             .collect()

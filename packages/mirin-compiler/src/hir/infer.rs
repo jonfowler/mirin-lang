@@ -1873,9 +1873,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             let Some(w) = self.const_arg_of(body, w_e) else {
                 return SliceTy::NotImpl;
             };
-            if matches!(&w, ConstArg::Lit(v) if *v <= 0) {
-                return SliceTy::NotImpl; // zero/neg literal width needs the const-if guard
+            if matches!(&w, ConstArg::Lit(v) if *v < 0) {
+                return SliceTy::NotImpl; // negative literal width is never a slice
             }
+            // `w == 0` is allowed (like the two-endpoint `h == l` case): the prelude
+            // guard's `const if w == 0` emits the effective-0-bit.
             // bounds: `off + w <= N`, checked only when off/w/N all fold (a
             // runtime base is a sim-time concern).
             if let Some(base) = self.const_arg_of(body, lo)

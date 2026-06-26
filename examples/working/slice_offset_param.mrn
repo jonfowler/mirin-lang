@@ -1,0 +1,8 @@
+// verilator: -Gw=4
+// Offset slice with a SYMBOLIC width: `x[i..+w]` at a runtime base `i` and a
+// const-generic width `w`. The width is symbolic, so the zero-width guard lowers
+// to a `generate if` (the `w == 0` arm is the effective-0-bit); at `w != 0` it is
+// the indexed part-select `x[i +: w]` (planning/slice_guards.md).
+fn s(const w: integer, x: bits(16), i: uint(4)) -> bits(w) {
+    x[i..+w]
+}
