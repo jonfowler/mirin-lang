@@ -22,33 +22,48 @@ kind of `lo` (resolved with Jon, 2026-06-26):
 
 ```mirin
 // raw part-select — verilog-bodied, assumes w >= 1; zero-ness is NOT its problem.
+// `W`/`L` are inferred (named, elidable); `w` is provided (positional const).
 #[inline]
-fn __slice_raw {const w: integer} (self: bits(W), lo: uint(L)) -> bits(w) = verilog {
+fn __slice_raw {const W: integer, const L: integer}
+              (self: bits(W), const w: integer, lo: uint(L)) -> bits(w) = verilog {
     assign ${return} = ${self}[${lo} +: ${w}];
 }
 
 // offset / variable-base form — what `x[lo..+w]` desugars to. `lo` is a runtime
 // value; the zero-width guard lives here.
 #[inline]
-fn slice_from {const w: integer} (self: bits(W), lo: uint(L)) -> bits(w) {
-    const if w == 0 { zero_bits() } else { __slice_raw{w}(self, lo) }
+fn slice_from {const W, const L} (self: bits(W), const w: integer, lo: uint(L)) -> bits(w) {
+    const if w == 0 { zero_bits() } else { __slice_raw(self, w, lo) }
 }
 
-// two-endpoint form — what `x[a..b]` desugars to. `lo` is a CONST GENERIC.
+// two-endpoint form — what `x[a..b]` desugars to. `lo`/`hi` are positional consts.
 #[inline]
-fn slice {const lo: integer, const hi: integer} (self: bits(W)) -> bits(hi - lo) {
-    const if hi - lo == 0 { zero_bits() } else { __slice_raw{hi - lo}(self, lo) }
+fn slice {const W} (self: bits(W), const lo: integer, const hi: integer) -> bits(hi - lo) {
+    const if hi - lo == 0 { zero_bits() } else { __slice_raw(self, hi - lo, lo) }
 }
 ```
 
-(`Vec(N, A)` gets the duals, low-first, `-> Vec(w, A)`.)
+(`Vec(N, A)` gets the duals, low-first, `-> Vec(w, A)`. Signatures are
+illustrative — exact generic placement nails down in Phase 1.)
 
-- **`w`/`lo`/`hi` are const generics (`{}`), not `integer` value params** — both
-  because they are compile-time, and because S7's `inline_check` rejects an
-  `integer` *value* param in an inline body (it can't be a wire). The one runtime
-  value param is `slice_from`'s `lo` (a `uint` — the mux base).
-- **Two ops because the kind of `lo` differs**: `slice` takes `lo` as a const
-  generic (const base, folds inside `[lo +: w]`); `slice_from` takes `lo` as a
+- **Named `{}` = elidable/inferable, positional `()` = must be provided** (Jon's
+  convention, 2026-06-26): a self-width `W` / base-width `L` are *inferred* so they
+  are named generics; the slice's `lo`/`hi`/`w` *must be given* so they are
+  **positional** — even though they are `const`. A `const` positional param is a
+  *const generic* (`sig.rs:1605` classifies `const` as `TermKind::Const`), so it
+  lands in `generic_params`, **not** value params — which also means S7's
+  `inline_check` integer-*value*-param rule (it scans value params) doesn't touch
+  them. The one true value param is `slice_from`'s `lo`. (Phase-1 confirm: the
+  grammar accepts `const` in the positional section, not just `{}`.)
+- **`slice_from`'s `lo` is `uint(L)`, not `integer`.** `integer` is *not*
+  synthesized to a net — `build_module` elides every integer param/result (only a
+  const-*function* emits SV `int`), so a runtime `integer` base would be elided and
+  never reach hardware. `uint(L)` with `L` inferred is the index signal's own
+  width (never constrains the slice). *Open (separable):* making runtime `integer`
+  synthesizable to SV `int` would let `lo` be `integer` and unify index/count
+  types — a broader decision, out of this plan's critical path.
+- **Two ops because the kind of `lo` differs**: `slice` takes `lo` as a positional
+  const (const base, folds inside `[lo +: w]`); `slice_from` takes `lo` as a
   runtime `uint` (the mux base). Whether they share one raw primitive or each has
   its own is a Phase-1 detail.
 - **`[lo +: w]` everywhere** — no `[msb:lo]` special case; a constant `lo` folds
@@ -168,12 +183,17 @@ against the call-site const generics.
 ## Resolved decisions (with Jon, 2026-06-26)
 
 1. **Slice surface.** Two prelude ops, split by the kind of `lo`:
-   `slice {const lo, const hi}(self)` (two-endpoint, const base — `x[a..b]`) and
-   `slice_from {const w}(self, lo: uint)` (offset, runtime base — `x[lo..+w]`).
-   `w` is always a const generic; args are const generics (`{}`) not `integer`
-   value params (which inline rejects). `..+` is required when `lo` is variable.
-   **Open detail:** whether `x[a..b]` desugars to these via a `Slice` trait
-   (clean `bits`/`Vec` duals, user-extensible) or a compiler-resolved free
+   `slice(self, const lo: integer, const hi: integer)` (two-endpoint, const base —
+   `x[a..b]`) and `slice_from(self, const w: integer, lo: uint(L))` (offset,
+   runtime base — `x[lo..+w]`). **Convention:** named `{}` = elidable/inferable
+   (self-width `W`, base-width `L`), positional `()` = must be provided (`lo`/`hi`/
+   `w`) — even when `const`. A `const` positional param is a *const generic*
+   (`sig.rs:1605`), so it is in `generic_params`, not value params, and S7's
+   integer-value-param rule doesn't touch it. `w` is always const; `..+` is
+   required when `lo` is variable. `slice_from`'s `lo` is `uint(L)` (a runtime
+   net) — *not* `integer`, which is elided/not synthesized (see the integer-`int`
+   note in "The shape"). **Open detail:** whether `x[a..b]` desugars via a `Slice`
+   trait (clean `bits`/`Vec` duals, user-extensible) or a compiler-resolved free
    prelude fn (less machinery) — defer to Phase 1.
 2. **Zero-width literal.** A prelude **builtin** — `zero_bits() -> bits(0)` and a
    `Vec` dual (or one polymorphic `zero<T>()`). Must flatten to the uniform
