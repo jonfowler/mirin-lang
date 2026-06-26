@@ -8,15 +8,25 @@
 > instead of being rejected; the `ConstIfNotConst` rejection is retired). So the
 > whole `const if` axis (grounded fold inline, grounded fold at `mir_of`, and
 > symbolic generate-if) is complete — the infrastructure the guards ride on.
-> **Blocked:** the actual zero-width guards — Phase 1's prelude half (`Slice`
-> trait + `__slice_raw` + `zero_bits` + the `[..]`→method desugar), Phase 2 (set
-> guard — coupled: allowing zero-width is all-or-nothing at infer's slice typing),
-> and Phase 3 (concat/resize) — all edit `prelude.mrn`, which has uncommitted
-> slicing-adjacent user WIP (`truncate`-based tuple `unpack`). **Resume:** once
-> `prelude.mrn` is clear, do Phase 1 → 2 → 3; the symbolic-width case of each is
-> already served by Phase 4. (Also deferred: Phase 2b's symbolic-ground bounds,
-> needing a recorded residual; and binding explicit const generics to non-inline
-> instances — see Phase 4 note.)
+> **Phase 1 prelude half LANDED** (`prelude.mrn` unblocked — the user's WIP was
+> committed as checkpoint `6d49911`): `__slice_const`/`__slice_off` raw part-select
+> primitives, `zero_bits() -> bits(0)`, and a `Slice` trait (bits) whose impl
+> wraps them in a `const if w == 0 { zero_bits() } else { … }` guard; `mono_check`
+> width-positivity relaxed `< 1` → `< 0` (width 0 is the legal effective-0-bit).
+> **Remaining for Phase 1 — the `[..]` desugar (the one connection left):** route
+> `ExprKind::Slice` to a call of `Slice::slice` (two-endpoint) / `Slice::slice_from`
+> (offset). Recommended path: in `infer`'s Slice arm resolve the `Slice` method on
+> the base type (reuse `owner_of`/`trait_dispatch`/`select_by_header`/`call_def`/
+> `pin_impl_self`, as `infer_type_path_call` does) and record `method_resolutions`
+> + `call_substs` for the slice expr; in `mir_of` lower `ExprKind::Slice` to a
+> `Call` (callee = resolved method, receiver = base, endpoints as named const args
+> `{lo,hi}`/`{w}` + runtime `lo` value arg for offset) instead of
+> `MExprKind::Slice`; the inline-splice + guard machinery then takes over and the
+> backend `slice_range_sv` read path is deleted. Also relax `slice_literal` to
+> allow a literal zero width. **Then Phase 2** (set guard) and **Phase 3**
+> (concat/resize); the symbolic-width case of each is already served by Phase 4.
+> (Also deferred: Phase 2b's symbolic-ground bounds, needing a recorded residual;
+> and binding explicit const generics to non-inline instances — see Phase 4 note.)
 
 > **Direction (Jon, 2026-06-26):** the zero-width slice/concat guards are **not**
 > backend-synthesised. The layout operations are *primitives that do not support
