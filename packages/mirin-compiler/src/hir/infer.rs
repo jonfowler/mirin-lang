@@ -54,6 +54,11 @@ pub enum InferDiagnosticKind {
     /// the semantics (planning/slicing.md) are not yet implemented. Rejected
     /// cleanly here so a slice never silently lowers to its base.
     SliceNotImplemented,
+    /// A zero-width slice on a base/form that does not route through the prelude
+    /// `Slice` guard: a `Vec` slice (no guard yet) or an elided `bits` form. Such
+    /// a slice has no totalizing `const if`, so the backend would emit an illegal
+    /// zero-width part-select — reject it (planning/slice_guards.md).
+    ZeroWidthSliceUnsupported,
     /// A slice whose constant high endpoint (or `offset + width`) exceeds the
     /// base length `N` — out of range. (Symbolic-but-grounding bounds defer to
     /// `mono_check`; this is the eager const check, planning/slicing.md.)
@@ -189,6 +194,13 @@ impl InferDiagnostic {
                 "unsupported slice: the width must be a positive compile-time constant \
                  (a literal, const generic, or const-folding expression) over a `bits`/`Vec` \
                  base — for a runtime offset use `x[off +: width]` (planning/slicing.md)"
+                    .to_owned()
+            }
+            InferDiagnosticKind::ZeroWidthSliceUnsupported => {
+                "zero-width slice unsupported here: only a `bits` two-endpoint \
+                 (`x[a..b]`) or offset (`x[lo..+w]`) slice routes through the \
+                 zero-width guard — a `Vec` slice or an elided form does not \
+                 (planning/slice_guards.md)"
                     .to_owned()
             }
             InferDiagnosticKind::SliceOutOfBounds { high, len } => {
@@ -1958,6 +1970,20 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         }
     }
 
+    /// Does a slice's result width/length fold to exactly 0? Used to reject a
+    /// zero-width slice that won't route through the prelude guard.
+    fn slice_result_is_zero(&self, ty: &Type<'db>) -> bool {
+        let w = match ty {
+            Type::Value {
+                kind: ValueKind::Bits { width },
+                ..
+            } => width,
+            Type::Vec { len, .. } => len,
+            _ => return false,
+        };
+        crate::hir::const_eval::eval_const(self.db, self.krate, self.def, w) == Some(0)
+    }
+
     /// Push an inference diagnostic at the current expression's span.
     fn diag(&mut self, kind: InferDiagnosticKind) {
         self.diagnostics.push(InferDiagnostic {
@@ -2096,14 +2122,28 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                         // lowering; planning/slice_guards.md). Recorded only; the
                         // typing above is unchanged.
                         let method = if width.is_some() { "slice_from" } else { "slice" };
+                        let mut resolved = false;
                         if let Some(owner) = self.owner_of(&bt) {
                             let cands =
                                 self.select_by_header(self.map.trait_dispatch(owner, method), &bt);
                             if let [(_, method_def)] = cands.as_slice() {
                                 self.method_resolutions.insert(expr, *method_def);
+                                resolved = true;
                             }
                         }
-                        ty
+                        // A zero-width result is total ONLY when the slice routes
+                        // through the prelude `const if` guard — a resolved `bits`
+                        // two-endpoint (both endpoints present) or offset form. A
+                        // `Vec` slice (no guard yet) and an elided `bits` form fall
+                        // to the structural backend path, which can't emit a
+                        // zero-width part-select; reject rather than miscompile.
+                        let routes = resolved && (width.is_some() || (lo.is_some() && hi.is_some()));
+                        if !routes && self.slice_result_is_zero(&ty) {
+                            self.diag(InferDiagnosticKind::ZeroWidthSliceUnsupported);
+                            Type::Error
+                        } else {
+                            ty
+                        }
                     }
                     SliceTy::Oob { high, len } => {
                         self.diag(InferDiagnosticKind::SliceOutOfBounds { high, len });

@@ -28,9 +28,21 @@
 > the `lo` param wire. Ground (`slice_offset.mrn`) and symbolic-width
 > (`slice_offset_param.mrn`, a `generate if`) both work; `infer` now allows a
 > literal `w == 0` offset (mirrors the two-endpoint `h == l` allowance).
-> **Remaining (kept on the old structural `Slice` node / `slice_range_sv`):**
-> elision (`x[lo..]` / `x[..hi]`) and `Vec` slices (inherent, not yet a resolvable
-> method).
+> **Concat guard LANDED (Phase 3, 2026-06-26):** `concat_hi` wraps its
+> zero-width-operand case in a `const if` (`resize` needs none — the SV width-cast
+> is already total). See Phase 3 below.
+> **Zero-width non-routing slices now REJECTED (2026-06-26):** a zero-width slice
+> only routes through the guard for a `bits` two-endpoint/offset form; a `Vec`
+> slice or an elided `bits` form falls to the structural `slice_range_sv` path,
+> which would emit an illegal zero-width part-select (`v[2 +: 0]` / a `[0:-1]`
+> array range). `infer` now rejects those (`ZeroWidthSliceUnsupported`,
+> `fail-expected/slice-vec-zero-width.mrn`) rather than miscompiling — negative
+> space until a `Vec` guard lands.
+> **Remaining (kept on the old structural `Slice` node / `slice_range_sv`, NON-zero
+> width only):** elision (`x[lo..]` / `x[..hi]`) and `Vec` slices (inherent, not yet
+> a resolvable method). A `Vec` zero-width guard (an inherent `slice` impl with a
+> `zero_vec` primitive) would let those route too and is the path to deleting
+> `slice_range_sv`'s read arm.
 >
 > **Symbolic slices — SOLVED + validated (2026-06-26).** Two blockers, both fixed:
 > (1) *cross-frame rendering* — the inline splice rendered a caller generic against
