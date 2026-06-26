@@ -1,5 +1,19 @@
 # Zero-width layout guards via prelude `const if` (workplan)
 
+> **Progress (2026-06-26).** Done + committed: **Phase 0** (const-if folds inside
+> an inline splice), the **ascending-direction flip** (decision 6: low-first for
+> both `bits`/`Vec`, `[lo +: w]` everywhere), and the **const slice bounds check**
+> (Phase 2b's eager half). **Blocked:** the actual zero-width guards — Phase 1's
+> prelude half (`Slice` trait + `__slice_raw` + `zero_bits` + the `[..]`→method
+> desugar), Phase 2 (set guard — coupled: allowing zero-width is all-or-nothing at
+> infer's slice typing, so it can't precede the read guard), and Phase 3
+> (concat/resize) — all edit `prelude.mrn`, which has uncommitted slicing-adjacent
+> user WIP (the `truncate`-based tuple `unpack`). **Deferred (build against the
+> guards):** Phase 4 (`generate if`) has no consumer until the guards exist (its
+> only use is the symbolic-width guard), so building it now would be speculative;
+> Phase 2b's symbolic-ground bounds need a recorded residual. **Resume:** once
+> `prelude.mrn` is clear, do Phase 1 → 2 → 3, then Phase 4 for the symbolic case.
+
 > **Direction (Jon, 2026-06-26):** the zero-width slice/concat guards are **not**
 > backend-synthesised. The layout operations are *primitives that do not support
 > zero-width*; the guard is a Mirin `const if` written in `prelude.mrn`. The
