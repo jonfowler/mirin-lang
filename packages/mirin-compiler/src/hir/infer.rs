@@ -2087,6 +2087,18 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                             .is_some()
                         }) =>
                     {
+                        // Resolve the prelude `Slice` method for the desugar — `mir_of`
+                        // builds the call from this (the `[..]` → `slice`/`slice_from`
+                        // lowering; planning/slice_guards.md). Recorded only; the
+                        // typing above is unchanged.
+                        let method = if width.is_some() { "slice_from" } else { "slice" };
+                        if let Some(owner) = self.owner_of(&bt) {
+                            let cands =
+                                self.select_by_header(self.map.trait_dispatch(owner, method), &bt);
+                            if let [(_, method_def)] = cands.as_slice() {
+                                self.method_resolutions.insert(expr, *method_def);
+                            }
+                        }
                         ty
                     }
                     SliceTy::Oob { high, len } => {

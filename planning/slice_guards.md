@@ -13,7 +13,21 @@
 > primitives, `zero_bits() -> bits(0)`, and a `Slice` trait (bits) whose impl
 > wraps them in a `const if w == 0 { zero_bits() } else { … }` guard; `mono_check`
 > width-positivity relaxed `< 1` → `< 0` (width 0 is the legal effective-0-bit).
-> **Remaining for Phase 1 — the `[..]` desugar (the one connection left):** route
+> **Phase 1 desugar LANDED for ground two-endpoint bits slices (2026-06-26):**
+> `infer`'s Slice arm resolves `Slice::slice` (recorded as `method_resolution`);
+> `mir_of` lowers a fully-ground two-endpoint `bits` slice to a `Call` (base width
+> → impl generic in `substs` by name; `lo`/`hi` as named const args bound by the
+> splice; receiver = base), so `x[4..8]` routes through the prelude guard →
+> `(__inl0__self[4 +: 4])`. **Remaining (kept on the old structural `Slice` node /
+> `slice_range_sv`):** offset (`..+w`), elision, `Vec` slices, and **symbolic**
+> slices (a `ConstParam` base/endpoint) — the last because the inline splice can't
+> yet render a *caller* generic in the callee's frame (a cross-frame limit in
+> `splice_inline_body`; `slice_param` stays on the old path via `const_param_free`
+> + `base_ground` gates). The general fix is to teach the splice to render
+> caller-frame generics; until then ground slices get the guard, symbolic ones the
+> old (un-guarded) part-select.
+>
+> _(Older note, for the general approach:)_ route
 > `ExprKind::Slice` to a call of `Slice::slice` (two-endpoint) / `Slice::slice_from`
 > (offset). Recommended path: in `infer`'s Slice arm resolve the `Slice` method on
 > the base type (reuse `owner_of`/`trait_dispatch`/`select_by_header`/`call_def`/

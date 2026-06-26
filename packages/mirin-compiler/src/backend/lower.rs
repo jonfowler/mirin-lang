@@ -2843,10 +2843,25 @@ impl<'db> SvLower<'_, 'db> {
             };
             val_map.insert(p.local, rendered);
         }
-        let node_subst: Vec<Option<Term<'db>>> = match subst_override {
+        let mut node_subst: Vec<Option<Term<'db>>> = match subst_override {
             Some(ov) => ov.to_vec(),
             None => substs.iter().cloned().map(Some).collect(),
         };
+        // Explicitly-provided const generics (`{w = …}`) are recorded as NAMED
+        // args with their subst slot left deferred — bind them here too (the same
+        // fix `splice_inline_body` applies for Mirin bodies), so a verilog inline
+        // primitive called with named const generics grounds them.
+        node_subst.resize(csig.generic_params.len(), None);
+        for n in named {
+            if let Conn::In(e) = &n.conn
+                && let Some(i) = csig
+                    .generic_params
+                    .iter()
+                    .position(|g| g.kind == TermKind::Const && g.name == n.name)
+            {
+                node_subst[i] = Some(Term::Const(self.mir_const_arg(*e)));
+            }
+        }
         self.render_inline_spliced(&template, &val_map, &node_subst)
     }
 

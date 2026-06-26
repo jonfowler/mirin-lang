@@ -17,7 +17,8 @@
 use crate::base::db::SourceRoot;
 use crate::hir::body::{Block, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::infer::{Inference, infer};
-use crate::hir::types::{LocalId, Term, Type};
+use crate::hir::sig::sig_of;
+use crate::hir::types::{ConstArg, LocalId, Term, Type, ValueKind};
 use crate::mir::ir::*;
 use crate::nameres::ids::DefId;
 
@@ -78,6 +79,19 @@ pub fn mir_of<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'
 /// Map a builtin method name to its closed-set tag. Panics on an unrecognised
 /// name — a method call with no `method_resolution` must be one of the builtins
 /// inference handles structurally (negative space: the assumption is asserted).
+/// The base length/width of a slice base (`bits(W)` → `W`, `Vec(N, _)` → `N`) —
+/// the impl generic the desugared `Slice` call carries in its subst.
+fn slice_base_width<'db>(ty: &Type<'db>) -> Option<ConstArg<'db>> {
+    match ty {
+        Type::Value {
+            kind: ValueKind::Bits { width },
+            ..
+        } => Some(width.clone()),
+        Type::Vec { len, .. } => Some(len.clone()),
+        _ => None,
+    }
+}
+
 fn builtin_method(name: &str) -> BuiltinMethod {
     match name {
         "reg" => BuiltinMethod::Reg,
@@ -322,17 +336,64 @@ impl<'a, 'db> Lower<'a, 'db> {
                     else_branch: self.lower_block(else_branch),
                 },
             },
+            // Slicing desugars to a call of the prelude `Slice` method that infer
+            // resolved (planning/slice_guards.md): the impl generic (base width)
+            // rides in `substs`, the const endpoints as named args (`{lo, hi}` /
+            // `{w}`) that the inline splice binds, the base as the receiver, and a
+            // runtime offset base as the value arg. The const-if zero-width guard
+            // then lives in the spliced method body. Shapes not yet routed (vec,
+            // elision, unresolved) fall back to the structural `Slice` node.
             ExprKind::Slice {
                 base,
                 lo,
                 hi,
                 width,
-            } => MExprKind::Slice {
-                base: self.lower_expr(*base),
-                lo: lo.map(|e| self.lower_expr(e)),
-                hi: hi.map(|e| self.lower_expr(e)),
-                width: width.map(|e| self.lower_expr(e)),
-            },
+            } => {
+                let resolved = self.inf.method_resolution(id);
+                let base_w = slice_base_width(&self.ty_of(*base));
+                let base_ground = base_w.as_ref().is_some_and(|w| {
+                    crate::hir::const_eval::eval_const(self.db, self.krate, self.def, w).is_some()
+                });
+                match (resolved, base_w, *width, *lo, *hi) {
+                    // two-endpoint, both present, FULLY GROUND base + endpoints:
+                    // `base.slice{lo, hi}()`, routed through the prelude guard. The
+                    // base width binds the impl generic in `substs` (by name); the
+                    // const endpoints ride as named args the inline splice binds.
+                    // A symbolic base/endpoint stays on the structural node — the
+                    // inline splice can't yet render a *caller* generic in the
+                    // callee's frame (the cross-frame limit; planning/slice_guards.md).
+                    (Some(callee), Some(w), None, Some(lo), Some(hi))
+                        if base_ground
+                            && self.const_param_free(lo)
+                            && self.const_param_free(hi) =>
+                    {
+                        MExprKind::Call {
+                            callee,
+                            substs: self.slice_impl_substs(callee, &w),
+                            receiver: Some(self.lower_expr(*base)),
+                            args: Vec::new(),
+                            named: vec![
+                                MNamedArg {
+                                    name: "lo".to_owned(),
+                                    conn: Conn::In(self.lower_expr(lo)),
+                                },
+                                MNamedArg {
+                                    name: "hi".to_owned(),
+                                    conn: Conn::In(self.lower_expr(hi)),
+                                },
+                            ],
+                        }
+                    }
+                    // Offset / elision / vec / symbolic / unresolved: keep the
+                    // structural node (still emitted by the backend).
+                    _ => MExprKind::Slice {
+                        base: self.lower_expr(*base),
+                        lo: lo.map(|e| self.lower_expr(e)),
+                        hi: hi.map(|e| self.lower_expr(e)),
+                        width: width.map(|e| self.lower_expr(e)),
+                    },
+                }
+            }
             ExprKind::When { event, body, init } => MExprKind::When {
                 event: self.lower_expr(*event),
                 body: self.lower_block(body),
@@ -410,6 +471,45 @@ impl<'a, 'db> Lower<'a, 'db> {
             .call_subst(id)
             .map(|ts| ts.to_vec())
             .unwrap_or_default()
+    }
+
+    /// Is a slice endpoint free of `ConstParam` (a caller const generic)? Such an
+    /// endpoint is symbolic in the caller's frame, which the inline splice can't
+    /// render in the callee's frame (the cross-frame limit), so those slices stay
+    /// on the structural node. Cheap structural check — must NOT call `mir_of`-
+    /// based const-eval here (that would re-enter the in-flight `mir_of` query).
+    fn const_param_free(&self, e: ExprId) -> bool {
+        match &self.body.expr(e).kind {
+            ExprKind::ConstParam(_) => false,
+            ExprKind::Number(..)
+            | ExprKind::TypedLiteral { .. }
+            | ExprKind::Bool(_)
+            | ExprKind::Local(_)
+            | ExprKind::ConstAssoc { .. }
+            | ExprKind::Def(_)
+            | ExprKind::Missing => true,
+            ExprKind::MethodCall { receiver, args, .. } => {
+                self.const_param_free(*receiver) && args.iter().all(|a| self.const_param_free(a.expr))
+            }
+            ExprKind::Field { receiver, .. } => self.const_param_free(*receiver),
+            // Conservative: any other shape stays on the structural node.
+            _ => false,
+        }
+    }
+
+    /// The subst for a desugared slice call: the base width binds the `Slice`
+    /// impl's generic (placed by name — the method's own `lo`/`hi`/`w`/`L`
+    /// generics precede it and are bound via named args / the value arg, so their
+    /// slots are left `Deferred` placeholders the splice overrides).
+    fn slice_impl_substs(&self, callee: DefId<'db>, base_w: &ConstArg<'db>) -> Vec<Term<'db>> {
+        sig_of(self.db, self.krate, callee)
+            .generic_params
+            .iter()
+            .map(|g| match g.name.as_str() {
+                "lo" | "hi" | "w" | "L" => Term::Const(ConstArg::Deferred),
+                _ => Term::Const(base_w.clone()),
+            })
+            .collect()
     }
 
     /// Lower a connection: an out-connection (`=> target`) is a drive target
