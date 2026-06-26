@@ -159,6 +159,21 @@ its value via `mir_const_arg` — Phase 1's slice ops will rely on the same path
 
 ### Phase 1 — slice **read** as primitive + prelude guard
 
+> **Desugar finding (2026-06-26).** The surface shortcut `x.slice{lo,hi}()` does
+> NOT work: it parses as `Call{ callee: Field{x,"slice"}, named:[lo,hi] }`, and
+> `infer_call` returns `Type::Error` on a non-`Def` callee (then `mir_of` panics).
+> The existing method machinery (`infer_method`/`call_def`) also can't *bind* a
+> method's const generics from explicit endpoints (it infers generics from value
+> args). So the desugar is **bespoke**: keep `ExprKind::Slice` (so `slice_literal`'s
+> typing + const bounds stay), and in infer's Slice arm resolve the impl method via
+> `owner_of(bt)` → `trait_dispatch(owner,"slice")` → `select_by_header`, record
+> `method_resolutions[slice_expr]`, **and manually bind the method's `lo`/`hi`/`w`
+> const generics from the endpoints into the recorded `call_substs`** (the part the
+> machinery doesn't do for free); then `mir_of`'s Slice arm builds a `Call` from
+> that resolution (receiver = base; endpoints already in the subst) instead of
+> `MExprKind::Slice`, after which the inline-splice + guard machinery takes over
+> and `slice_range_sv` (read) is deleted. This is the one remaining intricate step.
+
 > **Ascending flip LANDED (2026-06-26)** — the direction half (decision 6) shipped
 > ahead of the prelude half: `slice_literal` (infer) and `slice_range_sv` (backend)
 > are now low-first/ascending for both `bits` and `Vec`, emitting `[low +: width]`
