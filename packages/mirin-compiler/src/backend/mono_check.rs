@@ -276,6 +276,27 @@ fn check_obligations<'db>(
         }
     }
 
+    // Slice-bounds residuals (`high <= len`): ground both against this
+    // instantiation's subst and report an out-of-range slice that only becomes
+    // decidable here (e.g. `x[1..k]` instantiated with `k > N`).
+    for sr in inf.slice_residuals() {
+        let high = subst_const_opt(&sr.high, subst);
+        let len = subst_const_opt(&sr.len, subst);
+        if is_closed(&high)
+            && is_closed(&len)
+            && let (Some(h), Some(n)) = (
+                eval_const(db, krate, callee, &high),
+                eval_const(db, krate, callee, &len),
+            )
+            && h > n
+        {
+            report(format!(
+                "instantiating `{name}`: slice out of range (high endpoint {h} \
+                 exceeds base length {n})"
+            ));
+        }
+    }
+
     // Width positivity. A parametric width/len (`uint(n - m)`, `Vec(k, …)`) that
     // grounds to `< 0` at this instantiation is invalid SV (`logic [-5:0]`; width
     // 0 is the legal effective-0-bit). infer defers parametric widths, so this is

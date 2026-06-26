@@ -1,0 +1,12 @@
+// A slice with a SYMBOLIC endpoint that is in range for the def's own type but
+// goes out of range at a concrete instantiation. `take_lo`'s `x[0..k]` types fine
+// (high `k` is symbolic), so infer defers the bound as a residual; `mono_check`
+// grounds it at the call `take_lo(x)` where `k` is solved to 12 from the return
+// type — 12 > 8 is out of range (planning/slice_guards.md, Phase 2b).
+fn take_lo(const k: integer, x: bits(8)) -> bits(k) {
+    x[0..k]
+}
+
+fn use_it(x: bits(8)) -> bits(12) {
+    take_lo(x)
+}

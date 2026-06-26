@@ -273,12 +273,15 @@ its value via `mir_const_arg` — Phase 1's slice ops will rely on the same path
   `offset + width`) and base length `N` both fold, `high > N` (and `low < 0`) is a
   clean `SliceOutOfBounds` diagnostic instead of an illegal `[lo +: w]` past the
   end. Direction (width ≥ 0) was already enforced. `fail-expected/slice-out-of-bounds.mrn`.
-- **mono_check symbolic-ground bounds — DEFERRED.** A *parametric* high endpoint
-  (`x[1..k]` with `k` a const generic) that grounds out-of-range only at a literal
-  instantiation isn't caught yet — it needs infer to *record* a slice-bounds
-  obligation (like `const_residuals`) and `mono_check` to decide it at ground call
-  sites (the call-site model doesn't see a def's own slices otherwise). Smaller
-  residual gap; left for when the guard work resumes.
+- **mono_check symbolic-ground bounds — LANDED (2026-06-26).** A *parametric* high
+  endpoint (`x[0..k]` with `k` a const generic) that grounds out-of-range only at a
+  literal instantiation is now caught. `infer` records a `SliceBoundsResidual
+  { high, len }` whenever the eager `high <= N` check can't fold (mirrors
+  `fit_residuals`); `mono_check` grounds both against the instantiation's subst and
+  reports `high > len` ("slice out of range"). Covers two-endpoint and offset
+  (const base) forms. `fail-expected/slice-symbolic-oob.mrn` (k=12 vs bits(8)) +
+  unit test `mono_check_decides_slice_bounds` (bad k=12 / clean k=4). The eager
+  const check (above) still handles the all-literal case.
 
 ### Phase 3 — `concat_hi` / `resize` guards via prelude `const if` — DONE (2026-06-26)
 

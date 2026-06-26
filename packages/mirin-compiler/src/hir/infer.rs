@@ -343,6 +343,17 @@ pub struct FitResidual<'db> {
     pub signed: bool,
 }
 
+/// A slice-bounds obligation that could not be decided here because an endpoint
+/// or the base length is still symbolic (a const generic): the high endpoint (or
+/// `offset + width`) must be `<= len`. `infer`'s eager check decides the
+/// all-literal case; this defers the symbolic-but-grounding case to `mono_check`,
+/// which grounds both against the instantiation's subst (planning/slice_guards.md).
+#[derive(Clone, PartialEq, Eq, salsa::Update)]
+pub struct SliceBoundsResidual<'db> {
+    pub high: ConstArg<'db>,
+    pub len: ConstArg<'db>,
+}
+
 /// The result of inferring one def: a type per expression and per local, the
 /// resolved method calls, and the diagnostics.
 #[derive(Clone, PartialEq, Eq, Default, salsa::Update)]
@@ -364,6 +375,9 @@ pub struct Inference<'db> {
     /// Literal-fit checks against still-symbolic widths: `(value, width)` —
     /// the backend emits each as an elaboration-time assert.
     fit_residuals: Vec<FitResidual<'db>>,
+    /// Slice-bounds checks (`high <= len`) deferred because an endpoint or the
+    /// base length is symbolic — `mono_check` grounds them at each instantiation.
+    slice_residuals: Vec<SliceBoundsResidual<'db>>,
 }
 
 impl<'db> Inference<'db> {
@@ -391,6 +405,10 @@ impl<'db> Inference<'db> {
     /// `initial assert` and, later, `const_eval`.
     pub fn const_residuals(&self) -> &[(ConstArg<'db>, ConstArg<'db>)] {
         &self.const_residuals
+    }
+
+    pub fn slice_residuals(&self) -> &[SliceBoundsResidual<'db>] {
+        &self.slice_residuals
     }
 
     pub fn fit_residuals(&self) -> &[FitResidual<'db>] {
@@ -619,6 +637,8 @@ struct InferCtx<'a, 'db> {
     literal_vars: Vec<InferVar>,
     /// Literal-fit checks that survived against symbolic widths.
     fit_residuals: Vec<FitResidual<'db>>,
+    /// Slice-bounds checks deferred because an endpoint/length is symbolic.
+    slice_residuals: Vec<SliceBoundsResidual<'db>>,
     /// Non-`range` for-loop elems, re-checked at finish: a compile-time
     /// integer element can only be the genvar (ForConstVec).
     for_elem_checks: Vec<(LocalId, Span)>,
@@ -758,6 +778,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             diagnostics: Vec::new(),
             literal_vars: Vec::new(),
             fit_residuals: Vec::new(),
+            slice_residuals: Vec::new(),
             for_elem_checks: Vec::new(),
             const_if_checks: Vec::new(),
             obligations: Vec::new(),
@@ -840,6 +861,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             diagnostics: self.diagnostics,
             const_residuals,
             fit_residuals: self.fit_residuals,
+            slice_residuals: self.slice_residuals,
         }
     }
 
@@ -1856,7 +1878,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     /// order, zero width — the last awaits the prelude guard) so the caller
     /// rejects it cleanly.
     fn slice_literal(
-        &self,
+        &mut self,
         body: &Body<'db>,
         bt: &Type<'db>,
         lo: Option<ExprId>,
@@ -1873,8 +1895,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             _ => return SliceTy::NotImpl,
         };
         // Ground a const arg to a literal, if it folds (else `None` — symbolic,
-        // deferred to mono_check for bounds).
-        let eval = |c: &ConstArg<'db>| crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c);
+        // deferred to mono_check for bounds). Capture db/krate/def into locals so
+        // the closure doesn't borrow `self` (we also push residuals to `self`).
+        let (db, krate, def) = (self.db, self.krate, self.def);
+        let eval = |c: &ConstArg<'db>| crate::hir::const_eval::eval_const(db, krate, def, c);
 
         // Offset form `x[off..+w]`: the base (`lo`) may be RUNTIME; only the
         // width must be a constant (literal or a const generic param).
@@ -1890,16 +1914,22 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             // `w == 0` is allowed (like the two-endpoint `h == l` case): the prelude
             // guard's `const if w == 0` emits the effective-0-bit.
-            // bounds: `off + w <= N`, checked only when off/w/N all fold (a
-            // runtime base is a sim-time concern).
-            if let Some(base) = self.const_arg_of(body, lo)
-                && let (Some(b), Some(wv), Some(nv)) = (eval(&base), eval(&w), eval(&n))
-                && b + wv > nv
-            {
-                return SliceTy::Oob {
-                    high: b + wv,
-                    len: nv,
-                };
+            // bounds: `off + w <= N`. A runtime base (`const_arg_of` → None) is a
+            // sim-time concern, skipped. With a const base: decide eagerly when
+            // `off`/`w`/`N` all fold; else record a residual for `mono_check` to
+            // ground at each instantiation.
+            if let Some(base) = self.const_arg_of(body, lo) {
+                let high = ConstArg::Op(ConstOp::Add, Box::new(base), Box::new(w.clone()));
+                match (eval(&high), eval(&n)) {
+                    (Some(h), Some(nv)) if h > nv => {
+                        return SliceTy::Oob { high: h, len: nv };
+                    }
+                    (Some(_), Some(_)) => {}
+                    _ => self.slice_residuals.push(SliceBoundsResidual {
+                        high,
+                        len: n.clone(),
+                    }),
+                }
             }
             return SliceTy::from(self.sliced_ty(bt, w));
         }
@@ -1924,11 +1954,15 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             },
             None => n.clone(),
         };
-        // bounds: `high <= N` and `low >= 0`, when they fold (symbolic → mono).
-        if let (Some(h), Some(nv)) = (eval(&high), eval(&n))
-            && h > nv
-        {
-            return SliceTy::Oob { high: h, len: nv };
+        // bounds: `high <= N` and `low >= 0`. Decide eagerly when they fold; a
+        // symbolic high/N records a residual for `mono_check` to ground.
+        match (eval(&high), eval(&n)) {
+            (Some(h), Some(nv)) if h > nv => return SliceTy::Oob { high: h, len: nv },
+            (Some(_), Some(_)) => {}
+            _ => self.slice_residuals.push(SliceBoundsResidual {
+                high: high.clone(),
+                len: n.clone(),
+            }),
         }
         if let Some(l) = eval(&low)
             && l < 0

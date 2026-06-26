@@ -661,6 +661,39 @@ fn mono_check_fit_is_sign_aware() {
     );
 }
 
+/// `mono_check` grounds a slice-bounds residual: `x[0..k]` types fine in the def
+/// (symbolic `k`), but an instantiation with `k > N` is out of range. The same
+/// shape with `k <= N` is clean (planning/slice_guards.md, Phase 2b).
+#[test]
+fn mono_check_decides_slice_bounds() {
+    const CALLEE: &str = "fn take_lo (const k: integer, x: bits(8)) -> bits(k) { x[0..k] }\n";
+
+    let bad = format!("{CALLEE}fn use_bad (x: bits(8)) -> bits(12) {{ take_lo(x) }}\n");
+    let mut db = RootDatabase::default();
+    let mut vfs = Vfs::new();
+    vfs.set_file_text(&mut db, "t.mrn", bad);
+    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+    let diags = mono_check(&db, krate);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message().contains("take_lo") && d.message().contains("out of range")),
+        "expected a slice-bounds diagnostic: {:?}",
+        diags.iter().map(|d| d.message()).collect::<Vec<_>>()
+    );
+
+    // In range (k = 4 <= 8): the residual grounds true, no diagnostic.
+    let good = format!("{CALLEE}fn use_ok (x: bits(8)) -> bits(4) {{ take_lo(x) }}\n");
+    let mut db = RootDatabase::default();
+    let mut vfs = Vfs::new();
+    vfs.set_file_text(&mut db, "t.mrn", good);
+    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
+    assert!(
+        mono_check(&db, krate).is_empty(),
+        "in-range slice instantiation should not diagnose"
+    );
+}
+
 /// `mono_check` composes one level: a bad width in an inner callee's signature
 /// (`inner: uint(k - 10)`), invisible in the wrapper's own signature
 /// (`wrap: uint(k) -> uint(k)`), is caught by substituting the wrapper's
