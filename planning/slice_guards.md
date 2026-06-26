@@ -2,17 +2,21 @@
 
 > **Progress (2026-06-26).** Done + committed: **Phase 0** (const-if folds inside
 > an inline splice), the **ascending-direction flip** (decision 6: low-first for
-> both `bits`/`Vec`, `[lo +: w]` everywhere), and the **const slice bounds check**
-> (Phase 2b's eager half). **Blocked:** the actual zero-width guards — Phase 1's
-> prelude half (`Slice` trait + `__slice_raw` + `zero_bits` + the `[..]`→method
-> desugar), Phase 2 (set guard — coupled: allowing zero-width is all-or-nothing at
-> infer's slice typing, so it can't precede the read guard), and Phase 3
-> (concat/resize) — all edit `prelude.mrn`, which has uncommitted slicing-adjacent
-> user WIP (the `truncate`-based tuple `unpack`). **Deferred (build against the
-> guards):** Phase 4 (`generate if`) has no consumer until the guards exist (its
-> only use is the symbolic-width guard), so building it now would be speculative;
-> Phase 2b's symbolic-ground bounds need a recorded residual. **Resume:** once
-> `prelude.mrn` is clear, do Phase 1 → 2 → 3, then Phase 4 for the symbolic case.
+> both `bits`/`Vec`, `[lo +: w]` everywhere), the **const slice bounds check**
+> (Phase 2b's eager half), and **Phase 4** (`generate if` — `SvItem::GenerateIf`;
+> a symbolic-const-generic `const if` now lowers to an SV conditional generate
+> instead of being rejected; the `ConstIfNotConst` rejection is retired). So the
+> whole `const if` axis (grounded fold inline, grounded fold at `mir_of`, and
+> symbolic generate-if) is complete — the infrastructure the guards ride on.
+> **Blocked:** the actual zero-width guards — Phase 1's prelude half (`Slice`
+> trait + `__slice_raw` + `zero_bits` + the `[..]`→method desugar), Phase 2 (set
+> guard — coupled: allowing zero-width is all-or-nothing at infer's slice typing),
+> and Phase 3 (concat/resize) — all edit `prelude.mrn`, which has uncommitted
+> slicing-adjacent user WIP (`truncate`-based tuple `unpack`). **Resume:** once
+> `prelude.mrn` is clear, do Phase 1 → 2 → 3; the symbolic-width case of each is
+> already served by Phase 4. (Also deferred: Phase 2b's symbolic-ground bounds,
+> needing a recorded residual; and binding explicit const generics to non-inline
+> instances — see Phase 4 note.)
 
 > **Direction (Jon, 2026-06-26):** the zero-width slice/concat guards are **not**
 > backend-synthesised. The layout operations are *primitives that do not support
@@ -211,15 +215,27 @@ its value via `mir_const_arg` — Phase 1's slice ops will rely on the same path
 - **test**: a `concat_hi` with a zero-width operand; `resize` to/from a
   zero-width — both grounded — verilator-clean.
 
-### Phase 4 — symbolic widths: `generate if` (comptime_if step 5)
+### Phase 4 — symbolic widths: `generate if` (comptime_if step 5) — DONE
 
-- `SvItem::GenerateIf` (sibling of `SvItem::GenerateFor`); a `const if` whose
-  condition is still symbolic at emit lowers to it (SV §27.5: only the selected
-  generate block is elaborated, so the dead arm's out-of-range select never
-  exists). This makes the prelude guards work for *generic* widths uniformly,
-  with no backend special-casing. Until it lands, a symbolic-width slice through
-  the prelude guard is a clean front-end rejection (Phase 0's `inline_check`
-  narrowing), exactly the wall that exists today — just relocated.
+`SvItem::GenerateIf` (sibling of `SvItem::GenerateFor`) landed: a `const if`
+whose condition is still symbolic at emit (a const generic riding as a `#()`
+param) lowers to it (SV §27.5: only the selected block elaborates, so the dead
+arm's out-of-range constructs never exist). The value-position lowering
+(`const_if_generate`, `backend/lower.rs`) declares a fresh wire, captures each
+branch's own items into its generate block (swapping `self.items`), and drives
+the wire per branch; the cond renders as an SV expression over the `#()` params.
+infer's `ConstIfNotConst` rejection is **retired** — a symbolic-const-generic
+cond now grounds (inline splice) or generates (otherwise); only a *runtime*
+(clocked) cond is still rejected (`ConstIfRuntimeCond`).
+`examples/working/const_if_generate.mrn` (`-GW=8`) + golden + CLEAN +
+VERILATOR_CLEAN; the old `fail-expected/const-if-symbolic-generic.mrn` promoted.
+
+**Note (pre-existing, surfaced here):** an explicitly-passed const generic to a
+non-inline *instance* (`choose{k=1}(…)`) isn't bound as `#(.k(1))` — it lands in
+the call's named args with the subst slot deferred (the same shape Phase 0 fixed
+for the *splice*), so `emit_instance_core` misses it. Out of scope for generate-if
+(validated standalone via `-G`); fix when explicit const-generic instances are
+exercised (mirror Phase 0's named-arg binding in `emit_instance_core`).
 
 ## Resolved decisions (with Jon, 2026-06-26)
 

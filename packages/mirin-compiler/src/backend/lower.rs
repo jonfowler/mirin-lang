@@ -37,8 +37,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::backend::ir::{
     SvAlwaysComb, SvAlwaysFf, SvBinOp, SvCombAssert, SvCombIf, SvCombStmt, SvExpr, SvFile,
-    SvFunction, SvGenerateFor, SvInstance, SvItem, SvLogicDecl, SvModule, SvPort, SvPortDirection,
-    SvSeqAssign, SvType,
+    SvFunction, SvGenerateFor, SvGenerateIf, SvInstance, SvItem, SvLogicDecl, SvModule, SvPort,
+    SvPortDirection, SvSeqAssign, SvType,
 };
 use crate::base::db::SourceRoot;
 use crate::hir::body::{Body, LocalKind, VerilogSegment, VerilogTemplate, body};
@@ -2064,10 +2064,9 @@ impl<'db> SvLower<'_, 'db> {
                 match self.eval_mir_cond(cond) {
                     Some(true) => self.block_value(&tb),
                     Some(false) => self.block_value(&eb),
-                    None => panic!(
-                        "symbolic `const if` reached emission — needs `generate if` \
-                         (comptime_if step 5 / slice_guards Phase 4)"
-                    ),
+                    // Symbolic condition (a const generic riding as a `#()` param):
+                    // lower to a conditional generate driving a fresh wire.
+                    None => self.const_if_generate(m, cond, &tb, &eb),
                 }
             }
             // A slice in scalar position (a `bits` slice — one leaf). Vec slices
@@ -2239,10 +2238,10 @@ impl<'db> SvLower<'_, 'db> {
                 match self.eval_mir_cond(cond) {
                     Some(true) => self.block_leaves(&tb),
                     Some(false) => self.block_leaves(&eb),
-                    None => panic!(
-                        "symbolic `const if` reached emission — needs `generate if` \
-                         (comptime_if step 5 / slice_guards Phase 4)"
-                    ),
+                    // Symbolic ⇒ a conditional generate. Scalar result only for
+                    // now (one leaf via the value twin); an aggregate-result
+                    // symbolic `const if` is a future extension.
+                    None => vec![(String::new(), self.const_if_generate(m, cond, &tb, &eb))],
                 }
             }
             MExprKind::If {
@@ -2363,6 +2362,57 @@ impl<'db> SvLower<'_, 'db> {
             cond,
             &self.self_subst,
         )
+    }
+
+    /// Lower a `const if` whose condition is still **symbolic** at emit (a const
+    /// generic riding as a `#()` parameter) to an `SvItem::GenerateIf` driving a
+    /// fresh wire — SV §27.5 elaborates only the selected block, so the dead arm's
+    /// (possibly out-of-range) constructs never exist (planning/slice_guards.md
+    /// Phase 4). Scalar result: each branch drives one wire. Each branch's own
+    /// items are captured into its generate block (not hoisted to module scope).
+    fn const_if_generate(
+        &mut self,
+        m: MExprId,
+        cond: MExprId,
+        tb: &MBlock,
+        eb: &MBlock,
+    ) -> SvExpr {
+        let cond_sv = self.expr_value(cond);
+        let base = self.fresh_block();
+        let ty = ground_widths(
+            self.db,
+            self.krate,
+            self.def,
+            &subst_type(&self.mir.expr(m).ty, &self.self_subst),
+        );
+        // Lower each branch into its own item list (swap `self.items` out so the
+        // branch's nets/assigns land inside the generate block), then append the
+        // wire-driving assign.
+        let outer = std::mem::take(&mut self.items);
+        let then_val = self.block_value(tb);
+        let mut then_items = std::mem::take(&mut self.items);
+        then_items.push(SvItem::Assign {
+            lhs: SvExpr::Ident(base.clone()),
+            rhs: then_val,
+        });
+        let else_val = self.block_value(eb);
+        let mut else_items = std::mem::take(&mut self.items);
+        else_items.push(SvItem::Assign {
+            lhs: SvExpr::Ident(base.clone()),
+            rhs: else_val,
+        });
+        self.items = outer;
+        self.items.push(SvItem::Logic(SvLogicDecl {
+            ty: sv_type(&ty, &self.sig.generic_params),
+            name: base.clone(),
+        }));
+        self.items.push(SvItem::GenerateIf(SvGenerateIf {
+            cond: cond_sv,
+            label: format!("{base}__g"),
+            then_items,
+            else_items,
+        }));
+        SvExpr::Ident(base)
     }
 
     fn block_value(&mut self, block: &MBlock) -> SvExpr {

@@ -50,10 +50,6 @@ pub enum InferDiagnosticKind {
     /// runtime data. The condition is resolved at elaboration, so it must be a
     /// constant (planning/comptime_if.md).
     ConstIfRuntimeCond,
-    /// A `const if` (in a non-`#[inline]` def) whose condition does not reduce
-    /// to a constant: a symbolic const generic (which needs the not-yet-built
-    /// `generate if` lowering) or a runtime value.
-    ConstIfNotConst,
     /// A slice expression (`x[lo..hi]` / `x[off..+w]`) — parsed and lowered, but
     /// the semantics (planning/slicing.md) are not yet implemented. Rejected
     /// cleanly here so a slice never silently lowers to its base.
@@ -187,12 +183,6 @@ impl InferDiagnostic {
             InferDiagnosticKind::ConstIfRuntimeCond => {
                 "a `const if` condition must be constant, but this one depends on \
                  runtime data (it carries a clock domain)"
-                    .to_owned()
-            }
-            InferDiagnosticKind::ConstIfNotConst => {
-                "a `const if` condition must reduce to a compile-time constant; \
-                 this one does not (a symbolic const generic needs `generate if`, \
-                 not yet implemented; a runtime value is not allowed)"
                     .to_owned()
             }
             InferDiagnosticKind::SliceNotImplemented => {
@@ -850,19 +840,19 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     /// `#[inline]` fn a symbolic-const condition is fine: it grounds when the
     /// body is spliced at a call with concrete const generics (planning/inline_bodies.md).
     fn check_const_ifs(&mut self) {
-        let inline = self.map.def_data(self.def).is_some_and(|d| d.inline);
         for (cond, span) in std::mem::take(&mut self.const_if_checks) {
             self.current_span = span;
             let dom = match self.expr_types.get(&cond).cloned() {
                 Some(Type::Value { domain, .. }) => self.table.resolve_domain_shallow(domain),
                 _ => continue,
             };
+            // A runtime (clocked / domain-param) condition is still rejected — a
+            // `const if` must be compile-time. A *symbolic const generic* cond
+            // (`W == 8` with `W` a `#()` param) is now fine: it grounds when an
+            // inline body is spliced, or lowers to an SV `generate if` otherwise
+            // (planning/slice_guards.md Phase 4).
             if matches!(dom, Domain::Clock(_) | Domain::Param(_)) {
                 self.diag(InferDiagnosticKind::ConstIfRuntimeCond);
-            } else if !inline
-                && crate::hir::const_eval::eval_cond(self.db, self.krate, self.def, cond).is_none()
-            {
-                self.diag(InferDiagnosticKind::ConstIfNotConst);
             }
         }
     }

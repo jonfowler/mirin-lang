@@ -102,6 +102,12 @@ pub enum SvItem {
     /// hierarchy — instance paths are `label[i].name`
     /// (planning/for_loops.md).
     GenerateFor(SvGenerateFor),
+    /// A conditional generate (`if (cond) begin : l … end else begin : l … end`)
+    /// — SV §27.5 elaborates at most one block, so the dead arm's constructs are
+    /// never brought into existence. The lowering of a `const if` whose condition
+    /// is still symbolic at emit (a const generic riding as a `#()` param);
+    /// planning/comptime_if.md step 5 / slice_guards.md Phase 4.
+    GenerateIf(SvGenerateIf),
     /// Raw verilog text from an inline-verilog fn body, emitted as-is
     /// (dedented to the module body's indentation).
     Verbatim(String),
@@ -171,6 +177,17 @@ pub struct SvGenerateFor {
     pub bound: SvExpr,
     pub label: String,
     pub items: Vec<SvItem>,
+}
+
+/// `if (cond) begin : label … end else begin : label … end` — a conditional
+/// generate. Both blocks share `label` (only one elaborates, so the hierarchical
+/// path is stable). `else_items` empty ⇒ no `else` block.
+#[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
+pub struct SvGenerateIf {
+    pub cond: SvExpr,
+    pub label: String,
+    pub then_items: Vec<SvItem>,
+    pub else_items: Vec<SvItem>,
 }
 
 /// `always_comb assert (i < N);` — a simulation-time bounds check on a
@@ -367,6 +384,29 @@ impl fmt::Display for SvItem {
                     }
                 }
                 writeln!(f, "    end")
+            }
+            Self::GenerateIf(g) => {
+                let indent = |f: &mut fmt::Formatter<'_>, items: &[SvItem]| -> fmt::Result {
+                    for item in items {
+                        for line in item.to_string().lines() {
+                            if line.is_empty() {
+                                writeln!(f)?;
+                            } else {
+                                writeln!(f, "    {line}")?;
+                            }
+                        }
+                    }
+                    Ok(())
+                };
+                writeln!(f, "    if ({}) begin : {}", g.cond, g.label)?;
+                indent(f, &g.then_items)?;
+                if g.else_items.is_empty() {
+                    writeln!(f, "    end")
+                } else {
+                    writeln!(f, "    end else begin : {}", g.label)?;
+                    indent(f, &g.else_items)?;
+                    writeln!(f, "    end")
+                }
             }
             Self::Initial(assigns) => {
                 writeln!(f, "    initial begin")?;

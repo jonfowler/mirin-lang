@@ -1,7 +1,9 @@
 # Compile-time `const if`
 
-Status: steps 1–4 landed (parse, HIR, type-check + const-condition rejection,
-grounded fold). The symbolic `generate if` lowering (step 5) is not yet built.
+Status: steps 1–5 landed (parse, HIR, type-check, grounded fold, and the symbolic
+`generate if` lowering — `SvItem::GenerateIf`, 2026-06-26, slice_guards.md
+Phase 4). A symbolic-const-generic condition now generates; only a *runtime*
+(clocked) condition is rejected.
 
 `const if cond { … } else { … }` is a **compile-time conditional**: `cond` is a
 constant expression resolved at elaboration, and only the *selected* arm is
@@ -56,14 +58,13 @@ Precedent is uniformly explicit: C++ `if constexpr`, D `static if`, Zig
   inlined to a concrete value. Emit only the taken arm (`block_value` /
   `block_leaves`); the other is never produced, so its (possibly invalid) SV
   never reaches the tool. No new SV node.
-- **symbolic** (step 5, not built): the controlling const generic rides out as
-  an SV `#()` parameter, so the condition is still symbolic at emit. This needs
-  an `SvItem::GenerateIf` (sibling of the existing `SvItem::GenerateFor`) — SV
-  §27.5 instantiates only the selected generate block, so the dead arm is never
-  elaborated. Until it lands, a symbolic condition is a hard stop in the backend
-  (`eval_const_cond` panics) — acceptable because emission only runs on a
-  diagnostic-free crate, and the front-end already rejects the *runtime* case,
-  so the only thing that reaches it is a genuinely-symbolic const.
+- **symbolic** (step 5, **landed** 2026-06-26): the controlling const generic
+  rides out as an SV `#()` parameter, so the condition is still symbolic at emit.
+  It lowers to `SvItem::GenerateIf` (sibling of `SvItem::GenerateFor`) — SV §27.5
+  instantiates only the selected generate block, so the dead arm is never
+  elaborated. The value-position lowering (`const_if_generate`) declares a result
+  wire and drives it per branch, each branch's own items captured into its
+  generate block. (slice_guards.md Phase 4.)
 
 ## Implementation map
 

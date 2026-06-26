@@ -1,0 +1,9 @@
+// verilator: -GW=8
+// A `const if` on a const generic in a non-#[inline] fn: the fn emits once as a
+// parameterised SV module (`#(parameter int W)`), so `W` is symbolic at emit and
+// the guard lowers to an SV `generate if` (planning/slice_guards.md Phase 4 /
+// comptime_if.md step 5) — SV §27.5 elaborates only the selected block, so the
+// dead arm is never brought into existence.
+fn ground {const W: integer} (a: uint(8), b: uint(8)) -> uint(8) {
+    const if W == 8 { a } else { b }
+}

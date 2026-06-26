@@ -1,8 +1,0 @@
-// A `const if` on a const generic in a non-`#[inline]` fn cannot ground: the fn
-// is emitted once as a parameterised SV module, so `W` is symbolic at emit. That
-// needs the `generate if` lowering (not yet built), so it is diagnosed rather
-// than panicking the backend (planning/comptime_if.md). Inside an `#[inline]`
-// fn the same condition would be fine — it grounds when the body is spliced.
-fn ground {const W: integer} (a: uint(8), b: uint(8)) -> uint(8) {
-    const if W == 8 { a } else { b }
-}
