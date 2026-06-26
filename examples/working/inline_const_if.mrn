@@ -1,0 +1,14 @@
+// A `const if` inside a Mirin-bodied `#[inline]` fn folds at the call site
+// (planning/slice_guards.md Phase 0): `choose`'s guard picks an arm by its const
+// generic `k`, and because `choose` splices inline, the call's `k` grounds the
+// `const if` to the taken branch — `choose{k=0}` ⇒ `a`, `choose{k=1}` ⇒ `b`,
+// each a plain wire, no mux. This is the mechanism the zero-width slice/concat
+// guards ride on.
+#[inline]
+fn choose {const k: integer} (a: uint(8), b: uint(8)) -> uint(8) {
+    const if k == 0 { a } else { b }
+}
+
+fn top {dom clk: Clock} (a: uint(8) @clk, b: uint(8) @clk) -> uint(8) @clk {
+    choose{ k = 0 }(a, b) + choose{ k = 1 }(a, b)
+}

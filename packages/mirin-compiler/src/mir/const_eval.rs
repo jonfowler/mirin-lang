@@ -27,7 +27,7 @@ use crate::base::db::SourceRoot;
 use crate::hir::body::LocalKind;
 use crate::hir::const_eval::{MAX_DEPTH, MAX_STEPS, Value, arith, assoc_grounded_body, eval_const};
 use crate::hir::sig::{Param, sig_of};
-use crate::hir::types::{ConstOp, Direction, LocalId, Type};
+use crate::hir::types::{ConstOp, Direction, LocalId, Term, Type};
 use crate::mir::ir::{Conn, MBlock, MExprId, MExprKind, MStmt, Mir};
 use crate::mir::lower::mir_of;
 use crate::nameres::def_map::CrateDefMap;
@@ -89,6 +89,32 @@ pub fn eval_return<'db>(
     ev.eval_block(&frame, &block, 0)
 }
 
+/// Evaluate a boolean condition (a `const if` guard) with const-generic bindings
+/// seeded on the root frame — the inline-splice entry point. `const_subst` is the
+/// call's `call_subst ∘ self_subst` (indexed by generic param); a `ConstParam(i)`
+/// resolves against it. `Some(b)` if it folds, `None` if still symbolic (the
+/// generate-if case). Ordinary (no-binding) folding is `eval(...).` on a Bool.
+pub fn eval_cond_with<'db>(
+    db: &'db dyn salsa::Database,
+    krate: SourceRoot,
+    def: DefId<'db>,
+    expr: MExprId,
+    const_subst: &[Option<Term<'db>>],
+) -> Option<bool> {
+    let mut ev = Evaluator {
+        db,
+        krate,
+        map: crate::nameres::def_map::crate_def_map(db, krate),
+        steps: 0,
+        symbolic: false,
+    };
+    let frame = Frame::root_with(db, krate, def, const_subst.to_vec());
+    match ev.eval_expr(&frame, expr, 0) {
+        Some(Value::Bool(b)) => Some(b),
+        _ => None,
+    }
+}
+
 /// Three-way evaluation: distinguishes a symbolic leaf (defer) from a closed
 /// expression that genuinely has no value (a hard error).
 pub fn eval3<'db>(
@@ -123,8 +149,16 @@ struct Evaluator<'db> {
 /// One activation: a def's MIR plus the call-site bindings for its value params
 /// and the per-local memo slots.
 struct Frame<'db> {
+    def: DefId<'db>,
     mir: &'db Mir<'db>,
     bindings: HashMap<LocalId, Value<'db>>,
+    /// Const-generic bindings for this activation, indexed by the def's generic
+    /// param index (the same index `MExprKind::ConstParam(i)` / `ConstArg::Param(i)`
+    /// use). Seeded at the **root** from a caller-supplied subst (the inline
+    /// splice's composed `call_subst ∘ self_subst`); empty for an entered callee
+    /// frame (a const generic reached through a *nested* call stays symbolic — the
+    /// deferred case in `planning/alternative/inline_bodies-frame-constgen.md`).
+    const_subst: Vec<Option<Term<'db>>>,
     slots: RefCell<HashMap<LocalId, Slot<'db>>>,
 }
 
@@ -136,9 +170,22 @@ enum Slot<'db> {
 
 impl<'db> Frame<'db> {
     fn root(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'db>) -> Self {
+        Self::root_with(db, krate, def, Vec::new())
+    }
+
+    /// A root frame seeded with const-generic bindings (the inline splice site,
+    /// which knows the call's const args; ordinary callers pass `Vec::new()`).
+    fn root_with(
+        db: &'db dyn salsa::Database,
+        krate: SourceRoot,
+        def: DefId<'db>,
+        const_subst: Vec<Option<Term<'db>>>,
+    ) -> Self {
         Frame {
+            def,
             mir: mir_of(db, krate, def),
             bindings: HashMap::new(),
+            const_subst,
             slots: Default::default(),
         }
     }
@@ -156,9 +203,20 @@ impl<'db> Evaluator<'db> {
             MExprKind::Number(n, _) => Some(Value::Int(*n)),
             MExprKind::Bool(b) => Some(Value::Bool(*b)),
             MExprKind::Local(l) => self.demand(frame, *l, depth),
-            // A const generic used as a value — symbolic at the root (defers to
+            // A const generic used as a value. If this frame carries a binding for
+            // it (an inline splice seeded the root with the call's const args),
+            // re-enter the bound `ConstArg`; otherwise symbolic (defers to
             // monomorphisation), exactly like `ConstArg::Param`.
-            MExprKind::ConstParam(_) => {
+            MExprKind::ConstParam(i) => {
+                if let Some(Some(Term::Const(c))) = frame.const_subst.get(*i as usize) {
+                    return match eval_const(self.db, self.krate, frame.def, c) {
+                        Some(v) => Some(Value::Int(v)),
+                        None => {
+                            self.symbolic = true;
+                            None
+                        }
+                    };
+                }
                 self.symbolic = true;
                 None
             }
@@ -473,8 +531,12 @@ impl<'db> Evaluator<'db> {
             }
         }
         Some(Frame {
+            def,
             mir: mir_of(self.db, self.krate, def),
             bindings,
+            // A nested callee's const generics are not bound here (deferred — the
+            // splice only seeds the root frame); they stay symbolic.
+            const_subst: Vec::new(),
             slots: Default::default(),
         })
     }

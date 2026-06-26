@@ -2060,7 +2060,27 @@ impl<'db> SvLower<'_, 'db> {
                 let (cond, tb, eb) = (*cond, then_branch.clone(), else_branch.clone());
                 self.lower_if(m, cond, &tb, &eb)
             }
-            MExprKind::ConstIf { .. } => todo!("expr_value: ConstIf (const-eval on MIR)"),
+            // A `const if` that survived `mir_of` unfolded (its generics were
+            // symbolic there) — fold it here against the active subst's const
+            // generics. At an inline splice `self.self_subst` is the call's
+            // composed subst, so a guard like `const if w == 0` grounds at the
+            // call site (planning/slice_guards.md). Still-symbolic ⇒ generate-if
+            // (Phase 4), not yet built.
+            MExprKind::ConstIf {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let (cond, tb, eb) = (*cond, then_branch.clone(), else_branch.clone());
+                match self.eval_mir_cond(cond) {
+                    Some(true) => self.block_value(&tb),
+                    Some(false) => self.block_value(&eb),
+                    None => panic!(
+                        "symbolic `const if` reached emission — needs `generate if` \
+                         (comptime_if step 5 / slice_guards Phase 4)"
+                    ),
+                }
+            }
             // A slice in scalar position (a `bits` slice — one leaf). Vec slices
             // are aggregates and go through `expr_leaves`.
             MExprKind::Slice { .. } => self.one_leaf(m),
@@ -2221,7 +2241,21 @@ impl<'db> SvLower<'_, 'db> {
             // A scalar builtin in leaf position (a `reg`) — one leaf via the value
             // twin (which handles the register synthesis).
             MExprKind::Builtin { .. } => vec![(String::new(), self.expr_value(m))],
-            MExprKind::ConstIf { .. } => todo!("expr_leaves: ConstIf"),
+            MExprKind::ConstIf {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let (cond, tb, eb) = (*cond, then_branch.clone(), else_branch.clone());
+                match self.eval_mir_cond(cond) {
+                    Some(true) => self.block_leaves(&tb),
+                    Some(false) => self.block_leaves(&eb),
+                    None => panic!(
+                        "symbolic `const if` reached emission — needs `generate if` \
+                         (comptime_if step 5 / slice_guards Phase 4)"
+                    ),
+                }
+            }
             MExprKind::If {
                 cond,
                 then_branch,
@@ -2327,6 +2361,20 @@ impl<'db> SvLower<'_, 'db> {
     }
 
     // ----- control flow -----
+
+    /// Fold a `const if` condition (a MIR expr) against the active subst's const
+    /// generics. At an inline splice `self.self_subst` is the call's composed
+    /// subst, so the guard grounds at the call site; `None` ⇒ still symbolic
+    /// (generate-if, not yet built).
+    fn eval_mir_cond(&self, cond: MExprId) -> Option<bool> {
+        crate::mir::const_eval::eval_cond_with(
+            self.db,
+            self.krate,
+            self.def,
+            cond,
+            &self.self_subst,
+        )
+    }
 
     fn block_value(&mut self, block: &MBlock) -> SvExpr {
         self.lower_stmts(&block.stmts);
@@ -2838,11 +2886,25 @@ impl<'db> SvLower<'_, 'db> {
             Some(ov) => ov.to_vec(),
             None => substs.iter().cloned().map(Some).collect(),
         };
-        let composed: Vec<Option<Term<'db>>> =
-            node_subst.iter().map(|t| self.compose_term(t)).collect();
-
         let cbody = body(self.db, self.krate, def);
         let csig = sig_of(self.db, self.krate, def);
+        let mut composed: Vec<Option<Term<'db>>> = (0..csig.generic_params.len())
+            .map(|i| self.compose_term(&node_subst.get(i).cloned().flatten()))
+            .collect();
+        // An explicitly-provided const generic (`{k = 0}`) is recorded as a NAMED
+        // arg with its subst slot left deferred — bind it into the const subst by
+        // matching the named arg to the callee's const generic param. (The value
+        // expr is in the *caller*'s MIR, so ground it with our own `mir_const_arg`.)
+        for n in named {
+            if let Conn::In(e) = &n.conn
+                && let Some(i) = csig
+                    .generic_params
+                    .iter()
+                    .position(|g| g.kind == TermKind::Const && g.name == n.name)
+            {
+                composed[i] = Some(Term::Const(self.mir_const_arg(*e)));
+            }
+        }
         let site = self.fresh_inline();
         let mut sub = SvLower {
             db: self.db,

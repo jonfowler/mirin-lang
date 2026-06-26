@@ -801,10 +801,6 @@ pub enum InlineDiagnosticKind {
     /// A `var` (cyclic-equation node) in an inline body — only `let`-style
     /// combinational bodies splice in v1.
     Var { name: String },
-    /// A `const if` in an inline body — folding it needs the call-site const
-    /// generics bound on the const-eval frame (planning/inline_bodies.md
-    /// "const generics"); deferred to a later slice.
-    ConstIf,
     /// An `integer`-typed value parameter — compile-time only, not a wire; v1
     /// binds value params as caller-side wires, so an integer param is deferred.
     IntegerParam { name: String },
@@ -830,12 +826,6 @@ impl InlineDiagnostic {
                     "an `#[inline]` fn cannot declare `var {name}` yet \
                      (only `let`-style combinational bodies splice)"
                 )
-            }
-            InlineDiagnosticKind::ConstIf => {
-                "a `const if` in an `#[inline]` fn is not supported yet \
-                 (the call-site const generics it folds against are not bound \
-                 during the splice)"
-                    .to_owned()
             }
             InlineDiagnosticKind::IntegerParam { name } => {
                 format!(
@@ -936,14 +926,11 @@ pub fn inline_check<'db>(
         });
     }
 
-    // `const if`: folding it during a splice needs the call-site const generics
-    // on the const-eval frame (a later slice). Reject for now.
-    if body.exprs().any(|e| matches!(&e.kind, ExprKind::ConstIf { .. })) {
-        out.push(InlineDiagnostic {
-            span: Span::default(),
-            kind: InlineDiagnosticKind::ConstIf,
-        });
-    }
+    // NB: a `const if` in an inline body is NOT rejected — whether it grounds is
+    // a property of the *call site* (its const args), not the def, so a per-def
+    // check cannot classify it (planning/slice_guards.md, decision 4). It folds at
+    // the splice when the call grounds it; a still-symbolic one is the generate-if
+    // case (Phase 4).
 
     // Inline recursion: a fn that calls itself (directly or transitively through
     // other inline fns) would splice forever. Reject up front.

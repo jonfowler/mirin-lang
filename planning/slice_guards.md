@@ -101,10 +101,16 @@ Each phase is independently committable, golden-gated, with examples. Phase 0 is
 the prerequisite; 1–3 build on it; 4 (symbolic) lands last and covers the
 generic-width tail.
 
-### Phase 0 — `const if` folding inside an inline splice (grounded)
+### Phase 0 — `const if` folding inside an inline splice (grounded) — DONE
 
 The forcing-function core. Make a `const if` in a spliced `#[inline]` body fold
-against the call-site const generics.
+against the call-site const generics. **Landed** — `inline_const_if.mrn`
+(`choose{k=0}`⇒`a`, `choose{k=1}`⇒`b`, each a plain wire) + golden + CLEAN +
+VERILATOR_CLEAN. Key finding folded into the splice: an explicitly-provided const
+generic (`{k = 0}`) is recorded as a **named arg** with its `substs` slot left
+`<deferred>` (infer does not fold the value into the subst), so the splice binds
+it by matching the named arg to the callee's const generic param and grounding
+its value via `mir_const_arg` — Phase 1's slice ops will rely on the same path.
 
 - **mir::const_eval**: accept the def's const bindings (the splice's composed
   `self_subst`), consulted at `MExprKind::ConstParam(i)` — the MIR analogue of the
