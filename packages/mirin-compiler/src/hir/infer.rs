@@ -1820,11 +1820,12 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         }
     }
 
-    /// Type a slice with two literal endpoints (the S4 cut so far). `bits` is
-    /// written high-first (`x[high..low]` → `bits(high-low)`); `Vec` is written
-    /// low-first (`v[low..high]` → `Vec(high-low, A)`). Returns `None` for any
-    /// shape not yet handled (offset form, non-literal endpoints, non-bits/vec
-    /// base, wrong order, zero width) so the caller rejects it cleanly.
+    /// Type a slice with two literal endpoints (the S4 cut so far). Both `bits`
+    /// and `Vec` are written **low-first / ascending** (decision 2026-06-26):
+    /// `x[low..high]` → `bits(high-low)` / `Vec(high-low, A)`. Returns `None` for
+    /// any shape not yet handled (non-literal endpoints, non-bits/vec base, wrong
+    /// order, zero width — the last awaits the prelude guard) so the caller
+    /// rejects it cleanly.
     fn slice_literal(
         &self,
         body: &Body<'db>,
@@ -1843,50 +1844,36 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
             return self.sliced_ty(bt, w);
         }
-        // Two-endpoint form `x[a..b]`, possibly elided. The base's length `N`
-        // supplies an elided end: bits `x[hi..]`→`x[hi..0]`, `x[..lo]`→`x[N..lo]`;
-        // vec `v[lo..]`→`v[lo..N]`, `v[..hi]`→`v[0..hi]`. Bare `x[..]` rejected.
-        // `bits` is high-first (`a`=high), `Vec` is low-first (`a`=low).
+        // Two-endpoint form `x[low..high]`, possibly elided. The base's length `N`
+        // supplies an elided end (same rule for both types now): `x[low..]`→
+        // `x[low..N]`, `x[..high]`→`x[0..high]`. Bare `x[..]` rejected.
         if lo.is_none() && hi.is_none() {
             return None; // bare `x[..]` is redundant
         }
-        let (n, is_bits) = match bt {
+        let n = match bt {
             Type::Value {
                 kind: ValueKind::Bits { width: n },
                 ..
-            } => (n.clone(), true),
-            Type::Vec { len: n, .. } => (n.clone(), false),
+            } => n.clone(),
+            Type::Vec { len: n, .. } => n.clone(),
             _ => return None,
         };
-        let zero = ConstArg::Lit(0);
-        let a = match lo {
+        // `lo` is the low end (elided → 0), `hi` the high end (elided → N).
+        let low = match lo {
             Some(e) => self.const_arg_of(body, e)?,
-            None => {
-                if is_bits {
-                    n.clone()
-                } else {
-                    zero.clone()
-                }
-            }
+            None => ConstArg::Lit(0),
         };
-        let b = match hi {
+        let high = match hi {
             Some(e) => self.const_arg_of(body, e)?,
-            None => {
-                if is_bits {
-                    zero
-                } else {
-                    n
-                }
-            }
+            None => n,
         };
-        // width = high - low (bits: a-b; vec: b-a). Fold when both endpoints are
-        // literal (so concrete slices keep a `Lit` width); else build a symbolic
-        // `Op(Sub, …)` that grounds at elaboration.
-        let (high, low) = if is_bits { (a, b) } else { (b, a) };
+        // width = high - low. Fold when both endpoints are literal (so concrete
+        // slices keep a `Lit` width); else build a symbolic `Op(Sub, …)` that
+        // grounds at elaboration.
         let w = match (&high, &low) {
             (ConstArg::Lit(h), ConstArg::Lit(l)) => {
                 if h <= l {
-                    return None; // wrong order / zero-width — not this cut
+                    return None; // descending (wrong order) or zero-width (awaits guard)
                 }
                 ConstArg::Lit(h - l)
             }

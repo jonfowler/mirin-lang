@@ -4,7 +4,7 @@ module build (
     output logic [7:0] result [0:3]
 );
     logic [7:0] v [0:3];
-    assign v[0:1] = '{a, b};
-    assign v[2:3] = '{b, a};
+    assign v[0 +: 2] = '{a, b};
+    assign v[2 +: 2] = '{b, a};
     assign result = v;
 endmodule

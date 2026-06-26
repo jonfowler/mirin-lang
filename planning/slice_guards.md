@@ -131,6 +131,17 @@ its value via `mir_const_arg` — Phase 1's slice ops will rely on the same path
 
 ### Phase 1 — slice **read** as primitive + prelude guard
 
+> **Ascending flip LANDED (2026-06-26)** — the direction half (decision 6) shipped
+> ahead of the prelude half: `slice_literal` (infer) and `slice_range_sv` (backend)
+> are now low-first/ascending for both `bits` and `Vec`, emitting `[low +: width]`
+> uniformly (decision 3). Examples flipped (`slice_bits`/`slice_elide`/`slice_set`/
+> `slice_const_expr`/`slice_param`, + `slice_vec`/`slice_vec_set` re-emit `+:`) +
+> goldens. **The prelude half (the `Slice` trait + `__slice_raw` + `zero_bits` +
+> the `[..]`→method desugar + the zero-width guard) is DEFERRED** — it edits
+> `prelude.mrn`, which currently has the user's uncommitted (slicing-adjacent) WIP;
+> resume once that's clear. The backend still emits the slice directly
+> (`slice_range_sv`) without the zero-width guard until then.
+
 - **`__slice_raw {const w}(self, lo: uint)`** primitive in `prelude.mrn`
   (verilog-bodied): `${self}[${lo} +: ${w}]`, assumes `w >= 1`.
 - **`zero_bits() -> bits(0)`** builtin (+ `Vec` dual) for the guard's taken branch

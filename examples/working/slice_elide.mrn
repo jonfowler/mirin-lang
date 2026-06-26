@@ -1,10 +1,10 @@
 // Elided slice endpoints (planning/slicing.md): the base length supplies the
-// missing end. For `bits`, `x[8..]` ⇒ `x[8..0]` (bits {0..7}, → x[7:0]) and
-// `x[..4]` ⇒ `x[16..4]` (bits {4..15}, → x[15:4]).
+// missing end (low-first/ascending). `x[..8]` ⇒ `x[0..8]` (bits {0..7}, →
+// x[0 +: 8]) and `x[4..]` ⇒ `x[4..16]` (bits {4..15}, → x[4 +: 12]).
 fn lo_half(x: bits(16)) -> bits(8) {
-    x[8..]
+    x[..8]
 }
 
 fn hi_part(x: bits(16)) -> bits(12) {
-    x[..4]
+    x[4..]
 }

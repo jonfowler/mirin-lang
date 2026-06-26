@@ -1307,38 +1307,27 @@ impl<'db> SvLower<'_, 'db> {
             let w = self.render_const(&self.mir_const_arg(w_e));
             return format!("[{off} +: {w}]");
         }
-        let (n, is_bits) = match base_ty {
+        // Two-endpoint, **ascending (low-first)** for both `bits` and `Vec`
+        // (decision 2026-06-26), emitted as the indexed part-select
+        // `[low +: width]` uniformly (no `[msb:lo]` special case). An elided low
+        // defaults to 0, an elided high to the base length `N`.
+        let n = match base_ty {
             Type::Value {
                 kind: ValueKind::Bits { width: n },
                 ..
-            } => (n.clone(), true),
-            Type::Vec { len: n, .. } => (n.clone(), false),
+            } => n.clone(),
+            Type::Vec { len: n, .. } => n.clone(),
             _ => panic!("MIR: slice base is neither bits nor vec"),
         };
-        let zero = ConstArg::Lit(0);
-        let a = lo.map(|e| self.mir_const_arg(e)).unwrap_or(if is_bits {
-            n.clone()
-        } else {
-            zero.clone()
-        });
-        let b = hi
-            .map(|e| self.mir_const_arg(e))
-            .unwrap_or(if is_bits { zero } else { n });
-        // Type-directed: bits high-first (`a`=high) → `[high-1:low]`; vec
-        // low-first (`a`=low) → ascending `[low:high-1]`. The msb (`high-1`)
-        // folds for literals, renders symbolic for a param.
-        let (high, low) = if is_bits { (a, b) } else { (b, a) };
-        let msb = self.render_const(&ConstArg::Op(
+        let low = lo.map(|e| self.mir_const_arg(e)).unwrap_or(ConstArg::Lit(0));
+        let high = hi.map(|e| self.mir_const_arg(e)).unwrap_or(n);
+        let width = self.render_const(&ConstArg::Op(
             ConstOp::Sub,
             Box::new(high),
-            Box::new(ConstArg::Lit(1)),
+            Box::new(low.clone()),
         ));
-        let lsb = self.render_const(&low);
-        if is_bits {
-            format!("[{msb}:{lsb}]")
-        } else {
-            format!("[{lsb}:{msb}]")
-        }
+        let low_s = self.render_const(&low);
+        format!("[{low_s} +: {width}]")
     }
 
     /// A slice endpoint as a `ConstArg` for rendering. First try to **ground** it

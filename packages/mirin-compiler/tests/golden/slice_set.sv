@@ -4,7 +4,7 @@ module concat (
     output logic [15:0] result
 );
     logic [15:0] word;
-    assign word[7:0] = lo_byte;
-    assign word[15:8] = hi_byte;
+    assign word[0 +: 8] = lo_byte;
+    assign word[8 +: 8] = hi_byte;
     assign result = word;
 endmodule
