@@ -1926,9 +1926,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         // grounds at elaboration.
         let w = match (&high, &low) {
             (ConstArg::Lit(h), ConstArg::Lit(l)) => {
-                if h <= l {
-                    return SliceTy::NotImpl; // descending (wrong order) or zero-width (awaits guard)
+                if h < l {
+                    return SliceTy::NotImpl; // descending (wrong order)
                 }
+                // `h == l` is a zero-width slice — allowed: the prelude guard's
+                // `const if w == 0` emits the effective-0-bit (planning/slice_guards.md).
                 ConstArg::Lit(h - l)
             }
             _ => ConstArg::Op(ConstOp::Sub, Box::new(high), Box::new(low)),

@@ -18,7 +18,10 @@
 > `mir_of` lowers a fully-ground two-endpoint `bits` slice to a `Call` (base width
 > → impl generic in `substs` by name; `lo`/`hi` as named const args bound by the
 > splice; receiver = base), so `x[4..8]` routes through the prelude guard →
-> `(__inl0__self[4 +: 4])`. **Remaining (kept on the old structural `Slice` node /
+> `(__inl0__self[4 +: 4])`. **Zero-width works:** `infer` allows a literal `h == l`
+> slice, and `x[4..4]` folds the guard's `const if w == 0` to `zero_bits()` → `'0`
+> into a `[-1:0]` effective-0-bit (`slice_zero_width.mrn`; verilator `-Wno-ASCRANGE`
+> added for the intentional ascending range). **Remaining (kept on the old structural `Slice` node /
 > `slice_range_sv`):** offset (`..+w`), elision, `Vec` slices, and **symbolic**
 > slices (a `ConstParam` base/endpoint) — the last because the inline splice can't
 > yet render a *caller* generic in the callee's frame (a cross-frame limit in

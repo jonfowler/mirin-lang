@@ -74,6 +74,7 @@ const CLEAN: &[&str] = &[
     "slice_set.mrn",
     "slice_vec_set.mrn",
     "slice_const_expr.mrn",
+    "slice_zero_width.mrn",
     "slice_param.mrn",
     "assoc_const_value.mrn",
     "resize.mrn",
@@ -266,6 +267,7 @@ const VERILATOR_CLEAN: &[&str] = &[
     "slice_set.mrn",
     "slice_vec_set.mrn",
     "slice_const_expr.mrn",
+    "slice_zero_width.mrn",
     "slice_param.mrn",
     "resize.mrn",
     "ram.mrn",
@@ -514,7 +516,8 @@ fn corpus_is_verilator_clean() {
 
 /// Write one emitted SV file and lint it: `-Wall` minus the cosmetic lints
 /// (filename≠module name, intentionally-unused port-field signals, multiple
-/// uninstantiated top modules). Parameter values come from the example's
+/// uninstantiated top modules, and the intentional effective-0-bit ascending
+/// range `[-1:0]`). Parameter values come from the example's
 /// `// verilator: -G…` directive.
 fn lint_sv(dir: &Path, name: &str, src: &str, sv: &str) {
     let path = dir.join(format!("{}.sv", name.trim_end_matches(".mrn")));
@@ -526,6 +529,11 @@ fn lint_sv(dir: &Path, name: &str, src: &str, sv: &str) {
             "-Wno-DECLFILENAME",
             "-Wno-UNUSEDSIGNAL",
             "-Wno-MULTITOP",
+            // The effective-0-bit `[-1:0]` (a zero-width value, the basis of the
+            // slice/concat zero-width guards — planning/slicing.md) is an
+            // intentional ascending range; we never emit `[a:b]` ranges otherwise
+            // (slices lower to `[lo +: w]`), so suppressing ASCRANGE is safe.
+            "-Wno-ASCRANGE",
         ])
         .args(verilator_directive(src))
         .arg(&path)

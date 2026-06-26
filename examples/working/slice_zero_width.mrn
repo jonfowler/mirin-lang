@@ -1,0 +1,8 @@
+// A zero-width slice (`x[4..4]`, width 0) is total, not an error: it routes
+// through the prelude `Slice` guard whose `const if w == 0` emits the
+// effective-0-bit value (`'0` into a `[-1:0]` net) rather than an illegal
+// reversed/empty part-select (planning/slice_guards.md). Generic code that folds
+// a width to 0 at its limit thus needs no `n == 0` special case.
+fn empty(x: bits(8)) -> bits(0) {
+    x[4..4]
+}
