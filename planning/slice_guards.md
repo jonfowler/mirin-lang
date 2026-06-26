@@ -1,5 +1,18 @@
 # Zero-width layout guards via prelude `const if` (workplan)
 
+> **STATUS (2026-06-26): all defined phases (0–4) DONE for the `bits` family.**
+> `bits` slices — two-endpoint, offset, elision*, symbolic-width, zero-width — and
+> `concat_hi` all route through prelude `const if` guards (`zero_bits{w}`,
+> `__concat`); slice-set has the compiler-applied dual; bounds are checked eagerly
+> (const) and at instantiation (symbolic residual → `mono_check`). `resize` needs
+> no guard (the SV width-cast is total). Zero-width slices that can't route (`Vec`,
+> elided `bits`) are rejected, not miscompiled. **Remaining (NOT a numbered phase —
+> a future feature):** a `Vec` zero-width guard (an inherent `Vec` slice impl +
+> empty-`Vec` value), which would let `Vec`/elided slices route too and is the path
+> to deleting `slice_range_sv`'s read arm. Design sketch + open question at the
+> bottom ("Future: Vec zero-width guard"). *(elision non-zero stays on the
+> structural path; only its zero-width case is rejected.)
+>
 > **Progress (2026-06-26).** Done + committed: **Phase 0** (const-if folds inside
 > an inline splice), the **ascending-direction flip** (decision 6: low-first for
 > both `bits`/`Vec`, `[lo +: w]` everywhere), the **const slice bounds check**
@@ -386,3 +399,41 @@ exercised (mirror Phase 0's named-arg binding in `emit_instance_core`).
   an off-critical-path nicety.
 - `planning/mir_progress.md` — S7's `const if` increment reopened as active work
   (Phase 0), tracked against this plan.
+
+## Future: Vec zero-width guard (not yet built)
+
+`Vec` slices currently route through the structural backend node (`slice_range_sv`)
+for non-zero widths; a zero-width `Vec` slice is *rejected* (`ZeroWidthSliceUnsupported`)
+rather than miscompiled (it would emit `v[lo +: 0]` / a `[0:-1]` array range). To
+make `Vec` slices total like `bits` — and to finally delete `slice_range_sv`'s read
+arm — give `Vec` an inherent `slice`/`slice_from` with the same `const if` guard:
+
+```
+#[inline]
+impl {const N: integer, type A} Vec(N, A) {
+    fn slice {const lo: integer, const hi: integer} (self) -> Vec(hi - lo, A) {
+        const if hi - lo == 0 { zero_vec() } else { __vec_slice{...}(self) }
+    }
+}
+```
+
+Two things must be solved first:
+
+1. **The empty-`Vec` value.** `bits(0)` flattens to *one* `[-1:0]` leaf
+   (so nothing monomorphises on zero-ness); `Vec(0, A)` flattens to *zero* leaves.
+   The splice's value-source, the result wiring, and any consumer must accept a
+   zero-leaf value. Confirm the backend handles a 0-leaf aggregate end-to-end
+   (param binding, result port, instance hookup) before relying on it.
+
+2. **`zero_vec` typing.** Mirror the `zero_bits{w}` trick: `zero_vec{n, A}() ->
+   Vec(n, A)` so both `const if` arms are `Vec(hi - lo, A)` (no divergent-arm
+   typing). It is only ever taken at `n == 0`, where it is the empty vec — the
+   primitive emits no leaves; it never has to fabricate an `A` value (good, since
+   `A` may be a port). A `verilog {}` body is the wrong shape (no SV text for an
+   empty aggregate); `zero_vec` likely needs to be a small compiler builtin that
+   yields zero leaves, not a prelude `= verilog` fn.
+
+Once both hold, the `mir_of` slice arm routes `Vec` (drop the `is_bits` half of the
+zero-width rejection), elision fills its endpoint and routes too, and the backend
+`slice_range_sv` read arm + the structural `MExprKind::Slice` read can be deleted
+(the slice-set `BitRange` path stays — the set is compiler-special by design).
