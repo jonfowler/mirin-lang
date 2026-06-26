@@ -277,8 +277,9 @@ fn check_obligations<'db>(
     }
 
     // Width positivity. A parametric width/len (`uint(n - m)`, `Vec(k, …)`) that
-    // grounds to `< 1` at this instantiation is invalid SV (`logic [-5:0]`). infer
-    // defers parametric widths, so this is their ground decision. Covers the
+    // grounds to `< 0` at this instantiation is invalid SV (`logic [-5:0]`; width
+    // 0 is the legal effective-0-bit). infer defers parametric widths, so this is
+    // their ground decision. Covers the
     // callee signature's own widths (param/return, nested through Vec/Tuple) —
     // struct/port *field* widths resolve elsewhere and are not walked here yet.
     // Dedup by value so repeated widths report once per call.
@@ -299,8 +300,11 @@ fn check_obligations<'db>(
                     continue;
                 }
                 match eval_const(db, krate, callee, w) {
-                    Some(v) if v < 1 && reported.insert(v) => report(format!(
-                        "instantiating `{name}`: width evaluates to {v} (must be >= 1)"
+                    // Width 0 is legal (the effective-0-bit `[-1:0]`, the basis of
+                    // the zero-width guards — planning/slicing.md); only a negative
+                    // width is invalid. Matches infer's `check_widths` (`< 0`).
+                    Some(v) if v < 0 && reported.insert(v) => report(format!(
+                        "instantiating `{name}`: width evaluates to {v} (must be >= 0)"
                     )),
                     Some(_) => {}
                     // Closed but unevaluable ⇒ a genuine arithmetic failure

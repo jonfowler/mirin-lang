@@ -718,7 +718,7 @@ fn mono_check_catches_ground_negative_width() {
     assert!(
         diags
             .iter()
-            .any(|d| d.message().contains("-4") && d.message().contains("must be >= 1")),
+            .any(|d| d.message().contains("-4") && d.message().contains("must be >= 0")),
         "expected a negative-width diagnostic: {:?}",
         diags.iter().map(|d| d.message()).collect::<Vec<_>>()
     );

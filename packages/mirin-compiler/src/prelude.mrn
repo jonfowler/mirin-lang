@@ -512,3 +512,54 @@ impl {const n: integer} bits(n) {
         assign ${return} = {${hi}, ${self}};
     }
 }
+
+// ----- Slicing (planning/slice_guards.md) -----
+// The layout primitives are raw (no zero-width support); the zero-width guard is
+// a Mirin `const if` wrapping them, so a width that folds to 0 (generic code at
+// its limit) is total. `[..]` desugars to `Slice::slice` / `Slice::slice_from`.
+
+// Raw bit part-selects, `x[lo +: w]`, assuming `w >= 1` (the guard handles 0).
+// Two forms by the kind of `lo`: a constant low end (two-endpoint `x[a..b]`) and
+// a runtime base (offset `x[lo..+w]`, the mux-style slice). `w` is always const.
+#[inline]
+fn __slice_const {const W: integer, const lo: integer, const w: integer} (x: bits(W)) -> bits(w) = verilog {
+    assign ${return} = ${x}[${lo} +: ${w}];
+}
+#[inline]
+fn __slice_off {const W: integer, const w: integer, const L: integer} (x: bits(W), lo: uint(L)) -> bits(w) = verilog {
+    assign ${return} = ${x}[${lo} +: ${w}];
+}
+
+// A zero-width `bits` value (effective-0-bit; flattens to the uniform `[-1:0]`
+// leaf, not to *no* leaves — so nothing monomorphises on zero-ness).
+#[inline]
+fn zero_bits() -> bits(0) = verilog {
+    assign ${return} = '0;
+}
+
+// Slicing as a trait (bits family — user bits-like types can `impl Slice`). The
+// zero-width guard is a `const if` here, so a width that folds to 0 is total and
+// the backend carries no zero-width logic. `[a..b]` desugars to `slice`,
+// `[lo..+w]` to `slice_from` (planning/slice_guards.md).
+trait Slice {
+    fn slice {const lo: integer, const hi: integer} (self) -> bits(hi - lo);
+    fn slice_from {const w: integer, const L: integer} (self, lo: uint(L)) -> bits(w);
+}
+
+#[inline]
+impl {const W: integer} Slice for bits(W) {
+    fn slice {const lo: integer, const hi: integer} (self) -> bits(hi - lo) {
+        const if hi - lo == 0 {
+            zero_bits()
+        } else {
+            __slice_const{lo = lo, w = hi - lo}(self)
+        }
+    }
+    fn slice_from {const w: integer, const L: integer} (self, lo: uint(L)) -> bits(w) {
+        const if w == 0 {
+            zero_bits()
+        } else {
+            __slice_off{w = w}(self, lo)
+        }
+    }
+}
