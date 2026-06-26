@@ -268,14 +268,23 @@ its value via `mir_const_arg` — Phase 1's slice ops will rely on the same path
   sites (the call-site model doesn't see a def's own slices otherwise). Smaller
   residual gap; left for when the guard work resumes.
 
-### Phase 3 — `concat_hi` / `resize` guards via prelude `const if`
+### Phase 3 — `concat_hi` / `resize` guards via prelude `const if` — DONE (2026-06-26)
 
-- Wrap the zero-width-operand case of `concat_hi` (and the zero-width `self` case
-  of `resize`) in a prelude `const if`, removing reliance on any backend zero
-  handling. `resize`'s zero *pad* already works (`{0{x}}` is ignored by SV); only
-  a zero-width input/operand needs the guard.
-- **test**: a `concat_hi` with a zero-width operand; `resize` to/from a
-  zero-width — both grounded — verilator-clean.
+- **`concat_hi` guarded** (the real case). SV concat forbids a zero-width operand:
+  `{y, <0-width>}` doesn't error-but-misparse — verilator reads the `[-1:0]` as a
+  6-bit replicate and `WIDTHTRUNC`s. So `concat_hi` wraps the zero-width-operand
+  case in a `const if`: when an operand folds to width 0 the result is the other
+  operand, re-typed to `bits(n + m)` by `__resize_bits` (a free-fn width-cast
+  primitive — Mirin has no `recv.method{generics}()` call syntax, so the guard
+  can't write `x.resize{to}()`); the both-zero arm is `zero_bits`. Every arm is
+  declared `bits(n + m)`, so the `const if` types cleanly. The nonzero path is
+  `__concat` (the raw `{hi, lo}`). `concat_zero_width.mrn` (both operand sides)
+  verilator-clean; `tuple_bitpack` unchanged semantically (extra inline layer).
+- **`resize` needs NO guard.** SV's width-cast `to'(self)` is *already total* for a
+  zero-width input — verilator accepts `8'(<0-width>)` cleanly (and `0'(x)` for a
+  zero-width target). So a zero-width `resize` (uint/sint/bits) is fine as-is; no
+  guard, and no `zero_uint`/`zero_sint` builtins are needed. (The earlier worry
+  about "zero-width `self`" only bites concat, not the width-cast.)
 
 ### Phase 4 — symbolic widths: `generate if` (comptime_if step 5) — DONE
 

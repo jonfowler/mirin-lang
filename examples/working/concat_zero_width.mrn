@@ -1,0 +1,13 @@
+// Concatenation with a zero-width operand (planning/slice_guards.md). A raw SV
+// concat forbids a zero-width element; the `concat_hi` `const if` guard folds the
+// zero-width side away, so a `bits(0)` operand (here the empty slice `x[2..2]`)
+// is total: the result is just the other operand, re-typed by `resize`.
+fn hi_zero(x: bits(8), y: bits(4)) -> bits(4) {
+    // high operand is zero-width → result is `y`
+    y.concat_hi(x[2..2])
+}
+
+fn lo_zero(x: bits(8), y: bits(4)) -> bits(4) {
+    // low operand (`self`) is zero-width → result is `y`
+    (x[2..2]).concat_hi(y)
+}

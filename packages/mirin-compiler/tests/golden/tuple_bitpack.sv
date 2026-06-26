@@ -78,7 +78,11 @@ module Tuple__BitPack__pack__uint8__uint4 (
     input  logic [3:0] self__1,
     output logic [11:0] result
 );
-    assign result = ({(self__1), (self__0)});
+    logic [7:0] __inl0__self;
+    assign __inl0__self = (self__0);
+    logic [3:0] __inl0__hi;
+    assign __inl0__hi = (self__1);
+    assign result = ({__inl0__hi, __inl0__self});
 endmodule
 
 module Tuple__BitPack__pack__uint8__uint4__bool (
@@ -87,7 +91,15 @@ module Tuple__BitPack__pack__uint8__uint4__bool (
     input  logic self__2,
     output logic [12:0] result
 );
-    assign result = ({(self__2), ({(self__1), (self__0)})});
+    logic [7:0] __inl1__self;
+    assign __inl1__self = (self__0);
+    logic [3:0] __inl1__hi;
+    assign __inl1__hi = (self__1);
+    logic [11:0] __inl0__self;
+    assign __inl0__self = ({__inl1__hi, __inl1__self});
+    logic [0:0] __inl0__hi;
+    assign __inl0__hi = (self__2);
+    assign result = ({__inl0__hi, __inl0__self});
 endmodule
 
 module Tuple__BitPack__unpack__uint8__uint4 (

@@ -508,9 +508,46 @@ impl {const n: integer} bits(n) {
     // the high bits. The little-endian builder aggregate `pack` concatenates
     // with (element 0 stays at the LSBs); kept as inline text until the
     // `SvExpr::Concat` node lands (planning/pack_resize.md).
-    fn concat_hi {const m: integer} (self, hi: bits(m)) -> bits(n + m) = verilog {
-        assign ${return} = {${hi}, ${self}};
+    //
+    // Zero-width guard (planning/slice_guards.md): SV concat forbids a zero-width
+    // operand, so a `bits(0)` operand — common in generic `pack` of a zero-width
+    // element — would emit illegal `{x, <0-width>}`. Guard it with a `const if`:
+    // when either operand folds to width 0 the result is just the other operand,
+    // and `resize` re-types it to `bits(n + m)` (an identity width-cast at the
+    // taken arm, since `n + m` equals the surviving operand's width there). Every
+    // arm is declared `bits(n + m)`, so the `const if` node types cleanly (the
+    // `zero_bits{w}` trick — no divergent-arm typing).
+    fn concat_hi {const m: integer} (self, hi: bits(m)) -> bits(n + m) {
+        const if n == 0 {
+            const if m == 0 {
+                zero_bits{w = n + m}()
+            } else {
+                __resize_bits{n = m, to = n + m}(hi)
+            }
+        } else {
+            const if m == 0 {
+                __resize_bits{n = n, to = n + m}(self)
+            } else {
+                __concat{n = n, m = m}(self, hi)
+            }
+        }
     }
+}
+
+// Raw concatenation, `{hi, lo}`, assuming both operands have width >= 1 (the
+// `concat_hi` guard handles a zero-width operand). `lo` occupies the low bits.
+#[inline]
+fn __concat {const n: integer, const m: integer} (lo: bits(n), hi: bits(m)) -> bits(n + m) = verilog {
+    assign ${return} = {${hi}, ${lo}};
+}
+
+// Identity-or-cast width coercion (`to'(x)`), used by `concat_hi`'s guard to
+// re-type the surviving operand to `bits(n + m)` when the other is zero-width. A
+// free fn (not a method) — Mirin has no `recv.method{generics}()` call syntax, so
+// the guard can't write `x.resize{to}()`. Both widths are >= 1 at every call site.
+#[inline]
+fn __resize_bits {const n: integer, const to: integer} (x: bits(n)) -> bits(to) = verilog {
+    assign ${return} = ${to}'(${x});
 }
 
 // ----- Slicing (planning/slice_guards.md) -----
