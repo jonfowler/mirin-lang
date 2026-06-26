@@ -26,20 +26,21 @@
 > slices (a `ConstParam` base/endpoint), gated to the old path via `base_ground` +
 > `const_param_free`.
 >
-> **Symbolic slices — two blockers, one solved, one deep (investigated 2026-06-26):**
+> **Symbolic slices — SOLVED + validated (2026-06-26).** Two blockers, both fixed:
 > (1) *cross-frame rendering* — the inline splice rendered a caller generic against
-> the callee sig (printed `W`/`hi` instead of `n`). **SOLVED + validated:** a
-> `caller_const` helper pre-renders symbolic subst entries as a `Symbol` in the
-> caller frame, `compose_term` + the splice's named-arg loop use it (passing a
-> `Deferred` placeholder through untouched), and `expr_value`'s `ConstParam` arm
-> consults `self_subst` — with these, `slice_param` routed and emitted a correct
-> `if ((n - 1) == 0) … else … x[1 +: (n - 1)]` generate-if. (2) *divergent-arm
-> `const if` typing* — the guard's arms differ in type (`bits(0)` then vs
-> `bits(w)` else), so the const-if node mistypes as `bits(0)`, making the
-> generate-if result wire `[-1:0]` instead of `[n-1:0]` (a width mismatch). This
-> is the divergent-type-arm extension `comptime_if.md` explicitly defers — the
-> real remaining blocker. Both fixes were reverted to keep the tree clean; redo (1)
-> + land (2) to route symbolic slices.
+> the callee sig (printed `W`/`hi` instead of `n`). Fixed: a `caller_const` helper
+> pre-renders symbolic subst entries as a `Symbol` in the caller frame (`Deferred`
+> placeholders pass through untouched), used by `compose_term` + the splice's
+> named-arg loop; and `expr_value`'s `ConstParam` arm consults `self_subst`.
+> (2) *divergent-arm `const if` typing* — the guard's arms used to differ in type
+> (`bits(0)` then vs `bits(w)` else), so the const-if node mistyped as `bits(0)`,
+> making the generate-if result wire `[-1:0]` instead of `[n-1:0]`. Fixed (Jon's
+> insight) by making **`zero_bits {const w}() -> bits(w)`** (was `bits(0)`): both
+> arms are now `bits(w)`, so the node types correctly — no divergent-type-arm
+> feature needed, and no `where w == 0` clause (which would fire on the dead
+> branch). `slice_param` now emits `if ((n - 1) == 0) { '0 } else { x[1 +: (n - 1)] }`
+> with result wire `[(n-1)-1:0]`. **All `bits` slices now route through the guard —
+> ground, symbolic, and zero-width.**
 >
 > _(Older note, for the general approach:)_ route
 > `ExprKind::Slice` to a call of `Slice::slice` (two-endpoint) / `Slice::slice_from`

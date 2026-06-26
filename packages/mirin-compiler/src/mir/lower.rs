@@ -351,22 +351,15 @@ impl<'a, 'db> Lower<'a, 'db> {
             } => {
                 let resolved = self.inf.method_resolution(id);
                 let base_w = slice_base_width(&self.ty_of(*base));
-                let base_ground = base_w.as_ref().is_some_and(|w| {
-                    crate::hir::const_eval::eval_const(self.db, self.krate, self.def, w).is_some()
-                });
                 match (resolved, base_w, *width, *lo, *hi) {
-                    // two-endpoint, both present, FULLY GROUND base + endpoints:
-                    // `base.slice{lo, hi}()`, routed through the prelude guard. The
-                    // base width binds the impl generic in `substs` (by name); the
-                    // const endpoints ride as named args the inline splice binds.
-                    // A symbolic base/endpoint stays on the structural node — the
-                    // inline splice can't yet render a *caller* generic in the
-                    // callee's frame (the cross-frame limit; planning/slice_guards.md).
-                    (Some(callee), Some(w), None, Some(lo), Some(hi))
-                        if base_ground
-                            && self.const_param_free(lo)
-                            && self.const_param_free(hi) =>
-                    {
+                    // two-endpoint, both present: `base.slice{lo, hi}()`, routed
+                    // through the prelude guard. The base width binds the impl
+                    // generic in `substs` (by name); the const endpoints ride as
+                    // named args the inline splice binds. A symbolic base/endpoint
+                    // is pre-rendered in the caller frame (`caller_const` + the
+                    // `ConstParam` self_subst lookup), so it renders correctly
+                    // inside the callee splice.
+                    (Some(callee), Some(w), None, Some(lo), Some(hi)) => {
                         MExprKind::Call {
                             callee,
                             substs: self.slice_impl_substs(callee, &w),
@@ -471,30 +464,6 @@ impl<'a, 'db> Lower<'a, 'db> {
             .call_subst(id)
             .map(|ts| ts.to_vec())
             .unwrap_or_default()
-    }
-
-    /// Is a slice endpoint free of `ConstParam` (a caller const generic)? Such an
-    /// endpoint is symbolic in the caller's frame, which the inline splice can't
-    /// render in the callee's frame (the cross-frame limit), so those slices stay
-    /// on the structural node. Cheap structural check — must NOT call `mir_of`-
-    /// based const-eval here (that would re-enter the in-flight `mir_of` query).
-    fn const_param_free(&self, e: ExprId) -> bool {
-        match &self.body.expr(e).kind {
-            ExprKind::ConstParam(_) => false,
-            ExprKind::Number(..)
-            | ExprKind::TypedLiteral { .. }
-            | ExprKind::Bool(_)
-            | ExprKind::Local(_)
-            | ExprKind::ConstAssoc { .. }
-            | ExprKind::Def(_)
-            | ExprKind::Missing => true,
-            ExprKind::MethodCall { receiver, args, .. } => {
-                self.const_param_free(*receiver) && args.iter().all(|a| self.const_param_free(a.expr))
-            }
-            ExprKind::Field { receiver, .. } => self.const_param_free(*receiver),
-            // Conservative: any other shape stays on the structural node.
-            _ => false,
-        }
     }
 
     /// The subst for a desugared slice call: the base width binds the `Slice`

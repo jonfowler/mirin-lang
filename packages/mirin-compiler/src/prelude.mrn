@@ -532,8 +532,13 @@ fn __slice_off {const W: integer, const w: integer, const L: integer} (x: bits(W
 
 // A zero-width `bits` value (effective-0-bit; flattens to the uniform `[-1:0]`
 // leaf, not to *no* leaves — so nothing monomorphises on zero-ness).
+// `zero_bits{w}()` is a `w`-bit `'0` — valid for any `w`, but only ever taken at
+// `w == 0` (the slice/concat guards), where it is the effective-0-bit. Returning
+// `bits(w)` (not a concrete `bits(0)`) keeps the guard's two arms the SAME type,
+// so the `const if` node types as `bits(w)` instead of mistyping as `bits(0)` (no
+// divergent-arm typing needed).
 #[inline]
-fn zero_bits() -> bits(0) = verilog {
+fn zero_bits {const w: integer} () -> bits(w) = verilog {
     assign ${return} = '0;
 }
 
@@ -550,14 +555,14 @@ trait Slice {
 impl {const W: integer} Slice for bits(W) {
     fn slice {const lo: integer, const hi: integer} (self) -> bits(hi - lo) {
         const if hi - lo == 0 {
-            zero_bits()
+            zero_bits{w = hi - lo}()
         } else {
             __slice_const{lo = lo, w = hi - lo}(self)
         }
     }
     fn slice_from {const w: integer, const L: integer} (self, lo: uint(L)) -> bits(w) {
         const if w == 0 {
-            zero_bits()
+            zero_bits{w = w}()
         } else {
             __slice_off{w = w}(self, lo)
         }

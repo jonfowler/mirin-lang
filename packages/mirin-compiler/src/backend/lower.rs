@@ -1980,15 +1980,23 @@ impl<'db> SvLower<'_, 'db> {
             }
             MExprKind::Bool(b) => SvExpr::Lit(if *b { "1'b1" } else { "1'b0" }.to_owned()),
             MExprKind::Local(l) => SvExpr::Ident(self.local_name(*l)),
-            // A const generic renders as the SV `#(…)` parameter name; an
-            // out-of-range index is a leaked foreign param — surface it loudly.
-            MExprKind::ConstParam(i) => match self.sig.generic_params.get(*i as usize) {
-                Some(g) => SvExpr::Ident(g.name.clone()),
-                None => panic!(
-                    "ConstParam({i}) indexes no generic of the emitted module on \
-                     a clean crate — a foreign param leaked into rendering."
-                ),
-            },
+            // A const generic used as a value. In a splice the active subst binds
+            // it to a caller-frame value (`caller_const` made it a `Lit`/`Symbol`),
+            // so render that; otherwise (top-level / parametric module) it is the
+            // module's own `#(…)` parameter name. An out-of-range index with no
+            // binding is a leaked foreign param — surface it loudly.
+            MExprKind::ConstParam(i) => {
+                match self.self_subst.get(*i as usize).and_then(Option::as_ref) {
+                    Some(Term::Const(c)) => SvExpr::Lit(self.render_const(c)),
+                    _ => match self.sig.generic_params.get(*i as usize) {
+                        Some(g) => SvExpr::Ident(g.name.clone()),
+                        None => panic!(
+                            "ConstParam({i}) indexes no generic of the emitted module on \
+                             a clean crate — a foreign param leaked into rendering."
+                        ),
+                    },
+                }
+            }
             // `A::bit_size`: ground Self with the instance subst, then evaluate.
             MExprKind::ConstAssoc { item, self_ty } => {
                 let (item, self_ty) = (*item, self_ty.clone());
@@ -2936,11 +2944,27 @@ impl<'db> SvLower<'_, 'db> {
                 self.def,
                 &subst_type(ty, &self.self_subst),
             ))),
-            Some(Term::Const(c)) => {
-                let c = subst_const_opt(c, &self.self_subst);
-                Some(Term::Const(self.subst_promoted_const(&c)))
-            }
+            Some(Term::Const(c)) => Some(Term::Const(self.caller_const(c))),
             other => other.clone(),
+        }
+    }
+
+    /// Ground a const for hand-off into an inline splice: fold to a literal when
+    /// it grounds (so the nested splice's `const if` can still fold); otherwise
+    /// **pre-render it in THIS (caller) frame** as a `Symbol`, so a caller generic
+    /// prints with the caller's name. The nested splice renders against the
+    /// *callee* sig, so a bare caller `Param` would otherwise print the wrong
+    /// generic (the cross-frame limit). A `Symbol` is inert to eval, so a symbolic
+    /// guard correctly defers to `generate if`. A `Deferred` placeholder (a method
+    /// generic bound later via a named arg) passes through untouched.
+    fn caller_const(&self, c: &ConstArg<'db>) -> ConstArg<'db> {
+        if matches!(c, ConstArg::Deferred) {
+            return ConstArg::Deferred;
+        }
+        let c = self.subst_promoted_const(&subst_const_opt(c, &self.self_subst));
+        match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &c) {
+            Some(v) => ConstArg::Lit(v),
+            None => ConstArg::Symbol(render_const_sv(&c, self.sig)),
         }
     }
 
@@ -2993,7 +3017,8 @@ impl<'db> SvLower<'_, 'db> {
                     .iter()
                     .position(|g| g.kind == TermKind::Const && g.name == n.name)
             {
-                composed[i] = Some(Term::Const(self.mir_const_arg(*e)));
+                let c = self.mir_const_arg(*e);
+                composed[i] = Some(Term::Const(self.caller_const(&c)));
             }
         }
         let site = self.fresh_inline();
