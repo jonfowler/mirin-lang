@@ -174,15 +174,19 @@ its value via `mir_const_arg` — Phase 1's slice ops will rely on the same path
 - **test**: `x[4..4] = y` (zero-width set) emits no drive and stays
   verilator-clean; existing slice-set examples unchanged.
 
-### Phase 2b — symbolic slice bounds in mono_check (decision 5)
+### Phase 2b — slice bounds (decision 5)
 
-- **infer** keeps the *constant*-endpoint checks: direction (which end is low),
-  width ≥ 0, and static bounds (`high ≤ N`, `low ≤ high`).
-- **mono_check** gains the *symbolic-but-ground* slice obligations — width ≥ 0 and
-  bounds — decided at instantiation, exactly like its existing negative-width
-  positivity check. A runtime base is sim-time (or static when the base is
-  statically bounded).
-- Independent of the guard work; can land alongside Phase 1/2.
+- **infer const bounds — LANDED (2026-06-26).** `slice_literal` now returns a
+  3-way `SliceTy` (`Ok` / `Oob` / `NotImpl`); when the high endpoint (or
+  `offset + width`) and base length `N` both fold, `high > N` (and `low < 0`) is a
+  clean `SliceOutOfBounds` diagnostic instead of an illegal `[lo +: w]` past the
+  end. Direction (width ≥ 0) was already enforced. `fail-expected/slice-out-of-bounds.mrn`.
+- **mono_check symbolic-ground bounds — DEFERRED.** A *parametric* high endpoint
+  (`x[1..k]` with `k` a const generic) that grounds out-of-range only at a literal
+  instantiation isn't caught yet — it needs infer to *record* a slice-bounds
+  obligation (like `const_residuals`) and `mono_check` to decide it at ground call
+  sites (the call-site model doesn't see a def's own slices otherwise). Smaller
+  residual gap; left for when the guard work resumes.
 
 ### Phase 3 — `concat_hi` / `resize` guards via prelude `const if`
 

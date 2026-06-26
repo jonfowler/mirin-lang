@@ -1,0 +1,7 @@
+// A slice whose constant high endpoint exceeds the base length is out of range
+// (planning/slicing.md "bounds checks"). `x[1..20]` on a `bits(16)` reads up to
+// bit 19, past the end — rejected eagerly at infer (the symbolic-but-grounding
+// case defers to `mono_check`). Slices are `x[low..high]` with `high <= N`.
+fn f(x: bits(16)) -> bits(19) {
+    x[1..20]
+}

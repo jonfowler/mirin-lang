@@ -58,6 +58,10 @@ pub enum InferDiagnosticKind {
     /// the semantics (planning/slicing.md) are not yet implemented. Rejected
     /// cleanly here so a slice never silently lowers to its base.
     SliceNotImplemented,
+    /// A slice whose constant high endpoint (or `offset + width`) exceeds the
+    /// base length `N` — out of range. (Symbolic-but-grounding bounds defer to
+    /// `mono_check`; this is the eager const check, planning/slicing.md.)
+    SliceOutOfBounds { high: i128, len: i128 },
     /// Two types that had to be equal could not be unified.
     TypeMismatch,
     /// Two `uint` widths that had to be equal are different (`uint(8)` vs
@@ -196,6 +200,12 @@ impl InferDiagnostic {
                  (a literal, const generic, or const-folding expression) over a `bits`/`Vec` \
                  base — for a runtime offset use `x[off +: width]` (planning/slicing.md)"
                     .to_owned()
+            }
+            InferDiagnosticKind::SliceOutOfBounds { high, len } => {
+                format!(
+                    "slice out of range: the high endpoint {high} exceeds the base length \
+                     {len} (a slice is `x[low..high]` with `high <= N`)"
+                )
             }
             InferDiagnosticKind::TypeMismatch => "type mismatch".to_owned(),
             InferDiagnosticKind::WidthMismatch => "mismatched `uint` widths".to_owned(),
@@ -654,6 +664,23 @@ enum ObligationKind<'db> {
 fn is_whole_result_place(body: &Body<'_>, expr: ExprId) -> bool {
     matches!(&body.expr(expr).kind, ExprKind::Local(l)
         if body.local(*l).result_base.is_some())
+}
+
+/// The outcome of typing a slice: a valid result type, a provable const
+/// out-of-bounds, or a shape not handled (rejected as `SliceNotImplemented`).
+enum SliceTy<'db> {
+    Ok(Type<'db>),
+    Oob { high: i128, len: i128 },
+    NotImpl,
+}
+
+impl<'db> From<Option<Type<'db>>> for SliceTy<'db> {
+    fn from(o: Option<Type<'db>>) -> Self {
+        match o {
+            Some(t) => SliceTy::Ok(t),
+            None => SliceTy::NotImpl,
+        }
+    }
 }
 
 fn width_locals(ty: &Type<'_>) -> Vec<LocalId> {
@@ -1833,53 +1860,90 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         lo: Option<ExprId>,
         hi: Option<ExprId>,
         width: Option<ExprId>,
-    ) -> Option<Type<'db>> {
-        // Offset form `x[off..+w]`: the base (`lo`) may be RUNTIME; only the
-        // width must be a constant (literal or a const generic param).
-        if let Some(w_e) = width {
-            lo?; // must have a base/offset
-            let w = self.const_arg_of(body, w_e)?;
-            if matches!(&w, ConstArg::Lit(v) if *v <= 0) {
-                return None; // zero/neg literal width needs the const-if guard
-            }
-            return self.sliced_ty(bt, w);
-        }
-        // Two-endpoint form `x[low..high]`, possibly elided. The base's length `N`
-        // supplies an elided end (same rule for both types now): `x[low..]`→
-        // `x[low..N]`, `x[..high]`→`x[0..high]`. Bare `x[..]` rejected.
-        if lo.is_none() && hi.is_none() {
-            return None; // bare `x[..]` is redundant
-        }
+    ) -> SliceTy<'db> {
+        // Base length `N` (for bounds + elision).
         let n = match bt {
             Type::Value {
                 kind: ValueKind::Bits { width: n },
                 ..
             } => n.clone(),
             Type::Vec { len: n, .. } => n.clone(),
-            _ => return None,
+            _ => return SliceTy::NotImpl,
         };
+        // Ground a const arg to a literal, if it folds (else `None` — symbolic,
+        // deferred to mono_check for bounds).
+        let eval = |c: &ConstArg<'db>| crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c);
+
+        // Offset form `x[off..+w]`: the base (`lo`) may be RUNTIME; only the
+        // width must be a constant (literal or a const generic param).
+        if let Some(w_e) = width {
+            let Some(lo) = lo else {
+                return SliceTy::NotImpl; // must have a base/offset
+            };
+            let Some(w) = self.const_arg_of(body, w_e) else {
+                return SliceTy::NotImpl;
+            };
+            if matches!(&w, ConstArg::Lit(v) if *v <= 0) {
+                return SliceTy::NotImpl; // zero/neg literal width needs the const-if guard
+            }
+            // bounds: `off + w <= N`, checked only when off/w/N all fold (a
+            // runtime base is a sim-time concern).
+            if let Some(base) = self.const_arg_of(body, lo)
+                && let (Some(b), Some(wv), Some(nv)) = (eval(&base), eval(&w), eval(&n))
+                && b + wv > nv
+            {
+                return SliceTy::Oob {
+                    high: b + wv,
+                    len: nv,
+                };
+            }
+            return SliceTy::from(self.sliced_ty(bt, w));
+        }
+        // Two-endpoint form `x[low..high]`, possibly elided. The base's length `N`
+        // supplies an elided end (same rule for both types now): `x[low..]`→
+        // `x[low..N]`, `x[..high]`→`x[0..high]`. Bare `x[..]` rejected.
+        if lo.is_none() && hi.is_none() {
+            return SliceTy::NotImpl; // bare `x[..]` is redundant
+        }
         // `lo` is the low end (elided → 0), `hi` the high end (elided → N).
         let low = match lo {
-            Some(e) => self.const_arg_of(body, e)?,
+            Some(e) => match self.const_arg_of(body, e) {
+                Some(c) => c,
+                None => return SliceTy::NotImpl,
+            },
             None => ConstArg::Lit(0),
         };
         let high = match hi {
-            Some(e) => self.const_arg_of(body, e)?,
-            None => n,
+            Some(e) => match self.const_arg_of(body, e) {
+                Some(c) => c,
+                None => return SliceTy::NotImpl,
+            },
+            None => n.clone(),
         };
+        // bounds: `high <= N` and `low >= 0`, when they fold (symbolic → mono).
+        if let (Some(h), Some(nv)) = (eval(&high), eval(&n))
+            && h > nv
+        {
+            return SliceTy::Oob { high: h, len: nv };
+        }
+        if let Some(l) = eval(&low)
+            && l < 0
+        {
+            return SliceTy::Oob { high: l, len: 0 };
+        }
         // width = high - low. Fold when both endpoints are literal (so concrete
         // slices keep a `Lit` width); else build a symbolic `Op(Sub, …)` that
         // grounds at elaboration.
         let w = match (&high, &low) {
             (ConstArg::Lit(h), ConstArg::Lit(l)) => {
                 if h <= l {
-                    return None; // descending (wrong order) or zero-width (awaits guard)
+                    return SliceTy::NotImpl; // descending (wrong order) or zero-width (awaits guard)
                 }
                 ConstArg::Lit(h - l)
             }
             _ => ConstArg::Op(ConstOp::Sub, Box::new(high), Box::new(low)),
         };
-        self.sliced_ty(bt, w)
+        SliceTy::from(self.sliced_ty(bt, w))
     }
 
     /// The result type of a width-`w` slice of `bt` (`bits(w)` / `Vec(w, A)`).
@@ -1999,10 +2063,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             // `v[i]`: Vec(N, A) → A; bits(N) → bool. The index is a literal,
             // an integer, or a uint (a hardware select); its domain joins the
             // base's via the result.
-            // Slicing (planning/slicing.md). First cut: a `bits` slice with two
-            // LITERAL endpoints, written high-first (`x[8..4]` → bits(4)). Wider
-            // cases (vec, offset `..+w`, param/runtime endpoints, elision,
-            // zero-width) still reject cleanly — never fall through to the base.
+            // Slicing (planning/slicing.md): low-first/ascending for both `bits`
+            // and `Vec` (`x[low..high]` → `bits(high-low)` / `Vec(high-low, A)`).
+            // Endpoints must be elaboration-constant (offset form allows a runtime
+            // base); a const out-of-bounds is rejected; unhandled shapes reject
+            // cleanly — never fall through to the base.
             ExprKind::Slice {
                 base,
                 lo,
@@ -2021,7 +2086,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     // a `Local` leaf must fold to a literal (`let lo = 4`). A
                     // value/runtime local endpoint folds to nothing — reject it
                     // rather than emit an illegal runtime-width slice.
-                    Some(ty)
+                    SliceTy::Ok(ty)
                         if width_locals(&ty).into_iter().all(|l| {
                             crate::hir::const_eval::eval_const(
                                 self.db,
@@ -2033,6 +2098,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                         }) =>
                     {
                         ty
+                    }
+                    SliceTy::Oob { high, len } => {
+                        self.diag(InferDiagnosticKind::SliceOutOfBounds { high, len });
+                        Type::Error
                     }
                     _ => {
                         self.diag(InferDiagnosticKind::SliceNotImplemented);

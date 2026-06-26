@@ -209,13 +209,14 @@ express the same guard — instead of the backend synthesising it.
 (structural + const arithmetic infer already does): ascending-bits / descending-vec
 errors fire there.
 
-**Bounds** — `high ≤ N`, `low ≤ high` — are static (mirroring single-index bounds)
-when endpoints are constant: checked in **`infer`**. When endpoints are **symbolic
-but ground at instantiation**, the width-≥0 and bounds checks defer to
-**`mono_check`**, exactly like the negative-width residual it already decides. A
-runtime base with constant width is bounds-checked only when the base is
-statically bounded; otherwise it is a simulation-time concern. (Zero width is
-allowed; a *literal* zero-width slice earns a warning, above.)
+**Bounds** — `high ≤ N`, `low ≥ 0` — are static (mirroring single-index bounds)
+when endpoints fold to constants: checked in **`infer`** (`slice_literal` →
+`SliceOutOfBounds`; LANDED 2026-06-26). When endpoints are **symbolic but ground
+at instantiation**, the bounds defer to **`mono_check`** (deferred — see
+`slice_guards.md` Phase 2b). A runtime base with constant width is bounds-checked
+only when the base is statically bounded; otherwise it is a simulation-time
+concern. (Zero width is allowed once the guard lands; a *literal* zero-width slice
+earns a warning, above.)
 
 ## Deferred
 
