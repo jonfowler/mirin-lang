@@ -70,21 +70,26 @@ SystemVerilog's one hard rule (IEEE 1800; confirmed across packed and unpacked):
 - a **variable width is illegal SV** — there is no legal form, in any context
   (not "valid but unsynthesizable"; the tool rejects it).
 
-So every Mirin slice lowers through *(low endpoint, constant width)*:
+So every Mirin slice lowers through *(low endpoint, constant width)*, and emits
+the indexed part-select **`[low +: width]` uniformly** (decision 2026-06-26 — no
+`[msb:lo]` special case; a constant `low` folds inside `[low +: w]`, so SV quality
+is unaffected):
 
 | Mirin | width | → SV |
 |---|---|---|
-| `x[8..4]` (const) | 4 | `x[7:4]` — plain part-select (nicest) |
+| `x[8..4]` (const) | 4 | `x[4 +: 4]` |
 | `x[i..+4]` (runtime base) | 4 | `x[i +: 4]` |
-| `x[i..i+4]` | 4 (folds) | `x[i +: 4]` |
-| `v[2..5]` (const) | 3 | `v[4:2]` |
+| `v[2..5]` (const) | 3 | `v[2 +: 3]` |
 | `v[i..+3]` (runtime base) | 3 | `v[i +: 3]` |
 | width does not fold to a constant | — | **error: slice width must be constant** |
 
-Rule: compute `width = high - low`; it must fold to a constant. Emit a plain
-`[msb:lo]` when `low` is *also* constant (cleaner Verilog), otherwise
-`[low +: width]`. This is uniform across `bits`/`Vec` and both syntactic forms,
-so we never need `-:` (we always anchor at the known low end).
+Rule: compute `width = high - low`; it must fold to a constant. Always emit
+`[low +: width]` — uniform across `bits`/`Vec` and both syntactic forms, so we
+never need `-:` (we always anchor at the known low end). The **low endpoint may be
+runtime** (the mux-style slice), but only via the offset form: `x[lo..+w]` allows
+a runtime `lo`; the two-endpoint `x[a..b]` requires `a` constant (write
+`x[lo..+w]` for a runtime base). The slice itself lowers to the prelude `slice` /
+`slice_from` ops (`planning/slice_guards.md`), not a dedicated backend node.
 
 `uint`/`sint` do not slice directly — `u.pack()[hi..lo]` (no dedicated accessor
 for now).
@@ -203,12 +208,20 @@ the generate-if follows (Phase 4). Exposing `const if` as a language construct i
 what lets the prelude primitives (slice, `resize`, `concat_hi`) and user code all
 express the same guard — instead of the backend synthesising it.
 
-## Bounds checks
+## Direction and bounds checks (where they live)
 
-Static check when endpoints are constant (mirrors single-index bounds): require
-`high ≤ N` and `low ≤ high` (zero width allowed, negative width rejected as the
-direction error). A runtime base with constant width is bounds-checked only when
-the base is statically bounded; otherwise it is a simulation-time concern.
+**Direction** — which end is "low" (bits high-first, vec low-first) and, for
+*constant* endpoints, the width-≥0 / ordering check — is an **`infer`** thing
+(structural + const arithmetic infer already does): ascending-bits / descending-vec
+errors fire there.
+
+**Bounds** — `high ≤ N`, `low ≤ high` — are static (mirroring single-index bounds)
+when endpoints are constant: checked in **`infer`**. When endpoints are **symbolic
+but ground at instantiation**, the width-≥0 and bounds checks defer to
+**`mono_check`**, exactly like the negative-width residual it already decides. A
+runtime base with constant width is bounds-checked only when the base is
+statically bounded; otherwise it is a simulation-time concern. (Zero width is
+allowed; a *literal* zero-width slice earns a warning, above.)
 
 ## Deferred
 

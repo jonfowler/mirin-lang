@@ -15,28 +15,55 @@ acceptance test that inline + `const if` compose.
 
 ## The shape
 
-A layout primitive emits SV that is only legal for a positive width. Wrap it in a
-Mirin `const if` on the (output) width:
+`w` (the output width) **must be a constant** — SV's one hard rule. `lo` (the low
+end) **may be variable** — a runtime base is the mux-style slice, SV's indexed
+part-select `x[lo +: w]`. This splits the read into **two prelude ops** by the
+kind of `lo` (resolved with Jon, 2026-06-26):
 
 ```mirin
-// prelude.mrn — user-facing slice; what `x[a..b]` (read) desugars to.
+// raw part-select — verilog-bodied, assumes w >= 1; zero-ness is NOT its problem.
 #[inline]
-fn slice {const lo: integer, const w: integer} (x: bits(W)) -> bits(w) {
-    const if w == 0 { zero_bits() }        // effective-0-bit value, never read
-    else            { __slice_raw(x, lo) } // the raw part-select primitive (w >= 1)
+fn __slice_raw {const w: integer} (self: bits(W), lo: uint(L)) -> bits(w) = verilog {
+    assign ${return} = ${self}[${lo} +: ${w}];
+}
+
+// offset / variable-base form — what `x[lo..+w]` desugars to. `lo` is a runtime
+// value; the zero-width guard lives here.
+#[inline]
+fn slice_from {const w: integer} (self: bits(W), lo: uint(L)) -> bits(w) {
+    const if w == 0 { zero_bits() } else { __slice_raw{w}(self, lo) }
+}
+
+// two-endpoint form — what `x[a..b]` desugars to. `lo` is a CONST GENERIC.
+#[inline]
+fn slice {const lo: integer, const hi: integer} (self: bits(W)) -> bits(hi - lo) {
+    const if hi - lo == 0 { zero_bits() } else { __slice_raw{hi - lo}(self, lo) }
 }
 ```
 
-- **`__slice_raw`** — a verilog-bodied primitive: `assign ${return} = ${x}[${lo} +: ${w}];`
-  (or `${x}[${lo + w - 1} : ${lo}]` when `lo` is a constant, for the nicer
-  `[msb:lo]` form). It assumes `w >= 1`; zero-ness is *not* its problem.
-- **The guard is the `const if`** — and because `slice` is `#[inline]`, the guard
-  folds at the call site:
+(`Vec(N, A)` gets the duals, low-first, `-> Vec(w, A)`.)
+
+- **`w`/`lo`/`hi` are const generics (`{}`), not `integer` value params** — both
+  because they are compile-time, and because S7's `inline_check` rejects an
+  `integer` *value* param in an inline body (it can't be a wire). The one runtime
+  value param is `slice_from`'s `lo` (a `uint` — the mux base).
+- **Two ops because the kind of `lo` differs**: `slice` takes `lo` as a const
+  generic (const base, folds inside `[lo +: w]`); `slice_from` takes `lo` as a
+  runtime `uint` (the mux base). Whether they share one raw primitive or each has
+  its own is a Phase-1 detail.
+- **`[lo +: w]` everywhere** — no `[msb:lo]` special case; a constant `lo` folds
+  inside the indexed part-select, so SV quality is unaffected.
+- **`..+` is required when `lo` is variable.** `x[a..b]` requires the low endpoint
+  constant; a runtime base must be written `x[lo..+w]` (an infer rule). Otherwise
+  `x[lo..lo+4]` (const width, runtime base) would smuggle a variable base into the
+  two-endpoint form.
+- **The guard is the `const if`** — and because the op is `#[inline]`, it folds at
+  the call site:
   - **grounded `w`** (a literal at the call): the inline splice folds the
     `const if` to the taken branch — the immediate work (Phase 0/1).
-  - **symbolic `w`** (a generic caller, `w` rides as `#()`): the `const if`
-    lowers to an SV `generate if` (comptime_if step 5) — the long pole, but now
-    the *same* prelude `const if`, with **zero backend guard code**.
+  - **symbolic `w`** (a generic caller, `w` rides as `#()`): the *same* `const if`
+    lowers to an SV `generate if` (comptime_if step 5) — the long pole, with
+    **zero backend guard code**.
 
 `set` is the dual but cannot be a value fn (it drives a place), so the compiler
 keeps the `BitRange` place and applies the *same* `const if` guard itself at the
@@ -71,30 +98,35 @@ against the call-site const generics.
   (currently `todo!`): evaluate the cond with the composed const subst, keep the
   taken branch (`block_value`/`block_leaves`). A symbolic cond stays a hard stop
   until Phase 4.
-- **inline_check**: drop the blanket `ConstIf` rejection; reject only the case
-  that would reach the unbuilt symbolic path (until Phase 4) — i.e. allow a
-  `const if` whose condition grounds at the (eventual) call, defer the rest. (If
-  precise per-call detection is awkward, keep rejecting a `const if` over a
-  *symbolic* generic and allow it once Phase 4 lands.)
+- **inline_check**: **drop the `ConstIf` rejection entirely** — grounding is a
+  call-site property, not a per-def one (decision 4), so the front end can't and
+  shouldn't classify it.
+- **splice-site diagnostic**: when the const-if can't fold at the splice (symbolic
+  width, generic caller) and generate-if (Phase 4) isn't built, emit a **clean
+  call-site diagnostic**, not a panic. (Today the symbolic-cond path panics in
+  `eval_const_cond` — that is the compiler-state artifact to replace.)
 - **test**: `#[inline] fn choose {const k}() -> uint(8) { const if k == 0 { a } else { b } }`,
   called `choose{k=0}` / `choose{k=1}`, each a plain wire.
 
 ### Phase 1 — slice **read** as primitive + prelude guard
 
-- **`__slice_raw`** primitive in `prelude.mrn` (verilog-bodied): the part-select,
-  `w >= 1`. Decide const-`lo` `[msb:lo]` vs uniform `[lo +: w]` (open q below).
-- **`zero_bits()`** (or a typed-literal form) producing a `bits(0)` effective-0-bit
-  value for the guard's taken branch (open q below).
-- **prelude `slice`** wrapper (`#[inline]` + `const if`), and its `Vec` dual
-  (low-first, `Vec(w, A)`).
-- **desugar** `x[a..b]` / `x[off..+w]` / elision (read position) → a call to the
-  prelude `slice` (compute `lo`/`w` as const args; base may be runtime). This
-  replaces the backend's read-side `MExprKind::Slice` lowering (`slice_range_sv`
-  for reads) with a desugaring; the typing/bounds/direction checks in `infer`
-  stay (they type the slice and derive `lo`/`w`).
+- **`__slice_raw {const w}(self, lo: uint)`** primitive in `prelude.mrn`
+  (verilog-bodied): `${self}[${lo} +: ${w}]`, assumes `w >= 1`.
+- **`zero_bits() -> bits(0)`** builtin (+ `Vec` dual) for the guard's taken branch
+  — flattening to the uniform effective-0-bit leaf (decision 2).
+- **`slice {const lo, const hi}`** (two-endpoint) and **`slice_from {const w}(self,
+  lo: uint)`** (offset) prelude ops, each `#[inline]` + `const if` guard, with
+  `Vec` duals (low-first, `Vec(w, A)`).
+- **desugar** `x[a..b]` / `x[lo..+w]` / elision (read position) → `slice` /
+  `slice_from` (compute the low end + `w`; enforce `..+` when the base is runtime,
+  decision 1/5). Surface = `Slice` trait vs compiler-resolved fn — decided here.
+  This replaces the backend's read-side `MExprKind::Slice` lowering
+  (`slice_range_sv` for reads) with a desugaring; the **direction** check stays in
+  `infer` (decision 5).
 - **test**: promote a zero-width read example (`x[4..4]`, and a parametric
   `x[n..n]` at its limit grounded) to working + verilator-clean; the current
-  S4 slice examples keep passing through the new path (golden review).
+  S4 slice examples keep passing through the new path (golden review — they now
+  emit `[lo +: w]` uniformly, decision 3).
 
 ### Phase 2 — slice **set** zero-width guard (compiler-special)
 
@@ -103,6 +135,16 @@ against the call-site const generics.
   (Phase 4). No prelude fn (a set is not a value).
 - **test**: `x[4..4] = y` (zero-width set) emits no drive and stays
   verilator-clean; existing slice-set examples unchanged.
+
+### Phase 2b — symbolic slice bounds in mono_check (decision 5)
+
+- **infer** keeps the *constant*-endpoint checks: direction (which end is low),
+  width ≥ 0, and static bounds (`high ≤ N`, `low ≤ high`).
+- **mono_check** gains the *symbolic-but-ground* slice obligations — width ≥ 0 and
+  bounds — decided at instantiation, exactly like its existing negative-width
+  positivity check. A runtime base is sim-time (or static when the base is
+  statically bounded).
+- Independent of the guard work; can land alongside Phase 1/2.
 
 ### Phase 3 — `concat_hi` / `resize` guards via prelude `const if`
 
@@ -123,27 +165,38 @@ against the call-site const generics.
   the prelude guard is a clean front-end rejection (Phase 0's `inline_check`
   narrowing), exactly the wall that exists today — just relocated.
 
-## Open questions (for design before/while building)
+## Resolved decisions (with Jon, 2026-06-26)
 
-1. **Slice desugaring surface.** Does `x[a..b]` desugar to a method
-   (`x.slice::<lo, w>()`, a `Slice`/`Index`-style trait) or a free prelude fn
-   resolved by the compiler (like operator → `add`)? It must carry `lo`/`w` as
-   **const** args and the base as a value. A trait keeps `bits`/`Vec` duals clean.
-2. **Zero-width literal.** How does the guard's taken branch name a `bits(0)` /
-   `Vec(0, A)` value — a `zero_bits()` builtin, a typed literal `bits(0)::0`, or
-   `[-1:0]` synthesised? It must flatten to the uniform effective-0-bit leaf
-   (`planning/slicing.md` "Representation"), not to *no* leaves.
-3. **Const-`lo` nice form.** Keep emitting `[msb:lo]` for a constant low endpoint
-   (cleaner Verilog) by const-splicing `${lo + w - 1}:${lo}` in `__slice_raw`, or
-   accept uniform `[lo +: w]` everywhere? (Affects golden diffs on existing slice
-   examples.)
-4. **Phase 0 `inline_check` narrowing.** Can the front end tell "this `const if`
-   will ground at every call" from "it may stay symbolic"? If not, the safe v1 is
-   to allow `const if` in inline bodies but keep emission's symbolic-cond stop as
-   the backstop until Phase 4 — and ensure that stop is a diagnostic, not a panic.
-5. **Bounds/direction checks** stay in `infer` (they type the slice and derive
-   `lo`/`w`) regardless of the lowering move — confirm nothing in the read-path
-   bounds check assumed the backend `Slice` node.
+1. **Slice surface.** Two prelude ops, split by the kind of `lo`:
+   `slice {const lo, const hi}(self)` (two-endpoint, const base — `x[a..b]`) and
+   `slice_from {const w}(self, lo: uint)` (offset, runtime base — `x[lo..+w]`).
+   `w` is always a const generic; args are const generics (`{}`) not `integer`
+   value params (which inline rejects). `..+` is required when `lo` is variable.
+   **Open detail:** whether `x[a..b]` desugars to these via a `Slice` trait
+   (clean `bits`/`Vec` duals, user-extensible) or a compiler-resolved free
+   prelude fn (less machinery) — defer to Phase 1.
+2. **Zero-width literal.** A prelude **builtin** — `zero_bits() -> bits(0)` and a
+   `Vec` dual (or one polymorphic `zero<T>()`). Must flatten to the uniform
+   effective-0-bit leaf (`[-1:0]`; `slicing.md` "Representation"), not to *no*
+   leaves.
+3. **Lowering form.** `[lo +: w]` **everywhere** — no `[msb:lo]` special case (a
+   constant `lo` folds inside the indexed part-select).
+4. **No per-def `const if` narrowing — it can't exist.** Whether a `const if` in
+   an inline body grounds is a property of the **call site** (its const args), not
+   the def, so `inline_check` (per-def, no call context) cannot classify it — the
+   same `slice` grounds at `x[8..4]` and stays symbolic at `x[n..m]`. So Phase 0
+   **drops the `inline_check` const-if rejection entirely**, folds at the *splice*
+   (which has the call's args), and — until Phase 4 — emits a **clean call-site
+   diagnostic** if it's still symbolic (today that path *panics*; that is a
+   compiler-state artifact to fix, not a law).
+5. **Direction = infer; bounds = infer (const) / mono_check (symbolic).**
+   Direction (which end is low — bits high-first, vec low-first — plus the
+   width-≥0 / ordering check on *constant* endpoints) is an `infer` thing. Bounds
+   (`high ≤ N`, `low ≤ high`) and the width-≥0 check on **symbolic** endpoints
+   that ground at instantiation go to **mono_check** — exactly like the
+   negative-width residual it already decides; a *runtime* base is sim-time (or
+   static if the base is statically bounded). Neither depends on the backend
+   `Slice` node — both work on the slice's typed form.
 
 ## Doc cross-refs updated for this direction
 
