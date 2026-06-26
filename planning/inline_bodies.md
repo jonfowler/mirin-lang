@@ -112,31 +112,35 @@ those must ground, or the `const if` cannot fold and the width is wrong.
   adopted over the threaded-`subst` sketch — it also closes a pre-existing
   recursive-symbolic leak independent of inlining.
 
-## Relationship to the slice/concat guards (reconciles comptime_if.md)
+## Relationship to the slice/concat guards — the FORCING FUNCTION (2026-06-26)
 
-`comptime_if.md` concluded the zero-width slice/concat guard should be
-**synthesised directly in the backend lowering of the slice/concat expression**
-(where the bounds are in hand), *not* delegated to an inline Mirin primitive.
-That conclusion **stands** — and this design does not supersede it:
+**Reversed direction (Jon, 2026-06-26):** the zero-width slice/concat guard is
+**not** backend-synthesised. The layout operations are *primitives that do not
+support zero-width*, and the guard is a Mirin `const if` wrapping them — the
+**read** as an `#[inline]` fn in `prelude.mrn`, the **set** applied by the
+compiler at the `BitRange` drive (a set is an lvalue, not a value). So a `const
+if` *through* an inline body is the slicing critical path, and the slice-read
+guard is the acceptance test that inline + `const if` compose. Full plan:
+`planning/slice_guards.md`. (This supersedes the earlier "guards are
+backend-synthesised, inline is off the critical path" reconciliation.)
 
-- **Slice/concat zero-width guards: backend-synthesised.** The slice expression's
-  bounds are its own operands; the backend builds the part-select wrapped in the
-  `const if` (grounded fold, or step-5 `generate if`) directly. This is robust
-  for both literal and generic bounds and is the slicing critical path. It does
-  **not** depend on inline-Mirin splicing.
-- **Inline-Mirin splicing is a *general* capability** — clean inline SV for
-  ordinary combinational Mirin helpers (`id`, small reinterprets, user
-  primitives), and it removes the silent-`0`/panic wart. It is *not* on the
-  slicing critical path; the two workstreams are independent.
+- **Read guard: a prelude `#[inline]` `const if`.** `x[a..b]` desugars to a
+  prelude `slice` fn whose body is `const if w == 0 { zero } else { __slice_raw }`.
+  Splicing it folds the guard at the call site (grounded) — so inline + `const if`
+  is on the slicing critical path, not independent of it.
+- **Set guard: compiler-special.** A set drives a place, so it stays a compiler
+  construct (`Projection::BitRange`) with the compiler applying the same `const
+  if` guard at the drive.
 
-Crucially (the mono interaction): a spliced `const if` grounds **only** when
+The mono interaction is unchanged and is the reason the *symbolic* case still
+needs step-5 `generate if`: a spliced `const if` grounds (folds) only when
 `call_subst ∘ self_subst` makes the controlling const generic a *literal at this
-call site* (`choose{k=0}`, or the caller's own generic bound by *its* caller's
-mono). When the caller is itself generic and the value rides out as a `#()`
-param, the condition stays symbolic and hits the **same unbuilt step-5
-`generate if` wall** as everywhere else — so inline guards only work where the
-width grounds to a literal at the call site. This is why the guards are
-backend-synthesised, not why inlining is blocked.
+call site* (`choose{k=0}`, or the caller's own generic bound by its caller's
+mono). When the caller is itself generic and the width rides out as a `#()`
+param, the condition stays symbolic and hits the **step-5 `generate if` wall** —
+the *same* wall whether the guard is in the prelude or the backend. Moving it to
+the prelude removes all backend zero-width code and makes the grounded case
+(most real code) the immediate, inline-splice-driven deliverable.
 
 ## v1 scope and deferrals
 

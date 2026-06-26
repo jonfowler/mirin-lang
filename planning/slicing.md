@@ -141,51 +141,67 @@ considered to have a size of zero and is ignored," provided the concat has ≥1
 positive-size operand. So `extend`/`resize`'s `{ {(to-n){1'b0}}, self }` is
 already correct at `to == n`; only a zero-width `self` needs the concat guard.
 
-### The fix: a compile-time `if` at those primitives
+### The fix: a `const if` guard written in the prelude — NOT backend-synthesised
 
-Guard the layout primitives with a **compile-time `if`** on the (output) width
-— for slice, on `hi - lo`, which also covers a zero-width input (you cannot
-slice a positive width out of nothing):
+> **Direction (2026-06-26):** the guard is **not** synthesised in the backend.
+> The layout operations are *primitives that do not support zero-width*, and the
+> guard is a Mirin `const if` wrapping them — the **read** in `prelude.mrn`, the
+> **set** applied by the compiler (it is an lvalue, not a value). Full plan +
+> rationale: `planning/slice_guards.md`.
 
-```
-slice(x: bits(W), hi, lo) -> bits(hi - lo) {
-    if hi - lo == 0 { /* zero result — never read */ }
-    else            { x[hi-1 : lo] }      // the real part-select
+Guard the layout primitive with a **`const if`** on the (output) width — for
+slice, on `hi - lo`, which also covers a zero-width input (you cannot slice a
+positive width out of nothing). For the **read**, this is an ordinary `#[inline]`
+Mirin fn in the prelude — what `x[a..b]` desugars to:
+
+```mirin
+#[inline]
+fn slice {const lo, const w} (x: bits(W)) -> bits(w) {
+    const if w == 0 { zero_bits() }        // zero result — never read
+    else            { __slice_raw(x, lo) } // the raw part-select primitive (w >= 1)
 }
 ```
 
-Two lowering modes, by whether the condition is known at emit:
+`__slice_raw` is a verilog-bodied primitive (`${x}[${lo} +: ${w}]`) that assumes
+`w >= 1`; zero-ness is the `const if`'s job, not the primitive's. Because `slice`
+is `#[inline]`, the guard folds at the call site. Two lowering modes, by whether
+the width is known at emit:
 
-- **grounded** (the width folds to a literal at monomorphisation — the common
-  case): evaluate the condition, emit only the taken branch. No generate, no
-  `[-1:0]` select ever reaches the tool.
-- **symbolic** (the width rides as an SV `#()` parameter): lower to an SV
-  **generate-if**. This is why it must be a *compile-time* if. §27.5: a
-  conditional generate "select[s] at most one generate block ... The selected
-  generate block, if any, is instantiated into the model," and only the
-  selected block's constructs are brought into existence — so the dead
-  `else { x[hi-1:lo] }` is **not elaborated** and its out-of-range select is
-  never checked. A *procedural* `always_comb if` will not do: both arms
-  elaborate, so the dead select stays a compile error.
+- **grounded** (the width folds to a literal — the common case): the inline
+  splice folds the `const if` to the taken branch. No generate, no `[-1:0]`
+  select ever reaches the tool. (Needs `const if`-in-inline — `slice_guards.md`
+  Phase 0/1.)
+- **symbolic** (the width rides as an SV `#()` parameter): the *same* `const if`
+  lowers to an SV **generate if**. §27.5: a conditional generate "select[s] at
+  most one generate block ... instantiated into the model," so the dead
+  `else { __slice_raw }` is **not elaborated** and its out-of-range select is
+  never checked. A *procedural* `always_comb if` will not do — both arms
+  elaborate. (`slice_guards.md` Phase 4 / comptime_if step 5.)
 
-This one mechanism lets a single parameterised module (`#(W)`) cover every
-width including zero — the alternative to the rejected per-pattern explosion.
+The **set** (`x[a..b] = y`) is the dual but cannot be a value-returning prelude
+fn — it drives a place — so it stays a **special compiler** construct: the
+compiler keeps the `BitRange` place and applies the same `const if` guard at the
+drive (grounded `w == 0` ⇒ no drive; symbolic ⇒ generate-if).
+
+This one mechanism — `const if`, in the prelude for reads, compiler-applied for
+sets — lets a single parameterised module (`#(W)`) cover every width including
+zero, with **no zero-width logic in the backend** (the alternative to both the
+rejected per-pattern explosion *and* bespoke backend guard synthesis).
 
 A *literally* constant zero-width slice is almost always a typo, so it earns a
 **warning** (not an error) — totality without losing the diagnostic.
 
-### Prerequisite — a compile-time `if` → `generate if`
+### Prerequisite — `const if` through `#[inline]`, then `generate if`
 
-Mirin's `if` currently lowers to a procedural `always_comb` mux (both arms
-elaborated). The guard needs a **const-conditioned `if`** that, like the
-existing structural generate-`for` (`SvItem::GenerateFor`), emits an
-`SvItem::GenerateIf` (new) — or folds to the taken branch when the condition
-grounds. The generate-`for` path already shows the shape, so this is a small,
-well-precedented addition. The grounded case (fold) needs no new SV node and
-covers most real code, so it can land first; the generate-if (symbolic) case
-follows. Slice/concat lowering can synthesise the guard directly; exposing the
-const-`if` as a language construct lets prelude primitives (resize, `concat_hi`)
-and user code express the same guard.
+The read guard is a `const if` inside an `#[inline]` body, so it needs the
+inline-splice + `const if` fold (`slice_guards.md` Phase 0) — the grounded case,
+which covers most real code and lands first. The symbolic case additionally needs
+the **`generate if`** lowering: like the structural generate-`for`
+(`SvItem::GenerateFor`), a const-conditioned `if` that stays symbolic at emit
+becomes an `SvItem::GenerateIf` (new). The grounded fold needs no new SV node;
+the generate-if follows (Phase 4). Exposing `const if` as a language construct is
+what lets the prelude primitives (slice, `resize`, `concat_hi`) and user code all
+express the same guard — instead of the backend synthesising it.
 
 ## Bounds checks
 

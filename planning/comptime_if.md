@@ -80,11 +80,15 @@ Precedent is uniformly explicit: C++ `if constexpr`, D `static if`, Zig
 
 - **Statement form** (`const if` driving leaves, no value) is not implemented;
   only the value form. Concat's zero-width guard may want it.
-- **Inline Mirin-bodied fns** currently mis-lower (emit `0`) — a pre-existing
-  limitation (inline is built for verilog-bodied prelude primitives). So a
-  `const if` reached *through* such an inline fn will not fold correctly. The
-  slice/concat guard must be synthesised **directly** in the backend lowering of
-  the slice/concat expression (where the bounds are in hand), not delegated to
-  an inline Mirin primitive.
+- **Inline Mirin-bodied fns** now splice (S7, `planning/inline_bodies.md`); a
+  `const if` *through* an inline fn folds in the **grounded** case via the inline
+  splice (the symbolic case awaits the generate-if, step 5). **Direction
+  (2026-06-26):** the slice/concat zero-width guard is therefore the *prelude*
+  `const if` wrapping a raw layout primitive — **not** synthesised in the backend
+  (the earlier conclusion, now reversed). The read guard is an `#[inline]` prelude
+  fn; the set guard is compiler-applied at the `BitRange` drive (a set is an
+  lvalue, not a value). This makes a `const if` through an inline body the
+  *forcing function* for step 5, and removes all zero-width logic from the
+  backend. Full plan: `planning/slice_guards.md`.
 - **Divergent-type arms** and the `generate if` (step 5) path are the two known
   extensions.
