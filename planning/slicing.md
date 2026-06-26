@@ -25,37 +25,31 @@ overturning. `..` reads as half-open (Rust/Python), so the exclusive end is no
 surprise, and it leaves room for a future `a..b` range value to unify with
 `range(n)`.
 
-## Semantics — half-open, high endpoint exclusive
+## Semantics — half-open, ascending (low-first), for both `bits` and `Vec`
 
-A slice is the half-open interval `[low, high)`: **the high endpoint is always
-exclusive**, so the width is `high - low` (Rust-style length: write `x[4..len]`,
-never `x[4..len-1]`).
+A slice is the half-open interval `[low, high)`, written **low-first / ascending
+for both `bits` and `Vec`**: `x[low..high]` selects indices `{low, …, high-1}`.
+The high endpoint is always exclusive, so the width is `high - low` (Rust-style
+length: write `x[4..len]`, never `x[4..len-1]`). The full value is `x[0..N]`.
 
-Write order encodes the type's natural direction:
+> **Ascending for both (decided 2026-06-26).** `bits` was previously written
+> high-first (`x[8..4]`) to mirror SV's `[msb:lo]`. Dropped: we emit the indexed
+> part-select `[low +: w]` regardless (see "SV lowering"), so source order need
+> not mirror SV bit order — and a single ascending form removes the wart that the
+> offset form `x[lo..+w]` was low-first while the two-endpoint `bits` form was
+> high-first. Both forms now anchor the low end: `x[4..8] ≡ x[4..+4]`.
 
-- **`Vec` is written low-first**, ascending: `v[low..high]` → elements
-  `{low, …, high-1}`. Full vector is `v[0..N]`.
-- **`bits` is written high-first**, descending: `x[high..low]` → bits
-  `{low, …, high-1}`, matching SV's MSB:LSB reading. Full word is `x[N..0]`.
+so `x[4..8]` = bits `{4,5,6,7}` = SV `x[7:4]` — **4 bits, not 5**; to include bit
+8 write `x[4..9]`. `v[2..5]` = elements `{2,3,4}`.
 
-so `x[8..4]` = bits `{4,5,6,7}` = SV `x[7:4]` — **4 bits, not 5**; to include
-bit 8 write `x[9..4]`. The two-endpoint and offset forms agree:
-`x[8..4]` ≡ `x[4..+4]` (the offset is always the low/base end, never reversed).
+**Direction is enforced.** The width `high - low` must be `≥ 0` (i.e. `high ≥
+low`) for both types; `high < low` is the wrong-order error (hint to swap the
+endpoints). A **zero** width is allowed (below).
 
-**Direction is enforced.** The width `high - low` must be `≥ 0` in the type's
-natural direction:
-
-- ascending on `bits` (`x[4..8]`) → error, hint to write `x[8..4]` / `x[4..+4]`.
-- descending on `Vec` (`v[5..2]`) → error, hint to write `v[2..5]`.
-
-A negative width is the wrong-order error; a **zero** width is allowed (below).
-
-**Elision** defaults the missing end to the start/length of the natural
-direction:
+**Elision** defaults the missing end (same rule for both types now):
 
 ```
-bits:  x[hi..]  ⇒  x[hi..0]      x[..lo]  ⇒  x[N..lo]
-Vec:   v[lo..]  ⇒  v[lo..N]      v[..hi]  ⇒  v[0..hi]
+x[lo..]  ⇒  x[lo..N]      x[..hi]  ⇒  x[0..hi]
 ```
 
 Bare `x[..]` is redundant with `x` and is rejected.
@@ -77,7 +71,7 @@ is unaffected):
 
 | Mirin | width | → SV |
 |---|---|---|
-| `x[8..4]` (const) | 4 | `x[4 +: 4]` |
+| `x[4..8]` (const) | 4 | `x[4 +: 4]` |
 | `x[i..+4]` (runtime base) | 4 | `x[i +: 4]` |
 | `v[2..5]` (const) | 3 | `v[2 +: 3]` |
 | `v[i..+3]` (runtime base) | 3 | `v[i +: 3]` |

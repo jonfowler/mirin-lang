@@ -132,22 +132,28 @@ against the call-site const generics.
 - **`slice {const lo, const hi}`** (two-endpoint) and **`slice_from {const w}(self,
   lo: uint)`** (offset) prelude ops, each `#[inline]` + `const if` guard, with
   `Vec` duals (low-first, `Vec(w, A)`).
-- **desugar** `x[a..b]` / `x[lo..+w]` / elision (read position) → `slice` /
-  `slice_from` (compute the low end + `w`; enforce `..+` when the base is runtime,
-  decision 1/5). Surface = `Slice` trait vs compiler-resolved fn — decided here.
-  This replaces the backend's read-side `MExprKind::Slice` lowering
-  (`slice_range_sv` for reads) with a desugaring; the **direction** check stays in
-  `infer` (decision 5).
+- **`Slice` trait** for the bits family (`fn slice(self, const lo, const hi) ->
+  bits(hi - lo)`, `fn slice_from(self, const w, lo: uint(L)) -> bits(w)`, each with
+  the guard) + **inherent** `slice`/`slice_from` on `Vec` (decision 1).
+- **desugar** `x[a..b]` / `x[lo..+w]` / elision (read position) → the `slice` /
+  `slice_from` method (compute the low end + `w`; **always-ascending**, low-first
+  for both types — decision 6; enforce `..+` when the base is runtime). This
+  replaces the backend's read-side `MExprKind::Slice` lowering (`slice_range_sv`
+  for reads) with a desugaring; the **direction** check stays in `infer`.
+- **flip the existing S4 bits syntax** to ascending: infer's `bits` arm and the
+  `slice_bits`/`slice_elide` examples + goldens (`x[8..4]` → `x[4..8]`).
 - **test**: promote a zero-width read example (`x[4..4]`, and a parametric
   `x[n..n]` at its limit grounded) to working + verilator-clean; the current
   S4 slice examples keep passing through the new path (golden review — they now
-  emit `[lo +: w]` uniformly, decision 3).
+  emit `[lo +: w]` uniformly, decision 3, ascending, decision 6).
 
 ### Phase 2 — slice **set** zero-width guard (compiler-special)
 
 - Keep `Projection::BitRange` (lvalue). Apply the `const if` guard *at the drive*
   in the compiler: grounded `w == 0` ⇒ emit nothing; symbolic ⇒ generate-if
   (Phase 4). No prelude fn (a set is not a value).
+- **flip the set path to ascending** (decision 6): the `BitRange` direction +
+  `slice_set` example/golden (`x[8..0] = …` → `x[0..8] = …`).
 - **test**: `x[4..4] = y` (zero-width set) emits no drive and stays
   verilator-clean; existing slice-set examples unchanged.
 
@@ -192,9 +198,23 @@ against the call-site const generics.
    integer-value-param rule doesn't touch it. `w` is always const; `..+` is
    required when `lo` is variable. `slice_from`'s `lo` is `uint(L)` (a runtime
    net) — *not* `integer`, which is elided/not synthesized (see the integer-`int`
-   note in "The shape"). **Open detail:** whether `x[a..b]` desugars via a `Slice`
-   trait (clean `bits`/`Vec` duals, user-extensible) or a compiler-resolved free
-   prelude fn (less machinery) — defer to Phase 1.
+   note in "The shape"). **Surface = a trait** (decided): a trait method whose
+   return is a function of its *own* const generics works today (`BitPack`'s
+   `bits(bit_size)` precedent), so a `Slice` trait returning `bits(hi - lo)` is
+   expressible now and is **user-extensible**. *Unifying* `bits` + `Vec` under one
+   trait needs an **associated type** for the result shape (`bits(w)` vs
+   `Vec(w, A)`), deferred from the trait core (`pack_resize.md`). So: a `Slice`
+   trait for the **bits family** now + **inherent** `slice`/`slice_from` on `Vec`
+   (`A` is the impl's generic → `Vec(hi - lo, A)` concrete); `x[a..b]` desugars to
+   the method either way, unify under one trait when associated types land.
+6. **Always-ascending direction.** `x[low..high]` is low-first for **both** `bits`
+   and `Vec` (`bits` was high-first); width `high - low ≥ 0`, full `x[0..N]`.
+   Removes the wart that the offset form was already low-first while two-endpoint
+   `bits` was high-first (`x[4..8] ≡ x[4..+4]`), and the bits-high-first SV-mirror
+   rationale is moot under `[lo +: w]` emission. **Changes the existing S4 path:**
+   infer's `bits` direction arm, the slice-set `BitRange` direction, and the
+   `slice_bits`/`slice_elide`/`slice_set` examples + goldens flip — folded into
+   Phase 1 (read) / Phase 2 (set). See `slicing.md` "Semantics".
 2. **Zero-width literal.** A prelude **builtin** — `zero_bits() -> bits(0)` and a
    `Vec` dual (or one polymorphic `zero<T>()`). Must flatten to the uniform
    effective-0-bit leaf (`[-1:0]`; `slicing.md` "Representation"), not to *no*
