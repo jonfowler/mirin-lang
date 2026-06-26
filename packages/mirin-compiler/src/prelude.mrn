@@ -389,10 +389,10 @@ impl {type A: BitPack, type B: BitPack} BitPack for (A, B) {
         self.0.pack().concat_hi(self.1.pack())
     }
     fn unpack(b: bits(bit_size)) -> Self {
-        var ea: bits(A::bit_size);
-        for j in range(A::bit_size) { ea[j] = b[j]; }
-        var eb: bits(B::bit_size);
-        for j in range(B::bit_size) { eb[j] = b[A::bit_size + j]; }
+        // Peel from the LSB end: element 0 is the low slice, the rest is the
+        // high slice (= element 1, since a 2-tuple has nothing left over).
+        let ea: bits(A::bit_size) = b.truncate();
+        let eb: bits(B::bit_size) = b.truncate_lsb();
         (A::unpack(ea), B::unpack(eb))
     }
 }
@@ -403,12 +403,12 @@ impl {type A: BitPack, type B: BitPack, type C: BitPack} BitPack for (A, B, C) {
         self.0.pack().concat_hi(self.1.pack()).concat_hi(self.2.pack())
     }
     fn unpack(b: bits(bit_size)) -> Self {
-        var ea: bits(A::bit_size);
-        for j in range(A::bit_size) { ea[j] = b[j]; }
-        var eb: bits(B::bit_size);
-        for j in range(B::bit_size) { eb[j] = b[A::bit_size + j]; }
-        var ec: bits(C::bit_size);
-        for j in range(C::bit_size) { ec[j] = b[A::bit_size + B::bit_size + j]; }
+        // Peel from the LSB end: each element is the low slice of the running
+        // remainder; the last remainder is the final element.
+        let ea: bits(A::bit_size) = b.truncate();
+        let r1: bits(B::bit_size + C::bit_size) = b.truncate_lsb();
+        let eb: bits(B::bit_size) = r1.truncate();
+        let ec: bits(C::bit_size) = r1.truncate_lsb();
         (A::unpack(ea), B::unpack(eb), C::unpack(ec))
     }
 }
@@ -419,14 +419,14 @@ impl {type A: BitPack, type B: BitPack, type C: BitPack, type D: BitPack} BitPac
         self.0.pack().concat_hi(self.1.pack()).concat_hi(self.2.pack()).concat_hi(self.3.pack())
     }
     fn unpack(b: bits(bit_size)) -> Self {
-        var ea: bits(A::bit_size);
-        for j in range(A::bit_size) { ea[j] = b[j]; }
-        var eb: bits(B::bit_size);
-        for j in range(B::bit_size) { eb[j] = b[A::bit_size + j]; }
-        var ec: bits(C::bit_size);
-        for j in range(C::bit_size) { ec[j] = b[A::bit_size + B::bit_size + j]; }
-        var ed: bits(D::bit_size);
-        for j in range(D::bit_size) { ed[j] = b[A::bit_size + B::bit_size + C::bit_size + j]; }
+        // Peel from the LSB end: each element is the low slice of the running
+        // remainder; the last remainder is the final element.
+        let ea: bits(A::bit_size) = b.truncate();
+        let r1: bits(B::bit_size + C::bit_size + D::bit_size) = b.truncate_lsb();
+        let eb: bits(B::bit_size) = r1.truncate();
+        let r2: bits(C::bit_size + D::bit_size) = r1.truncate_lsb();
+        let ec: bits(C::bit_size) = r2.truncate();
+        let ed: bits(D::bit_size) = r2.truncate_lsb();
         (A::unpack(ea), B::unpack(eb), C::unpack(ec), D::unpack(ed))
     }
 }
