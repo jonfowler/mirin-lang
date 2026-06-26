@@ -1330,6 +1330,36 @@ impl<'db> SvLower<'_, 'db> {
         format!("[{low_s} +: {width}]")
     }
 
+    /// Does a slice/slice-set width fold to exactly 0 at this instantiation? Used
+    /// to skip a zero-width slice-set drive (the compiler-applied zero guard).
+    /// Mirrors `slice_range_sv`'s width computation (ascending, low-first).
+    fn slice_width_is_zero(
+        &self,
+        base_ty: &Type<'db>,
+        lo: Option<MExprId>,
+        hi: Option<MExprId>,
+        width: Option<MExprId>,
+    ) -> bool {
+        let w = match width {
+            Some(w_e) => self.mir_const_arg(w_e),
+            None => {
+                let n = match base_ty {
+                    Type::Value {
+                        kind: ValueKind::Bits { width: n },
+                        ..
+                    } => n.clone(),
+                    Type::Vec { len: n, .. } => n.clone(),
+                    _ => return false,
+                };
+                let low = lo.map(|e| self.mir_const_arg(e)).unwrap_or(ConstArg::Lit(0));
+                let high = hi.map(|e| self.mir_const_arg(e)).unwrap_or(n);
+                ConstArg::Op(ConstOp::Sub, Box::new(high), Box::new(low))
+            }
+        };
+        let w = subst_const_opt(&w, &self.self_subst);
+        crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &w) == Some(0)
+    }
+
     /// A slice endpoint as a `ConstArg` for rendering. First try to **ground** it
     /// through the MIR const evaluator (so arithmetic, const `let`s, and const-fn
     /// calls all reduce — `v[w..]`, `v[n+1..]`, `v[f()..]`); if it stays symbolic
@@ -1453,6 +1483,13 @@ impl<'db> SvLower<'_, 'db> {
             Some(Projection::BitRange { lo, hi, width }) => {
                 let (lo, hi, width) = (*lo, *hi, *width);
                 let bt = self.mir.local(place.base).ty.clone();
+                // Zero-width slice-set drives nothing — the compiler-applied dual
+                // of the prelude read guard (a set is an lvalue, not a value, so it
+                // can't be a prelude fn). Skip the illegal `[lo +: 0]` part-select
+                // (planning/slice_guards.md Phase 2).
+                if self.slice_width_is_zero(&bt, lo, hi, width) {
+                    return Vec::new();
+                }
                 let range = self.slice_range_sv(&bt, lo, hi, width);
                 self.local_leaves(place.base)
                     .into_iter()

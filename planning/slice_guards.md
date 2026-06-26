@@ -224,15 +224,17 @@ its value via `mir_const_arg` — Phase 1's slice ops will rely on the same path
   S4 slice examples keep passing through the new path (golden review — they now
   emit `[lo +: w]` uniformly, decision 3, ascending, decision 6).
 
-### Phase 2 — slice **set** zero-width guard (compiler-special)
+### Phase 2 — slice **set** zero-width guard (compiler-special) — DONE (grounded)
 
-- Keep `Projection::BitRange` (lvalue). Apply the `const if` guard *at the drive*
-  in the compiler: grounded `w == 0` ⇒ emit nothing; symbolic ⇒ generate-if
-  (Phase 4). No prelude fn (a set is not a value).
-- **flip the set path to ascending** (decision 6): the `BitRange` direction +
-  `slice_set` example/golden (`x[8..0] = …` → `x[0..8] = …`).
-- **test**: `x[4..4] = y` (zero-width set) emits no drive and stays
-  verilator-clean; existing slice-set examples unchanged.
+- **LANDED (2026-06-26):** `place_leaves_dir`'s `BitRange` arm calls
+  `slice_width_is_zero` (mirrors `slice_range_sv`'s width computation, grounded
+  via `self_subst`); a grounded `w == 0` set drives **nothing** (skips the illegal
+  `[lo +: 0]`). The compiler-applied dual of the prelude read guard (a set is an
+  lvalue, not a value). Ascending flip of the set path landed earlier. Existing
+  slice-sets unchanged (non-zero ⇒ guard inactive). A *symbolic* zero-width set
+  (generate-if for a drive) is deferred with the symbolic read case. No dedicated
+  working example — a standalone zero-width set fails completeness (it drives
+  nothing); the guard's real use is generic tiling where some iteration folds to 0.
 
 ### Phase 2b — slice bounds (decision 5)
 
