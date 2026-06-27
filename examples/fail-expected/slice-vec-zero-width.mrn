@@ -1,8 +1,0 @@
-// A zero-width `Vec` slice (`v[2..2]`) is rejected: unlike a `bits` slice it does
-// not route through the prelude `Slice` guard (Vec slicing is inherent and its
-// zero-width guard isn't built yet), so it has no totalizing `const if` and the
-// backend would emit an illegal zero-width part-select (`v[2 +: 0]` / a `[0:-1]`
-// array range). Reject rather than miscompile (planning/slice_guards.md).
-fn f(v: Vec(4, uint(8))) -> Vec(0, uint(8)) {
-    v[2..2]
-}

@@ -1,17 +1,20 @@
 # Zero-width layout guards via prelude `const if` (workplan)
 
-> **STATUS (2026-06-26): all defined phases (0–4) DONE for the `bits` family.**
-> `bits` slices — two-endpoint, offset, elision*, symbolic-width, zero-width — and
-> `concat_hi` all route through prelude `const if` guards (`zero_bits{w}`,
-> `__concat`); slice-set has the compiler-applied dual; bounds are checked eagerly
-> (const) and at instantiation (symbolic residual → `mono_check`). `resize` needs
-> no guard (the SV width-cast is total). Zero-width slices that can't route (`Vec`,
-> elided `bits`) are rejected, not miscompiled. **Remaining (NOT a numbered phase —
-> a future feature):** a `Vec` zero-width guard (an inherent `Vec` slice impl +
-> empty-`Vec` value), which would let `Vec`/elided slices route too and is the path
-> to deleting `slice_range_sv`'s read arm. Design sketch + open question at the
-> bottom ("Future: Vec zero-width guard"). *(elision non-zero stays on the
-> structural path; only its zero-width case is rejected.)
+> **STATUS (2026-06-27): all defined phases (0–4) DONE + zero-width `Vec`/elision.**
+> `bits` slices — two-endpoint, offset, elision, symbolic-width, zero-width — and
+> `concat_hi` route through prelude `const if` guards (`zero_bits{w}`, `__concat`);
+> slice-set has the compiler-applied dual; bounds are checked eagerly (const) and
+> at instantiation (symbolic residual → `mono_check`). `resize` needs no guard (the
+> SV width-cast is total). **Zero-width `Vec` slices (and elided `bits`) now WORK
+> (2026-06-27):** a ground zero-length `Vec` flattens to **zero leaves** (no SV net
+> — `[0:-1]` is illegal), and a zero-width slice READ emits the empty/undriven
+> value (`undefined_vec_leaves`) — the read-side dual of the slice-SET guard. The
+> one hard boundary: a zero-length `Vec` **cannot cross a non-`#[inline]` module
+> boundary** (the port would vanish, but a parametric module has a fixed port list,
+> unlike `bits(0)`'s `[-1:0]`); `mono_check` rejects that instantiation and points
+> at `#[inline]` (which splices, flattening the Vec away). So generic tiling that
+> bottoms out at length 0 works when the generic unit is inline. **Remaining:**
+> deleting `slice_range_sv`'s read arm (non-zero `Vec`/elided still ride it).
 >
 > **Progress (2026-06-26).** Done + committed: **Phase 0** (const-if folds inside
 > an inline splice), the **ascending-direction flip** (decision 6: low-first for
@@ -44,18 +47,15 @@
 > **Concat guard LANDED (Phase 3, 2026-06-26):** `concat_hi` wraps its
 > zero-width-operand case in a `const if` (`resize` needs none — the SV width-cast
 > is already total). See Phase 3 below.
-> **Zero-width non-routing slices now REJECTED (2026-06-26):** a zero-width slice
-> only routes through the guard for a `bits` two-endpoint/offset form; a `Vec`
-> slice or an elided `bits` form falls to the structural `slice_range_sv` path,
-> which would emit an illegal zero-width part-select (`v[2 +: 0]` / a `[0:-1]`
-> array range). `infer` now rejects those (`ZeroWidthSliceUnsupported`,
-> `fail-expected/slice-vec-zero-width.mrn`) rather than miscompiling — negative
-> space until a `Vec` guard lands.
-> **Remaining (kept on the old structural `Slice` node / `slice_range_sv`, NON-zero
-> width only):** elision (`x[lo..]` / `x[..hi]`) and `Vec` slices (inherent, not yet
-> a resolvable method). A `Vec` zero-width guard (an inherent `slice` impl with a
-> `zero_vec` primitive) would let those route too and is the path to deleting
-> `slice_range_sv`'s read arm.
+> **Zero-width `Vec`/elided slices now WORK (2026-06-27):** handled the
+> compiler-special way (a ground zero-length `Vec` flattens to zero leaves; a
+> zero-width slice read emits `undefined_vec_leaves`). The one boundary: a
+> zero-length `Vec` can't cross a non-`#[inline]` module (rejected at `mono_check`).
+> See "Zero-width Vec slices — LANDED" at the bottom.
+> **Remaining (kept on the old structural `Slice` node / `slice_range_sv`):** the
+> NON-zero `Vec` and elided slice reads still ride it — deleting that arm is a
+> pure-cleanup refactor (route them through an inherent `Vec` impl), not a feature
+> gap.
 >
 > **Symbolic slices — SOLVED + validated (2026-06-26).** Two blockers, both fixed:
 > (1) *cross-frame rendering* — the inline splice rendered a caller generic against
@@ -400,40 +400,37 @@ exercised (mirror Phase 0's named-arg binding in `emit_instance_core`).
 - `planning/mir_progress.md` — S7's `const if` increment reopened as active work
   (Phase 0), tracked against this plan.
 
-## Future: Vec zero-width guard (not yet built)
+## Zero-width Vec slices — LANDED (2026-06-27)
 
-`Vec` slices currently route through the structural backend node (`slice_range_sv`)
-for non-zero widths; a zero-width `Vec` slice is *rejected* (`ZeroWidthSliceUnsupported`)
-rather than miscompiled (it would emit `v[lo +: 0]` / a `[0:-1]` array range). To
-make `Vec` slices total like `bits` — and to finally delete `slice_range_sv`'s read
-arm — give `Vec` an inherent `slice`/`slice_from` with the same `const if` guard:
+Done the **compiler-special** way (the read-side dual of the slice-SET guard),
+NOT via a prelude inherent impl — `Vec` slices stay on the structural backend node
+(`slice_range_sv`) for non-zero widths, and the zero-width case is handled in the
+backend. This sidesteps the inherent-impl complications (a verilog primitive can't
+express a multi-leaf Vec-of-struct slice; an empty-aggregate body has no SV text).
+Three pieces (Jon's `undefined_vec` direction):
 
-```
-#[inline]
-impl {const N: integer, type A} Vec(N, A) {
-    fn slice {const lo: integer, const hi: integer} (self) -> Vec(hi - lo, A) {
-        const if hi - lo == 0 { zero_vec() } else { __vec_slice{...}(self) }
-    }
-}
-```
+1. **A ground zero-length `Vec` flattens to ZERO leaves.** `flatten_leaves_inner`'s
+   `Vec` arm returns `vec![]` when the (grounded) length is `Lit(0)` — there is no
+   SV net (`[0:-1]` is illegal). This is the "account for flattening" point: a
+   Vec(0) result port / local / wire simply vanishes. (`bits(0)` still flattens to
+   the one `[-1:0]` leaf — the asymmetry that matters below.)
 
-Two things must be solved first:
+2. **A zero-width slice READ emits the empty value.** `expr_leaves`' `Slice` arm,
+   when `slice_width_is_zero`, returns `undefined_vec_leaves(result_ty)` — the
+   flattened result-type leaves each driven by `'x` ("never set"). For `Vec(0)`
+   that is zero leaves (nothing); for `bits(0)` the one effective-0-bit leaf. So
+   `v[2..2]` emits no net, not an illegal `[lo +: 0]`.
 
-1. **The empty-`Vec` value.** `bits(0)` flattens to *one* `[-1:0]` leaf
-   (so nothing monomorphises on zero-ness); `Vec(0, A)` flattens to *zero* leaves.
-   The splice's value-source, the result wiring, and any consumer must accept a
-   zero-leaf value. Confirm the backend handles a 0-leaf aggregate end-to-end
-   (param binding, result port, instance hookup) before relying on it.
+3. **A zero-length `Vec` cannot cross a non-`#[inline]` module boundary.** A
+   parametric module has a fixed port list, so a port that should *vanish* at
+   length 0 is unrepresentable (unlike `bits(0)`'s `[-1:0]`). `mono_check` rejects
+   an instantiation whose callee port type grounds to a zero-length `Vec`
+   (`grounded_has_zero_vec`), pointing at `#[inline]` — which splices, so the Vec
+   flattens away with no boundary. Generic tiling that bottoms out at length 0
+   therefore works when the generic unit is inline (`slice_vec_zero_width.mrn`:
+   `drop_all` direct, `head{k}` inline at k=0 and k=2). `fail-expected/
+   slice-vec-zero-port.mrn` + unit test `mono_check_rejects_zero_vec_port` pin the
+   boundary rule.
 
-2. **`zero_vec` typing.** Mirror the `zero_bits{w}` trick: `zero_vec{n, A}() ->
-   Vec(n, A)` so both `const if` arms are `Vec(hi - lo, A)` (no divergent-arm
-   typing). It is only ever taken at `n == 0`, where it is the empty vec — the
-   primitive emits no leaves; it never has to fabricate an `A` value (good, since
-   `A` may be a port). A `verilog {}` body is the wrong shape (no SV text for an
-   empty aggregate); `zero_vec` likely needs to be a small compiler builtin that
-   yields zero leaves, not a prelude `= verilog` fn.
-
-Once both hold, the `mir_of` slice arm routes `Vec` (drop the `is_bits` half of the
-zero-width rejection), elision fills its endpoint and routes too, and the backend
-`slice_range_sv` read arm + the structural `MExprKind::Slice` read can be deleted
-(the slice-set `BitRange` path stays — the set is compiler-special by design).
+Still open: deleting `slice_range_sv`'s read arm (non-zero `Vec`/elided slices
+still ride it) — a pure-cleanup refactor, not a feature gap.

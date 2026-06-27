@@ -1,0 +1,31 @@
+// Zero-width `Vec` slices are total (planning/slice_guards.md): an empty Vec
+// value flattens to NO leaves — there is no SV net (an unpacked `[0:-1]` range is
+// illegal) — so a slice whose width folds to 0 (generic tiling at its limit)
+// emits nothing rather than an illegal `[lo +: 0]` part-select. This is the
+// read-side dual of the compiler-special zero-width slice-SET guard; the empty
+// value is `undefined_vec` (never driven → X, but at length 0 it is no net).
+
+// Direct zero-width slice: the empty middle of `v`. The result `Vec(0, …)` has
+// no leaves, so `drop_all` has no result port — a (degenerate) pass-through.
+fn drop_all(v: Vec(4, uint(8))) -> Vec(0, uint(8)) {
+    v[2..2]
+}
+
+// Generic tiling at its limit. `#[inline]` so a zero-length result flattens away
+// in the splice (no module boundary — a Vec(0) cannot be a real port). `head{k}`
+// takes the low `k` elements.
+#[inline]
+fn head(const k: integer, v: Vec(4, uint(8))) -> Vec(k, uint(8)) {
+    v[0..k]
+}
+
+// k solved to 0 from the return type: the slice is empty, so `use_zero` produces
+// nothing (no result port).
+fn use_zero(v: Vec(4, uint(8))) -> Vec(0, uint(8)) {
+    head(v)
+}
+
+// k solved to 2: a real 2-element slice.
+fn use_two(v: Vec(4, uint(8))) -> Vec(2, uint(8)) {
+    head(v)
+}

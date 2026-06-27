@@ -1331,8 +1331,10 @@ impl<'db> SvLower<'_, 'db> {
     }
 
     /// Does a slice/slice-set width fold to exactly 0 at this instantiation? Used
-    /// to skip a zero-width slice-set drive (the compiler-applied zero guard).
-    /// Mirrors `slice_range_sv`'s width computation (ascending, low-first).
+    /// by the compiler-applied zero guard on both sides: to skip a zero-width
+    /// slice-set drive, and to emit a zero-width slice READ as the empty
+    /// `undefined_vec` value (planning/slice_guards.md). Mirrors `slice_range_sv`'s
+    /// width computation (ascending, low-first).
     fn slice_width_is_zero(
         &self,
         base_ty: &Type<'db>,
@@ -1358,6 +1360,25 @@ impl<'db> SvLower<'_, 'db> {
         };
         let w = subst_const_opt(&w, &self.self_subst);
         crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &w) == Some(0)
+    }
+
+    /// The leaves of an **undefined** value of `ty` — the empty/zero-width result
+    /// of a slice (`undefined_vec`, planning/slice_guards.md). Each flattened leaf
+    /// is driven by SV `'x` ("never set"). A ground zero-length `Vec` flattens to
+    /// NO leaves, so an empty Vec value emits nothing at all; a `bits(0)` is the
+    /// single effective-0-bit leaf. The type is grounded through `self_subst`
+    /// first so a per-instance zero length is seen.
+    fn undefined_vec_leaves(&mut self, ty: &Type<'db>) -> Vec<(String, SvExpr)> {
+        let ty = ground_widths(
+            self.db,
+            self.krate,
+            self.def,
+            &subst_type(ty, &self.self_subst),
+        );
+        flatten_leaves(self.db, self.krate, self.def, &ty, true, &self.sig.generic_params)
+            .into_iter()
+            .map(|leaf| (leaf.suffix, SvExpr::Lit("'x".to_owned())))
+            .collect()
     }
 
     /// A slice endpoint as a `ConstArg` for rendering. First try to **ground** it
@@ -2318,6 +2339,15 @@ impl<'db> SvLower<'_, 'db> {
             } => {
                 let (base, lo, hi, width) = (*base, *lo, *hi, *width);
                 let bt = self.mir.expr(base).ty.clone();
+                // Zero-width (an empty slice — generic tiling at its limit): the
+                // result is an empty value. For a `Vec` it flattens to NO leaves
+                // (no net); emit the undriven leaves of the result type rather than
+                // an illegal `[lo +: 0]` part-select. The read-side dual of the
+                // compiler-special slice-SET zero guard (planning/slice_guards.md).
+                if self.slice_width_is_zero(&bt, lo, hi, width) {
+                    let rty = self.mir.expr(m).ty.clone();
+                    return self.undefined_vec_leaves(&rty);
+                }
                 let range = self.slice_range_sv(&bt, lo, hi, width);
                 self.expr_leaves(base)
                     .into_iter()
@@ -3632,6 +3662,14 @@ fn flatten_leaves_inner(
         // Struct-of-arrays (planning/vectors.md): one unpacked-array leaf
         // per ELEMENT-TYPE leaf — Vec(3, Packet) → v__valid[0:2] + ….
         Type::Vec { len, elem } => {
+            // A ground zero-length Vec has NO leaves — there is no SV net (an
+            // unpacked `[0:-1]` range is illegal). This is what makes a zero-width
+            // Vec slice / an empty Vec value (`undefined_vec`) total: the value
+            // flattens away entirely, so nothing is declared or driven
+            // (planning/slice_guards.md). A symbolic length never matches here.
+            if matches!(len, ConstArg::Lit(0)) {
+                return Vec::new();
+            }
             // The unpacked-array dimension. Share `width_expr` so a Vec length
             // and a scalar width render identically: literals verbatim, a bare
             // generic as an SV parameter, and a symbolic COMPOUND length
