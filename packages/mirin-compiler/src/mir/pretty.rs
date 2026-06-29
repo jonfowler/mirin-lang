@@ -120,17 +120,28 @@ impl<'a, 'db> Printer<'a, 'db> {
                     let _ = write!(s, "[{}]", self.expr(*i));
                 }
                 Projection::BitRange { lo, hi, width } => {
-                    let o = |e: &Option<MExprId>| e.map(|e| self.expr(e)).unwrap_or_default();
-                    let tail = match (hi, width) {
-                        (Some(_), _) => format!("..{}", o(hi)),
-                        (_, Some(_)) => format!("..+{}", o(width)),
-                        _ => "..".to_owned(),
-                    };
-                    let _ = write!(s, "[{}{tail}]", o(lo));
+                    let _ = write!(s, "{}", self.slice_suffix(lo, hi, width));
                 }
             }
         }
         s
+    }
+
+    /// Render a slice / bit-range suffix: `[lo..hi]`, `[lo..+w]`, or `[lo..]`.
+    /// Shared by the `Slice` expr and the `BitRange` place projection.
+    fn slice_suffix(
+        &self,
+        lo: &Option<MExprId>,
+        hi: &Option<MExprId>,
+        width: &Option<MExprId>,
+    ) -> String {
+        let o = |e: &Option<MExprId>| e.map(|e| self.expr(e)).unwrap_or_default();
+        let tail = match (hi, width) {
+            (Some(_), _) => format!("..{}", o(hi)),
+            (_, Some(_)) => format!("..+{}", o(width)),
+            _ => "..".to_owned(),
+        };
+        format!("[{}{tail}]", o(lo))
     }
 
     /// Render an expression as `kind:type`.
@@ -217,15 +228,7 @@ impl<'a, 'db> Printer<'a, 'db> {
                 lo,
                 hi,
                 width,
-            } => {
-                let o = |e: &Option<MExprId>| e.map(|e| self.expr(e)).unwrap_or_default();
-                let tail = match (hi, width) {
-                    (Some(_), _) => format!("..{}", o(hi)),
-                    (_, Some(_)) => format!("..+{}", o(width)),
-                    _ => "..".to_owned(),
-                };
-                format!("{}[{}{tail}]", self.expr(*base), o(lo))
-            }
+            } => format!("{}{}", self.expr(*base), self.slice_suffix(lo, hi, width)),
             MExprKind::When { event, body, init } => {
                 let init = init
                     .map(|i| format!(" init {}", self.expr(i)))

@@ -532,22 +532,16 @@ impl<'db> Evaluator<'db> {
                 self.eval_block(frame, branch, depth)
             }
             ExprKind::Block(b) => self.eval_block(frame, b, depth),
-            // Operator desugar (`a + b` → `a.add(b)`): the prelude trait
-            // methods ARE the const arithmetic — match by method name on
-            // evaluated operands (no inference data needed down here).
+            // Operator desugar (`a + b` → `a.add(b)`): fold by method name on the
+            // evaluated operands (shared with the MIR evaluator).
             ExprKind::MethodCall {
                 receiver,
                 method,
                 args,
             } => {
                 if args.is_empty() {
-                    // Unary: `-x` → `x.neg()`.
                     let a = self.eval_expr(frame, *receiver, depth)?;
-                    return match (method.as_str(), a) {
-                        ("neg", Value::Int(v)) => Some(Value::Int(-v)),
-                        ("not", Value::Bool(v)) => Some(Value::Bool(!v)),
-                        _ => None,
-                    };
+                    return apply_unary(method, a);
                 }
                 let [b] = args.as_slice() else { return None };
                 if b.out {
@@ -555,48 +549,7 @@ impl<'db> Evaluator<'db> {
                 }
                 let a = self.eval_expr(frame, *receiver, depth)?;
                 let b = self.eval_expr(frame, b.expr, depth)?;
-                match method.as_str() {
-                    "add" => arith(ConstOp::Add, &a, &b),
-                    "sub" => arith(ConstOp::Sub, &a, &b),
-                    "mul" => arith(ConstOp::Mul, &a, &b),
-                    "div" => arith(ConstOp::Div, &a, &b),
-                    "rem" => arith(ConstOp::Rem, &a, &b),
-                    "eq" => match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x == y)),
-                        (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x == y)),
-                        _ => None,
-                    },
-                    "ne" => match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x != y)),
-                        (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x != y)),
-                        _ => None,
-                    },
-                    "lt" => match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x < y)),
-                        _ => None,
-                    },
-                    "le" => match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x <= y)),
-                        _ => None,
-                    },
-                    "gt" => match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x > y)),
-                        _ => None,
-                    },
-                    "ge" => match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x >= y)),
-                        _ => None,
-                    },
-                    "and" => match (a, b) {
-                        (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x && y)),
-                        _ => None,
-                    },
-                    "or" => match (a, b) {
-                        (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x || y)),
-                        _ => None,
-                    },
-                    _ => None,
-                }
+                apply_binary(method, a, b)
             }
             ExprKind::Call { callee, args, .. } => {
                 let ExprKind::Def(def) = frame.body.expr(*callee).kind else {
@@ -657,6 +610,64 @@ pub(crate) fn arith<'db>(op: ConstOp, a: &Value<'db>, b: &Value<'db>) -> Option<
         ConstOp::Rem => a.checked_rem(*b)?,
     };
     Some(Value::Int(v))
+}
+
+/// Fold a unary prelude-operator method (`-x` → `x.neg()`, `!b` → `b.not()`) on
+/// an evaluated operand. Matched by method name — the prelude trait methods ARE
+/// the const arithmetic. `None` for any other name or a type mismatch.
+pub(crate) fn apply_unary<'db>(name: &str, a: Value<'db>) -> Option<Value<'db>> {
+    match (name, a) {
+        ("neg", Value::Int(v)) => Some(Value::Int(-v)),
+        ("not", Value::Bool(v)) => Some(Value::Bool(!v)),
+        _ => None,
+    }
+}
+
+/// Fold a binary prelude-operator method (`a + b` → `a.add(b)`, etc.) on two
+/// evaluated operands. Matched by method name; `None` for any other name or a
+/// type mismatch.
+pub(crate) fn apply_binary<'db>(name: &str, a: Value<'db>, b: Value<'db>) -> Option<Value<'db>> {
+    match name {
+        "add" => arith(ConstOp::Add, &a, &b),
+        "sub" => arith(ConstOp::Sub, &a, &b),
+        "mul" => arith(ConstOp::Mul, &a, &b),
+        "div" => arith(ConstOp::Div, &a, &b),
+        "rem" => arith(ConstOp::Rem, &a, &b),
+        "eq" => match (a, b) {
+            (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x == y)),
+            (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x == y)),
+            _ => None,
+        },
+        "ne" => match (a, b) {
+            (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x != y)),
+            (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x != y)),
+            _ => None,
+        },
+        "lt" => int_cmp(a, b, |x, y| x < y),
+        "le" => int_cmp(a, b, |x, y| x <= y),
+        "gt" => int_cmp(a, b, |x, y| x > y),
+        "ge" => int_cmp(a, b, |x, y| x >= y),
+        "and" => match (a, b) {
+            (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x && y)),
+            _ => None,
+        },
+        "or" => match (a, b) {
+            (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x || y)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn int_cmp<'db>(
+    a: Value<'db>,
+    b: Value<'db>,
+    f: impl Fn(i128, i128) -> bool,
+) -> Option<Value<'db>> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(f(x, y))),
+        _ => None,
+    }
 }
 
 pub(crate) fn project<'db>(v: &Value<'db>, field: &str) -> Option<Value<'db>> {

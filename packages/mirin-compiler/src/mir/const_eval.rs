@@ -1,7 +1,6 @@
-//! Compile-time evaluation over **MIR** (`planning/const_eval.md`, the S8
-//! substrate introduced early for the MIR/backend side). This is the twin of
-//! `hir::const_eval` — same model (demand-driven per-output thunks, the shared
-//! [`Value`]/[`arith`]/[`project`] core) — but it walks the typed MIR
+//! Compile-time evaluation over **MIR** (`planning/const_eval.md`). This is the
+//! twin of `hir::const_eval` — same model (demand-driven per-output thunks, the
+//! shared [`Value`]/[`arith`]/[`project`] core) — but it walks the typed MIR
 //! ([`MExpr`]) instead of the HIR body. It evaluates **value-position** const
 //! expressions the MIR backend needs: slice endpoints, `const if` conditions,
 //! and (transitively) const-fn calls reached from them.
@@ -10,38 +9,26 @@
 //! endpoint / const-if condition is an [`MExprId`], and the lossy `ConstArg`
 //! bridge can't represent a call (`planning/const_eval.md`: a call in width
 //! position stays `Deferred`). The MIR has the full expression tree, so
-//! evaluating it directly is strictly more capable. `infer` keeps the HIR
-//! evaluator until S8; the *type-level* width axis (`ConstArg` in `Type`) also
-//! stays on the HIR evaluator — only value-position `MExpr` lives here.
+//! evaluating it directly is strictly more capable. The *type-level* width axis
+//! (`ConstArg` in `Type`) stays on the HIR evaluator — only value-position
+//! `MExpr` lives here.
 //!
 //! Negative space: every failure is soft (`None`) — the caller falls back to a
-//! symbolic render (a parametric `#()` expression) or the `initial assert`
-//! path. A `symbolic` flag separates "stuck on a generic `Param`/unbound input"
-//! (defer) from "closed but unevaluable" (a genuine error, e.g. divide-by-zero)
-//! for callers that need the three-way distinction.
+//! symbolic render (a parametric `#()` expression) or the `initial assert` path.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::base::db::SourceRoot;
-use crate::hir::body::LocalKind;
-use crate::hir::const_eval::{MAX_DEPTH, MAX_STEPS, Value, arith, assoc_grounded_body, eval_const};
+use crate::hir::const_eval::{
+    MAX_DEPTH, MAX_STEPS, Value, apply_binary, apply_unary, assoc_grounded_body, eval_const,
+};
 use crate::hir::sig::{Param, sig_of};
-use crate::hir::types::{ConstOp, Direction, LocalId, Term, Type};
+use crate::hir::types::{Direction, LocalId, Term, Type};
 use crate::mir::ir::{Conn, MBlock, MExprId, MExprKind, MStmt, Mir};
 use crate::mir::lower::mir_of;
 use crate::nameres::def_map::CrateDefMap;
 use crate::nameres::ids::DefId;
-
-/// The three-way outcome of evaluating a MIR const expression, mirroring
-/// `hir::const_eval::WidthEval`: a clean value, still **symbolic** (a generic
-/// `Param` / unbound input — defer), or **failed** (a closed expression with no
-/// value — divide-by-zero / overflow — a genuine error).
-pub enum MirEval<'db> {
-    Value(Value<'db>),
-    Symbolic,
-    Failed,
-}
 
 /// Evaluate a value-position MIR expression with **no** parameter bindings
 /// (`ConstParam`s stay symbolic). `Some` only for a fully ground result.
@@ -51,10 +38,9 @@ pub fn eval<'db>(
     def: DefId<'db>,
     expr: MExprId,
 ) -> Option<Value<'db>> {
-    match eval3(db, krate, def, expr) {
-        MirEval::Value(v) => Some(v),
-        _ => None,
-    }
+    let mut ev = Evaluator::new(db, krate);
+    let frame = Frame::root(db, krate, def);
+    ev.eval_expr(&frame, expr, 0)
 }
 
 /// Integer convenience over [`eval`].
@@ -77,13 +63,7 @@ pub fn eval_return<'db>(
     krate: SourceRoot,
     def: DefId<'db>,
 ) -> Option<Value<'db>> {
-    let mut ev = Evaluator {
-        db,
-        krate,
-        map: crate::nameres::def_map::crate_def_map(db, krate),
-        steps: 0,
-        symbolic: false,
-    };
+    let mut ev = Evaluator::new(db, krate);
     let frame = Frame::root(db, krate, def);
     let block = frame.mir.block().clone();
     ev.eval_block(&frame, &block, 0)
@@ -101,40 +81,11 @@ pub fn eval_cond_with<'db>(
     expr: MExprId,
     const_subst: &[Option<Term<'db>>],
 ) -> Option<bool> {
-    let mut ev = Evaluator {
-        db,
-        krate,
-        map: crate::nameres::def_map::crate_def_map(db, krate),
-        steps: 0,
-        symbolic: false,
-    };
+    let mut ev = Evaluator::new(db, krate);
     let frame = Frame::root_with(db, krate, def, const_subst.to_vec());
     match ev.eval_expr(&frame, expr, 0) {
         Some(Value::Bool(b)) => Some(b),
         _ => None,
-    }
-}
-
-/// Three-way evaluation: distinguishes a symbolic leaf (defer) from a closed
-/// expression that genuinely has no value (a hard error).
-pub fn eval3<'db>(
-    db: &'db dyn salsa::Database,
-    krate: SourceRoot,
-    def: DefId<'db>,
-    expr: MExprId,
-) -> MirEval<'db> {
-    let mut ev = Evaluator {
-        db,
-        krate,
-        map: crate::nameres::def_map::crate_def_map(db, krate),
-        steps: 0,
-        symbolic: false,
-    };
-    let frame = Frame::root(db, krate, def);
-    match ev.eval_expr(&frame, expr, 0) {
-        Some(v) => MirEval::Value(v),
-        None if ev.symbolic => MirEval::Symbolic,
-        None => MirEval::Failed,
     }
 }
 
@@ -143,7 +94,17 @@ struct Evaluator<'db> {
     krate: SourceRoot,
     map: &'db CrateDefMap<'db>,
     steps: u32,
-    symbolic: bool,
+}
+
+impl<'db> Evaluator<'db> {
+    fn new(db: &'db dyn salsa::Database, krate: SourceRoot) -> Self {
+        Evaluator {
+            db,
+            krate,
+            map: crate::nameres::def_map::crate_def_map(db, krate),
+            steps: 0,
+        }
+    }
 }
 
 /// One activation: a def's MIR plus the call-site bindings for its value params
@@ -205,24 +166,17 @@ impl<'db> Evaluator<'db> {
             MExprKind::Local(l) => self.demand(frame, *l, depth),
             // A const generic used as a value. If this frame carries a binding for
             // it (an inline splice seeded the root with the call's const args),
-            // re-enter the bound `ConstArg`; otherwise symbolic (defers to
-            // monomorphisation), exactly like `ConstArg::Param`.
-            MExprKind::ConstParam(i) => {
-                if let Some(Some(Term::Const(c))) = frame.const_subst.get(*i as usize) {
-                    return match eval_const(self.db, self.krate, frame.def, c) {
-                        Some(v) => Some(Value::Int(v)),
-                        None => {
-                            self.symbolic = true;
-                            None
-                        }
-                    };
+            // re-enter the bound `ConstArg`; otherwise it stays a symbolic hole
+            // (defers to monomorphisation), exactly like `ConstArg::Param`.
+            MExprKind::ConstParam(i) => match frame.const_subst.get(*i as usize) {
+                Some(Some(Term::Const(c))) => {
+                    eval_const(self.db, self.krate, frame.def, c).map(Value::Int)
                 }
-                self.symbolic = true;
-                None
-            }
+                _ => None,
+            },
             // An associated const: ground the impl const body for the (concrete)
             // self type, then evaluate that `ConstArg` via the shared core.
-            MExprKind::ConstAssoc { item, self_ty } => self.eval_assoc(*item, self_ty, depth),
+            MExprKind::ConstAssoc { item, self_ty } => self.eval_assoc(*item, self_ty),
             MExprKind::Field { receiver, field } => {
                 let r = self.eval_expr(frame, *receiver, depth)?;
                 crate::hir::const_eval::project(&r, field)
@@ -281,22 +235,18 @@ impl<'db> Evaluator<'db> {
     ) -> Option<Value<'db>> {
         let name = self.map.def_data(callee).map(|d| d.name.as_str());
         // Method-form operator: the prelude trait methods ARE the const
-        // arithmetic, matched by name on evaluated operands (mirrors HIR).
+        // arithmetic, folded by name on evaluated operands (shared with HIR).
         if let Some(recv) = receiver
             && let Some(n) = name
             && is_operator(n)
         {
             let a = self.eval_expr(frame, recv, depth)?;
             if args.is_empty() {
-                return match (n, a) {
-                    ("neg", Value::Int(v)) => Some(Value::Int(-v)),
-                    ("not", Value::Bool(v)) => Some(Value::Bool(!v)),
-                    _ => None,
-                };
+                return apply_unary(n, a);
             }
             let [Conn::In(b)] = args else { return None };
             let b = self.eval_expr(frame, *b, depth)?;
-            return apply_operator(n, a, b);
+            return apply_binary(n, a, b);
         }
         // A user fn/method call: fresh frame, eval its return value.
         if depth >= MAX_DEPTH {
@@ -306,38 +256,19 @@ impl<'db> Evaluator<'db> {
         self.eval_block(&callee_frame, &callee_frame.mir.block().clone(), depth + 1)
     }
 
-    fn eval_assoc(
-        &mut self,
-        item: DefId<'db>,
-        self_ty: &Type<'db>,
-        depth: u32,
-    ) -> Option<Value<'db>> {
+    fn eval_assoc(&mut self, item: DefId<'db>, self_ty: &Type<'db>) -> Option<Value<'db>> {
         if let Type::Value {
             kind: crate::hir::types::ValueKind::Param(_),
             ..
         } = self_ty
         {
-            self.symbolic = true;
-            return None;
+            return None; // symbolic self type — defer
         }
-        let grounded = assoc_grounded_body(self.db, self.krate, item, self_ty);
-        match grounded {
-            // The grounded impl-const body is a self-contained `ConstArg` — hand
-            // it to the shared `ConstArg` evaluator. (Its own `def` context is the
-            // impl const; a closed value needs no frame.)
-            Some(c) => match eval_const(self.db, self.krate, item, &c) {
-                Some(v) => Some(Value::Int(v)),
-                None => {
-                    self.symbolic = true;
-                    None
-                }
-            },
-            None => {
-                self.symbolic = true;
-                None
-            }
-        }
-        .filter(|_| depth <= MAX_DEPTH)
+        // The grounded impl-const body is a self-contained `ConstArg` — hand it to
+        // the shared `ConstArg` evaluator. (Its own `def` context is the impl
+        // const; a closed value needs no frame.)
+        let grounded = assoc_grounded_body(self.db, self.krate, item, self_ty)?;
+        eval_const(self.db, self.krate, item, &grounded).map(Value::Int)
     }
 
     /// The thunk: a local's value by finding its defining site — `let`, a
@@ -356,10 +287,6 @@ impl<'db> Evaluator<'db> {
         frame.slots.borrow_mut().insert(local, Slot::Evaluating);
         let block = frame.mir.block().clone();
         let v = self.demand_in_block(frame, &block, local, depth);
-        // An unbound input `Param` is symbolic (deferred), not failed.
-        if v.is_none() && frame.mir.local(local).kind == LocalKind::Param {
-            self.symbolic = true;
-        }
         frame
             .slots
             .borrow_mut()
@@ -583,52 +510,6 @@ fn is_operator(name: &str) -> bool {
             | "and"
             | "or"
     )
-}
-
-/// Apply a binary operator method to two evaluated operands (shared arithmetic
-/// for the integer ops; comparisons/logic inline).
-fn apply_operator<'db>(name: &str, a: Value<'db>, b: Value<'db>) -> Option<Value<'db>> {
-    match name {
-        "add" => arith(ConstOp::Add, &a, &b),
-        "sub" => arith(ConstOp::Sub, &a, &b),
-        "mul" => arith(ConstOp::Mul, &a, &b),
-        "div" => arith(ConstOp::Div, &a, &b),
-        "rem" => arith(ConstOp::Rem, &a, &b),
-        "eq" => match (a, b) {
-            (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x == y)),
-            (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x == y)),
-            _ => None,
-        },
-        "ne" => match (a, b) {
-            (Value::Int(x), Value::Int(y)) => Some(Value::Bool(x != y)),
-            (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x != y)),
-            _ => None,
-        },
-        "lt" => bool_cmp(a, b, |x, y| x < y),
-        "le" => bool_cmp(a, b, |x, y| x <= y),
-        "gt" => bool_cmp(a, b, |x, y| x > y),
-        "ge" => bool_cmp(a, b, |x, y| x >= y),
-        "and" => match (a, b) {
-            (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x && y)),
-            _ => None,
-        },
-        "or" => match (a, b) {
-            (Value::Bool(x), Value::Bool(y)) => Some(Value::Bool(x || y)),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn bool_cmp<'db>(
-    a: Value<'db>,
-    b: Value<'db>,
-    f: impl Fn(i128, i128) -> bool,
-) -> Option<Value<'db>> {
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => Some(Value::Bool(f(x, y))),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

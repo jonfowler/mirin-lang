@@ -76,9 +76,6 @@ pub fn mir_of<'db>(db: &'db dyn salsa::Database, krate: SourceRoot, def: DefId<'
     }
 }
 
-/// Map a builtin method name to its closed-set tag. Panics on an unrecognised
-/// name — a method call with no `method_resolution` must be one of the builtins
-/// inference handles structurally (negative space: the assumption is asserted).
 /// The base length/width of a slice base (`bits(W)` → `W`, `Vec(N, _)` → `N`) —
 /// the impl generic the desugared `Slice` call carries in its subst.
 fn slice_base_width<'db>(ty: &Type<'db>) -> Option<ConstArg<'db>> {
@@ -105,6 +102,9 @@ fn uint_width<'db>(ty: &Type<'db>) -> Option<ConstArg<'db>> {
     }
 }
 
+/// Map a builtin method name to its closed-set tag. Panics on an unrecognised
+/// name — a method call with no `method_resolution` must be one of the builtins
+/// inference handles structurally (negative space: the assumption is asserted).
 fn builtin_method(name: &str) -> BuiltinMethod {
     match name {
         "reg" => BuiltinMethod::Reg,
@@ -334,8 +334,8 @@ impl<'a, 'db> Lower<'a, 'db> {
             // `const if` folds at lowering: evaluate the (HIR) condition and keep
             // only the taken branch as a block — the discarded arm's (possibly
             // invalid) SV is never produced (planning/comptime_if.md). A
-            // still-symbolic condition (the `generate if` case, not yet built)
-            // keeps the structural `ConstIf` node; emission rejects it as today.
+            // still-symbolic condition (the `generate if` case) keeps the
+            // structural `ConstIf` node, which emission rejects.
             ExprKind::ConstIf {
                 cond,
                 then_branch,
@@ -354,8 +354,8 @@ impl<'a, 'db> Lower<'a, 'db> {
             // rides in `substs`, the const endpoints as named args (`{lo, hi}` /
             // `{w}`) that the inline splice binds, the base as the receiver, and a
             // runtime offset base as the value arg. The const-if zero-width guard
-            // then lives in the spliced method body. Shapes not yet routed (vec,
-            // elision, unresolved) fall back to the structural `Slice` node.
+            // then lives in the spliced method body. Shapes not routed this way
+            // (vec, elision, unresolved) fall back to the structural `Slice` node.
             ExprKind::Slice {
                 base,
                 lo,
@@ -372,24 +372,22 @@ impl<'a, 'db> Lower<'a, 'db> {
                     // is pre-rendered in the caller frame (`caller_const` + the
                     // `ConstParam` self_subst lookup), so it renders correctly
                     // inside the callee splice.
-                    (Some(callee), Some(w), None, Some(lo), Some(hi)) => {
-                        MExprKind::Call {
-                            callee,
-                            substs: self.slice_impl_substs(callee, &w),
-                            receiver: Some(self.lower_expr(*base)),
-                            args: Vec::new(),
-                            named: vec![
-                                MNamedArg {
-                                    name: "lo".to_owned(),
-                                    conn: Conn::In(self.lower_expr(lo)),
-                                },
-                                MNamedArg {
-                                    name: "hi".to_owned(),
-                                    conn: Conn::In(self.lower_expr(hi)),
-                                },
-                            ],
-                        }
-                    }
+                    (Some(callee), Some(w), None, Some(lo), Some(hi)) => MExprKind::Call {
+                        callee,
+                        substs: self.slice_substs(callee, &w, None),
+                        receiver: Some(self.lower_expr(*base)),
+                        args: Vec::new(),
+                        named: vec![
+                            MNamedArg {
+                                name: "lo".to_owned(),
+                                conn: Conn::In(self.lower_expr(lo)),
+                            },
+                            MNamedArg {
+                                name: "hi".to_owned(),
+                                conn: Conn::In(self.lower_expr(hi)),
+                            },
+                        ],
+                    },
                     // offset form `base.slice_from{w}(lo)` (`x[lo..+w]`): the
                     // const width rides as the `{w}` named arg, the runtime base
                     // `lo` as the value arg. The base width binds the impl generic
@@ -399,7 +397,7 @@ impl<'a, 'db> Lower<'a, 'db> {
                         let lo_w = uint_width(&self.ty_of(lo));
                         MExprKind::Call {
                             callee,
-                            substs: self.slice_off_substs(callee, &w, lo_w.as_ref()),
+                            substs: self.slice_substs(callee, &w, lo_w.as_ref()),
                             receiver: Some(self.lower_expr(*base)),
                             args: vec![Conn::In(self.lower_expr(lo))],
                             named: vec![MNamedArg {
@@ -498,24 +496,13 @@ impl<'a, 'db> Lower<'a, 'db> {
     }
 
     /// The subst for a desugared slice call: the base width binds the `Slice`
-    /// impl's generic (placed by name — the method's own `lo`/`hi`/`w`/`L`
-    /// generics precede it and are bound via named args / the value arg, so their
-    /// slots are left `Deferred` placeholders the splice overrides).
-    fn slice_impl_substs(&self, callee: DefId<'db>, base_w: &ConstArg<'db>) -> Vec<Term<'db>> {
-        sig_of(self.db, self.krate, callee)
-            .generic_params
-            .iter()
-            .map(|g| match g.name.as_str() {
-                "lo" | "hi" | "w" | "L" => Term::Const(ConstArg::Deferred),
-                _ => Term::Const(base_w.clone()),
-            })
-            .collect()
-    }
-
-    /// As [`Self::slice_impl_substs`], for the offset form: additionally bind `L`
-    /// (the `uint(L)` width of the runtime `lo` base) so the splice can render the
-    /// `lo` param wire. `w` stays `Deferred` (bound by the `{w}` named arg).
-    fn slice_off_substs(
+    /// impl's base-width generic (placed by name — the method's own `lo`/`hi`/`w`/
+    /// `L` generics precede it and are bound via named args / the value arg, so
+    /// their slots are left `Deferred` placeholders the splice overrides). For the
+    /// offset form, `lo_w` binds `L` (the `uint(L)` width of the runtime `lo`
+    /// base) so the splice can render the `lo` param wire; the two-endpoint form
+    /// passes `None` and `L` stays `Deferred`.
+    fn slice_substs(
         &self,
         callee: DefId<'db>,
         base_w: &ConstArg<'db>,

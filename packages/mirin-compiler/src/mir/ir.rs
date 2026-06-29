@@ -14,11 +14,11 @@
 //!
 //! Drive targets are resolved [`Place`]s (`base` local + `Field`/`Index`/
 //! `BitRange` projections; slices lower here), and `const if` folds at lowering.
-//! MIR is the backend's single lowering source — emission reads MIR, not HIR.
+//! MIR is the backend's primary lowering source — emission reads MIR for the
+//! body, still reaching into HIR for verilog templates and the inline splice.
 //!
-//! What still lives in the backend rather than as a MIR→MIR pass (step 3, see
-//! planning/mir.md): aggregate flatten, monomorphisation, and inline. Moving
-//! those onto MIR is the remaining migration work.
+//! Aggregate flatten, monomorphisation, and inline still run in the backend
+//! rather than as MIR→MIR passes (see planning/mir.md for the migration state).
 
 use crate::base::diagnostics::Span;
 use crate::hir::body::{LocalKind, NumBase, VerilogTemplate};
@@ -132,7 +132,7 @@ pub enum MExprKind<'db> {
     /// A resolved call. Unifies plain calls, method calls, type-path calls, and
     /// operators. `callee` is the resolved def. `substs` is the **inference-
     /// recorded** call subst (callee-param order, deep-resolved, possibly empty)
-    /// — *not* the final ground/mono subst: mono (S6) resolves trait-instance
+    /// — *not* the final ground/mono subst: mono resolves trait-instance
     /// overrides and fills unbound type generics from it (cf. `backend::lower`'s
     /// `match_type` + `node_subst`). A `range`-builtin plain call records no
     /// subst (empty) — recognised by name downstream. `receiver` is `Some` for
@@ -171,7 +171,7 @@ pub enum MExprKind<'db> {
         then_branch: MBlock,
         else_branch: MBlock,
     },
-    /// `x[lo..hi]` / `x[off..+w]` — a slice. Desugared by the slice pass (S4);
+    /// `x[lo..hi]` / `x[off..+w]` — a slice. Desugared by the slice pass;
     /// kept structural here so the type-directed desugar has the operand type.
     Slice {
         base: MExprId,
@@ -208,9 +208,8 @@ pub enum BuiltinMethod {
 /// and applies projections. HDL drive targets are exactly `Local`/`Field`/
 /// `Index` chains (cf. the backend's `backend_root_local`), so a place always
 /// has a `Local` base; a non-place LHS is a lowering invariant violation.
-///
-/// S2b will extend places to out-connection / out-record / out-arg targets;
-/// S4 will add a `BitRange` projection for slice-set.
+/// Out-connection / out-record / out-arg targets are places too (see [`Conn`]),
+/// and a [`Projection::BitRange`] addresses a slice-set lvalue.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct Place {
     pub base: LocalId,
@@ -238,8 +237,8 @@ pub enum Projection {
 /// value into the callee/constructor; `Out` (`=> target`, or an `in`-direction
 /// record field) is a caller [`Place`] the callee drives back. This single
 /// direction-carrying model unifies every connection site (positional, named,
-/// record field) — the substrate the emission retarget (S3) and named-args
-/// handling build on, replacing the backend's per-site direction re-derivation.
+/// record field) — one substrate for emission retargeting and named-args
+/// handling, replacing the backend's per-site direction re-derivation.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub enum Conn {
     /// A value flowing into the callee (`f(v)`, `f{ x = v }`).
@@ -269,7 +268,7 @@ pub struct MBlock {
     pub tail: Option<MExprId>,
 }
 
-/// A MIR statement. Mirrors HIR `Stmt`; an equation's `lhs` is a [`Place`] (S2).
+/// A MIR statement. Mirrors HIR `Stmt`; an equation's `lhs` is a [`Place`].
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub enum MStmt {
     /// `let x = value;`
