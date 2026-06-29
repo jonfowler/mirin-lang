@@ -64,7 +64,7 @@ Precedent is uniformly explicit: C++ `if constexpr`, D `static if`, Zig
   instantiates only the selected generate block, so the dead arm is never
   elaborated. The value-position lowering (`const_if_generate`) declares a result
   wire and drives it per branch, each branch's own items captured into its
-  generate block. (slice_guards.md Phase 4.)
+  generate block.
 
 ## Implementation map
 
@@ -81,15 +81,10 @@ Precedent is uniformly explicit: C++ `if constexpr`, D `static if`, Zig
 
 - **Statement form** (`const if` driving leaves, no value) is not implemented;
   only the value form. Concat's zero-width guard may want it.
-- **Inline Mirin-bodied fns** now splice (S7, `planning/inline_bodies.md`); a
+- **Inline Mirin-bodied fns** splice (S7, `planning/inline_bodies.md`); a
   `const if` *through* an inline fn folds in the **grounded** case via the inline
-  splice (the symbolic case awaits the generate-if, step 5). **Direction
-  (2026-06-26):** the slice/concat zero-width guard is therefore the *prelude*
-  `const if` wrapping a raw layout primitive — **not** synthesised in the backend
-  (the earlier conclusion, now reversed). The read guard is an `#[inline]` prelude
-  fn; the set guard is compiler-applied at the `BitRange` drive (a set is an
-  lvalue, not a value). This makes a `const if` through an inline body the
-  *forcing function* for step 5, and removes all zero-width logic from the
-  backend. Full plan: `planning/slice_guards.md`.
+  splice, and lowers to a `generate if` (step 5) when symbolic. This is the
+  mechanism the zero-width slice/concat guards ride on — see
+  [docs/compiler/zero-width-handling.md](../docs/compiler/zero-width-handling.md).
 - **Divergent-type arms** and the `generate if` (step 5) path are the two known
   extensions.

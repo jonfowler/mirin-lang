@@ -136,18 +136,18 @@ Reconciles planning/slicing.md and planning/comptime_if.md:
 - **Read — opaque to the backend.** `x[a..b]` desugars *during HIR→MIR lowering*
   (the first stage that has types) into a part-select primitive — bits-high-first
   vs vec-low-first is a type-directed choice, so it must happen here, not at HIR
-  lowering. MIR has no "slice" node. The zero-width guard rides a `const if`
-  (already a construct) emitted around the primitive at desugar time. Slicing's
-  whole footprint becomes: one type-directed desugar rule + a primitive.
+  lowering. The zero-width guard rides a `const if` (see
+  [docs/compiler/zero-width-handling.md](../docs/compiler/zero-width-handling.md)).
 - **Set — a place projection.** A slice-set assigns to a *place* with a bit-range
   projection (rustc MIR `ProjectionElem`). The completeness/driver checker reasons
   over places-with-projections ("drives bits [lo, lo+w) of x") — strictly cleaner
   than the current `index_uses_forbound` HIR pattern-match. Special **only** in
   the checker; emission is the same primitive.
 
-So the guards are MIR/backend-synthesised (where the bounds are in hand), **not**
-delegated to inline-Mirin primitives — which supersedes the open tension noted in
-both docs.
+The zero-width guards are *not* backend-synthesised: the read is a prelude
+`const if` (and Vec is handled in the backend leaf walker), the set is a
+compiler-applied guard at the `BitRange` drive. See
+[docs/compiler/zero-width-handling.md](../docs/compiler/zero-width-handling.md).
 
 ## Monomorphisation and mono_check on MIR
 

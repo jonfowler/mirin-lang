@@ -11,15 +11,13 @@
 3. Move passes onto MIR one at a time: slice desugar → flatten → mono+mono_check → inline. ← **DONE** (slice S4; flatten stays type-keyed by design S5; mono_check S6 incl. N-level; inline v1 S7)
 4. Keep the during-infer `ConstArg` path throughout; revisit subsume-vs-keep last. ← **kept**; the re-representation is S8, deferred by decision (no functional gap).
 
-**Status: the core migration is complete; one architecture follow-on is now
-planned.** Every slice (S1–S8) is built or carries a documented decision (S5
-closed as a no-op; S6 cost-factoring and S8 anon-const units deferred as
-cost/uniformity, not correctness). **Reopened (2026-06-26, Jon):** S7's
-`const if`-in-inline is no longer deferred — the zero-width slice/concat guards
-move from backend-synthesised to **prelude `const if`** (read) / compiler-applied
-`const if` (set), making `const if`-through-inline the forcing function. Workplan:
-**`planning/slice_guards.md`** (Phase 0 = `const if`-in-inline; Phases 1–3 = slice
-read/set + concat/resize guards; Phase 4 = `generate if` for symbolic widths).
+**Status: the core migration is complete.** Every slice (S1–S8) is built or
+carries a documented decision (S5 closed as a no-op; S6 cost-factoring and S8
+anon-const units deferred as cost/uniformity, not correctness). S7's
+`const if`-in-inline and the zero-width slice/concat/Vec guards that ride on it
+are **landed** — the mechanism is documented in
+[docs/compiler/zero-width-handling.md](../docs/compiler/zero-width-handling.md)
+(history in `planning/slice_guards.md`).
 
 ## Decisions taken for this run (per Jon, 2026-06-24)
 
@@ -127,16 +125,10 @@ read/set + concat/resize guards; Phase 4 = `generate if` for symbolic widths).
   VERILATOR_CLEAN. **Const-generic widths/slices in an inline body already
   ground** via the nested lower's composed `self_subst` (`render_const` applies
   it), so a `slice{lo,hi}` helper's `x[hi-1..lo]`/`bits(hi-lo)` work at a literal
-  call site. **`const if`-in-inline — REOPENED as active work (2026-06-26, Jon).**
-  The earlier "off the critical path because guards are backend-synthesised"
-  framing is **reversed**: the zero-width slice/concat guard is now a *prelude*
-  `const if` (read) / a compiler-applied `const if` (set), so a `const if`
-  *through* an inline body is the forcing function and acceptance test. The
-  grounded case is mechanical (eval the cond MExpr with the call's const generics
-  — `alternative/inline_bodies-frame-constgen.md`) and lands first; the symbolic
-  case needs the `generate if` (comptime_if step 5). Tracked as Phase 0 of the
-  workplan in **`planning/slice_guards.md`**; `inline_check` rejects `const if`
-  only until Phase 0 lands.
+  call site. **`const if`-in-inline — LANDED.** A `const if` *through* an inline
+  body folds at the splice (grounded) or lowers to a `generate if` (symbolic); it
+  is the mechanism the zero-width slice/concat/Vec guards ride on. See
+  [docs/compiler/zero-width-handling.md](../docs/compiler/zero-width-handling.md).
 - [defer] **S8 — const-eval during infer via per-item anon-const units (DEFERRED
   by decision, 2026-06-25).** const-eval-in-infer is *not* a functional gap —
   `infer` calls the `const_eval` helper (`try_eval`/`eval_width`/`eval_cond`)
