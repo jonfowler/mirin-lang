@@ -219,15 +219,10 @@ fn check_obligations<'db>(
         return;
     }
 
-    let cdef = crate_def_map(db, krate);
-    let name = cdef
+    let name = crate_def_map(db, krate)
         .def_data(callee)
         .map(|d| d.name.clone())
         .unwrap_or_default();
-    // An `#[inline]` callee splices into the caller — it is never a real module,
-    // so a zero-length Vec in its signature flattens away rather than becoming a
-    // (vanishing) port. Skip the zero-Vec-port check for it.
-    let callee_inline = cdef.def_data(callee).is_some_and(|d| d.inline);
     let mut report = |message: String| {
         out.push(MonoDiagnostic {
             def: report_def,
@@ -319,19 +314,18 @@ fn check_obligations<'db>(
             .collect();
         let mut reported: HashSet<i128> = HashSet::new();
         let mut failed_reported = false;
-        let mut vec0_reported = false;
         for ty in &tys {
-            let grounded = subst_type_opt(ty, subst);
             let mut collector = WidthCollector(Vec::new());
-            collector.fold_type(&grounded);
+            collector.fold_type(&subst_type_opt(ty, subst));
             for w in &collector.0 {
                 if !is_closed(w) {
                     continue;
                 }
                 match eval_const(db, krate, callee, w) {
-                    // Width 0 is legal (the effective-0-bit `[-1:0]`, the basis of
-                    // the zero-width guards — planning/slicing.md); only a negative
-                    // width is invalid. Matches infer's `check_widths` (`< 0`).
+                    // Width 0 is legal (the effective-0-bit `[-1:0]` / a zero-length
+                    // `Vec` `[0:-1]`, the basis of the zero-width guards —
+                    // planning/slicing.md); only a negative width is invalid.
+                    // Matches infer's `check_widths` (`< 0`).
                     Some(v) if v < 0 && reported.insert(v) => report(format!(
                         "instantiating `{name}`: width evaluates to {v} (must be >= 0)"
                     )),
@@ -349,62 +343,8 @@ fn check_obligations<'db>(
                     None => {}
                 }
             }
-            // A `Vec` whose length grounds to 0 in a PORT type (param/result) is
-            // unrepresentable across a module boundary: a zero-length Vec flattens
-            // to zero nets, so the port would vanish — but a parametric module has
-            // a fixed port list (unlike bits(0), the single `[-1:0]` net). The
-            // callee is emitted with the symbolic length, so its `[0:k-1]` array
-            // and `[lo +: k]` slice are illegal SV at `k == 0`. Reject the
-            // instantiation; the fix is to make the callee `#[inline]` so the
-            // zero-length Vec flattens away in the splice (no module boundary).
-            if !callee_inline
-                && !vec0_reported
-                && grounded_has_zero_vec(db, krate, callee, &grounded)
-            {
-                vec0_reported = true;
-                report(format!(
-                    "instantiating `{name}`: a zero-length `Vec` cannot cross a \
-                     module boundary (the port would vanish) — make the callee \
-                     `#[inline]` so it flattens away"
-                ));
-            }
         }
     }
-}
-
-/// Does `ty` contain a `Vec` whose length grounds to exactly 0? (A port type at a
-/// monomorphisation — a zero-length Vec port is unrepresentable; see the caller.)
-fn grounded_has_zero_vec<'db>(
-    db: &'db dyn salsa::Database,
-    krate: SourceRoot,
-    def: DefId<'db>,
-    ty: &Type<'db>,
-) -> bool {
-    struct ZeroVec<'db> {
-        db: &'db dyn salsa::Database,
-        krate: SourceRoot,
-        def: DefId<'db>,
-        found: bool,
-    }
-    impl<'db> Folder<'db> for ZeroVec<'db> {
-        fn fold_type(&mut self, t: &Type<'db>) -> Type<'db> {
-            if let Type::Vec { len, .. } = t
-                && is_closed(len)
-                && eval_const(self.db, self.krate, self.def, len) == Some(0)
-            {
-                self.found = true;
-            }
-            super_fold_type(self, t)
-        }
-    }
-    let mut v = ZeroVec {
-        db,
-        krate,
-        def,
-        found: false,
-    };
-    v.fold_type(ty);
-    v.found
 }
 
 /// Is a recorded inner call already ground on its own (independent of any

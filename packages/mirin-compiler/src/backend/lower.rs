@@ -1330,18 +1330,17 @@ impl<'db> SvLower<'_, 'db> {
         format!("[{low_s} +: {width}]")
     }
 
-    /// Does a slice/slice-set width fold to exactly 0 at this instantiation? Used
-    /// by the compiler-applied zero guard on both sides: to skip a zero-width
-    /// slice-set drive, and to emit a zero-width slice READ as the empty
-    /// `undefined_vec` value (planning/slice_guards.md). Mirrors `slice_range_sv`'s
-    /// width computation (ascending, low-first).
-    fn slice_width_is_zero(
+    /// The (substituted) width `ConstArg` of a slice/slice-set, for this
+    /// instantiation. Mirrors `slice_range_sv`'s width computation (ascending,
+    /// low-first): the offset form's `width`, else `high - low` with elided ends
+    /// from the base length. Returns `None` if the base is neither bits nor vec.
+    fn slice_width_const(
         &self,
         base_ty: &Type<'db>,
         lo: Option<MExprId>,
         hi: Option<MExprId>,
         width: Option<MExprId>,
-    ) -> bool {
+    ) -> Option<ConstArg<'db>> {
         let w = match width {
             Some(w_e) => self.mir_const_arg(w_e),
             None => {
@@ -1351,23 +1350,102 @@ impl<'db> SvLower<'_, 'db> {
                         ..
                     } => n.clone(),
                     Type::Vec { len: n, .. } => n.clone(),
-                    _ => return false,
+                    _ => return None,
                 };
                 let low = lo.map(|e| self.mir_const_arg(e)).unwrap_or(ConstArg::Lit(0));
                 let high = hi.map(|e| self.mir_const_arg(e)).unwrap_or(n);
                 ConstArg::Op(ConstOp::Sub, Box::new(high), Box::new(low))
             }
         };
-        let w = subst_const_opt(&w, &self.self_subst);
-        crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &w) == Some(0)
+        Some(subst_const_opt(&w, &self.self_subst))
     }
 
-    /// The leaves of an **undefined** value of `ty` — the empty/zero-width result
-    /// of a slice (`undefined_vec`, planning/slice_guards.md). Each flattened leaf
-    /// is driven by SV `'x` ("never set"). A ground zero-length `Vec` flattens to
-    /// NO leaves, so an empty Vec value emits nothing at all; a `bits(0)` is the
-    /// single effective-0-bit leaf. The type is grounded through `self_subst`
-    /// first so a per-instance zero length is seen.
+    /// Does a slice/slice-set width fold to exactly 0 at this instantiation? Used
+    /// by the compiler-applied zero guard on both sides: to skip a zero-width
+    /// slice-set drive, and to emit a zero-width slice READ as the empty value.
+    fn slice_width_is_zero(
+        &self,
+        base_ty: &Type<'db>,
+        lo: Option<MExprId>,
+        hi: Option<MExprId>,
+        width: Option<MExprId>,
+    ) -> bool {
+        self.slice_width_const(base_ty, lo, hi, width)
+            .and_then(|w| crate::hir::const_eval::eval_const(self.db, self.krate, self.def, &w))
+            == Some(0)
+    }
+
+    /// Lower a SYMBOLIC-width slice read to a per-leaf `generate if` (the zero
+    /// guard for an unknown width — planning/slice_guards.md). Each base leaf
+    /// drives a fresh wire of the result-leaf type: the `width == 0` arm is the
+    /// empty value (`'0` / `'{default:'0}`), the else arm the `[lo +: w]`
+    /// part-select. SV §27.5 elaborates only the selected arm, so a parametric
+    /// module instantiated at length 0 never elaborates the out-of-range slice.
+    #[allow(clippy::too_many_arguments)]
+    fn slice_generate(
+        &mut self,
+        base: MExprId,
+        base_ty: &Type<'db>,
+        result_ty: &Type<'db>,
+        lo: Option<MExprId>,
+        hi: Option<MExprId>,
+        width: Option<MExprId>,
+        w: Option<ConstArg<'db>>,
+    ) -> Vec<(String, SvExpr)> {
+        let range = self.slice_range_sv(base_ty, lo, hi, width);
+        let base_leaves = self.expr_leaves(base);
+        let rty = ground_widths(
+            self.db,
+            self.krate,
+            self.def,
+            &subst_type(result_ty, &self.self_subst),
+        );
+        let result_leaves =
+            flatten_leaves(self.db, self.krate, self.def, &rty, true, &self.sig.generic_params);
+        let cond = SvExpr::Lit(format!(
+            "({} == 0)",
+            w.map(|w| self.render_const(&w)).unwrap_or_else(|| "0".to_owned())
+        ));
+        let label = self.fresh_block();
+        let mut then_items = Vec::new();
+        let mut else_items = Vec::new();
+        let mut out = Vec::new();
+        for (i, (suffix, e)) in base_leaves.into_iter().enumerate() {
+            let ty = result_leaves
+                .get(i)
+                .map(|l| l.ty.clone())
+                .unwrap_or_else(SvType::bit);
+            let name = join(&label, &suffix);
+            self.items.push(SvItem::Logic(SvLogicDecl {
+                ty: ty.clone(),
+                name: name.clone(),
+            }));
+            then_items.push(SvItem::Assign {
+                lhs: SvExpr::Ident(name.clone()),
+                rhs: zero_value_for(&ty),
+            });
+            else_items.push(SvItem::Assign {
+                lhs: SvExpr::Ident(name.clone()),
+                rhs: SvExpr::Lit(format!("{e}{range}")),
+            });
+            out.push((suffix, SvExpr::Ident(name)));
+        }
+        self.items.push(SvItem::GenerateIf(SvGenerateIf {
+            cond,
+            label: format!("{label}__g"),
+            then_items,
+            else_items,
+        }));
+        out
+    }
+
+    /// The leaves of the empty/zero-width value of result type `ty` — the value of
+    /// a zero-width slice (planning/slice_guards.md). Each flattened leaf is driven
+    /// by its uniform zero: `'{default: '0}` for an unpacked-array (`Vec`) leaf —
+    /// the array analog of `bits(0)`'s `'0` (a zero-length `Vec` is `[0:-1]`, a
+    /// degenerate net that cannot be a part-select but IS fillable by a default
+    /// pattern) — and `'0` for a scalar/packed leaf. The type is grounded through
+    /// `self_subst` first so a per-instance zero length is seen.
     fn undefined_vec_leaves(&mut self, ty: &Type<'db>) -> Vec<(String, SvExpr)> {
         let ty = ground_widths(
             self.db,
@@ -1377,7 +1455,7 @@ impl<'db> SvLower<'_, 'db> {
         );
         flatten_leaves(self.db, self.krate, self.def, &ty, true, &self.sig.generic_params)
             .into_iter()
-            .map(|leaf| (leaf.suffix, SvExpr::Lit("'x".to_owned())))
+            .map(|leaf| (leaf.suffix, zero_value_for(&leaf.ty)))
             .collect()
     }
 
@@ -2326,11 +2404,13 @@ impl<'db> SvLower<'_, 'db> {
                 let b = b.clone();
                 self.block_leaves(&b)
             }
-            // A slice (literal endpoints), per base leaf → a part-select. Type
-            // directed in BOTH endpoint order and SV range direction:
-            // `bits` is packed MSB:LSB (high-first: `lo`=high) → `[high-1:low]`;
-            // `Vec` is an unpacked `[0:N-1]` array (low-first: `lo`=low) →
-            // ascending `[low:high-1]`. One leaf for `bits`, N for a `Vec`.
+            // A slice, per base leaf → an indexed part-select `[lo +: w]`
+            // (ascending/low-first for both bits and Vec). Width-directed by the
+            // zero guard (planning/slice_guards.md): a width that grounds to 0 is
+            // the empty value (`'0` / `'{default:'0}`, no illegal `[lo +: 0]`); a
+            // SYMBOLIC width emits a `generate if` so the zero case is the empty
+            // value and the nonzero case the part-select (a parametric module
+            // instantiated at length 0 would otherwise be an out-of-range slice).
             MExprKind::Slice {
                 base,
                 lo,
@@ -2339,20 +2419,26 @@ impl<'db> SvLower<'_, 'db> {
             } => {
                 let (base, lo, hi, width) = (*base, *lo, *hi, *width);
                 let bt = self.mir.expr(base).ty.clone();
-                // Zero-width (an empty slice — generic tiling at its limit): the
-                // result is an empty value. For a `Vec` it flattens to NO leaves
-                // (no net); emit the undriven leaves of the result type rather than
-                // an illegal `[lo +: 0]` part-select. The read-side dual of the
-                // compiler-special slice-SET zero guard (planning/slice_guards.md).
-                if self.slice_width_is_zero(&bt, lo, hi, width) {
-                    let rty = self.mir.expr(m).ty.clone();
-                    return self.undefined_vec_leaves(&rty);
+                let rty = self.mir.expr(m).ty.clone();
+                let w = self.slice_width_const(&bt, lo, hi, width);
+                let w_val = w
+                    .as_ref()
+                    .and_then(|w| crate::hir::const_eval::eval_const(self.db, self.krate, self.def, w));
+                match w_val {
+                    // Ground zero: the empty value (no part-select).
+                    Some(0) => self.undefined_vec_leaves(&rty),
+                    // Ground nonzero: the plain part-select.
+                    Some(_) => {
+                        let range = self.slice_range_sv(&bt, lo, hi, width);
+                        self.expr_leaves(base)
+                            .into_iter()
+                            .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}{range}"))))
+                            .collect()
+                    }
+                    // Symbolic width: guard each leaf with a `generate if` so the
+                    // zero instantiation is total.
+                    None => self.slice_generate(base, &bt, &rty, lo, hi, width, w),
                 }
-                let range = self.slice_range_sv(&bt, lo, hi, width);
-                self.expr_leaves(base)
-                    .into_iter()
-                    .map(|(suffix, e)| (suffix, SvExpr::Lit(format!("{e}{range}"))))
-                    .collect()
             }
             // Scalars: a single empty-suffix leaf via the value twin.
             MExprKind::Number(..)
@@ -3662,14 +3748,6 @@ fn flatten_leaves_inner(
         // Struct-of-arrays (planning/vectors.md): one unpacked-array leaf
         // per ELEMENT-TYPE leaf — Vec(3, Packet) → v__valid[0:2] + ….
         Type::Vec { len, elem } => {
-            // A ground zero-length Vec has NO leaves — there is no SV net (an
-            // unpacked `[0:-1]` range is illegal). This is what makes a zero-width
-            // Vec slice / an empty Vec value (`undefined_vec`) total: the value
-            // flattens away entirely, so nothing is declared or driven
-            // (planning/slice_guards.md). A symbolic length never matches here.
-            if matches!(len, ConstArg::Lit(0)) {
-                return Vec::new();
-            }
             // The unpacked-array dimension. Share `width_expr` so a Vec length
             // and a scalar width render identically: literals verbatim, a bare
             // generic as an SV parameter, and a symbolic COMPOUND length
@@ -3775,6 +3853,18 @@ impl<'db> crate::hir::types::Folder<'db> for PromotedFolder<'_> {
             return ConstArg::Symbol(name.clone());
         }
         crate::hir::types::super_fold_const(self, c)
+    }
+}
+
+/// The uniform zero value for an SV leaf type: `'{default: '0}` for an
+/// unpacked-array leaf (a `Vec`; works at any length, including the degenerate
+/// `[0:-1]` zero-length), else the scalar/packed `'0`. The leaf-level analog of
+/// `bits(0)`'s `'0` for the zero-width slice guard (planning/slice_guards.md).
+fn zero_value_for(ty: &SvType) -> SvExpr {
+    if ty.unpacked.is_empty() {
+        SvExpr::Lit("'0".to_owned())
+    } else {
+        SvExpr::Lit("'{default: '0}".to_owned())
     }
 }
 

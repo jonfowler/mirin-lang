@@ -696,41 +696,6 @@ fn mono_check_decides_slice_bounds() {
     );
 }
 
-/// A zero-length `Vec` cannot cross a module boundary: a non-`#[inline]` generic
-/// instantiated so a Vec param/result grounds to length 0 is rejected (the port
-/// would vanish). The same callee marked `#[inline]` is clean — it splices, so
-/// the zero-length Vec flattens away (planning/slice_guards.md).
-#[test]
-fn mono_check_rejects_zero_vec_port() {
-    let bad = "fn head (const k: integer, v: Vec(4, uint(8))) -> Vec(k, uint(8)) { v[0..k] }\n\
-        fn use_zero (v: Vec(4, uint(8))) -> Vec(0, uint(8)) { head(v) }\n";
-    let mut db = RootDatabase::default();
-    let mut vfs = Vfs::new();
-    vfs.set_file_text(&mut db, "t.mrn", bad);
-    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
-    let diags = mono_check(&db, krate);
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.message().contains("head") && d.message().contains("zero-length")),
-        "expected a zero-Vec-port diagnostic: {:?}",
-        diags.iter().map(|d| d.message()).collect::<Vec<_>>()
-    );
-
-    // `#[inline]` splices — no module boundary, so the zero-length Vec flattens
-    // away and there is no diagnostic.
-    let good = "#[inline]\nfn head (const k: integer, v: Vec(4, uint(8))) -> Vec(k, uint(8)) { v[0..k] }\n\
-        fn use_zero (v: Vec(4, uint(8))) -> Vec(0, uint(8)) { head(v) }\n";
-    let mut db = RootDatabase::default();
-    let mut vfs = Vfs::new();
-    vfs.set_file_text(&mut db, "t.mrn", good);
-    let krate: SourceRoot = vfs.source_root(&mut db, "t.mrn");
-    assert!(
-        mono_check(&db, krate).is_empty(),
-        "an #[inline] callee should flatten the zero-length Vec away, no diagnostic"
-    );
-}
-
 /// `mono_check` composes one level: a bad width in an inner callee's signature
 /// (`inner: uint(k - 10)`), invisible in the wrapper's own signature
 /// (`wrap: uint(k) -> uint(k)`), is caught by substituting the wrapper's
