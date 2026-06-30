@@ -1,0 +1,15 @@
+[book]
+title = "Mirin Compiler Internals"
+authors = ["The Mirin developers"]
+description = "How the Mirin compiler is structured — its phases, its IRs, and the query engine that drives them."
+src = "src"
+
+[build]
+# Fail loudly on a SUMMARY entry with no file, rather than silently
+# regenerating an empty stub (which once littered src/ with orphan pages).
+create-missing = false
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/jonfowler/mirin-lang"
