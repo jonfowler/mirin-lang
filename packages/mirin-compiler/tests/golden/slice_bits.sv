@@ -2,9 +2,7 @@ module s (
     input  logic [15:0] x,
     output logic [3:0] result
 );
-    logic [15:0] __inl0__self;
-    assign __inl0__self = x;
-    logic [3:0] __inl0____block_0;
-    assign __inl0____block_0 = __inl0__self[4 +: 4];
-    assign result = __inl0____block_0;
+    logic [3:0] __block_0;
+    assign __block_0 = type(__block_0)'(x >> 4);
+    assign result = __block_0;
 endmodule

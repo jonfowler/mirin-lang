@@ -436,16 +436,22 @@ impl {type A: BitPack, type B: BitPack, type C: BitPack, type D: BitPack} BitPac
 // TARGET width `to` (it unifies trivially with the context; the delta `to - n`
 // is computed in the body). v1 is inference-only — `a.extend()` solves `to`
 // from the expected type. Every body drives the materialized result net (a real
-// wire of width `to`), so it casts against its own type: `type(${return})'(x)` is
-// a width coercion total even when `to` folds to 0, unlike the size cast `to'(x)`
-// or a `[to-1:0]` part-select (planning/.../zero-width-handling.md). extend grows
-// on the MSB side (zero/sign fill) and truncate drops the MSB side — both are that
-// MSB-aligned cast; the `_lsb` variants shift the LSB-aligned window into place.
+// wire of width `to`) and casts against its own type — total even when `to` folds
+// to 0, unlike the size cast `to'(x)` (illegal `0'(x)`) or a `[to-1:0]` part-select
+// (planning/.../zero-width-handling.md). extend grows on the MSB side (zero/sign
+// fill), truncate drops it; the `_lsb` variants shift the LSB-aligned window.
+//
+// Zero-width SOURCE (`n == 0`): a *widening* op reads `self`'s bits, so it must not
+// depend on the value of a zero-bit net — SV leaves that tool-defined, possibly X.
+// `extend`/`resize` force 0 with `(n != 0) ? cast : '0` (a zero-width value is the
+// empty sum of base powers: 0, signed or not). The others are already robust:
+// `extend_lsb`'s `<< (to-n)` shifts a zero-width operand fully out (→ 0), and
+// `truncate`/`truncate_lsb` read no bits above the result.
 
 #[inline]
 impl {const n: integer} uint(n) {
     fn extend {const to: integer} (self) -> uint(to) = verilog {
-        assign ${return} = type(${return})'(${self});
+        assign ${return} = (${n} != 0) ? type(${return})'(${self}) : '0;
     }
     fn truncate {const to: integer} (self) -> uint(to) = verilog {
         assign ${return} = type(${return})'(${self});
@@ -460,23 +466,20 @@ impl {const n: integer} uint(n) {
     fn truncate_lsb {const to: integer} (self) -> uint(to) = verilog {
         assign ${return} = type(${return})'(${self} >> (${n} - ${to}));
     }
-    // resize is bidirectional (extend OR truncate, MSB side). A *type* cast onto
-    // the result net `type(${return})'(self)` does both (zero-extends an unsigned
-    // value, truncates the high bits) AND stays total at width 0 — unlike the size
-    // cast `to'(self)`, which is an illegal `0'(self)` when `to` folds to 0
-    // (planning/.../zero-width-handling.md). resize_lsb (LSB-aligned bidirectional)
-    // needs direction-aware lowering and is deferred.
+    // resize is bidirectional (extend OR truncate, MSB side); the cast does both.
+    // resize_lsb (LSB-aligned bidirectional) needs direction-aware lowering, deferred.
     fn resize {const to: integer} (self) -> uint(to) = verilog {
-        assign ${return} = type(${return})'(${self});
+        assign ${return} = (${n} != 0) ? type(${return})'(${self}) : '0;
     }
 }
 
 #[inline]
 impl {const n: integer} sint(n) {
     // The cast onto the signed result net sign-extends a signed operand (extend)
-    // or keeps its low bits (truncate), staying signed throughout.
+    // or keeps its low bits (truncate), staying signed throughout. At `n == 0`
+    // there is no sign bit, so extend forces 0 (a zero-width sint is 0).
     fn extend {const to: integer} (self) -> sint(to) = verilog {
-        assign ${return} = type(${return})'(${self});
+        assign ${return} = (${n} != 0) ? type(${return})'(${self}) : '0;
     }
     fn truncate {const to: integer} (self) -> sint(to) = verilog {
         assign ${return} = type(${return})'(${self});
@@ -489,17 +492,15 @@ impl {const n: integer} sint(n) {
     fn truncate_lsb {const to: integer} (self) -> sint(to) = verilog {
         assign ${return} = type(${return})'(${self} >>> (${n} - ${to}));
     }
-    // The cast onto the signed result net sign-extends a signed operand and stays
-    // signed; the type-cast form is also total at width 0 (see uint::resize).
     fn resize {const to: integer} (self) -> sint(to) = verilog {
-        assign ${return} = type(${return})'(${self});
+        assign ${return} = (${n} != 0) ? type(${return})'(${self}) : '0;
     }
 }
 
 #[inline]
 impl {const n: integer} bits(n) {
     fn extend {const to: integer} (self) -> bits(to) = verilog {
-        assign ${return} = type(${return})'(${self});
+        assign ${return} = (${n} != 0) ? type(${return})'(${self}) : '0;
     }
     fn truncate {const to: integer} (self) -> bits(to) = verilog {
         assign ${return} = type(${return})'(${self});
@@ -511,87 +512,35 @@ impl {const n: integer} bits(n) {
         assign ${return} = type(${return})'(${self} >> (${n} - ${to}));
     }
     fn resize {const to: integer} (self) -> bits(to) = verilog {
-        assign ${return} = type(${return})'(${self});
+        assign ${return} = (${n} != 0) ? type(${return})'(${self}) : '0;
     }
-    // `lo.concat_hi(hi)` = SV `{hi, lo}` — `self` occupies the LOW bits, `hi`
-    // the high bits. The little-endian builder aggregate `pack` concatenates
-    // with (element 0 stays at the LSBs); kept as inline text until the
-    // `SvExpr::Concat` node lands (planning/pack_resize.md).
-    //
-    // Zero-width guard (planning/slice_guards.md): SV concat forbids a zero-width
-    // operand, so a `bits(0)` operand — common in generic `pack` of a zero-width
-    // element — would emit illegal `{x, <0-width>}`. Guard it with a `const if`:
-    // when either operand folds to width 0 the result is just the other operand,
-    // and `resize` re-types it to `bits(n + m)` (an identity width-cast at the
-    // taken arm, since `n + m` equals the surviving operand's width there). Every
-    // arm is declared `bits(n + m)`, so the `const if` node types cleanly (the
-    // `zero_bits{w}` trick — no divergent-arm typing).
-    fn concat_hi {const m: integer} (self, hi: bits(m)) -> bits(n + m) {
-        const if n == 0 {
-            const if m == 0 {
-                zero_bits{w = n + m}()
-            } else {
-                __resize_bits{n = m, to = n + m}(hi)
-            }
-        } else {
-            const if m == 0 {
-                __resize_bits{n = n, to = n + m}(self)
-            } else {
-                __concat{n = n, m = m}(self, hi)
-            }
-        }
+    // `lo.concat_hi(hi)` = SV `{hi, lo}` — `self` occupies the LOW `n` bits, `hi`
+    // the high `m`. Widen both to `n + m` (a cast onto the result net), OR `hi`
+    // shifted into the high range with `self` masked to the low range. The ranges
+    // are disjoint, so `|` reconstructs `{hi, self}`. Both sides stay correct when
+    // an operand is zero-width (a `bits(0)` from a generic `pack`) WITHOUT relying
+    // on the value of a zero-bit net — which SV leaves tool-defined and may be X:
+    //   - upper (`hi`, `m == 0`): `<< n` shifts an `n`-bit operand out entirely, so
+    //     `X << n == 0` — hi contributes nothing.
+    //   - lower (`self`, `n == 0`): the mask `~('1 << n)` is `~'1 == 0` at `n == 0`,
+    //     and `X & 0 == 0` — self contributes nothing. (At `n > 0` the mask is the
+    //     low-`n`-ones, redundant with the cast's zero-fill but harmless.)
+    // So a zero-width operand can never leak X into the other operand's bits
+    // (planning/.../zero-width-handling.md).
+    fn concat_hi {const m: integer} (self, hi: bits(m)) -> bits(n + m) = verilog {
+        assign ${return} = (type(${return})'(${hi}) << ${n})
+            | (type(${return})'(${self}) & ~(type(${return})'('1) << ${n}));
     }
-}
-
-// Raw concatenation, `{hi, lo}`, assuming both operands have width >= 1 (the
-// `concat_hi` guard handles a zero-width operand). `lo` occupies the low bits.
-#[inline]
-fn __concat {const n: integer, const m: integer} (lo: bits(n), hi: bits(m)) -> bits(n + m) = verilog {
-    assign ${return} = {${hi}, ${lo}};
-}
-
-// Identity-or-cast width coercion (`to'(x)`), used by `concat_hi`'s guard to
-// re-type the surviving operand to `bits(n + m)` when the other is zero-width. A
-// free fn (not a method) — Mirin has no `recv.method{generics}()` call syntax, so
-// the guard can't write `x.resize{to}()`. Both widths are >= 1 at every call site.
-#[inline]
-fn __resize_bits {const n: integer, const to: integer} (x: bits(n)) -> bits(to) = verilog {
-    assign ${return} = ${to}'(${x});
 }
 
 // ----- Slicing (planning/slice_guards.md) -----
-// The layout primitives are raw (no zero-width support); the zero-width guard is
-// a Mirin `const if` wrapping them, so a width that folds to 0 (generic code at
-// its limit) is total. `[..]` desugars to `Slice::slice` / `Slice::slice_from`.
-
-// Raw bit part-selects, `x[lo +: w]`, assuming `w >= 1` (the guard handles 0).
-// Two forms by the kind of `lo`: a constant low end (two-endpoint `x[a..b]`) and
-// a runtime base (offset `x[lo..+w]`, the mux-style slice). `w` is always const.
-#[inline]
-fn __slice_const {const W: integer, const lo: integer, const w: integer} (x: bits(W)) -> bits(w) = verilog {
-    assign ${return} = ${x}[${lo} +: ${w}];
-}
-#[inline]
-fn __slice_off {const W: integer, const w: integer, const L: integer} (x: bits(W), lo: uint(L)) -> bits(w) = verilog {
-    assign ${return} = ${x}[${lo} +: ${w}];
-}
-
-// A zero-width `bits` value (effective-0-bit; flattens to the uniform `[-1:0]`
-// leaf, not to *no* leaves — so nothing monomorphises on zero-ness).
-// `zero_bits{w}()` is a `w`-bit `'0` — valid for any `w`, but only ever taken at
-// `w == 0` (the slice/concat guards), where it is the effective-0-bit. Returning
-// `bits(w)` (not a concrete `bits(0)`) keeps the guard's two arms the SAME type,
-// so the `const if` node types as `bits(w)` instead of mistyping as `bits(0)` (no
-// divergent-arm typing needed).
-#[inline]
-fn zero_bits {const w: integer} () -> bits(w) = verilog {
-    assign ${return} = '0;
-}
-
-// Slicing as a trait (bits family — user bits-like types can `impl Slice`). The
-// zero-width guard is a `const if` here, so a width that folds to 0 is total and
-// the backend carries no zero-width logic. `[a..b]` desugars to `slice`,
+// A bit slice `x[lo +: w]` is a shift-then-truncate: shift `x` down so bit `lo`
+// lands at 0, then cast onto the `w`-bit result net (which drops the high bits).
+// This is total at `w == 0` (the cast, not a `[-1:0]` part-select) and uses no
+// part-select, so it carries no zero-width guard. `[a..b]` desugars to `slice`,
 // `[lo..+w]` to `slice_from` (planning/slice_guards.md).
+
+// Slicing as a trait (bits family — user bits-like types can `impl Slice`).
 trait Slice {
     fn slice {const lo: integer, const hi: integer} (self) -> bits(hi - lo);
     fn slice_from {const w: integer, const L: integer} (self, lo: uint(L)) -> bits(w);
@@ -599,18 +548,12 @@ trait Slice {
 
 #[inline]
 impl {const W: integer} Slice for bits(W) {
-    fn slice {const lo: integer, const hi: integer} (self) -> bits(hi - lo) {
-        const if hi - lo == 0 {
-            zero_bits{w = hi - lo}()
-        } else {
-            __slice_const{lo = lo, w = hi - lo}(self)
-        }
+    // Two-endpoint `x[lo..hi]`: take `hi - lo` bits at a constant `lo`.
+    fn slice {const lo: integer, const hi: integer} (self) -> bits(hi - lo) = verilog {
+        assign ${return} = type(${return})'(${self} >> ${lo});
     }
-    fn slice_from {const w: integer, const L: integer} (self, lo: uint(L)) -> bits(w) {
-        const if w == 0 {
-            zero_bits{w = w}()
-        } else {
-            __slice_off{w = w}(self, lo)
-        }
+    // Offset `x[lo..+w]`: the same shift-then-cast with a runtime base `lo`.
+    fn slice_from {const w: integer, const L: integer} (self, lo: uint(L)) -> bits(w) = verilog {
+        assign ${return} = type(${return})'(${self} >> ${lo});
     }
 }

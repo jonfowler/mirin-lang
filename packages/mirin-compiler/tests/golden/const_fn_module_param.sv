@@ -3,7 +3,7 @@ module sink #(parameter int W) (
     output logic [7:0] result
 );
     logic [7:0] __block_0;
-    assign __block_0 = type(__block_0)'(x);
+    assign __block_0 = (W != 0) ? type(__block_0)'(x) : '0;
     assign result = __block_0;
 endmodule
 
@@ -22,7 +22,7 @@ module top #(parameter int N) (
     localparam int w = sum_to(N);
     logic [w-1:0] wide;
     logic [w-1:0] __block_0;
-    assign __block_0 = type(__block_0)'(x);
+    assign __block_0 = (8 != 0) ? type(__block_0)'(x) : '0;
     assign wide = __block_0;
     sink #(
         .W(w)

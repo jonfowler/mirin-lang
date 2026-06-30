@@ -10,9 +10,11 @@ This file keeps only the design decisions that aren't captured in either.
 
 - `const if` as a language construct: grounded fold inline (the inline splice) and
   at `mir_of`, symbolic → `SvItem::GenerateIf`. (`comptime_if.md` is the spec.)
-- Prelude guards in `prelude.mrn`: `__slice_const`/`__slice_off`/`__concat` raw
-  primitives + `zero_bits {const w}() -> bits(w)`, wrapped in `const if w == 0`
-  guards; `concat_hi` likewise. `resize` needs none.
+- Prelude bits family in `prelude.mrn`: slices, `concat_hi`, and the resize family
+  lower to width-cast / shift forms cast onto the materialized result net, total at
+  width 0 *by construction* — no raw primitives, no `const if w == 0` guards.
+  (These were originally `const if`-guarded `__slice_*`/`__concat` + `zero_bits`
+  primitives; superseded by the shift forms — see zero-width-handling.md.)
 - Slice **set** zero guard (compiler-special, an lvalue) and **Vec** slice
   zero/symbolic handling (backend `slice_generate` + `'{default: '0}`).
 - Bounds: eager const check in `infer` (`SliceOutOfBounds`); symbolic-but-grounding
@@ -39,8 +41,9 @@ for the implementation.
   Unifying the two under one trait needs an associated result type (deferred with
   the rest of associated types — `pack_resize.md`). `x[a..b]` desugars to the
   method either way.
-- **Lowering form `[lo +: w]` everywhere** (no `[msb:lo]`), **ascending/low-first**
-  for both `bits` and `Vec`.
+- **Lowering: bits slices are a shift-then-cast** (`type(result)'(x >> lo)`,
+  const or runtime `lo`); the backend `Slice` node (Vec + elided) uses the
+  ascending `[lo +: w]` part-select (no `[msb:lo]`), **low-first**.
 - **Where checks live.** Direction + const-endpoint ordering → `infer`. Bounds:
   const → `infer`, symbolic-but-grounding → `mono_check` (a recorded residual). A
   `const if` is a *call-site* property, so there is no per-def `inline_check`

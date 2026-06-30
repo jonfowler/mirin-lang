@@ -22,9 +22,9 @@ module adder_tree #(parameter int N) (
     localparam int w = headroom(N);
     logic [w-1:0] wide;
     logic [w-1:0] __block_1;
-    assign __block_1 = type(__block_1)'(acc);
+    assign __block_1 = (8 != 0) ? type(__block_1)'(acc) : '0;
     assign wide = __block_1;
     logic [7:0] __block_2;
-    assign __block_2 = type(__block_2)'(wide);
+    assign __block_2 = (w != 0) ? type(__block_2)'(wide) : '0;
     assign result = __block_2;
 endmodule

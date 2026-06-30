@@ -34,52 +34,61 @@ Represent a zero-width value as a **degenerate-but-real net**, and guard only th
   array analog of `'0` — plain `'0` type-errors on it and `'{}` crashes
   verilator).
 
-- **Guards on layout ops.** Three positions are *not* tolerant, and they are
-  exactly the producers we guard: a part-select `x[lo +: 0]` is an out-of-range
-  **error**; a concat operand `{a, <0-width>}` *miscompiles* (verilator reads the
-  `[-1:0]` operand as a 2-bit replicate, `WIDTHTRUNC`); and a zero-width drive
-  (slice set) must write nothing rather than emit a degenerate part-select. Two
-  mechanisms handle them:
-  1. *Prelude `const if`* for the Mirin-expressed ops (`prelude.mrn`). The raw
-     primitives (`__slice_const`, `__slice_off`, `__concat`) assume width ≥ 1; a
-     `const if w == 0 { zero_bits{w}() } else { <primitive> }` wraps each. The
-     empty value is `zero_bits {const w}() -> bits(w)` — a `w`-bit `'0`, only ever
-     taken at `w == 0`. It returns `bits(w)` (not `bits(0)`) so both arms of the
-     `const if` share a type — no divergent-arm typing. A *symbolic* width lowers
-     the `const if` to a `generate if` (SV §27.5 elaborates only the taken arm).
-  2. *Compiler-special* for constructs that aren't plain values. The slice **set**
-     is an lvalue: a grounded zero-width drive is skipped (drives nothing), the
-     dual of the read guard. **Vec** slices (multi-leaf, unpacked) are handled in
-     the backend: ground-zero emits the empty value, symbolic emits a per-leaf
-     `generate if`.
+- **Producers stay total — and value-correct — by construction.** Two hazards at
+  width 0. *Legality:* a size cast `to'(x)` is an illegal `0'(x)`, a `[lo +: 0]`
+  part-select is out-of-range, `[hi:lo]` reverses, a concat operand `{a, <0-width>}`
+  miscompiles. *Value:* a zero-width net has no defined value — SV leaves widening
+  one tool-defined, possibly **X** — so an op that *reads* a zero-width source must
+  not depend on it. Each bits-family op is lowered to arithmetic that is total at 0
+  *and* never trusts a zero-bit value, cast onto the op's result **net** (a
+  statement-form inline body materializes a real wire of its result type):
+  - **truncate / truncate_lsb** → the width cast `type(result)'(x)` (`>>` first for
+    the lsb form): the zero-width case is the *result*, which reads no bits.
+  - **extend / resize** → `(n != 0) ? type(result)'(x) : '0`. The cast does the
+    width coercion (zero/sign-extend or truncate); when the *source* is zero-width
+    (`n == 0`) the result is forced to `'0` — a zero-width value is the empty sum of
+    base powers, i.e. 0, signed or not — without reading the zero-bit net.
+  - **extend_lsb** → `type(result)'(x) << (to-n)`: at `n == 0` the `<< (to-n)`
+    moves the (zero-width) operand fully out, so it is 0 whatever its bits.
+  - **bit slice** `x[lo +: w]` → `type(result)'(x >> lo)` (`lo` const or runtime):
+    shift then truncate; `x` is a real source, the zero-width is only the result.
+  - **concat_hi** `{hi, lo}` →
+    `(type(result)'(hi) << n) | (type(result)'(lo) & ~('1 << n))`. Both operands
+    can be zero-width without leaking a (possibly X) value into the other's range:
+    the high operand is shifted out when `m == 0` (`X << n == 0`), and the low
+    operand is masked — `~('1 << n)` is 0 at `n == 0`, and `X & 0 == 0`. At `n > 0`
+    the mask is the low-`n`-ones (redundant with the cast's zero-fill, harmless).
 
-The **resize family** (`resize`, `extend`, `truncate`, `extend_lsb`,
-`truncate_lsb`) needs no `const if` — but not because its old form was total. The
-naive lowerings all break at width 0: a size cast `to'(x)` is an illegal `0'(x)`,
-a `[to-1:0]` part-select reverses, a `{(to-n){…}}` replicate goes zero-count. The
-fix routes each through its result **net**: a statement-form inline body
-materializes a real wire of its result type, so the body can name it. The
-MSB-aligned ops (`resize`/`extend`/`truncate`) become the type cast
-`type(result)'(x)`, which coerces width identically (zero/sign-extend or truncate)
-yet stays legal at zero width. The LSB-aligned ops shift the window into place —
-`extend_lsb` is `type(result)'(x) << (to-n)`, `truncate_lsb` is
-`type(result)'(x >> (n-to))` — a shift, never a reversed part-select, so both are
-total at width 0 too.
+- **Two cases that aren't a single packed cast** keep a structural lowering:
+  - **Vec slices** (multi-leaf, unpacked) and **elided** bit slices stay in the
+    backend `Slice` node: ground-zero emits the empty value, a symbolic width
+    emits a per-leaf `generate if` (SV §27.5 elaborates only the taken arm).
+  - **slice set** is an lvalue: a grounded zero-width drive is skipped (drives
+    nothing) — the dual of the read.
+
+(Cosmetic edge: a bit slice of a 1-bit value at its top — `x[1..1]`, `W==1` — emits
+`x >> 1`, which trips a `WIDTHEXPAND` lint at that one degenerate instantiation;
+the result is still a correct zero-width `'0`. Narrower than `ASCRANGE` and absent
+from the corpus.)
 
 ## Why the surface area is small
 
-The guard sits at the *producer*. The moment a layout op would yield zero width,
-it yields a representable degenerate net instead. Every *consumer* — arithmetic,
-comparison, registers, instance hookup, port emission, equation wiring — then sees
-an ordinary (degenerate) net, not a special "absent" case. So:
+The work sits at the *producer*. The moment a layout op would yield zero width it
+yields a representable degenerate net instead — by construction (a width cast /
+shift that is total at 0), not by a guard wrapped around a fragile primitive.
+Every *consumer* — arithmetic, comparison, registers, instance hookup, port
+emission, equation wiring — then sees an ordinary (degenerate) net, not a special
+"absent" case. So:
 
 - No operator special-cases zero width (`+`, `==`, `reg`, … are untouched). Only
-  the handful of layout ops that actually *produce* zero width carry a guard.
+  the handful of layout ops that actually *produce* zero width carry any
+  zero-width logic.
 - No type-system change: there is no special `bits(0)` type, and zero-width is not
   a distinct case in inference or monomorphisation. Bounds checks already treat
   width 0 as legal (only `< 0` is rejected).
-- The guards live in one place each: `prelude.mrn` for the bits family, and two
-  backend arms (slice read, slice set) for the rest.
+- The zero-width logic lives in two places: `prelude.mrn` (the bits family — cast
+  and shift forms, total at 0 by construction) and the backend `Slice` node (Vec
+  and elided slices, slice set).
 
 Keeping the net rather than dropping it to "no net" is also what lets a
 zero-width value cross a module boundary (see *The problem*): a degenerate
@@ -91,8 +100,9 @@ The degenerate ranges trip a verilator lint that must be suppressed project-wide
 `ASCRANGE` (the `[-1:0]` / `[0:-1]` ranges). This is cosmetic for our intentional
 zero-width nets, but suppressing it globally means a *genuinely* mis-ordered range
 elsewhere would not be flagged. It is relatively safe because the compiler never
-emits `[a:b]`-style ranges otherwise (slices lower to `[lo +: w]`), so the only
-ascending ranges in generated SV are the intentional zero-width ones.
+emits a descending `[a:b]` range otherwise (bits slices lower to a shift; the
+backend `Slice` node uses the ascending `[lo +: w]` form), so the only ascending
+ranges in generated SV are the intentional zero-width ones.
 
 Note we do **not** need `-Wno-UNDRIVEN`: the empty values are *driven* (`'0` /
 `'{default: '0}`), not left undriven. Driving was the deciding factor in choosing

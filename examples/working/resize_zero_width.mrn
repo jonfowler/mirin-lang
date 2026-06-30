@@ -7,8 +7,9 @@ fn to_empty(x: uint(8)) -> uint(0) {
     x.resize()
 }
 
-// The reverse — resizing FROM a zero-width source up to a real width — is a plain
-// zero-extend (`N'(<0-width>)` is already total, unlike `0'(x)`).
+// The reverse — resizing FROM a zero-width source up to a real width — yields 0,
+// the empty sum of base powers. `resize`/`extend` force this with `(n != 0) ? cast
+// : '0` rather than trusting the value of a zero-bit net (tool-defined, maybe X).
 fn from_empty(x: bits(8)) -> bits(4) {
     x[4..4].resize()
 }

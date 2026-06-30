@@ -4,7 +4,7 @@ module widen (
     output logic [15:0] result
 );
     logic [15:0] __block_0;
-    assign __block_0 = type(__block_0)'(a);
+    assign __block_0 = (8 != 0) ? type(__block_0)'(a) : '0;
     assign result = __block_0;
 endmodule
 
@@ -25,7 +25,7 @@ module sign_widen (
     output logic signed [15:0] result
 );
     logic signed [15:0] __block_0;
-    assign __block_0 = type(__block_0)'(a);
+    assign __block_0 = (8 != 0) ? type(__block_0)'(a) : '0;
     assign result = (__block_0 + b);
 endmodule
 
@@ -55,7 +55,7 @@ module resize_up (
     output logic [11:0] result
 );
     logic [11:0] __block_0;
-    assign __block_0 = type(__block_0)'(a);
+    assign __block_0 = (8 != 0) ? type(__block_0)'(a) : '0;
     assign result = __block_0;
 endmodule
 
@@ -65,6 +65,6 @@ module resize_down (
     output logic signed [3:0] result
 );
     logic signed [3:0] __block_0;
-    assign __block_0 = type(__block_0)'(a);
+    assign __block_0 = (8 != 0) ? type(__block_0)'(a) : '0;
     assign result = __block_0;
 endmodule
