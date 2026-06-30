@@ -1,0 +1,18 @@
+// `let x;` (declaration-only, no initialiser) is a forward-scoped signal node
+// driven by a later equation — the let-scoped cousin of `var`
+// (planning/cycles_and_scoping.md). Same drivable-node semantics as `var`,
+// including a feedback cycle through `.reg`; the only difference is scope: a
+// `let` decl enters scope at its line (forward), where a `var` is block-hoisted.
+fn counter {dom clk: Clock, rstn: Reset @clk = high} () -> uint(8) @clk {
+    let count: uint(8) @clk;
+    count = (count + 1).reg(rstn, 0);
+    count
+}
+
+// Combinational use: a declaration up front, driven below — handy when the
+// driving equation reads later bindings.
+fn twice(a: uint(8)) -> uint(8) {
+    let y: uint(8);
+    y = a + a;
+    y
+}

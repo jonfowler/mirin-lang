@@ -41,6 +41,30 @@ The combined form is purely syntactic sugar: it desugars to the declaration foll
 
 **Single-assignment rule:** every `var` must have exactly one assignment in the block. An assignment is either an explicit equation (`x = expr`), a source connection (`output => x`), or the initializer in a combined `var x = expr` declaration. Zero assignments is an undriven-signal error. Two assignments is a multiple-driver error. Both checks are enforced at structural checking time.
 
+### `let x;` — declaration-only binding (the let-scoped `var`)
+
+A `let` may omit its initialiser: `let x;` or `let x: T;` declares a signal node
+without giving it a value, exactly like a `var`, and a later equation drives it:
+
+```rust
+let count: uint[8] @clk;
+count = (count + 1).reg{rstn}(0);
+```
+
+This is the same drivable node as `var` — it participates in the equation system,
+may be driven cyclically (the `.reg` feedback above reads `count`), and obeys the
+same single-assignment rule. The **only** difference from `var` is scope: a
+declaration-only `let` enters scope at its line (forward-only, like any `let`),
+where a `var` is block-hoisted by the pre-scan. Use `var` when the name must be
+visible before its declaration (mutual structural feedback); use `let x;` for the
+common case where the declaration precedes its equation and forward scope is
+enough — it keeps the "declare where you use it" reading without hoisting every
+node to the top of the block.
+
+A declaration-only `let` needs a plain name: destructuring (`let (a, b);`) has no
+value to project and is rejected. The two forms desugar to the same `Var` node;
+they differ only in when the name enters scope.
+
 ## Why the two forms are different
 
 `let` and `var` are not interchangeable:

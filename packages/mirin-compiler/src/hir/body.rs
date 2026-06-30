@@ -1183,7 +1183,6 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 });
             }
             "let_statement" => {
-                let value = self.lower_field_expr(node, "value", source);
                 let lookup = |n: &str| self.lookup_local(n);
                 let mut unres = Vec::new();
                 let declared_ty = node.child_by_field_name("type").map(|t| {
@@ -1199,17 +1198,49 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     )
                 });
                 self.diag_unresolved_types(unres);
-                if let Some(pat) = node.child_by_field_name("pattern") {
-                    self.bind_pattern(&pat, source, declared_ty, value, &mut block.stmts);
-                    // `let mut x` — mark the freshly bound bare-name local mutable
-                    // (the most recent `Stmt::Let`). `mut` on a destructuring
-                    // pattern is not meaningful and is ignored.
-                    if node.child_by_field_name("modifier").is_some()
-                        && pat.kind() != "tuple_pattern"
-                        && pat.kind() != "struct_pattern"
-                        && let Some(Stmt::Let { local, .. }) = block.stmts.last()
-                    {
-                        self.locals[local.0 as usize].mutable = true;
+                let Some(pat) = node.child_by_field_name("pattern") else {
+                    return;
+                };
+                match node.child_by_field_name("value") {
+                    // `let x = expr` — a sequential binding (shadows).
+                    Some(v) => {
+                        let value = self.lower_expr(&v, source);
+                        self.bind_pattern(&pat, source, declared_ty, value, &mut block.stmts);
+                        // `let mut x` — mark the freshly bound bare-name local
+                        // mutable (the most recent `Stmt::Let`). `mut` on a
+                        // destructuring pattern is not meaningful and is ignored.
+                        if node.child_by_field_name("modifier").is_some()
+                            && pat.kind() != "tuple_pattern"
+                            && pat.kind() != "struct_pattern"
+                            && let Some(Stmt::Let { local, .. }) = block.stmts.last()
+                        {
+                            self.locals[local.0 as usize].mutable = true;
+                        }
+                    }
+                    // `let x;` / `let x: T;` — a declaration-only binding: a
+                    // forward-scoped signal node driven by a later equation, the
+                    // let-scoped cousin of `var` (planning/cycles_and_scoping.md).
+                    // It is a `Var` node (same equation/driver machinery), but
+                    // introduced HERE rather than block-hoisted, so it has `let`'s
+                    // forward scope. Destructuring needs a value, so a non-name
+                    // pattern is rejected.
+                    None => {
+                        if pat.kind() == "tuple_pattern" || pat.kind() == "struct_pattern" {
+                            self.diag_at(
+                                &pat,
+                                BodyDiagnosticKind::Unsupported {
+                                    what: "a declaration-only `let` needs a plain name \
+                                           (destructuring requires an initialiser)"
+                                        .to_owned(),
+                                },
+                            );
+                            return;
+                        }
+                        let name = node_text(&pat, source);
+                        let span = self.rel_span(&pat);
+                        let local =
+                            self.alloc_local(&name, LocalKind::Var, declared_ty, span);
+                        block.stmts.push(Stmt::VarDecl { local });
                     }
                 }
             }

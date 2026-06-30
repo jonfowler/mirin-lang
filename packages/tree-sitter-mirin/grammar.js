@@ -538,8 +538,11 @@ module.exports = grammar({
         optional(field("modifier", "mut")),
         field("pattern", $._pattern),
         optional(seq(":", field("type", $._type))),
-        "=",
-        field("value", $.expression),
+        // The initialiser is optional: `let x;` / `let x: T;` is a
+        // declaration-only binding — a forward-scoped signal node driven by a
+        // later equation (`let x; x = x.reg(…)`), the let-scoped cousin of `var`
+        // (planning/cycles_and_scoping.md).
+        optional(seq("=", field("value", $.expression))),
         ";",
       ),
 

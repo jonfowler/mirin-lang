@@ -465,6 +465,59 @@ fn f {dom clk: Clock} (x: uint(8) @clk) {
             (path_expression
               segment: (identifier))))))))
 
+========================================
+declaration-only let (no initialiser)
+========================================
+
+fn f(a: uint(8)) -> uint(8) {
+  let bare;
+  let count: uint(8);
+  count = a;
+  count
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (identifier)
+    parameters: (parameter_section
+      (parameter
+        name: (identifier)
+        type: (type_expression
+          name: (identifier)
+          (type_index
+            (type_argument
+              (number))))))
+    return_type: (return_type_expression
+      name: (identifier)
+      (type_index
+        (type_argument
+          (number))))
+    body: (block
+      (statement
+        (let_statement
+          pattern: (identifier)))
+      (statement
+        (let_statement
+          pattern: (identifier)
+          type: (type_expression
+            name: (identifier)
+            (type_index
+              (type_argument
+                (number))))))
+      (statement
+        (assignment_statement
+          left: (expression
+            (path_expression
+              segment: (identifier)))
+          right: (expression
+            (path_expression
+              segment: (identifier)))))
+      tail: (expression
+        (path_expression
+          segment: (identifier))))))
+
 ================================================================================
 record constructor with = fields and => binding
 ================================================================================

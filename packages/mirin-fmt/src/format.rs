@@ -713,7 +713,6 @@ impl<'a> Formatter<'a> {
 
     fn let_stmt(&self, n: Node) -> Doc {
         let pattern = self.doc(self.field(n, "pattern").unwrap());
-        let value = self.doc(self.field(n, "value").unwrap());
         let kw = if self.field(n, "modifier").is_some() {
             "let mut "
         } else {
@@ -723,7 +722,11 @@ impl<'a> Formatter<'a> {
         if let Some(ty) = self.field(n, "type") {
             parts.push(concat([text(": "), self.doc(ty)]));
         }
-        parts.extend([text(" = "), value, text(";")]);
+        // The initialiser is optional: `let x;` is a declaration-only binding.
+        if let Some(val) = self.field(n, "value") {
+            parts.push(concat([text(" = "), self.doc(val)]));
+        }
+        parts.push(text(";"));
         concat(parts)
     }
 

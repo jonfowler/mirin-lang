@@ -79,9 +79,11 @@ fn sum (v: Vec(N, uint(8))) -> uint(8) {
 
 This does **not** compile, for three independent reasons, in increasing depth:
 
-1. **Syntax.** `let acc : Vec(N+1, uint(8));` (uninitialised `let`) is a hard
-   syntax error; uninitialised declarations must be `var`. And `0..N` isn't an
-   accepted `for` range — you need `range(n)` or `.enumerate()`.
+1. **Syntax.** `0..N` isn't an accepted `for` range — you need `range(n)` or
+   `.enumerate()`. (An uninitialised `let acc : Vec(N+1, uint(8));` is *no longer*
+   a syntax error — it is now a declaration-only `let`, a forward-scoped `var`;
+   see planning/cycles_and_scoping.md. But it is a drivable signal node, not a
+   loop-carried mutable binding, so it doesn't change this section's conclusion.)
 
 2. **`param` is type-level only.** Rewriting to `var acc` + `param n: integer`,
    the param works in *type* position (`Vec(n+1, …)`) but `range(n)` and the
