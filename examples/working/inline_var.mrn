@@ -1,0 +1,16 @@
+// A Mirin-bodied `#[inline]` fn may declare a combinational `var`: the splice
+// emits the var's decl + driving equations into the caller under a fresh prefix,
+// exactly as at module top level (planning/inline_bodies.md). Clocked feedback
+// (`.reg`/`when`) is still rejected by `inline_check`, so only combinational vars
+// reach a splice. `var` is what lets an inline body build a value incrementally —
+// the enabler for the generic-length aggregate impls (e.g. `Vec` slicing).
+#[inline]
+fn with_var(a: uint(8)) -> uint(8) {
+    var x: uint(8);
+    x = a + a;
+    x
+}
+
+fn top(a: uint(8)) -> uint(8) {
+    with_var(a)
+}

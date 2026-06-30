@@ -798,9 +798,6 @@ pub enum InlineDiagnosticKind {
     /// An `out` parameter on an inline body (no instance to carry the
     /// out-connection; deferred).
     OutParam { name: String },
-    /// A `var` (cyclic-equation node) in an inline body — only `let`-style
-    /// combinational bodies splice in v1.
-    Var { name: String },
     /// An `integer`-typed value parameter — compile-time only, not a wire; v1
     /// binds value params as caller-side wires, so an integer param is deferred.
     IntegerParam { name: String },
@@ -820,12 +817,6 @@ impl InlineDiagnostic {
             }
             InlineDiagnosticKind::OutParam { name } => {
                 format!("an `#[inline]` fn cannot have an `out` parameter (`{name}`) yet")
-            }
-            InlineDiagnosticKind::Var { name } => {
-                format!(
-                    "an `#[inline]` fn cannot declare `var {name}` yet \
-                     (only `let`-style combinational bodies splice)"
-                )
             }
             InlineDiagnosticKind::IntegerParam { name } => {
                 format!(
@@ -897,19 +888,11 @@ pub fn inline_check<'db>(
         }
     }
 
-    // `var` nodes: only `let`-style combinational bodies splice in v1. The
-    // synthetic result place (a `var`-kind local carrying `result_base`, from a
-    // desugared whole-result equation) is not a user `var` — skip it.
-    for (i, l) in body.locals().iter().enumerate() {
-        if l.kind == LocalKind::Var && l.result_base.is_none() {
-            out.push(InlineDiagnostic {
-                span: body.local_span(LocalId(i as u32)),
-                kind: InlineDiagnosticKind::Var {
-                    name: l.name.clone(),
-                },
-            });
-        }
-    }
+    // A combinational `var` (cyclic-equation node) splices fine: the nested
+    // lower emits its decl + driving equations into the caller under a fresh
+    // prefix, exactly as at module top level. Clocked feedback is caught
+    // separately below (the `.reg`/`when` check), so only combinational vars
+    // reach a splice — no less sound here than in any module body.
 
     // Clocked state: a value-form `when` or a `.reg` is an expr in the arena; a
     // statement-form `when` is a `Stmt::When` reached by walking the block tree.
@@ -1236,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_check_rejects_var_and_integer_param() {
+    fn inline_check_rejects_integer_param_but_allows_var() {
         let mut db = RootDatabase::default();
         let mut vfs = Vfs::new();
         let krate = load(
@@ -1245,17 +1228,33 @@ mod tests {
             "#[inline]\nfn f(a: uint(8), n: integer) -> uint(8) { var x: uint(8); x = a; x }",
         );
         let ds = inline_diags(&db, krate, "f");
+        // A combinational `var` is now spliceable — no diagnostic for it.
         assert!(
-            ds.iter()
-                .any(|d| matches!(&d.kind, InlineDiagnosticKind::Var { name } if name == "x")),
+            ds.iter().all(|d| !matches!(
+                &d.kind,
+                InlineDiagnosticKind::IntegerParam { name } if name == "x"
+            )),
             "{ds:?}"
         );
+        // The `integer` param is still rejected (compile-time only, not a wire).
         assert!(
             ds.iter().any(
                 |d| matches!(&d.kind, InlineDiagnosticKind::IntegerParam { name } if name == "n")
             ),
             "{ds:?}"
         );
+    }
+
+    #[test]
+    fn inline_check_allows_combinational_var_body() {
+        let mut db = RootDatabase::default();
+        let mut vfs = Vfs::new();
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "#[inline]\nfn f(a: uint(8)) -> uint(8) { var x: uint(8); x = a; x }",
+        );
+        assert!(inline_diags(&db, krate, "f").is_empty());
     }
 
     #[test]
