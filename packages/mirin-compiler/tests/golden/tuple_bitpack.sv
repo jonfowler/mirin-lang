@@ -78,11 +78,17 @@ module Tuple__BitPack__pack__uint8__uint4 (
     input  logic [3:0] self__1,
     output logic [11:0] result
 );
+    logic [7:0] __block_1;
+    assign __block_1 = self__0;
     logic [7:0] __inl0__self;
-    assign __inl0__self = (self__0);
+    assign __inl0__self = __block_1;
+    logic [3:0] __block_2;
+    assign __block_2 = self__1;
     logic [3:0] __inl0__hi;
-    assign __inl0__hi = (self__1);
-    assign result = ({__inl0__hi, __inl0__self});
+    assign __inl0__hi = __block_2;
+    logic [11:0] __inl0____block_0;
+    assign __inl0____block_0 = {__inl0__hi, __inl0__self};
+    assign result = __inl0____block_0;
 endmodule
 
 module Tuple__BitPack__pack__uint8__uint4__bool (
@@ -91,15 +97,25 @@ module Tuple__BitPack__pack__uint8__uint4__bool (
     input  logic self__2,
     output logic [12:0] result
 );
+    logic [7:0] __block_2;
+    assign __block_2 = self__0;
     logic [7:0] __inl1__self;
-    assign __inl1__self = (self__0);
+    assign __inl1__self = __block_2;
+    logic [3:0] __block_3;
+    assign __block_3 = self__1;
     logic [3:0] __inl1__hi;
-    assign __inl1__hi = (self__1);
+    assign __inl1__hi = __block_3;
+    logic [11:0] __inl1____block_0;
+    assign __inl1____block_0 = {__inl1__hi, __inl1__self};
     logic [11:0] __inl0__self;
-    assign __inl0__self = ({__inl1__hi, __inl1__self});
+    assign __inl0__self = __inl1____block_0;
+    logic [0:0] __block_4;
+    assign __block_4 = self__2;
     logic [0:0] __inl0__hi;
-    assign __inl0__hi = (self__2);
-    assign result = ({__inl0__hi, __inl0__self});
+    assign __inl0__hi = __block_4;
+    logic [12:0] __inl0____block_0;
+    assign __inl0____block_0 = {__inl0__hi, __inl0__self};
+    assign result = __inl0____block_0;
 endmodule
 
 module Tuple__BitPack__unpack__uint8__uint4 (
@@ -108,11 +124,19 @@ module Tuple__BitPack__unpack__uint8__uint4 (
     output logic [3:0] result__1
 );
     logic [7:0] ea;
-    assign ea = (b[8 - 1 : 0]);
+    logic [7:0] __block_0;
+    assign __block_0 = type(__block_0)'(b);
+    assign ea = __block_0;
     logic [3:0] eb;
-    assign eb = (b[12 - 1 : 12 - 4]);
-    assign result__0 = (ea);
-    assign result__1 = (eb);
+    logic [3:0] __block_1;
+    assign __block_1 = type(__block_1)'(b >> (12 - 4));
+    assign eb = __block_1;
+    logic [7:0] __block_2;
+    assign __block_2 = ea;
+    logic [3:0] __block_3;
+    assign __block_3 = eb;
+    assign result__0 = __block_2;
+    assign result__1 = __block_3;
 endmodule
 
 module Tuple__BitPack__unpack__uint8__uint4__bool (
@@ -122,14 +146,28 @@ module Tuple__BitPack__unpack__uint8__uint4__bool (
     output logic result__2
 );
     logic [7:0] ea;
-    assign ea = (b[8 - 1 : 0]);
+    logic [7:0] __block_0;
+    assign __block_0 = type(__block_0)'(b);
+    assign ea = __block_0;
     logic [4:0] r1;
-    assign r1 = (b[13 - 1 : 13 - 5]);
+    logic [4:0] __block_1;
+    assign __block_1 = type(__block_1)'(b >> (13 - 5));
+    assign r1 = __block_1;
     logic [3:0] eb;
-    assign eb = (r1[4 - 1 : 0]);
+    logic [3:0] __block_2;
+    assign __block_2 = type(__block_2)'(r1);
+    assign eb = __block_2;
     logic [0:0] ec;
-    assign ec = (r1[5 - 1 : 5 - 1]);
-    assign result__0 = (ea);
-    assign result__1 = (eb);
-    assign result__2 = (ec);
+    logic [0:0] __block_3;
+    assign __block_3 = type(__block_3)'(r1 >> (5 - 1));
+    assign ec = __block_3;
+    logic [7:0] __block_4;
+    assign __block_4 = ea;
+    logic [3:0] __block_5;
+    assign __block_5 = eb;
+    logic __block_6;
+    assign __block_6 = ec;
+    assign result__0 = __block_4;
+    assign result__1 = __block_5;
+    assign result__2 = __block_6;
 endmodule

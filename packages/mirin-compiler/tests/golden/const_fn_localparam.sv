@@ -12,6 +12,10 @@ module widen #(parameter int N) (
     endfunction
     localparam int w = sum_to(N);
     logic [w-1:0] tmp;
-    assign tmp = (w'(x));
-    assign result = (8'(tmp));
+    logic [w-1:0] __block_0;
+    assign __block_0 = type(__block_0)'(x);
+    assign tmp = __block_0;
+    logic [7:0] __block_1;
+    assign __block_1 = type(__block_1)'(tmp);
+    assign result = __block_1;
 endmodule

@@ -7,5 +7,7 @@ module s (
     assign __inl0__self = x;
     logic [3:0] __inl0__lo;
     assign __inl0__lo = i;
-    assign result = (__inl0__self[__inl0__lo +: 4]);
+    logic [3:0] __inl0____block_0;
+    assign __inl0____block_0 = __inl0__self[__inl0__lo +: 4];
+    assign result = __inl0____block_0;
 endmodule

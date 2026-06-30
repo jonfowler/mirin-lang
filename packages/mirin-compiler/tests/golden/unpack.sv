@@ -3,7 +3,9 @@ module as_uint (
     input  logic [7:0] b,
     output logic [7:0] result
 );
-    assign result = (b);
+    logic [7:0] __block_0;
+    assign __block_0 = b;
+    assign result = __block_0;
 endmodule
 
 module as_sint (
@@ -11,7 +13,9 @@ module as_sint (
     input  logic [7:0] b,
     output logic signed [7:0] result
 );
-    assign result = (b);
+    logic signed [7:0] __block_0;
+    assign __block_0 = b;
+    assign result = __block_0;
 endmodule
 
 module as_bits (
@@ -19,7 +23,9 @@ module as_bits (
     input  logic [3:0] b,
     output logic [3:0] result
 );
-    assign result = (b);
+    logic [3:0] __block_0;
+    assign __block_0 = b;
+    assign result = __block_0;
 endmodule
 
 module as_bool (
@@ -27,5 +33,7 @@ module as_bool (
     input  logic [0:0] b,
     output logic result
 );
-    assign result = (b);
+    logic __block_0;
+    assign __block_0 = b;
+    assign result = __block_0;
 endmodule

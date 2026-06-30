@@ -1,0 +1,25 @@
+// A `resize` whose TARGET width folds to 0 is total, not an illegal `0'(x)` size
+// cast. The result is materialized as a real `[-1:0]` net driven by a *type* cast
+// `type(result)'(x)`, which SV accepts at zero width where a size cast errors
+// (docs/compiler/zero-width-handling.md). Generic code that resizes to a width
+// folding to 0 at its limit thus needs no `to == 0` special case.
+fn to_empty(x: uint(8)) -> uint(0) {
+    x.resize()
+}
+
+// The reverse — resizing FROM a zero-width source up to a real width — is a plain
+// zero-extend (`N'(<0-width>)` is already total, unlike `0'(x)`).
+fn from_empty(x: bits(8)) -> bits(4) {
+    x[4..4].resize()
+}
+
+// The MSB/LSB-directional resizes are total at width 0 too: extend/truncate are
+// the same MSB-aligned cast, and the `_lsb` variants shift the window into place
+// (a shift, never a reversed `[-1:0]` part-select).
+fn drop_all(x: bits(8)) -> bits(0) {
+    x.truncate_lsb()
+}
+
+fn grow_from_empty(x: bits(8)) -> bits(4) {
+    x[4..4].extend_lsb()
+}

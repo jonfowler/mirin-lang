@@ -3,7 +3,9 @@ module widen (
     input  logic [7:0] a,
     output logic [15:0] result
 );
-    assign result = ({{(16 - 8){1'b0}}, a});
+    logic [15:0] __block_0;
+    assign __block_0 = type(__block_0)'(a);
+    assign result = __block_0;
 endmodule
 
 module narrow (
@@ -11,7 +13,9 @@ module narrow (
     input  logic [7:0] a,
     output logic [3:0] result
 );
-    assign result = (a[4 - 1 : 0]);
+    logic [3:0] __block_0;
+    assign __block_0 = type(__block_0)'(a);
+    assign result = __block_0;
 endmodule
 
 module sign_widen (
@@ -20,7 +24,9 @@ module sign_widen (
     input  logic signed [15:0] b,
     output logic signed [15:0] result
 );
-    assign result = (($signed({{(16 - 8){a[8 - 1]}}, a})) + b);
+    logic signed [15:0] __block_0;
+    assign __block_0 = type(__block_0)'(a);
+    assign result = (__block_0 + b);
 endmodule
 
 module scale_up (
@@ -28,7 +34,9 @@ module scale_up (
     input  logic [7:0] a,
     output logic [11:0] result
 );
-    assign result = ({a, {(12 - 8){1'b0}}});
+    logic [11:0] __block_0;
+    assign __block_0 = (type(__block_0)'(a)) << (12 - 8);
+    assign result = __block_0;
 endmodule
 
 module scale_down (
@@ -36,7 +44,9 @@ module scale_down (
     input  logic [7:0] a,
     output logic [3:0] result
 );
-    assign result = (a[8 - 1 : 8 - 4]);
+    logic [3:0] __block_0;
+    assign __block_0 = type(__block_0)'(a >> (8 - 4));
+    assign result = __block_0;
 endmodule
 
 module resize_up (
@@ -44,7 +54,9 @@ module resize_up (
     input  logic [7:0] a,
     output logic [11:0] result
 );
-    assign result = (12'(a));
+    logic [11:0] __block_0;
+    assign __block_0 = type(__block_0)'(a);
+    assign result = __block_0;
 endmodule
 
 module resize_down (
@@ -52,5 +64,7 @@ module resize_down (
     input  logic signed [7:0] a,
     output logic signed [3:0] result
 );
-    assign result = (4'(a));
+    logic signed [3:0] __block_0;
+    assign __block_0 = type(__block_0)'(a);
+    assign result = __block_0;
 endmodule

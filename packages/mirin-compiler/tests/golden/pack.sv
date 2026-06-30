@@ -3,7 +3,9 @@ module pack_byte (
     input  logic [7:0] a,
     output logic [7:0] result
 );
-    assign result = (a);
+    logic [7:0] __block_0;
+    assign __block_0 = a;
+    assign result = __block_0;
 endmodule
 
 module pack_signed (
@@ -11,7 +13,9 @@ module pack_signed (
     input  logic signed [7:0] a,
     output logic [7:0] result
 );
-    assign result = (a);
+    logic [7:0] __block_0;
+    assign __block_0 = a;
+    assign result = __block_0;
 endmodule
 
 module pack_flag (
@@ -19,5 +23,7 @@ module pack_flag (
     input  logic f,
     output logic [0:0] result
 );
-    assign result = (f);
+    logic [0:0] __block_0;
+    assign __block_0 = f;
+    assign result = __block_0;
 endmodule

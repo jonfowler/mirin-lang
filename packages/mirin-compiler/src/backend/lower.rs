@@ -2903,13 +2903,28 @@ impl<'db> SvLower<'_, 'db> {
         template: &VerilogTemplate<'db>,
         val_map: &HashMap<LocalId, String>,
         node_subst: &[Option<Term<'db>>],
+        result_ty: Option<&Type<'db>>,
     ) -> SvExpr {
+        // A statement-form body drives a real `result` net: mint a fresh wire,
+        // bind every `${result}` to it, and hand the net back. So the spliced body
+        // can name its own result (e.g. `type(${result})'(…)`, the zero-width-safe
+        // resize cast), the same way a module's output is a proper net.
+        let result_name = if template.expr_form {
+            String::new()
+        } else {
+            self.fresh_block()
+        };
         let mut out = String::new();
         for seg in &template.segments {
             match seg {
                 VerilogSegment::Text(t) => out.push_str(t),
-                // The LHS `${result}` is dropped when we extract the RHS.
-                VerilogSegment::ResultPort => out.push_str("result"),
+                VerilogSegment::ResultPort => {
+                    out.push_str(if template.expr_form {
+                        "result"
+                    } else {
+                        &result_name
+                    });
+                }
                 VerilogSegment::Param(l) => {
                     out.push_str(val_map.get(l).map(String::as_str).unwrap_or("0"));
                 }
@@ -2934,14 +2949,35 @@ impl<'db> SvLower<'_, 'db> {
                 }
             }
         }
-        // An expression body IS the SV expression; a statement body
-        // (`assign ${result} = RHS;`) needs its RHS extracted.
-        let rhs = if template.expr_form {
-            out.trim().to_owned()
-        } else {
-            extract_assign_rhs(&out)
-        };
-        SvExpr::Lit(format!("({rhs})"))
+        // An expression body IS the SV expression; splice it in place.
+        if template.expr_form {
+            return SvExpr::Lit(format!("({})", out.trim()));
+        }
+        // A statement body (`assign ${result} = RHS;`) materializes its result:
+        // declare a net of the (grounded) return type, drive it with the body's
+        // RHS, and return the net. Ground the callee return type through the call's
+        // subst, then the caller's monomorphisation — the same two steps the `Const`
+        // segments take above.
+        let rt = result_ty.expect("statement-form inline body has a return type");
+        let rt = subst_type(&subst_type(rt, node_subst), &self.self_subst);
+        let rt = ground_widths(self.db, self.krate, self.def, &rt);
+        // A width that grounds to a promoted const body-local renders against its
+        // `localparam` name (`uint(w)` → `[w-1:0]`), as local decls do (1725).
+        let rt = self.subst_promoted(&rt);
+        let ty = flatten_leaves_inner(self.db, self.krate, &rt, true, &self.sig.generic_params)
+            .into_iter()
+            .next()
+            .map(|l| l.ty)
+            .unwrap_or_else(SvType::bit);
+        self.items.push(SvItem::Logic(SvLogicDecl {
+            ty,
+            name: result_name.clone(),
+        }));
+        self.items.push(SvItem::Assign {
+            lhs: SvExpr::Ident(result_name.clone()),
+            rhs: SvExpr::Lit(extract_assign_rhs(&out)),
+        });
+        SvExpr::Ident(result_name)
     }
 
     /// Build the param→value map and
@@ -3023,7 +3059,7 @@ impl<'db> SvLower<'_, 'db> {
                 node_subst[i] = Some(Term::Const(self.mir_const_arg(*e)));
             }
         }
-        self.render_inline_spliced(&template, &val_map, &node_subst)
+        self.render_inline_spliced(&template, &val_map, &node_subst, csig.return_type.as_ref())
     }
 
     /// The leaves of an inline call, dispatching on the callee's body shape: a

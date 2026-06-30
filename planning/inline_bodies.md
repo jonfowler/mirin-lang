@@ -11,7 +11,12 @@ deferred: `const if` folding via call-site const generics on the const-eval
 and the clocked / out-param / `var` shapes. Historically only **verilog-bodied**
 inline fns spliced (`render_inline` — a `${result} = EXPR` template); a
 Mirin-bodied `#[inline] fn` used to hit a front-end rejection (`InlineNonVerilogBody`,
-retired) / a backend panic.
+retired) / a backend panic. A statement-form verilog body (`= verilog { assign
+${result} = … }`) now materializes a fresh result net of its return type and
+drives it, so `${result}` names a real wire — letting a body cast against its own
+result (`type(${result})'(…)`, the zero-width-safe resize; see
+`docs/compiler/zero-width-handling.md`). An expression-form body (`= verilog expr
+{ … }`) still splices in place.
 
 ## Why we want it
 

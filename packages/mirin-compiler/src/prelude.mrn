@@ -435,74 +435,83 @@ impl {type A: BitPack, type B: BitPack, type C: BitPack, type D: BitPack} BitPac
 // Per-type inherent impls on the width-carrying primitives. The generic is the
 // TARGET width `to` (it unifies trivially with the context; the delta `to - n`
 // is computed in the body). v1 is inference-only — `a.extend()` solves `to`
-// from the expected type. Bodies are explicit full-width expressions (not
-// `assign return = self`): `#[inline]` splices the raw expression, so its
-// actual width must equal its type for downstream slices/concats to be correct.
-// extend grows on the MSB side (zero/sign fill); truncate drops the MSB side.
+// from the expected type. Every body drives the materialized result net (a real
+// wire of width `to`), so it casts against its own type: `type(${return})'(x)` is
+// a width coercion total even when `to` folds to 0, unlike the size cast `to'(x)`
+// or a `[to-1:0]` part-select (planning/.../zero-width-handling.md). extend grows
+// on the MSB side (zero/sign fill) and truncate drops the MSB side — both are that
+// MSB-aligned cast; the `_lsb` variants shift the LSB-aligned window into place.
 
 #[inline]
 impl {const n: integer} uint(n) {
     fn extend {const to: integer} (self) -> uint(to) = verilog {
-        assign ${return} = {{(${to} - ${n}){1'b0}}, ${self}};
+        assign ${return} = type(${return})'(${self});
     }
     fn truncate {const to: integer} (self) -> uint(to) = verilog {
-        assign ${return} = ${self}[${to} - 1 : 0];
+        assign ${return} = type(${return})'(${self});
     }
-    // LSB side: extend_lsb appends low zeros (scale up); truncate_lsb drops the
-    // low bits (scale down), keeping the high `to` bits.
+    // LSB side: extend_lsb appends low zeros (scale up) = widen, then shift the
+    // value up; truncate_lsb keeps the high `to` bits (scale down) = shift the high
+    // bits down, then narrow. Shifts stay total at width 0 (no `[-1:0]` part-select
+    // or zero-count replicate).
     fn extend_lsb {const to: integer} (self) -> uint(to) = verilog {
-        assign ${return} = {${self}, {(${to} - ${n}){1'b0}}};
+        assign ${return} = (type(${return})'(${self})) << (${to} - ${n});
     }
     fn truncate_lsb {const to: integer} (self) -> uint(to) = verilog {
-        assign ${return} = ${self}[${n} - 1 : ${n} - ${to}];
+        assign ${return} = type(${return})'(${self} >> (${n} - ${to}));
     }
-    // resize is bidirectional (extend OR truncate, MSB side). SV's width-cast
-    // `to'(self)` does both in one composition-safe expression (zero-extends an
-    // unsigned value, truncates the high bits). resize_lsb (LSB-aligned
-    // bidirectional) needs direction-aware lowering and is deferred.
+    // resize is bidirectional (extend OR truncate, MSB side). A *type* cast onto
+    // the result net `type(${return})'(self)` does both (zero-extends an unsigned
+    // value, truncates the high bits) AND stays total at width 0 — unlike the size
+    // cast `to'(self)`, which is an illegal `0'(self)` when `to` folds to 0
+    // (planning/.../zero-width-handling.md). resize_lsb (LSB-aligned bidirectional)
+    // needs direction-aware lowering and is deferred.
     fn resize {const to: integer} (self) -> uint(to) = verilog {
-        assign ${return} = ${to}'(${self});
+        assign ${return} = type(${return})'(${self});
     }
 }
 
 #[inline]
 impl {const n: integer} sint(n) {
-    // Sign-extend by replicating the sign bit; `$signed` keeps the spliced
-    // concat/part-select signed for any surrounding signed arithmetic.
+    // The cast onto the signed result net sign-extends a signed operand (extend)
+    // or keeps its low bits (truncate), staying signed throughout.
     fn extend {const to: integer} (self) -> sint(to) = verilog {
-        assign ${return} = $signed({{(${to} - ${n}){${self}[${n} - 1]}}, ${self}});
+        assign ${return} = type(${return})'(${self});
     }
     fn truncate {const to: integer} (self) -> sint(to) = verilog {
-        assign ${return} = $signed(${self}[${to} - 1 : 0]);
+        assign ${return} = type(${return})'(${self});
     }
+    // extend_lsb shifts left (logical = arithmetic for `<<`); truncate_lsb uses an
+    // arithmetic right shift `>>>` to bring the high `to` bits down before the cast.
     fn extend_lsb {const to: integer} (self) -> sint(to) = verilog {
-        assign ${return} = $signed({${self}, {(${to} - ${n}){1'b0}}});
+        assign ${return} = (type(${return})'(${self})) << (${to} - ${n});
     }
     fn truncate_lsb {const to: integer} (self) -> sint(to) = verilog {
-        assign ${return} = $signed(${self}[${n} - 1 : ${n} - ${to}]);
+        assign ${return} = type(${return})'(${self} >>> (${n} - ${to}));
     }
-    // The width-cast sign-extends a signed operand and stays signed.
+    // The cast onto the signed result net sign-extends a signed operand and stays
+    // signed; the type-cast form is also total at width 0 (see uint::resize).
     fn resize {const to: integer} (self) -> sint(to) = verilog {
-        assign ${return} = ${to}'(${self});
+        assign ${return} = type(${return})'(${self});
     }
 }
 
 #[inline]
 impl {const n: integer} bits(n) {
     fn extend {const to: integer} (self) -> bits(to) = verilog {
-        assign ${return} = {{(${to} - ${n}){1'b0}}, ${self}};
+        assign ${return} = type(${return})'(${self});
     }
     fn truncate {const to: integer} (self) -> bits(to) = verilog {
-        assign ${return} = ${self}[${to} - 1 : 0];
+        assign ${return} = type(${return})'(${self});
     }
     fn extend_lsb {const to: integer} (self) -> bits(to) = verilog {
-        assign ${return} = {${self}, {(${to} - ${n}){1'b0}}};
+        assign ${return} = (type(${return})'(${self})) << (${to} - ${n});
     }
     fn truncate_lsb {const to: integer} (self) -> bits(to) = verilog {
-        assign ${return} = ${self}[${n} - 1 : ${n} - ${to}];
+        assign ${return} = type(${return})'(${self} >> (${n} - ${to}));
     }
     fn resize {const to: integer} (self) -> bits(to) = verilog {
-        assign ${return} = ${to}'(${self});
+        assign ${return} = type(${return})'(${self});
     }
     // `lo.concat_hi(hi)` = SV `{hi, lo}` — `self` occupies the LOW bits, `hi`
     // the high bits. The little-endian builder aggregate `pack` concatenates
