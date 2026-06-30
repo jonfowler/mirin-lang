@@ -557,3 +557,20 @@ impl {const W: integer} Slice for bits(W) {
         assign ${return} = type(${return})'(${self} >> ${lo});
     }
 }
+
+// Vec slicing — an INHERENT impl with the same method name as the bits `Slice`
+// trait (`x[a..b]` resolves to whichever the base type offers; inherent wins). A
+// two-endpoint Vec slice is just the offset slice of the same window: `v[a..b]`
+// is `v[a ..+ (b - a)]`. So the impl delegates to the offset form, which the
+// backend lowers to a native indexed part-select `v[a +: (b-a)]` — already total
+// at a zero / symbolic width (its `generate if` drives the empty value). No
+// `var`, no loop, no zero-width special case here: the inherent impl expresses
+// the two-endpoint → offset reduction, the backend's offset primitive does the
+// rest. (The offset form itself has no inherent Vec impl — a runtime base needs
+// no reduction — so it stays the structural backend node.)
+#[inline]
+impl {const N: integer, type A} Vec(N, A) {
+    fn slice {const lo: integer, const hi: integer} (self) -> Vec(hi - lo, A) {
+        self[lo ..+ (hi - lo)]
+    }
+}

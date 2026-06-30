@@ -2138,10 +2138,17 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                             "slice"
                         };
                         if let Some(owner) = self.owner_of(&bt) {
-                            let cands =
-                                self.select_by_header(self.map.trait_dispatch(owner, method), &bt);
-                            if let [(_, method_def)] = cands.as_slice() {
-                                self.method_resolutions.insert(expr, *method_def);
+                            // Inherent first (the Vec impl), then the `Slice`
+                            // trait (the bits family) — the same order
+                            // `infer_method` uses for a normal method call.
+                            if let Some(method_def) = self.map.impl_method(owner, method) {
+                                self.method_resolutions.insert(expr, method_def);
+                            } else {
+                                let cands = self
+                                    .select_by_header(self.map.trait_dispatch(owner, method), &bt);
+                                if let [(_, method_def)] = cands.as_slice() {
+                                    self.method_resolutions.insert(expr, *method_def);
+                                }
                             }
                         }
                         // A zero-width result is total for every base: a `bits` slice

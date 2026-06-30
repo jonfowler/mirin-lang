@@ -11,9 +11,11 @@ fn drop_all(v: Vec(4, uint(8))) -> Vec(0, uint(8)) {
 }
 
 // Generic tiling, as an ordinary (non-`#[inline]`) parametric module. `head{k}`
-// takes the low `k` elements; the symbolic-width slice lowers to a `generate if`
-// so the `k == 0` instantiation drives the empty value instead of an out-of-range
-// part-select. So a zero-length `Vec` crosses the module boundary fine.
+// takes the low `k` elements; the two-endpoint slice reduces (via the inherent
+// Vec `slice` impl) to the offset form `v[0 ..+ k]`, whose symbolic width lowers
+// to a `generate if` so the `k == 0` instantiation drives the empty value
+// instead of an out-of-range part-select. So a zero-length `Vec` crosses the
+// module boundary fine.
 fn head(const k: integer, v: Vec(4, uint(8))) -> Vec(k, uint(8)) {
     v[0..k]
 }

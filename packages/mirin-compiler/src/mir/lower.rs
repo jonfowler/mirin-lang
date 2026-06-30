@@ -18,7 +18,7 @@ use crate::base::db::SourceRoot;
 use crate::hir::body::{Block, ConnArg, ExprId, ExprKind, NamedArg, Stmt, body};
 use crate::hir::infer::{Inference, infer};
 use crate::hir::sig::sig_of;
-use crate::hir::types::{ConstArg, LocalId, Term, Type, ValueKind};
+use crate::hir::types::{ConstArg, Domain, LocalId, Term, TermKind, Type, ValueKind};
 use crate::mir::ir::*;
 use crate::nameres::ids::DefId;
 
@@ -85,6 +85,16 @@ fn slice_base_width<'db>(ty: &Type<'db>) -> Option<ConstArg<'db>> {
             ..
         } => Some(width.clone()),
         Type::Vec { len, .. } => Some(len.clone()),
+        _ => None,
+    }
+}
+
+/// The element type of a `Vec(N, A)` slice base — binds the Vec slice impl's
+/// `type A` generic. `None` for a bits base (the `Slice` trait impl has no type
+/// generic, so the type arm of `slice_substs` never fires there).
+fn slice_elem_ty<'db>(ty: &Type<'db>) -> Option<Type<'db>> {
+    match ty {
+        Type::Vec { elem, .. } => Some((**elem).clone()),
         _ => None,
     }
 }
@@ -363,18 +373,21 @@ impl<'a, 'db> Lower<'a, 'db> {
                 width,
             } => {
                 let resolved = self.inf.method_resolution(id);
-                let base_w = slice_base_width(&self.ty_of(*base));
+                let bt = self.ty_of(*base);
+                let base_w = slice_base_width(&bt);
+                let elem_ty = slice_elem_ty(&bt);
                 match (resolved, base_w, *width, *lo, *hi) {
                     // two-endpoint, both present: `base.slice{lo, hi}()`, routed
-                    // through the prelude guard. The base width binds the impl
-                    // generic in `substs` (by name); the const endpoints ride as
-                    // named args the inline splice binds. A symbolic base/endpoint
-                    // is pre-rendered in the caller frame (`caller_const` + the
-                    // `ConstParam` self_subst lookup), so it renders correctly
-                    // inside the callee splice.
+                    // through the prelude impl (bits trait OR the Vec inherent
+                    // impl). The base width binds the impl's length generic and —
+                    // for Vec — `elem_ty` binds its `type A`, both in `substs`; the
+                    // const endpoints ride as named args the inline splice binds. A
+                    // symbolic base/endpoint is pre-rendered in the caller frame
+                    // (`caller_const` + the `ConstParam` self_subst lookup), so it
+                    // renders correctly inside the callee splice.
                     (Some(callee), Some(w), None, Some(lo), Some(hi)) => MExprKind::Call {
                         callee,
-                        substs: self.slice_substs(callee, &w, None),
+                        substs: self.slice_substs(callee, &w, None, elem_ty.as_ref()),
                         receiver: Some(self.lower_expr(*base)),
                         args: Vec::new(),
                         named: vec![
@@ -397,7 +410,7 @@ impl<'a, 'db> Lower<'a, 'db> {
                         let lo_w = uint_width(&self.ty_of(lo));
                         MExprKind::Call {
                             callee,
-                            substs: self.slice_substs(callee, &w, lo_w.as_ref()),
+                            substs: self.slice_substs(callee, &w, lo_w.as_ref(), elem_ty.as_ref()),
                             receiver: Some(self.lower_expr(*base)),
                             args: vec![Conn::In(self.lower_expr(lo))],
                             named: vec![MNamedArg {
@@ -406,7 +419,7 @@ impl<'a, 'db> Lower<'a, 'db> {
                             }],
                         }
                     }
-                    // elision / vec / unresolved: keep the structural node (still
+                    // elision / unresolved: keep the structural node (still
                     // emitted by the backend).
                     _ => MExprKind::Slice {
                         base: self.lower_expr(*base),
@@ -502,19 +515,29 @@ impl<'a, 'db> Lower<'a, 'db> {
     /// offset form, `lo_w` binds `L` (the `uint(L)` width of the runtime `lo`
     /// base) so the splice can render the `lo` param wire; the two-endpoint form
     /// passes `None` and `L` stays `Deferred`.
+    /// (The Vec impl additionally carries `type A` — its only type-kind generic —
+    /// bound to the base's element type so the splice grounds `Vec(hi-lo, A)`.)
     fn slice_substs(
         &self,
         callee: DefId<'db>,
         base_w: &ConstArg<'db>,
         lo_w: Option<&ConstArg<'db>>,
+        elem_ty: Option<&Type<'db>>,
     ) -> Vec<Term<'db>> {
         sig_of(self.db, self.krate, callee)
             .generic_params
             .iter()
-            .map(|g| match g.name.as_str() {
-                "lo" | "hi" | "w" => Term::Const(ConstArg::Deferred),
-                "L" => Term::Const(lo_w.cloned().unwrap_or(ConstArg::Deferred)),
-                _ => Term::Const(base_w.clone()),
+            .map(|g| match g.kind {
+                TermKind::Type => Term::Type(
+                    elem_ty
+                        .cloned()
+                        .unwrap_or(Type::Value { kind: ValueKind::Bits { width: base_w.clone() }, domain: Domain::Unspecified }),
+                ),
+                _ => match g.name.as_str() {
+                    "lo" | "hi" | "w" => Term::Const(ConstArg::Deferred),
+                    "L" => Term::Const(lo_w.cloned().unwrap_or(ConstArg::Deferred)),
+                    _ => Term::Const(base_w.clone()),
+                },
             })
             .collect()
     }
