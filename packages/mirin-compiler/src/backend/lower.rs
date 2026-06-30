@@ -1319,7 +1319,9 @@ impl<'db> SvLower<'_, 'db> {
             Type::Vec { len: n, .. } => n.clone(),
             _ => panic!("MIR: slice base is neither bits nor vec"),
         };
-        let low = lo.map(|e| self.mir_const_arg(e)).unwrap_or(ConstArg::Lit(0));
+        let low = lo
+            .map(|e| self.mir_const_arg(e))
+            .unwrap_or(ConstArg::Lit(0));
         let high = hi.map(|e| self.mir_const_arg(e)).unwrap_or(n);
         let width = self.render_const(&ConstArg::Op(
             ConstOp::Sub,
@@ -1352,7 +1354,9 @@ impl<'db> SvLower<'_, 'db> {
                     Type::Vec { len: n, .. } => n.clone(),
                     _ => return None,
                 };
-                let low = lo.map(|e| self.mir_const_arg(e)).unwrap_or(ConstArg::Lit(0));
+                let low = lo
+                    .map(|e| self.mir_const_arg(e))
+                    .unwrap_or(ConstArg::Lit(0));
                 let high = hi.map(|e| self.mir_const_arg(e)).unwrap_or(n);
                 ConstArg::Op(ConstOp::Sub, Box::new(high), Box::new(low))
             }
@@ -1400,11 +1404,18 @@ impl<'db> SvLower<'_, 'db> {
             self.def,
             &subst_type(result_ty, &self.self_subst),
         );
-        let result_leaves =
-            flatten_leaves(self.db, self.krate, self.def, &rty, true, &self.sig.generic_params);
+        let result_leaves = flatten_leaves(
+            self.db,
+            self.krate,
+            self.def,
+            &rty,
+            true,
+            &self.sig.generic_params,
+        );
         let cond = SvExpr::Lit(format!(
             "({} == 0)",
-            w.map(|w| self.render_const(&w)).unwrap_or_else(|| "0".to_owned())
+            w.map(|w| self.render_const(&w))
+                .unwrap_or_else(|| "0".to_owned())
         ));
         let label = self.fresh_block();
         let mut then_items = Vec::new();
@@ -1453,10 +1464,17 @@ impl<'db> SvLower<'_, 'db> {
             self.def,
             &subst_type(ty, &self.self_subst),
         );
-        flatten_leaves(self.db, self.krate, self.def, &ty, true, &self.sig.generic_params)
-            .into_iter()
-            .map(|leaf| (leaf.suffix, zero_value_for(&leaf.ty)))
-            .collect()
+        flatten_leaves(
+            self.db,
+            self.krate,
+            self.def,
+            &ty,
+            true,
+            &self.sig.generic_params,
+        )
+        .into_iter()
+        .map(|leaf| (leaf.suffix, zero_value_for(&leaf.ty)))
+        .collect()
     }
 
     /// A slice endpoint as a `ConstArg` for rendering. First try to **ground** it
@@ -2421,9 +2439,9 @@ impl<'db> SvLower<'_, 'db> {
                 let bt = self.mir.expr(base).ty.clone();
                 let rty = self.mir.expr(m).ty.clone();
                 let w = self.slice_width_const(&bt, lo, hi, width);
-                let w_val = w
-                    .as_ref()
-                    .and_then(|w| crate::hir::const_eval::eval_const(self.db, self.krate, self.def, w));
+                let w_val = w.as_ref().and_then(|w| {
+                    crate::hir::const_eval::eval_const(self.db, self.krate, self.def, w)
+                });
                 match w_val {
                     // Ground zero: the empty value (no part-select).
                     Some(0) => self.undefined_vec_leaves(&rty),
@@ -2531,13 +2549,7 @@ impl<'db> SvLower<'_, 'db> {
     /// (possibly out-of-range) constructs never exist (planning/slice_guards.md
     /// Phase 4). Scalar result: each branch drives one wire. Each branch's own
     /// items are captured into its generate block (not hoisted to module scope).
-    fn const_if_generate(
-        &mut self,
-        m: MExprId,
-        cond: MExprId,
-        tb: &MBlock,
-        eb: &MBlock,
-    ) -> SvExpr {
+    fn const_if_generate(&mut self, m: MExprId, cond: MExprId, tb: &MBlock, eb: &MBlock) -> SvExpr {
         let cond_sv = self.expr_value(cond);
         let base = self.fresh_block();
         let ty = ground_widths(

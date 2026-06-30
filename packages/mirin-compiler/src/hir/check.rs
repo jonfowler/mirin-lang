@@ -1227,7 +1227,11 @@ mod tests {
     fn inline_check_passes_combinational_value_body() {
         let mut db = RootDatabase::default();
         let mut vfs = Vfs::new();
-        let krate = load(&mut db, &mut vfs, "#[inline]\nfn id(a: uint(8)) -> uint(8) { a }");
+        let krate = load(
+            &mut db,
+            &mut vfs,
+            "#[inline]\nfn id(a: uint(8)) -> uint(8) { a }",
+        );
         assert!(inline_diags(&db, krate, "id").is_empty());
     }
 
@@ -1247,8 +1251,9 @@ mod tests {
             "{ds:?}"
         );
         assert!(
-            ds.iter()
-                .any(|d| matches!(&d.kind, InlineDiagnosticKind::IntegerParam { name } if name == "n")),
+            ds.iter().any(
+                |d| matches!(&d.kind, InlineDiagnosticKind::IntegerParam { name } if name == "n")
+            ),
             "{ds:?}"
         );
     }

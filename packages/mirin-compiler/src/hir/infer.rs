@@ -57,7 +57,10 @@ pub enum InferDiagnosticKind {
     /// A slice whose constant high endpoint (or `offset + width`) exceeds the
     /// base length `N` — out of range. (Symbolic-but-grounding bounds defer to
     /// `mono_check`; this is the eager const check, planning/slicing.md.)
-    SliceOutOfBounds { high: i128, len: i128 },
+    SliceOutOfBounds {
+        high: i128,
+        len: i128,
+    },
     /// Two types that had to be equal could not be unified.
     TypeMismatch,
     /// Two `uint` widths that had to be equal are different (`uint(8)` vs
@@ -2129,7 +2132,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                         // builds the call from this (the `[..]` → `slice`/`slice_from`
                         // lowering; planning/slice_guards.md). Recorded only; the
                         // typing above is unchanged.
-                        let method = if width.is_some() { "slice_from" } else { "slice" };
+                        let method = if width.is_some() {
+                            "slice_from"
+                        } else {
+                            "slice"
+                        };
                         if let Some(owner) = self.owner_of(&bt) {
                             let cands =
                                 self.select_by_header(self.map.trait_dispatch(owner, method), &bt);
