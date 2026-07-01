@@ -32,19 +32,24 @@ is `'0` for a packed leaf and `'{default: '0}` for an unpacked-array leaf.
 
 ## Guarding the producers
 
-With the representation settled, only the *producers* that cannot emit a degenerate
-net directly need guarding, and the guard depends on whether the width is known:
+With the representation settled, most producers need no special handling. The
+bits-family layout ops — slice, concatenation, resize — are lowered in the prelude
+to shift, mask, and cast forms chosen to be total at zero width: a bit slice
+`x[lo +: w]` becomes `type(result)'(x >> lo)`, a concatenation a shift-and-mask, a
+resize a conditional cast. Each stays well-defined when a width is zero — a shift
+past the operand, a mask that vanishes — so a zero-width input flows through
+without ever forming an illegal `[lo +: 0]` or a reversed `[hi:lo]` range, and
+without depending on the value of a zero-width net.
 
-- **Known zero** — the backend emits the empty value and skips the part-select or
-  drive entirely; there is nothing to read or write.
+The one producer that cannot sidestep the range this way is the **aggregate
+part-select** — a `Vec` slice, which must emit a real SystemVerilog part-select
+`[lo +: w]`. There the guard depends on whether the width is known:
+
+- **Known zero** — the backend emits the empty value and skips the part-select
+  entirely; there is nothing to read.
 - **Possibly zero** (a symbolic width that might evaluate to zero) — the backend
-  wraps the producer in a `generate if (width != 0)`, so the illegal arm never
-  elaborates at the instantiation where the width is zero.
-
-The bits-family arithmetic operations need no backend guard: their prelude
-definitions are written to be total at zero width by construction — a shift past
-the operand, a mask that vanishes — so a zero-width input flows through them
-without producing an illegal or undefined value.
+  wraps the part-select in a `generate if (width != 0)`, so the out-of-range arm
+  never elaborates at the instantiation where the width is zero.
 
 That keeps the emitted Verilog legal and value-correct at the limits of a generic's
 range, without the rest of the compiler having to know that zero width is special.

@@ -1,4 +1,4 @@
-//! `body(def)` — the per-def **body** HIR (`planning/q3_typed_hir.md` §2).
+//! `body(def)` — the per-def **body** HIR.
 //!
 //! A function body lowered to a name-resolved HIR over **owner-relative** ids:
 //! an [`Arena`](Body)-style `Vec<Expr>` indexed by [`ExprId`] and a `Vec` of
@@ -62,7 +62,7 @@ pub struct LocalData<'db> {
     pub declared_ty: Option<Type<'db>>,
     /// For a result place (`return`, or a named result/tuple part), the
     /// SystemVerilog port base its leaves emit under (`result`, `result__0`,
-    /// …). `None` for an ordinary local (planning/return_variable.md).
+    /// …). `None` for an ordinary local.
     pub result_base: Option<String>,
     /// `let mut` — a mutable binding, reassignable in place (a loop-carried
     /// accumulator). Sequential reassignment is exempt from the single-driver
@@ -78,7 +78,7 @@ pub struct Expr<'db> {
 }
 
 /// A literal's written base — carried so emitted SV preserves it
-/// (`0xFF` → `8'hFF`; planning/numeric_literals.md L6).
+/// (`0xFF` → `8'hFF`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, salsa::Update)]
 pub enum NumBase {
     Dec,
@@ -92,16 +92,16 @@ pub enum ExprKind<'db> {
     Missing,
     /// A numeric literal.
     Number(i128, NumBase),
-    /// `uint(6)::4` — a literal at an explicitly written type
-    /// (planning/numeric_literals.md L4). The fit check is direct.
+    /// `uint(6)::4` — a literal at an explicitly written type.
+    /// The fit check is direct.
     TypedLiteral {
         value: i128,
         base: NumBase,
         ty: Type<'db>,
     },
-    /// `[a, b, c]` — vector construction (planning/vectors.md).
+    /// `[a, b, c]` — vector construction.
     VecLit(Vec<ExprId>),
-    /// `(a, b)` — tuple construction (planning/tuples.md). Arity ≥ 2.
+    /// `(a, b)` — tuple construction. Arity ≥ 2.
     /// Projection reuses `Field` with a numeric name (`p.0`).
     TupleLit(Vec<ExprId>),
     /// `[e; N]` — repeat construction; the length is a const expression.
@@ -132,7 +132,7 @@ pub enum ExprKind<'db> {
     /// Connection shapes are recorded **as written** — positional and named args,
     /// with out-connections (`=>`) explicit. Matching named→params and out-args
     /// to the callee's signature is `infer`/`directions`' job (they have the
-    /// sig); the body never looks a callee up (`planning/q5_backend.md`).
+    /// sig); the body never looks a callee up.
     Call {
         callee: ExprId,
         /// Positional args, in source order.
@@ -149,7 +149,7 @@ pub enum ExprKind<'db> {
         args: Vec<ConnArg>,
     },
     /// `uint(8)::unpack(b)` — an associated function called on an explicit Self
-    /// type (planning/pack_resize.md). The impl is selected from `self_ty`, so a
+    /// type. The impl is selected from `self_ty`, so a
     /// fn with no receiver (return-type dispatch, like `unpack`) is callable.
     TypePathCall {
         self_ty: Type<'db>,
@@ -167,7 +167,7 @@ pub enum ExprKind<'db> {
         then_branch: Block,
         else_branch: Block,
     },
-    /// `x[lo..hi]` / `x[off..+w]` — a slice (planning/slicing.md). Fields are
+    /// `x[lo..hi]` / `x[off..+w]` — a slice. Fields are
     /// POSITIONAL: `lo` is the operand before `..` (the high endpoint for `bits`,
     /// the low for vecs — interpreted by base type), `hi` the range endpoint
     /// after `..`, `width` the `..+W` constant width; exactly one of `hi`/`width`
@@ -184,7 +184,7 @@ pub enum ExprKind<'db> {
     /// is kept. The discarded arm may be invalid for this instantiation (an
     /// out-of-range slice when a width folds to 0), so — unlike [`If`], a mux
     /// over both arms — it is folded away (or lowered to an SV `generate if`),
-    /// never elaborated together. planning/comptime_if.md.
+    /// never elaborated together.
     ConstIf {
         cond: ExprId,
         then_branch: Block,
@@ -230,7 +230,7 @@ pub struct RecordField {
 }
 
 /// An inline-verilog fn body (`= verilog { … }`): raw text split at `${…}`
-/// splices, resolved against the signature (`planning/inline_verilog.md`).
+/// splices, resolved against the signature.
 #[derive(Clone, PartialEq, Eq, Debug, Default, salsa::Update)]
 pub struct VerilogTemplate<'db> {
     pub segments: Vec<VerilogSegment<'db>>,
@@ -286,7 +286,7 @@ pub enum Stmt {
         body: Block,
         init: Option<Block>,
     },
-    /// `for x in v { … }` — structural replication (planning/for_loops.md).
+    /// `for x in v { … }` — structural replication.
     /// `index` is bound for the `for i, x in v.enumerate()` form; the elem
     /// local is "let x = v[i]" per iteration.
     For {
@@ -622,7 +622,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         // `result__0`/`result__1`/…). The body drives them (whole `name = …`,
         // per-leaf `name.f = …`) and reads their `in` leaves (`name.ready`);
         // the names bind block-wide. `return` is reserved, so the unnamed place
-        // never collides with a user local (planning/return_variable.md).
+        // never collides with a user local.
         for place in result_places {
             let id = LocalId(locals.len() as u32);
             base.insert(place.name.clone(), id);
@@ -719,7 +719,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             && inner.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         if is_ident {
             // `${return}` is the function's result place (the referrable
-            // result binding; planning/return_variable.md). `${result}` is
+            // result binding). `${result}` is
             // kept as an alias for the SV port name it lowers to.
             if inner == "return" || inner == "result" {
                 return VerilogSegment::ResultPort;
@@ -874,8 +874,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
 
     /// The whole-result place: the unnamed `return` local, or a single named
     /// result — i.e. the sole result place. `None` for a unit fn, or a
-    /// multi-part named return whose parts are driven individually
-    /// (planning/return_variable.md).
+    /// multi-part named return whose parts are driven individually.
     fn whole_result_local(&self) -> Option<LocalId> {
         let mut places = self
             .locals
@@ -967,8 +966,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
 
     /// Bind a `let` pattern to a value: a bare name binds directly; a tuple or
     /// struct pattern binds a synthetic local and recursively desugars each
-    /// element to a projection let — there is no pattern IR
-    /// (planning/tuples.md).
+    /// element to a projection let — there is no pattern IR.
     fn bind_pattern(
         &mut self,
         pat: &Node,
@@ -1069,8 +1067,8 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 };
                 // `.enumerate()` is a real method (typed in infer), but a
                 // for-loop also RECOGNISES it so the index binder reuses the
-                // genvar instead of materialising an index vector
-                // (planning/tuples.md): `for (i, x) in v.enumerate()` makes
+                // genvar instead of materialising an index vector:
+                // `for (i, x) in v.enumerate()` makes
                 // `i` the genvar and `x` the element of the receiver.
                 let iter_raw = node
                     .child_by_field_name("iter")
@@ -1219,7 +1217,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                     }
                     // `let x;` / `let x: T;` — a declaration-only binding: a
                     // forward-scoped signal node driven by a later equation, the
-                    // let-scoped cousin of `var` (planning/cycles_and_scoping.md).
+                    // let-scoped cousin of `var`.
                     // It is a `Var` node (same equation/driver machinery), but
                     // introduced HERE rather than block-hoisted, so it has `let`'s
                     // forward scope. Destructuring needs a value, so a non-name
@@ -1238,8 +1236,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                         }
                         let name = node_text(&pat, source);
                         let span = self.rel_span(&pat);
-                        let local =
-                            self.alloc_local(&name, LocalKind::Var, declared_ty, span);
+                        let local = self.alloc_local(&name, LocalKind::Var, declared_ty, span);
                         block.stmts.push(Stmt::VarDecl { local });
                     }
                 }
@@ -1288,7 +1285,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
                 // With a return type, `return EXPR;` is a whole-result drive —
                 // desugar to an equation on the result place so the driver
                 // checks and the backend treat it uniformly with `return.f = …`
-                // (planning/return_variable.md). A unit fn — or a multi-part
+                // A unit fn — or a multi-part
                 // named return (no whole-result place) — keeps `Stmt::Return`
                 // (a side-effecting tail call routed through `drive_result`).
                 match self.whole_result_local() {
@@ -1465,7 +1462,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             }
             "unary_expression" => {
                 // `-x`/`!x` desugar to the prelude `Neg`/`Not` trait methods
-                // (planning/traits.md T5) — EXCEPT `-literal`, which
+                // — EXCEPT `-literal`, which
                 // constant-folds into a negative literal value (`let x: sint(4)
                 // = -8;` must fit-check -8, not 8 — the -128i8 case; the LEXER
                 // still has no negative literals).
@@ -1673,7 +1670,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
         let rhs = self.lower_field_expr(node, "right", source);
         let op = field_text(node, "operator", source);
         // Operators desugar to the prelude operator traits' methods
-        // (`a + b` → `a.add(b)`; planning/traits.md T5) and dispatch through
+        // (`a + b` → `a.add(b)`) and dispatch through
         // the ordinary trait machinery.
         let method = match op.as_str() {
             "+" => "add",
@@ -1720,7 +1717,7 @@ impl<'a, 'db> BodyLowerer<'a, 'db> {
             .filter(|c| c.is_named() && c.id() != receiver.id() && c.kind() != "comment")
             .collect();
         // `Base::method(args)` with a bare-identifier `Base` that resolves to a
-        // type is a type-path call (planning/pack_resize.md) — it parses as a
+        // type is a type-path call — it parses as a
         // two-segment path call, but a non-type base (a module) falls through
         // to a normal path call. A TYPED base (`uint(8)::`) uses the grammar's
         // `type_path_call` rule instead.
@@ -2300,8 +2297,7 @@ mod tests {
 
         assert_eq!(b.param_count(), 1);
         // The block: let, var-decl, equation (`c = b`), and the desugared
-        // whole-result drive `return = c` (also an equation —
-        // planning/return_variable.md).
+        // whole-result drive `return = c` (also an equation).
         let stmts = &b.block().stmts;
         assert_eq!(stmts.len(), 4);
         assert!(matches!(stmts[0], Stmt::Let { .. }));
@@ -2382,7 +2378,7 @@ mod tests {
 
     #[test]
     fn unary_operators_desugar_to_their_trait_methods() {
-        // `-`→neg, `!`→not, `~`→bitnot (planning/operators.md O4).
+        // `-`→neg, `!`→not, `~`→bitnot.
         for (op, want) in [("-", "neg"), ("!", "not"), ("~", "bitnot")] {
             let mut db = RootDatabase::default();
             let mut vfs = Vfs::new();
@@ -2400,8 +2396,8 @@ mod tests {
 
     #[test]
     fn comparison_operators_desugar_to_eq_ord_methods() {
-        // The full set: `!=`/`<=`/`>`/`>=` join `==`/`<` (planning/operators.md
-        // O1), each desugaring to its `Eq`/`Ord` trait method.
+        // The full set: `!=`/`<=`/`>`/`>=` join `==`/`<`,
+        // each desugaring to its `Eq`/`Ord` trait method.
         for (op, want) in [
             ("==", "eq"),
             ("!=", "ne"),

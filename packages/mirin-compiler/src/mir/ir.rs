@@ -1,4 +1,4 @@
-//! The MIR data types — a typed, derived mid-level IR (`planning/mir.md`).
+//! The MIR data types — a typed, derived mid-level IR.
 //!
 //! MIR mirrors the HIR [`Body`](crate::hir::body::Body) one node at a time, but
 //! with two deliberate differences that pay off downstream:
@@ -18,7 +18,7 @@
 //! body, still reaching into HIR for verilog templates and the inline splice.
 //!
 //! Aggregate flatten, monomorphisation, and inline still run in the backend
-//! rather than as MIR→MIR passes (see planning/mir.md for the migration state).
+//! rather than as MIR→MIR passes.
 
 use crate::base::diagnostics::Span;
 use crate::hir::body::{LocalKind, NumBase, VerilogTemplate};

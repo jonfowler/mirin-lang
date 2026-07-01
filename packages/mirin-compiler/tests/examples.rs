@@ -432,7 +432,7 @@ fn golden_dir() -> PathBuf {
 /// Byte-for-byte SystemVerilog parity gate. Emits SV for the VERILATOR_CLEAN
 /// corpus + projects and compares against committed snapshots under
 /// `tests/golden/`. This is the gate the MIR emission retarget
-/// (`planning/mir.md` S3) must reproduce exactly: lint-clean alone (the
+/// must reproduce exactly: lint-clean alone (the
 /// `corpus_is_verilator_clean` test) would pass a miscompile — wrong width,
 /// swapped leaf, mis-resolved trait instance — silently, because the output is
 /// never compared, only linted.
@@ -542,7 +542,7 @@ fn lint_sv(dir: &Path, name: &str, src: &str, sv: &str) {
             "-Wno-UNUSEDSIGNAL",
             "-Wno-MULTITOP",
             // The effective-0-bit `[-1:0]` (a zero-width value, the basis of the
-            // slice/concat zero-width guards — planning/slicing.md) is an
+            // slice/concat zero-width guards) is an
             // intentional ascending range; we never emit `[a:b]` ranges otherwise
             // (slices lower to `[lo +: w]`), so suppressing ASCRANGE is safe.
             "-Wno-ASCRANGE",
@@ -671,7 +671,7 @@ fn mono_check_fit_is_sign_aware() {
 
 /// `mono_check` grounds a slice-bounds residual: `x[0..k]` types fine in the def
 /// (symbolic `k`), but an instantiation with `k > N` is out of range. The same
-/// shape with `k <= N` is clean (planning/slice_guards.md, Phase 2b).
+/// shape with `k <= N` is clean.
 #[test]
 fn mono_check_decides_slice_bounds() {
     const CALLEE: &str = "fn take_lo (const k: integer, x: bits(8)) -> bits(k) { x[0..k] }\n";

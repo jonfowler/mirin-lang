@@ -1,4 +1,4 @@
-//! `sig_of(def)` — the **signature** query (`planning/q3_typed_hir.md` §2).
+//! `sig_of(def)` — the **signature** query.
 //!
 //! A def's signature: its generic parameters, its value parameters (with
 //! owner-relative [`LocalId`]s), its return type, and — for structs/ports — its
@@ -6,7 +6,7 @@
 //! name resolution: it lowers signature **types** transiently from the CST
 //! (re-parsing, like `item_tree`), resolving type paths through
 //! [`crate_def_map`]. Bodies are never touched, so editing a body leaves
-//! `sig_of` value-equal — the signature/body firewall (`query_engine.md` §3.1).
+//! `sig_of` value-equal — the signature/body firewall.
 //!
 //! Keyed on `(SourceRoot, DefId)`: the `SourceRoot` gives the def map (type
 //! paths resolve crate-relative); the `DefId` gives the file + `FileAstId` to
@@ -42,8 +42,7 @@ pub struct Signature<'db> {
     pub params: Vec<Param<'db>>,
     pub return_type: Option<Type<'db>>,
     /// The referrable result place(s): one `return` place for a normal return,
-    /// the named part(s) for a `-> (name: T, …)` signature, empty for a unit fn
-    /// (planning/return_variable.md).
+    /// the named part(s) for a `-> (name: T, …)` signature, empty for a unit fn.
     pub result_places: Vec<ResultPlace<'db>>,
     pub fields: Vec<Field<'db>>,
     /// Written bounds (`type T: Add + Bits`, `where T: Bits`) plus, on a
@@ -68,7 +67,7 @@ pub struct SigDiagnostic {
 pub enum SigDiagnosticKind {
     /// In explicit mode (the signature introduces a `dom` or uses `@`), every
     /// parameter and the return type must carry a domain annotation
-    /// (`domain_checking.md`: explicit-mode annotation requirement).
+    /// (explicit-mode annotation requirement).
     MissingDomainAnnotation,
     /// A type name that resolved to nothing (or to a non-type item).
     UnresolvedType {
@@ -83,8 +82,7 @@ pub enum SigDiagnosticKind {
     /// An aggregate's `@D` annotation conflicts with an element's own explicit
     /// domain — e.g. `Vec(2, uint(8) @b) @a` or `(uint(8) @a, uint(8) @b) @c`.
     /// A domain lives on the leaf; an aggregate `@D` may only FILL unspecified
-    /// element slots, never override a conflicting one
-    /// (planning/domain_checking.md).
+    /// element slots, never override a conflicting one.
     ConflictingDomain,
     /// An `impl` on a generic owner written without its type arguments
     /// (`impl {dom clk} Bus` on `struct Bus(type A)`). A generic owner must be
@@ -147,7 +145,7 @@ pub struct Param<'db> {
 }
 
 /// A referrable result place — the `return` variable, or a named result/named
-/// tuple part (planning/return_variable.md). `name` is the source binding
+/// tuple part. `name` is the source binding
 /// (`return` when unnamed); `sv_base` is the SystemVerilog port base its leaves
 /// emit under (`result`, or `result__0`/`result__1`/… for tuple parts). Empty
 /// for a unit fn (no return type).
@@ -355,7 +353,7 @@ fn lower_adt_sig<'db>(
     // Both structs and ports may declare a named (`{ dom clk, param N }`) and a
     // positional section. A struct without a named section simply has none —
     // `section_params` finds nothing. Declaring `dom` params lets a struct's
-    // fields sit on distinct clocks (planning/structs_as_ports.md).
+    // fields sit on distinct clocks.
     let sections: &[(&str, &str, bool)] = &[
         ("named_parameters", "named_parameter", true),
         ("parameters", "parameter", false),
@@ -828,7 +826,7 @@ fn lower_fn_sig<'db>(
     // Named result(s) (`-> (output: DF)`, `-> (sum: T, carry: U)`): capture the
     // names; the underlying type is the element (1) or a tuple (≥2). For a
     // normal return the name list is empty and the `return` place is synthesised
-    // below (planning/return_variable.md).
+    // below.
     let result_names: Vec<String> = return_node
         .filter(|n| n.kind() == "named_return")
         .map(|n| named_result_names(&n, source))
@@ -838,7 +836,7 @@ fn lower_fn_sig<'db>(
     // below moves.
     let unresolved_diags = drain_unresolved(&lowerer, node);
 
-    // Domain mode (`domain_checking.md`): a signature that introduces a
+    // Domain mode: a signature that introduces a
     // `dom` generic or writes any `@` is EXPLICIT — every value param and the
     // return type must carry a domain annotation. Anything else is PURE and is
     // lifted: one implicit `__Dom` generic (appended LAST, so user `Param(i)`
@@ -934,7 +932,7 @@ fn lower_fn_sig<'db>(
 
 /// The result place(s) for a fn's (already lifted) return type: one `return`
 /// place for a normal return, the named part(s) for a named return. A tuple of
-/// named parts splits into `result__0`/`result__1`/… (planning/return_variable.md).
+/// named parts splits into `result__0`/`result__1`/….
 fn build_result_places<'db>(
     return_type: &Option<Type<'db>>,
     names: &[String],
@@ -1025,7 +1023,7 @@ fn paren_return_inner<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 /// its domain arguments is fully domain-specified.
 /// Propagate an aggregate annotation `@D` into a type's *unspecified* domain
 /// slots — the `Ty @ D` constraint for a head-known type (fill, don't
-/// override; planning/domain_checking.md). A no-op when `D` is Unspecified
+/// override). A no-op when `D` is Unspecified
 /// (a pure signature; the lift handles those slots instead).
 fn stamp_domain<'db>(ty: Type<'db>, dom: Domain) -> Type<'db> {
     if dom == Domain::Unspecified {
@@ -1046,7 +1044,7 @@ fn stamp_domain<'db>(ty: Type<'db>, dom: Domain) -> Type<'db> {
 }
 
 /// An aggregate's `@D` may only FILL unspecified element slots, never
-/// override a conflicting one (planning/domain_checking.md). Returns the
+/// override a conflicting one. Returns the
 /// first element type node whose explicit domain conflicts with one imposed
 /// by an enclosing aggregate. `@const` is compatible with any clock.
 fn domain_conflict<'t>(t: &Node<'t>, source: &str, inherited: Option<&str>) -> Option<Node<'t>> {
@@ -1078,7 +1076,7 @@ fn domain_conflict<'t>(t: &Node<'t>, source: &str, inherited: Option<&str>) -> O
 }
 
 /// Is this written type domain-annotated? A domain lives on a *leaf*, so an
-/// aggregate is annotated when its elements are (planning/domain_checking.md):
+/// aggregate is annotated when its elements are:
 /// a tuple iff every element is; a `Vec` iff its element is.
 fn type_has_domain(t: Node, source: &str) -> bool {
     if t.child_by_field_name("domain").is_some()
@@ -1172,13 +1170,13 @@ impl<'db> TypeLowerer<'_, 'db> {
     fn lower_type(&self, node: &Node, source: &str) -> Type<'db> {
         // `(A, B)` — elements are full types (own domains); a trailing
         // `@clk` is the tuple's own domain, the default for elements
-        // without one (planning/tuples.md).
+        // without one.
         if node.kind() == "tuple_type" {
             let domain = self.lower_domain(node, source);
             let mut cursor = node.walk();
             // A trailing `@D` is the constraint "every clock slot is D",
             // propagated into each element's unspecified slots
-            // (planning/domain_checking.md) — a tuple has no domain of its
+            // — a tuple has no domain of its
             // own.
             let elems = node
                 .children(&mut cursor)
@@ -1220,7 +1218,7 @@ impl<'db> TypeLowerer<'_, 'db> {
                 // `Vec(N, A)`: first positional arg is the const length,
                 // second the element type. A domain lives on a leaf, never on
                 // an aggregate — so an explicit `@D` here is the *constraint*
-                // "every clock slot in A is D" (planning/domain_checking.md):
+                // "every clock slot in A is D":
                 // propagate it into the element's unspecified slots now, so a
                 // later write meets a concrete element domain instead of a
                 // lenient `Unspecified` (which laundered the crossing).
@@ -1301,7 +1299,7 @@ impl<'db> TypeLowerer<'_, 'db> {
             .and_then(|d| self.map.def_data(d).map(|data| (d, data.kind)))
         {
             // A struct and a port share one type representation; the def's
-            // `DefKind` records which it was declared as (structs_as_ports.md).
+            // `DefKind` records which it was declared as.
             Some((def, DefKind::Struct | DefKind::Port)) => Type::Port {
                 def,
                 args: self.lower_args(node, source),
@@ -1349,8 +1347,8 @@ impl<'db> TypeLowerer<'_, 'db> {
         self.lower_const_expr(&arg, source)
     }
 
-    /// Lower a const-expression tree in width/const position
-    /// (`planning/const_eval.md`): literals, names (a Const-kind generic →
+    /// Lower a const-expression tree in width/const position:
+    /// literals, names (a Const-kind generic →
     /// `Param`, a body local → `Local`), `+`/`-`/`*` arithmetic, and field
     /// projection. Anything outside the fragment is `Deferred`.
     fn lower_const_expr(&self, node: &Node, source: &str) -> ConstArg<'db> {

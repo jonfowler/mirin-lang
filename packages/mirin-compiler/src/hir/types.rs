@@ -1,10 +1,9 @@
-//! The typed-HIR **type** vocabulary — the language `sig_of` and `infer` speak
-//! (`planning/q3_typed_hir.md`, `planning/q7_terms_and_domains.md`).
+//! The typed-HIR **type** vocabulary — the language `sig_of` and `infer` speak.
 //!
 //! Three principles:
 //!
-//! - **The domain is a *component* of a value's type, not a parallel attribute**
-//!   (`domain_checking.md`): `uint(8) @clk` is a distinct type from
+//! - **The domain is a *component* of a value's type, not a parallel attribute**:
+//!   `uint(8) @clk` is a distinct type from
 //!   `uint(8)`, so [`Type::Value`] pairs a [`ValueKind`] with a [`Domain`].
 //! - **Generic parameters are referenced positionally** by the enclosing def's
 //!   index — [`ValueKind::Param`] in type position, [`ConstArg::Param`] in const
@@ -52,21 +51,21 @@ pub enum Type<'db> {
         kind: ValueKind<'db>,
         domain: Domain,
     },
-    /// `Vec(N, A)` — N elements of A (planning/vectors.md). An aggregate has
-    /// NO domain of its own (planning/domain_checking.md): the domain lives
+    /// `Vec(N, A)` — N elements of A. An aggregate has
+    /// NO domain of its own: the domain lives
     /// entirely in the element `A`. Flattens struct-of-arrays — one
     /// unpacked-array leaf per element-type leaf.
     Vec {
         len: ConstArg<'db>,
         elem: Box<Type<'db>>,
     },
-    /// `(A, B)` — a structural product (planning/tuples.md). No domain of its
+    /// `(A, B)` — a structural product. No domain of its
     /// own; each element is a full type carrying its own domain, so
     /// mixed-domain tuples are legal. Arity ≥ 2.
     Tuple(Vec<Type<'db>>),
     /// A nominal record type — a `port` interface OR a `struct` value, with
-    /// the def's generic args and its domain. The two share one representation
-    /// (`planning/structs_as_ports.md`); the def's `DefKind` (`Struct` vs
+    /// the def's generic args and its domain. The two share one representation;
+    /// the def's `DefKind` (`Struct` vs
     /// `Port`) records which it was declared as. A struct is the special case
     /// whose fields carry no `in`/`out` direction (all positive); a port folds
     /// per-field direction when flattened.
@@ -96,7 +95,7 @@ pub enum ValueKind<'db> {
         width: ConstArg<'db>,
     },
     /// `bits(W)` — a raw bit vector: Eq only, no arithmetic, hex-default
-    /// printing; the pack/unpack and slicing carrier (planning/bits.md).
+    /// printing; the pack/unpack and slicing carrier.
     Bits {
         width: ConstArg<'db>,
     },
@@ -110,7 +109,7 @@ pub enum ValueKind<'db> {
 }
 
 /// The clock-domain component of a type. A subtyping lattice with a single
-/// edge: `@const` is below every concrete clock; see `domain_checking.md`.
+/// edge: `@const` is below every concrete clock.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, salsa::Update)]
 pub enum Domain {
     /// No `@…` annotation — a fresh domain variable, inferred later.
@@ -137,7 +136,7 @@ pub enum ConstOp {
 }
 
 /// A compile-time constant in const position (a `uint(W)` width): the
-/// restricted const-expression tree (`planning/const_eval.md`). Leaves are
+/// restricted const-expression tree. Leaves are
 /// literals, generic params, and body locals; `Op`/`Field` carry width
 /// arithmetic and config-field projection. Anything bigger (a call, an
 /// if/else) is reached *through a `Local` leaf* — the evaluator demands the
@@ -163,7 +162,7 @@ pub enum ConstArg<'db> {
     /// `item` is a trait's const DECL (resolved through an impl once
     /// `self_ty` is concrete) or an impl's own const. Equality while generic
     /// is structural; anything else rides the ConstEq obligations and
-    /// discharges at monomorphisation (planning/traits.md T4).
+    /// discharges at monomorphisation.
     Assoc {
         item: DefId<'db>,
         self_ty: Box<Type<'db>>,
@@ -367,7 +366,7 @@ pub fn subst_const_opt<'db>(c: &ConstArg<'db>, subst: &[Option<Term<'db>>]) -> C
 }
 
 /// `self_ty: trait_def` — a trait reference. Traits take no generic args of
-/// their own in v1, so a TraitRef is just the pair (planning/traits.md).
+/// their own in v1, so a TraitRef is just the pair.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct TraitRef<'db> {
     pub trait_def: DefId<'db>,
@@ -432,7 +431,7 @@ pub enum Term<'db> {
 }
 
 /// The reserved name of the **lifted** implicit domain parameter appended to a
-/// pure signature (`domain_checking.md` lifting). Checking-only: the
+/// pure signature (lifting). Checking-only: the
 /// backend emits no clock port for it (a pure fn is combinational).
 pub const LIFTED_DOM: &str = "__Dom";
 

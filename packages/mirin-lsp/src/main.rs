@@ -1,7 +1,7 @@
 //! `mirin-lsp` — an editor-agnostic language server for Mirin that speaks LSP
 //! over stdio. It reuses `mirin-db`'s tree-sitter parser and (from M2) its
 //! incremental query engine, so there is one grammar and one analysis shared by
-//! the compiler and the editor tooling (`planning/lsp.md`).
+//! the compiler and the editor tooling.
 
 mod document;
 mod encoding;

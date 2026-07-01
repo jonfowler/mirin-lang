@@ -1,4 +1,4 @@
-//! `mirin-compiler` — the query-based compiler (`planning/query_engine.md`).
+//! `mirin-compiler` — the query-based compiler.
 //!
 //! Structured by conceptual layer / IR, mirroring rust-analyzer's crate split
 //! (`base-db` → `hir-def` → `hir-ty`) and the old compiler's by-IR modules:

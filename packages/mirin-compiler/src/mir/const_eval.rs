@@ -1,4 +1,4 @@
-//! Compile-time evaluation over **MIR** (`planning/const_eval.md`). This is the
+//! Compile-time evaluation over **MIR**. This is the
 //! twin of `hir::const_eval` — same model (demand-driven per-output thunks, the
 //! shared [`Value`]/[`arith`]/[`project`] core) — but it walks the typed MIR
 //! ([`MExpr`]) instead of the HIR body. It evaluates **value-position** const
@@ -7,7 +7,7 @@
 //!
 //! Why a separate walker rather than extending `hir::const_eval`: a slice
 //! endpoint / const-if condition is an [`MExprId`], and the lossy `ConstArg`
-//! bridge can't represent a call (`planning/const_eval.md`: a call in width
+//! bridge can't represent a call (a call in width
 //! position stays `Deferred`). The MIR has the full expression tree, so
 //! evaluating it directly is strictly more capable. The *type-level* width axis
 //! (`ConstArg` in `Type`) stays on the HIR evaluator — only value-position
@@ -117,8 +117,7 @@ struct Frame<'db> {
     /// param index (the same index `MExprKind::ConstParam(i)` / `ConstArg::Param(i)`
     /// use). Seeded at the **root** from a caller-supplied subst (the inline
     /// splice's composed `call_subst ∘ self_subst`); empty for an entered callee
-    /// frame (a const generic reached through a *nested* call stays symbolic — the
-    /// deferred case in `planning/alternative/inline_bodies-frame-constgen.md`).
+    /// frame (a const generic reached through a *nested* call stays symbolic).
     const_subst: Vec<Option<Term<'db>>>,
     slots: RefCell<HashMap<LocalId, Slot<'db>>>,
 }

@@ -1,7 +1,7 @@
 //! The query database (salsa).
 //!
-//! `RootDatabase` is the single in-process engine that `planning/query_engine.md`
-//! and `planning/lsp.md` call for — shared by the batch CLI and the future LSP.
+//! `RootDatabase` is the single in-process engine shared by the batch CLI and the
+//! future LSP.
 //!
 //! Note there is deliberately **no `parse` query**. A `tree_sitter::Tree` is not
 //! `salsa::Update` (it is FFI-owned and not structurally comparable), so it
@@ -23,7 +23,7 @@ pub struct SourceFile {
 }
 
 /// The crate's file set — the minimal "crate handle" a query needs to resolve
-/// `mod foo;` declarations to other files (`planning/query_engine.md` §3.5: one
+/// `mod foo;` declarations to other files (one
 /// local crate, no crate graph). Keyed on this, `crate_def_map` can map a
 /// computed module path to its [`SourceFile`]. NOT a crate-graph node; just the
 /// root file plus the set of files reachable for module resolution.

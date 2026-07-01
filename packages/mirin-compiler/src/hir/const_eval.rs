@@ -1,4 +1,4 @@
-//! Compile-time evaluation of `@const` values (`planning/const_eval.md`).
+//! Compile-time evaluation of `@const` values.
 //!
 //! The rustc analogue is CTFE (`const_eval_*` interpreting MIR on demand),
 //! with one structural divergence: a Mirin fn body is an **equation system**,
@@ -14,7 +14,7 @@
 //! a non-const construct (`when`, `.reg`), a cycle, or a blown budget all
 //! leave the const symbolic, and the caller falls back to residual handling.
 //!
-//! Note (future, `planning/const_eval.md`): when const asserts land, an
+//! Note (future): when const asserts land, an
 //! entered frame must demand its assert-bearing statements even when no
 //! output needs them — laziness must not skip a failing assert.
 
@@ -35,8 +35,8 @@ use crate::nameres::ids::{DefId, DefKind};
 /// bound from the self type, but NOT evaluated. `eval_assoc` is "ground then
 /// eval"; this is the "ground" half, exposed so the backend can render a
 /// compound width whose assoc body stays symbolic — `Vec(N, A)::bit_size` with
-/// `A = uint(8)` but `N` a `#(...)` parameter expands to `N * 8`
-/// (planning/pack_resize.md), which `render_const_sv` then prints.
+/// `A = uint(8)` but `N` a `#(...)` parameter expands to `N * 8`, which
+/// `render_const_sv` then prints.
 ///
 /// `None` when the self type is itself abstract (a bare type param / infer var,
 /// so no impl is selectable) or the impl/const can't be resolved.
@@ -169,7 +169,7 @@ pub fn eval_width<'db>(
 /// Evaluate a boolean CONDITION expression (a `const if` guard) at elaboration.
 /// `Some(b)` if it folds to a constant; `None` if it stays symbolic — a const
 /// generic riding as an SV `#()` parameter — in which case the caller emits an
-/// SV `generate if` and lets the elaborator choose (planning/comptime_if.md).
+/// SV `generate if` and lets the elaborator choose.
 pub fn eval_cond<'db>(
     db: &'db dyn salsa::Database,
     krate: SourceRoot,

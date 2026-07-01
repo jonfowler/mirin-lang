@@ -1,4 +1,4 @@
-//! Tree-only syntactic features (`planning/lsp.md` M1): document symbols /
+//! Tree-only syntactic features: document symbols /
 //! outline, folding ranges, and selection ranges. All walk the tree-sitter tree
 //! directly — no compiler analysis. Node kinds/fields track the grammar
 //! (`tree-sitter-mirin`'s `node-types.json`).
@@ -213,8 +213,8 @@ fn collect_folds(node: Node, out: &mut Vec<FoldingRange>) {
 
 // ----- Syntactic diagnostics -----
 
-/// ERROR and MISSING nodes as diagnostics. Coarse by design (`planning/lsp.md`
-/// M1): a real error-recovery pass with messages arrives in M2 via the compiler.
+/// ERROR and MISSING nodes as diagnostics. Coarse by design: a real
+/// error-recovery pass with messages arrives via the compiler.
 /// MISSING nodes are zero-width and unqueryable, so this is a manual traversal.
 pub fn diagnostics(rope: &Rope, tree: &Tree, enc: Encoding) -> Vec<Diagnostic> {
     let mut out = Vec::new();

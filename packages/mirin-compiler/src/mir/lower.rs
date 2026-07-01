@@ -1,4 +1,4 @@
-//! `mir_of(def)` — HIR→MIR lowering (`planning/mir.md`).
+//! `mir_of(def)` — HIR→MIR lowering.
 //!
 //! A derived, per-def salsa query: reads `body` + `infer` and bakes the resolved
 //! types onto fresh MIR nodes. Because MIR is *derived* (rebuilt, never an
@@ -343,7 +343,7 @@ impl<'a, 'db> Lower<'a, 'db> {
             },
             // `const if` folds at lowering: evaluate the (HIR) condition and keep
             // only the taken branch as a block — the discarded arm's (possibly
-            // invalid) SV is never produced (planning/comptime_if.md). A
+            // invalid) SV is never produced. A
             // still-symbolic condition (the `generate if` case) keeps the
             // structural `ConstIf` node, which emission rejects.
             ExprKind::ConstIf {
@@ -360,7 +360,7 @@ impl<'a, 'db> Lower<'a, 'db> {
                 },
             },
             // Slicing desugars to a call of the prelude `Slice` method that infer
-            // resolved (planning/slice_guards.md): the impl generic (base width)
+            // resolved: the impl generic (base width)
             // rides in `substs`, the const endpoints as named args (`{lo, hi}` /
             // `{w}`) that the inline splice binds, the base as the receiver, and a
             // runtime offset base as the value arg. The const-if zero-width guard
@@ -528,11 +528,12 @@ impl<'a, 'db> Lower<'a, 'db> {
             .generic_params
             .iter()
             .map(|g| match g.kind {
-                TermKind::Type => Term::Type(
-                    elem_ty
-                        .cloned()
-                        .unwrap_or(Type::Value { kind: ValueKind::Bits { width: base_w.clone() }, domain: Domain::Unspecified }),
-                ),
+                TermKind::Type => Term::Type(elem_ty.cloned().unwrap_or(Type::Value {
+                    kind: ValueKind::Bits {
+                        width: base_w.clone(),
+                    },
+                    domain: Domain::Unspecified,
+                })),
                 _ => match g.name.as_str() {
                     "lo" | "hi" | "w" => Term::Const(ConstArg::Deferred),
                     "L" => Term::Const(lo_w.cloned().unwrap_or(ConstArg::Deferred)),

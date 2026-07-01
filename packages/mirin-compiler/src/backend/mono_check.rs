@@ -1,4 +1,4 @@
-//! Monomorphisation-time checking (`planning/mono_check.md`) — first slice.
+//! Monomorphisation-time checking.
 //!
 //! The HIR/`infer` layer is deliberately loose on const-parameter-dependent
 //! facts: a width mismatch between two symbolic widths (`uint(n)` vs `uint(m)`),
@@ -28,7 +28,7 @@
 //! recursion (`f(n)` → `f(n-1)`) with a fuel cap. Inner calls already ground on
 //! their own are left to the walk over the callee as a def (no double-report).
 //! This is the correct-but-unfactored ground check; the assertion-map /
-//! support-factoring design in `planning/mono_check.md` later cuts its *cost*
+//! support-factoring design later cuts its *cost*
 //! (loop-axis factoring, family dedup) **without changing the diagnostics**.
 //!
 //! Negative space: a residual/width that stays symbolic after substitution simply
@@ -78,8 +78,8 @@ impl<'db> MonoDiagnostic<'db> {
 /// then recurses through `C`'s inner calls that `args` grounds further, composing
 /// substs down the chain (`outer → inner → foo`). Diamonds dedup by
 /// `(callee, composed subst)`; a fuel cap bounds recursion. The cost-factoring
-/// (assertion maps, support factoring) remains the destination in
-/// `planning/mono_check.md` — it lowers cost, not the diagnostics.
+/// (assertion maps, support factoring) remains the destination — it lowers
+/// cost, not the diagnostics.
 #[salsa::tracked(returns(ref))]
 pub fn mono_check<'db>(
     db: &'db dyn salsa::Database,
@@ -323,8 +323,8 @@ fn check_obligations<'db>(
                 }
                 match eval_const(db, krate, callee, w) {
                     // Width 0 is legal (the effective-0-bit `[-1:0]` / a zero-length
-                    // `Vec` `[0:-1]`, the basis of the zero-width guards —
-                    // planning/slicing.md); only a negative width is invalid.
+                    // `Vec` `[0:-1]`, the basis of the zero-width guards);
+                    // only a negative width is invalid.
                     // Matches infer's `check_widths` (`< 0`).
                     Some(v) if v < 0 && reported.insert(v) => report(format!(
                         "instantiating `{name}`: width evaluates to {v} (must be >= 0)"

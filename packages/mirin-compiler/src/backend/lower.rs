@@ -1,4 +1,4 @@
-//! HIR → SV IR lowering + the `verilog` driver (`planning/q5_backend.md`).
+//! HIR → SV IR lowering + the `verilog` driver.
 //!
 //! **Q5b scope:** the combinational scalar case — a `fn` over scalar `uint`/`bool`
 //! becomes an `SvModule` whose value params + return are ports and whose
@@ -143,7 +143,7 @@ fn build_module<'db>(
     }
     // Result ports, one group per result place: an unnamed `return` is
     // `result__…`, a named result/tuple part uses its bound name as the base
-    // (`output__valid`, `sum`) — planning/return_variable.md.
+    // (`output__valid`, `sum`).
     for place in &sig.result_places {
         let pty = ground_widths(db, krate, def, &subst_type(&place.ty, self_subst));
         // A compile-time integer result is not a port.
@@ -261,7 +261,7 @@ fn build_module<'db>(
 /// Lower a const-only (`integer`-in, `integer`-out) `fn` to an in-module SV
 /// `function automatic int`. Used when such a fn is called in a constant
 /// position (`let w = f(N)`), where a module instance is illegal. Returns
-/// `None` if the callee is not a lowerable const fn. (const_net_duality.md.)
+/// `None` if the callee is not a lowerable const fn. (proposals/const_net_duality.md).
 fn build_const_function<'db>(
     db: &'db dyn salsa::Database,
     krate: SourceRoot,
@@ -625,7 +625,7 @@ struct SvLower<'a, 'db> {
     /// top-level module (so its emission is byte-identical to before MIR-inline);
     /// an inline splice runs a *nested* `SvLower` over the callee with a unique
     /// `__inl{site}__` prefix so its locals, synth blocks, and nested instances
-    /// merge into the caller without colliding (planning/inline_bodies.md).
+    /// merge into the caller without colliding.
     prefix: String,
     /// Inline-splice nesting depth (a recursion guard against `#[inline]` cycles).
     inline_depth: u32,
@@ -1380,7 +1380,7 @@ impl<'db> SvLower<'_, 'db> {
     }
 
     /// Lower a SYMBOLIC-width slice read to a per-leaf `generate if` (the zero
-    /// guard for an unknown width — planning/slice_guards.md). Each base leaf
+    /// guard for an unknown width). Each base leaf
     /// drives a fresh wire of the result-leaf type: the `width == 0` arm is the
     /// empty value (`'0` / `'{default:'0}`), the else arm the `[lo +: w]`
     /// part-select. SV §27.5 elaborates only the selected arm, so a parametric
@@ -1451,7 +1451,7 @@ impl<'db> SvLower<'_, 'db> {
     }
 
     /// The leaves of the empty/zero-width value of result type `ty` — the value of
-    /// a zero-width slice (planning/slice_guards.md). Each flattened leaf is driven
+    /// a zero-width slice. Each flattened leaf is driven
     /// by its uniform zero: `'{default: '0}` for an unpacked-array (`Vec`) leaf —
     /// the array analog of `bits(0)`'s `'0` (a zero-length `Vec` is `[0:-1]`, a
     /// degenerate net that cannot be a part-select but IS fillable by a default
@@ -1602,8 +1602,7 @@ impl<'db> SvLower<'_, 'db> {
                 let bt = self.mir.local(place.base).ty.clone();
                 // Zero-width slice-set drives nothing — the compiler-applied dual
                 // of the prelude read guard (a set is an lvalue, not a value, so it
-                // can't be a prelude fn). Skip the illegal `[lo +: 0]` part-select
-                // (planning/slice_guards.md Phase 2).
+                // can't be a prelude fn). Skip the illegal `[lo +: 0]` part-select.
                 if self.slice_width_is_zero(&bt, lo, hi, width) {
                     return Vec::new();
                 }
@@ -1686,8 +1685,7 @@ impl<'db> SvLower<'_, 'db> {
     /// or a named tuple part) emits as its result ports — leaves that ARE the
     /// module's result, declared from the signature. Its base is `result` (or
     /// `result__0`/… for a tuple part), never the source name (`return` is an SV
-    /// reserved word; a user name shouldn't rename the port) — see
-    /// planning/return_variable.md.
+    /// reserved word; a user name shouldn't rename the port).
     fn local_name(&self, local: LocalId) -> String {
         if let Some(base) = &self.body.local(local).result_base {
             return base.clone();
@@ -1890,7 +1888,7 @@ impl<'db> SvLower<'_, 'db> {
             } => true,
             // A `struct` whose every field is const-only is a config record. A
             // `port` is always a hardware boundary, so it is never const-only —
-            // gate on the def's `DefKind` (structs_as_ports.md).
+            // gate on the def's `DefKind`.
             Type::Port { def, .. }
                 if self.map.def_data(*def).map(|d| d.kind) == Some(DefKind::Struct) =>
             {
@@ -2215,8 +2213,7 @@ impl<'db> SvLower<'_, 'db> {
             // symbolic there) — fold it here against the active subst's const
             // generics. At an inline splice `self.self_subst` is the call's
             // composed subst, so a guard like `const if w == 0` grounds at the
-            // call site (planning/slice_guards.md). Still-symbolic ⇒ generate-if
-            // (Phase 4), not yet built.
+            // call site. Still-symbolic ⇒ generate-if, not yet built.
             MExprKind::ConstIf {
                 cond,
                 then_branch,
@@ -2423,12 +2420,14 @@ impl<'db> SvLower<'_, 'db> {
                 self.block_leaves(&b)
             }
             // A slice, per base leaf → an indexed part-select `[lo +: w]`
-            // (ascending/low-first for both bits and Vec). Width-directed by the
-            // zero guard (planning/slice_guards.md): a width that grounds to 0 is
-            // the empty value (`'0` / `'{default:'0}`, no illegal `[lo +: 0]`); a
-            // SYMBOLIC width emits a `generate if` so the zero case is the empty
-            // value and the nonzero case the part-select (a parametric module
-            // instantiated at length 0 would otherwise be an out-of-range slice).
+            // (ascending/low-first). This is the aggregate (`Vec`) part-select
+            // path; bits slices lower to a prelude shift form and never reach
+            // this structural node. Width-directed by the zero guard: a width
+            // that grounds to 0 is the empty value (`'0` / `'{default:'0}`, no
+            // illegal `[lo +: 0]`); a SYMBOLIC width emits a `generate if` so
+            // the zero case is the empty value and the nonzero case the
+            // part-select (a parametric module instantiated at length 0 would
+            // otherwise be an out-of-range slice).
             MExprKind::Slice {
                 base,
                 lo,
@@ -2546,8 +2545,8 @@ impl<'db> SvLower<'_, 'db> {
     /// Lower a `const if` whose condition is still **symbolic** at emit (a const
     /// generic riding as a `#()` parameter) to an `SvItem::GenerateIf` driving a
     /// fresh wire — SV §27.5 elaborates only the selected block, so the dead arm's
-    /// (possibly out-of-range) constructs never exist (planning/slice_guards.md
-    /// Phase 4). Scalar result: each branch drives one wire. Each branch's own
+    /// (possibly out-of-range) constructs never exist. Scalar result: each
+    /// branch drives one wire. Each branch's own
     /// items are captured into its generate block (not hoisted to module scope).
     fn const_if_generate(&mut self, m: MExprId, cond: MExprId, tb: &MBlock, eb: &MBlock) -> SvExpr {
         let cond_sv = self.expr_value(cond);
@@ -2888,7 +2887,7 @@ impl<'db> SvLower<'_, 'db> {
     // now ordinary `verilog expr` bodies, spliced via `inline_call`/
     // `render_inline` like any other inline fn; see prelude.mrn.)
 
-    // ----- #[inline] body splicing (planning/attributes.md) -----
+    // ----- #[inline] body splicing -----
 
     /// True if `def`'s body is an inline-expression verilog body
     /// (`= verilog expr { … }`): the whole template is one SV expression,
@@ -3132,8 +3131,8 @@ impl<'db> SvLower<'_, 'db> {
         }
     }
 
-    /// Splice a Mirin-bodied `#[inline]` callee at this call site
-    /// (planning/inline_bodies.md): sub-lower the callee's own `(body, inf, mir,
+    /// Splice a Mirin-bodied `#[inline]` callee at this call site:
+    /// sub-lower the callee's own `(body, inf, mir,
     /// sig)` in a fresh prefix-scoped `SvLower`, with its value params bound to
     /// caller-side wires, merging its items into the caller and returning the
     /// body's value as leaves. v1 scope (combinational, value-returning, no
@@ -3388,7 +3387,7 @@ impl<'db> SvLower<'_, 'db> {
         // Fill any still-unbound TYPE-kind generic from the inferred call subst.
         // A receiver-less type-path call (`Vec(..)::unpack(b)`) carries its Self
         // type in the path, not a value arg, so `match_type` over the args can't
-        // see it — but `infer` recorded it (planning/pack_resize.md).
+        // see it — but `infer` recorded it.
         if is_type_generic(csig) {
             if subst.is_empty() {
                 subst = vec![None; csig.generic_params.len()];
@@ -3486,7 +3485,7 @@ impl<'db> SvLower<'_, 'db> {
         //    unnamed `return` is `result__…`, named results use their bound
         //    port names (`output__valid`, `sum`). Leaf order matches the return
         //    type's flattening, so the positional zip with `result_target`
-        //    holds (planning/return_variable.md).
+        //    holds.
         let mut callee_result_ports: Vec<String> = Vec::new();
         for place in &csig.result_places {
             let pty = subst_type(&place.ty, &flatten_subst);
@@ -3793,7 +3792,7 @@ fn flatten_leaves_inner(
     generics: &[GenericParam],
 ) -> Vec<Leaf> {
     match ty {
-        // Struct-of-arrays (planning/vectors.md): one unpacked-array leaf
+        // Struct-of-arrays: one unpacked-array leaf
         // per ELEMENT-TYPE leaf — Vec(3, Packet) → v__valid[0:2] + ….
         Type::Vec { len, elem } => {
             // The unpacked-array dimension. Share `width_expr` so a Vec length
@@ -3813,7 +3812,7 @@ fn flatten_leaves_inner(
                 .collect()
         }
         // A tuple flattens like a struct whose field names are element
-        // indices: `x.0.valid` → `x__0__valid` (planning/tuples.md). Port
+        // indices: `x.0.valid` → `x__0__valid`. Port
         // elements fold direction through their own flattening.
         Type::Tuple(elems) => {
             let mut out = Vec::new();
@@ -3837,7 +3836,7 @@ fn flatten_leaves_inner(
                 // field's producer direction (`out` field of an `out` port, or
                 // `in` field of an `in` port). A struct field has no direction
                 // (`None`) — it is positive, flowing with the parent, exactly
-                // like an `out` field (structs_as_ports.md).
+                // like an `out` field.
                 let child = drives == (f.direction != Some(Direction::In));
                 let fty = subst_type(&f.ty, &subst);
                 for sub in flatten_leaves_inner(db, krate, &fty, child, generics) {
@@ -3907,7 +3906,7 @@ impl<'db> crate::hir::types::Folder<'db> for PromotedFolder<'_> {
 /// The uniform zero value for an SV leaf type: `'{default: '0}` for an
 /// unpacked-array leaf (a `Vec`; works at any length, including the degenerate
 /// `[0:-1]` zero-length), else the scalar/packed `'0`. The leaf-level analog of
-/// `bits(0)`'s `'0` for the zero-width slice guard (planning/slice_guards.md).
+/// `bits(0)`'s `'0` for the zero-width slice guard.
 fn zero_value_for(ty: &SvType) -> SvExpr {
     if ty.unpacked.is_empty() {
         SvExpr::Lit("'0".to_owned())
@@ -3939,8 +3938,8 @@ fn ground_widths<'db>(
                 // A symbolic assoc (an input is a `#(...)` parameter) can't
                 // evaluate to a literal; expand it to its substituted body so a
                 // compound width like `N * A::bit_size` becomes `N * 8` — a
-                // renderable `Op` — instead of an unrenderable `Assoc`
-                // (planning/pack_resize.md). Then fold that body (grounding its
+                // renderable `Op` — instead of an unrenderable `Assoc`.
+                // Then fold that body (grounding its
                 // inner, now-concrete assoc).
                 ConstArg::Assoc { item, self_ty } => {
                     match crate::hir::const_eval::eval_const(self.db, self.krate, self.def, c) {
@@ -4353,7 +4352,7 @@ fn describe_type(ty: &Type) -> &'static str {
 /// (a parametric module's own SV parameter, e.g. `[n-1:0]`). Anything else is a
 /// bug or an unimplemented case and must NOT silently become a 1-bit type: that
 /// default masked an associated-const substitution bug (`uint(T::width)` left
-/// ungrounded — planning/pack_resize.md).
+/// ungrounded).
 fn width_expr(c: &ConstArg, generics: &[GenericParam]) -> SvExpr {
     match c {
         ConstArg::Lit(w) => SvExpr::Lit(w.to_string()),

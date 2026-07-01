@@ -1,5 +1,4 @@
-//! `crate_def_map` — name resolution's firewall #2 (`planning/query_engine.md`
-//! §3.1).
+//! `crate_def_map` — name resolution's firewall #2.
 //!
 //! Builds the crate's **module tree** and **name tables** from the per-file
 //! [`item_tree`](crate::syntax::item_tree)s. Depends only on item-tree *names and
@@ -11,7 +10,7 @@
 //! Ports the *name-resolution half* of `mirin-compiler`'s `resolve.rs`
 //! (`collect_items` → the module + def tree). The body-resolution half
 //! (`resolve_items`) is deliberately **not** here — it lands in Q3 behind the
-//! `sig_of`/`body` split. The whole local repo is one crate (§3.5); this query
+//! `sig_of`/`body` split. The whole local repo is one crate; this query
 //! is keyed on the crate's [`SourceRoot`](crate::base::db::SourceRoot) (root file +
 //! file set), which is what lets it resolve `mod foo;` to another file.
 //!
@@ -276,7 +275,7 @@ pub struct DefData<'db> {
     pub visibility: Visibility,
     /// The type a `Ctor`/`Method` belongs to (`None` for everything else).
     pub owner: Option<DefId<'db>>,
-    /// Carries `#[inline]` (planning/attributes.md): the backend splices this
+    /// Carries `#[inline]`: the backend splices this
     /// fn/method's body at call sites instead of instantiating a module. Only
     /// ever true for `Fn`/`Method` defs.
     pub inline: bool,
@@ -299,7 +298,7 @@ pub struct CrateDefMap<'db> {
     /// signatures.
     trait_methods: HashMap<(DefId<'db>, String), DefId<'db>>,
     /// Per-trait impls (`impl Trait for SelfType`), in source order. The
-    /// solver's impl-candidate source (planning/traits.md).
+    /// solver's impl-candidate source.
     trait_impls: HashMap<DefId<'db>, Vec<TraitImplData<'db>>>,
     /// `(self-type head def, method name) → [(trait, impl-method def)]` —
     /// method dispatch's trait-candidate index (the self-type-fingerprint
@@ -464,7 +463,7 @@ impl<'db> CrateDefMap<'db> {
     /// then the prelude (lowest priority, so a user name shadows a builtin). This
     /// is the in-scope lookup body resolution (Q3c) uses. No ancestor walk — a
     /// bare name resolves in its own module or the prelude, matching the old
-    /// resolver (`modules.md` §5.2).
+    /// resolver.
     pub fn resolve_in_scope(
         &self,
         module: ModuleId,
@@ -715,8 +714,7 @@ impl<'db> Collector<'db> {
 
     /// Declare a trait: the trait def (Item namespace) plus a `Method` def per
     /// method declaration, owned by the trait and indexed in `trait_methods`.
-    /// Associated-const declarations get their defs with the assoc-const work
-    /// (planning/traits.md T4).
+    /// Associated-const declarations get their defs with the assoc-const work.
     fn declare_trait(
         &mut self,
         file: SourceFile,
@@ -1272,7 +1270,7 @@ impl<'db> Collector<'db> {
                 Some((o, DefKind::Struct | DefKind::Port)) => o,
                 // A builtin owner is allowed for a trait impl (`impl Bits for
                 // bool`) and an inherent impl (`impl uint(n) { fn extend … }`,
-                // the resize family — planning/pack_resize.md).
+                // the resize family).
                 Some((o, DefKind::BuiltinType)) => o,
                 _ => {
                     self.map.diagnostics.push(DefDiagnostic {
@@ -1377,7 +1375,7 @@ impl<'db> Collector<'db> {
             if let Some(t) = trait_def {
                 // Conformance, name level: every trait method implemented,
                 // nothing extra. (Signature-level conformance arrives with
-                // the solver slice — planning/traits.md T3.)
+                // the solver slice.)
                 let declared_consts: Vec<&String> = self
                     .map
                     .trait_consts

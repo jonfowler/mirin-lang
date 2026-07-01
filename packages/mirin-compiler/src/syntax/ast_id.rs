@@ -1,6 +1,6 @@
 //! Stable syntactic identity — the `AstIdMap`.
 //!
-//! The keystone of incremental reuse (`planning/query_engine.md` §2): every item
+//! The keystone of incremental reuse: every item
 //! gets a `FileAstId` derived from its **identity** (kind + name + enclosing
 //! parent), *not* its byte offset or sibling position. So an edit inside one
 //! body, a reformat, or inserting an *unrelated* item leaves every other item's

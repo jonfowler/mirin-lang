@@ -1,5 +1,5 @@
 // The Mirin prelude — real source compiled into every crate as the hidden
-// `$prelude` module (rustc's `core` move; planning/traits.md T5). Operator
+// `$prelude` module (rustc's `core` move). Operator
 // expressions desugar to these traits' methods (`a + b` → `a.add(b)`), and
 // dispatch routes through the ordinary trait machinery. The impl bodies are
 // inline verilog, but calls that select a prelude operator impl are emitted
@@ -32,7 +32,7 @@ pub trait Neg {
     fn neg(self) -> Self;
 }
 
-// Shift: the count is a widthless compile-time `integer` (planning/operators.md),
+// Shift: the count is a widthless compile-time `integer`,
 // so `x << 2` needs no annotation. `>>` is logical for uint/bits and
 // arithmetic (sign-extending) for sint.
 pub trait Shl {
@@ -67,7 +67,7 @@ pub trait Or {
     fn or(self, other: Self) -> Self;
 }
 
-// Pack a value to/from its raw `bits` representation (planning/pack_resize.md).
+// Pack a value to/from its raw `bits` representation.
 // `bit_size` is an associated const (it appears in a TYPE position), so it is
 // dependent only on the type. `unpack` dispatches on its return type, so it is
 // called as a concrete type-path call (`uint(8)::unpack(b)`), not on a receiver.
@@ -80,7 +80,7 @@ pub trait BitPack {
 }
 
 // Bitwise operators (`& | ^ ~`), distinct from the bool logicals `&& || !`
-// above (planning/operators.md). For uint/sint/bits.
+// above. For uint/sint/bits.
 pub trait BitAnd {
     fn bitand(self, other: Self) -> Self;
 }
@@ -185,7 +185,7 @@ impl {const n: integer} Ord for sint(n) {
 }
 
 // bits(n) is a raw vector, not a number: Eq is its ONLY operator
-// (planning/bits.md) — arithmetic on a representation is almost always
+// — arithmetic on a representation is almost always
 // a bug; convert deliberately (pack/unpack, when they land).
 impl {const n: integer} Eq for bits(n) {
     fn eq(self, other: Self) -> bool = verilog expr { ${self} == ${other} }
@@ -297,7 +297,7 @@ impl Ord for integer {
     fn ge(self, other: Self) -> bool = verilog expr { ${self} >= ${other} }
 }
 
-// ----- BitPack (planning/pack_resize.md) -----
+// ----- BitPack -----
 // A packed value occupies the same bits as its source, so every primitive
 // `pack` is a wire; `#[inline]` splices it at the call site rather than
 // emitting a module. `integer` is widthless (no representation) — no impl.
@@ -347,7 +347,7 @@ impl BitPack for bool {
 }
 
 // BitPack for Vec(N, A) — little-endian: element 0 occupies the LOW bits
-// (planning/pack_resize.md). Built bit-by-bit in a generate-`for`, so it needs
+// Built bit-by-bit in a generate-`for`, so it needs
 // no slice/concat primitive: every bit of `b` (and every element of `acc`) is
 // driven exactly once across the disjoint iterations — single-assignment per
 // leaf. `bit_size = N * A::bit_size` folds at monomorphisation.
@@ -377,7 +377,7 @@ impl {const N: integer, type A: BitPack} BitPack for Vec(N, A) {
 }
 
 // BitPack for tuples — per-arity, little-endian: element 0 occupies the LOW
-// bits (planning/pack_resize.md). `pack` packs each element via its own BitPack
+// bits. `pack` packs each element via its own BitPack
 // and `concat_hi`-stacks them (element 0 stays at the LSBs). `unpack` rebuilds
 // each element bit-by-bit into its own `var` (one disjoint loop per element, so
 // every leaf is driven once — like Vec, whose generic N forces the same loop
@@ -431,14 +431,14 @@ impl {type A: BitPack, type B: BitPack, type C: BitPack, type D: BitPack} BitPac
     }
 }
 
-// ----- Resizing (planning/pack_resize.md) -----
+// ----- Resizing -----
 // Per-type inherent impls on the width-carrying primitives. The generic is the
 // TARGET width `to` (it unifies trivially with the context; the delta `to - n`
 // is computed in the body). v1 is inference-only — `a.extend()` solves `to`
 // from the expected type. Every body drives the materialized result net (a real
 // wire of width `to`) and casts against its own type — total even when `to` folds
-// to 0, unlike the size cast `to'(x)` (illegal `0'(x)`) or a `[to-1:0]` part-select
-// (planning/.../zero-width-handling.md). extend grows on the MSB side (zero/sign
+// to 0, unlike the size cast `to'(x)` (illegal `0'(x)`) or a `[to-1:0]` part-select.
+// extend grows on the MSB side (zero/sign
 // fill), truncate drops it; the `_lsb` variants shift the LSB-aligned window.
 //
 // Zero-width SOURCE (`n == 0`): a *widening* op reads `self`'s bits, so it must not
@@ -525,20 +525,19 @@ impl {const n: integer} bits(n) {
     //   - lower (`self`, `n == 0`): the mask `~('1 << n)` is `~'1 == 0` at `n == 0`,
     //     and `X & 0 == 0` — self contributes nothing. (At `n > 0` the mask is the
     //     low-`n`-ones, redundant with the cast's zero-fill but harmless.)
-    // So a zero-width operand can never leak X into the other operand's bits
-    // (planning/.../zero-width-handling.md).
+    // So a zero-width operand can never leak X into the other operand's bits.
     fn concat_hi {const m: integer} (self, hi: bits(m)) -> bits(n + m) = verilog {
         assign ${return} = (type(${return})'(${hi}) << ${n})
             | (type(${return})'(${self}) & ~(type(${return})'('1) << ${n}));
     }
 }
 
-// ----- Slicing (planning/slice_guards.md) -----
+// ----- Slicing -----
 // A bit slice `x[lo +: w]` is a shift-then-truncate: shift `x` down so bit `lo`
 // lands at 0, then cast onto the `w`-bit result net (which drops the high bits).
 // This is total at `w == 0` (the cast, not a `[-1:0]` part-select) and uses no
 // part-select, so it carries no zero-width guard. `[a..b]` desugars to `slice`,
-// `[lo..+w]` to `slice_from` (planning/slice_guards.md).
+// `[lo..+w]` to `slice_from`.
 
 // Slicing as a trait (bits family — user bits-like types can `impl Slice`).
 trait Slice {

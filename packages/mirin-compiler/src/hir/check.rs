@@ -1,5 +1,5 @@
-//! Per-def **check** queries over the body HIR (`planning/q3_typed_hir.md`,
-//! pass #8). Diagnostics that need the lowered body but little else.
+//! Per-def **check** queries over the body HIR. Diagnostics that need the
+//! lowered body but little else.
 //!
 //! - [`check_drivers`] (Q3e): every `var` has exactly one driver — a driving
 //!   equation or an out-connection (`=>`) target.
@@ -177,7 +177,7 @@ fn place_of(body: &Body, expr: ExprId) -> Option<(LocalId, Vec<String>)> {
                 // (`b[i*a + j]`) covers the WHOLE place: the loop(s) span every
                 // index. Like the bare-genvar case, coverage is assumed, not
                 // proven (rigorous range checking is deferred) — the unit of a
-                // per-bit `bits` construction (planning/pack_resize.md).
+                // per-bit `bits` construction.
                 _ if index_uses_forbound(body, *index) => Some((l, path)),
                 _ => None,
             }
@@ -185,7 +185,7 @@ fn place_of(body: &Body, expr: ExprId) -> Option<(LocalId, Vec<String>)> {
         // A slice-set `x[a..b] = …` partially drives its base over the slice's
         // run — a DISTINCT partial-drive path per range, so tiling slices don't
         // false-conflict. Range coverage is not verified (deferred, like the
-        // genvar-index case) — planning/slicing.md.
+        // genvar-index case).
         ExprKind::Slice {
             base,
             lo,
@@ -331,7 +331,7 @@ pub fn completeness<'db>(
     let body = body(db, krate, def);
     if body.verilog().is_some() {
         // An inline-verilog body is trusted to drive what its signature
-        // declares (planning/inline_verilog.md; verilator is the backstop).
+        // declares (verilator is the backstop).
         return Vec::new();
     }
     let inf = crate::hir::infer::infer(db, krate, def);
@@ -433,8 +433,7 @@ fn struct_leaf_paths<'db>(
     if depth > 16 {
         return Vec::new();
     }
-    // A tuple's "fields" are its element indices: `r.0 = …` covers leaf "0"
-    // (planning/tuples.md).
+    // A tuple's "fields" are its element indices: `r.0 = …` covers leaf "0".
     if let Type::Tuple(elems) = ty {
         let mut out = Vec::new();
         for (i, ety) in elems.iter().enumerate() {
@@ -452,7 +451,7 @@ fn struct_leaf_paths<'db>(
     }
     // Only a *struct* record contributes positive leaf paths; a `port`'s owed
     // set is decided by direction folding (deferred). Both are `Type::Port`
-    // now, so distinguish by the def's `DefKind` (structs_as_ports.md).
+    // now, so distinguish by the def's `DefKind`.
     let Type::Port { def, .. } = ty else {
         return Vec::new();
     };
@@ -782,8 +781,7 @@ fn check_dir(
     out.push(DirectionDiagnostic { span, kind });
 }
 
-/// A Mirin-bodied `#[inline]` fn outside the v1 splice scope
-/// (planning/inline_bodies.md "v1 scope and deferrals").
+/// A Mirin-bodied `#[inline]` fn outside the v1 splice scope.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub struct InlineDiagnostic {
     pub span: Span,
@@ -834,7 +832,7 @@ impl InlineDiagnostic {
 }
 
 /// QUERY: validate that a Mirin-bodied `#[inline]` fn is within the v1 splice
-/// scope — combinational, value-returning (planning/inline_bodies.md). This is
+/// scope — combinational, value-returning. This is
 /// the home for the "not yet" restrictions: emission runs only on a
 /// diagnostic-free crate, so a rejected shape never reaches the backend splice
 /// (which would otherwise mis-thread a clock or panic). A verilog-bodied inline
@@ -911,9 +909,9 @@ pub fn inline_check<'db>(
 
     // NB: a `const if` in an inline body is NOT rejected — whether it grounds is
     // a property of the *call site* (its const args), not the def, so a per-def
-    // check cannot classify it (planning/slice_guards.md, decision 4). It folds at
+    // check cannot classify it. It folds at
     // the splice when the call grounds it; a still-symbolic one is the generate-if
-    // case (Phase 4).
+    // case.
 
     // Inline recursion: a fn that calls itself (directly or transitively through
     // other inline fns) would splice forever. Reject up front.

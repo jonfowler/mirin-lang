@@ -1,6 +1,6 @@
 //! The one place LSP `Position`s (line + character) convert to/from byte
 //! offsets and tree-sitter [`Point`]s. Position encoding is the #1 LSP bug
-//! class (`planning/lsp.md`): the `character` field is UTF-16 code units by
+//! class: the `character` field is UTF-16 code units by
 //! default, or UTF-8 bytes when negotiated. tree-sitter is byte-based and
 //! [`Point::column`] is a *byte* column, so every boundary crossing routes
 //! through here.

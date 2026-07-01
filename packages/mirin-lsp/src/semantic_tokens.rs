@@ -1,5 +1,5 @@
-//! Semantic tokens, computed from the *same* `highlights.scm` the grammar ships
-//! (`planning/lsp.md` M1). The query is embedded at compile time so the server
+//! Semantic tokens, computed from the *same* `highlights.scm` the grammar
+//! ships. The query is embedded at compile time so the server
 //! and the editor's TextMate fallback never drift, and run via a cached
 //! [`Query`]; captures map to a fixed legend by name.
 //!

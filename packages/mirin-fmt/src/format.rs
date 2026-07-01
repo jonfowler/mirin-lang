@@ -155,7 +155,7 @@ impl<'a> Formatter<'a> {
                 self.doc(self.field(n, "index").unwrap()),
                 text("]"),
             ]),
-            // `x[lo..hi]` / `x[off..+w]` / elided ends (planning/slicing.md).
+            // `x[lo..hi]` / `x[off..+w]` / elided ends.
             "slice_access" => {
                 let lo = self.field(n, "low").map(|c| self.doc(c)).unwrap_or(NIL);
                 let after = match (self.field(n, "high"), self.field(n, "width")) {
@@ -467,7 +467,7 @@ impl<'a> Formatter<'a> {
         let body = self.def_body(self.field(n, "body").unwrap(), "record_field_type");
 
         // A struct may declare a named (`{ dom clk, param N }`) section like a
-        // port (planning/structs_as_ports.md); lay it out the same way.
+        // port; lay it out the same way.
         let header = if let Some(named) = named {
             let mut sections = vec![Line, self.named_section(named)];
             if let Some(p) = params {

@@ -1,5 +1,4 @@
-//! Stable definition identity — the interned `DefId` (`planning/query_engine.md`
-//! §2).
+//! Stable definition identity — the interned `DefId`.
 //!
 //! A `DefId` is minted by **interning a syntactic location** `(file, FileAstId)`,
 //! exactly like rust-analyzer's name-resolution collector. Because the
@@ -14,7 +13,7 @@
 //! the surface IR, which was not offset-stable). [`StableCrateId`] +
 //! [`DefPath`]/[`DefPathHash`] (the cross-session, cross-crate identity layer)
 //! are built over this in `crate_def_map` (Q2d); for now the whole local repo is
-//! one crate (§3.5).
+//! one crate.
 
 use crate::base::db::SourceFile;
 use crate::syntax::ast_id::FileAstId;
@@ -30,7 +29,7 @@ use crate::syntax::ast_id::FileAstId;
 /// anonymous consts their own ids under a parent.
 ///
 /// Carries the `'db` lifetime that salsa threads through interned entities — the
-/// ergonomic cost flagged in `planning/query_engine.md` §7. Everything that
+/// ergonomic cost. Everything that
 /// stores a `DefId` (the [`crate::nameres::def_map`] tables) inherits it.
 #[salsa::interned]
 pub struct DefId<'db> {
@@ -52,7 +51,7 @@ pub enum DefRole {
     Ctor,
 }
 
-/// The two name namespaces (`modules.md` §5.1). Mirin splits **modules** from
+/// The two name namespaces. Mirin splits **modules** from
 /// everything else, rather than Rust's type/value split: a type and its
 /// constructor share the `Item` namespace (so `struct S = S` collides), while a
 /// `mod` lives in its own namespace and may share a name with an item (the
@@ -141,7 +140,7 @@ pub fn is_reserved_word(name: &str) -> bool {
 
 /// A crate's stable, content-independent identity — the high half of a
 /// [`DefPathHash`], so paths in different crates never collide. One local crate
-/// for now (§3.5); `root()` is its id. Mirrors rustc's `StableCrateId`.
+/// for now; `root()` is its id. Mirrors rustc's `StableCrateId`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, salsa::Update)]
 pub struct StableCrateId(pub u64);
 
@@ -177,7 +176,7 @@ pub enum DefPathSegmentKind {
 }
 
 /// The structural role of an anonymous const, preferred over a flat positional
-/// counter so editing one width never renumbers another (§2.3). Extended as
+/// counter so editing one width never renumbers another. Extended as
 /// anon-const sites are added; the disambiguator on [`DefPathSegment`] is the
 /// fallback for genuinely positional cases.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, salsa::Update)]

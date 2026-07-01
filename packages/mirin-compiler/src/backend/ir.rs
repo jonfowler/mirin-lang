@@ -99,14 +99,12 @@ pub enum SvItem {
     /// `initial begin lhs = rhs; … end` — power-on state.
     Initial(Vec<(SvExpr, SvExpr)>),
     /// A named generate-for: structural replication with a RECOVERABLE
-    /// hierarchy — instance paths are `label[i].name`
-    /// (planning/for_loops.md).
+    /// hierarchy — instance paths are `label[i].name`.
     GenerateFor(SvGenerateFor),
     /// A conditional generate (`if (cond) begin : l … end else begin : l … end`)
     /// — SV §27.5 elaborates at most one block, so the dead arm's constructs are
     /// never brought into existence. The lowering of a `const if` whose condition
-    /// is still symbolic at emit (a const generic riding as a `#()` param);
-    /// planning/comptime_if.md step 5 / slice_guards.md Phase 4.
+    /// is still symbolic at emit (a const generic riding as a `#()` param).
     GenerateIf(SvGenerateIf),
     /// Raw verilog text from an inline-verilog fn body, emitted as-is
     /// (dedented to the module body's indentation).
@@ -137,7 +135,7 @@ pub enum SvItem {
     },
     /// An in-module pure SV `function automatic` — a const-only Mirin `fn`
     /// lifted so it can be called in a constant position (`localparam W =
-    /// f(N);`), which a module instance cannot. (const_net_duality.md item 1.)
+    /// f(N);`), which a module instance cannot. (proposals/const_net_duality.md item 1.)
     Function(SvFunction),
 }
 
@@ -191,7 +189,7 @@ pub struct SvGenerateIf {
 }
 
 /// `always_comb assert (i < N);` — a simulation-time bounds check on a
-/// dynamic vector/bits index (planning/vectors.md). Synthesis ignores it;
+/// dynamic vector/bits index. Synthesis ignores it;
 /// simulation fires exactly when the out-of-range access happens.
 #[derive(Clone, PartialEq, Eq, Debug, salsa::Update)]
 pub struct SvCombAssert {

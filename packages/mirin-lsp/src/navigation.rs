@@ -1,4 +1,4 @@
-//! Go-to-definition (`planning/lsp.md` M2). Rides the **resolved HIR**: the
+//! Go-to-definition. Rides the **resolved HIR**: the
 //! cursor maps to an `ExprId`, whose `ExprKind` already names the target — a
 //! resolved local (`Local`) or a resolved item (`Def` / record `ctor`). Name
 //! resolution and `let`/`var` shadowing are therefore the compiler's, never
@@ -62,8 +62,7 @@ pub fn definition_range(
             let ld = b.local(*local);
             // A result place (`return`, or a named result/tuple part) has no
             // body declaration site — jump into the signature instead: a named
-            // result to its name, an unnamed `return` to the return type
-            // (planning/return_variable.md).
+            // result to its name, an unnamed `return` to the return type.
             if ld.result_base.is_some() {
                 return result_place_range(db, def, cur_file, &ld.name, &src, rope, enc);
             }
@@ -104,7 +103,7 @@ fn def_range<'db>(
 /// The signature declaration of a result place. A named result jumps to its
 /// `name` in the `-> (name: T, …)` list; an unnamed `return` jumps to the
 /// return type (the closest declaration of the result's shape). Rides the CST
-/// directly — result places have no body span (planning/return_variable.md).
+/// directly — result places have no body span.
 fn result_place_range<'db>(
     db: &'db RootDatabase,
     def: DefId<'db>,

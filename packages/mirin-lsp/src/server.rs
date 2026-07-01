@@ -1,7 +1,7 @@
 //! The LSP backend: an *adapter*, not an analyser. It holds a rope + tree-sitter
 //! [`Document`] per open file and (from M2) overlays those buffers onto a
 //! `mirin-db` query engine. All real analysis lives in `mirin-db`; the server
-//! never reimplements resolution or type checking (`planning/lsp.md`).
+//! never reimplements resolution or type checking.
 
 use std::sync::{Mutex, OnceLock};
 

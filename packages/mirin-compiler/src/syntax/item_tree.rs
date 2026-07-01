@@ -1,5 +1,5 @@
-//! The `item_tree` — the per-file **syntactic firewall** (`planning/query_engine.md`
-//! §3.1). A lean summary of the items a file declares: kind, name, visibility,
+//! The `item_tree` — the per-file **syntactic firewall**. A lean summary of the
+//! items a file declares: kind, name, visibility,
 //! and stable [`FileAstId`], with modules recursing into their children and
 //! impls carrying their method index.
 //!
@@ -40,7 +40,7 @@ pub struct FnItem {
     pub name: String,
     pub visibility: Visibility,
     pub ast_id: FileAstId,
-    /// Carries `#[inline]` (planning/attributes.md) — the fn's body is spliced
+    /// Carries `#[inline]` — the fn's body is spliced
     /// at each call site instead of emitting a module. For an impl method, also
     /// set when the enclosing `impl` carries `#[inline]`.
     pub inline: bool,

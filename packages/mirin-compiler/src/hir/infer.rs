@@ -1,4 +1,4 @@
-//! `infer(def)` — type + domain inference (`planning/q3_typed_hir.md` §2, §6.4).
+//! `infer(def)` — type + domain inference.
 //!
 //! An eager-unification walk over a function's [`body`](crate::hir::body), the
 //! per-fn `InferCtxt` of the old `typeck` lifted onto a query. Produces a type
@@ -7,7 +7,7 @@
 //! callees/structs/ports it touches — **never their bodies**, so a caller
 //! re-infers only when a callee's *signature* changes (the firewall).
 //!
-//! Per `domain_checking.md`, the **domain is a component of the type**,
+//! The **domain is a component of the type**,
 //! inferred by the same walk: `unify` is strict on domains; the lattice's one
 //! edge (`@const` below every clock) applies only through `subsume` at the
 //! coercion sites and through the join in `merge_branch`. Domain variables are
@@ -16,11 +16,11 @@
 //!
 //! **Scope:** structural-kind + domain inference for the monomorphic core, with
 //! generic callees instantiated by substituting their `Param`s with fresh
-//! variables. **Widths are checked** (Q4a): a literal's width and a Const-kind
+//! variables. **Widths are checked**: a literal's width and a Const-kind
 //! generic both infer through the one kinded variable table, and two ground literal widths
 //! that disagree are a `WidthMismatch`. Symbolic widths — generic params,
 //! arithmetic, anon-consts — are accepted here and deferred to the residual +
-//! `const_eval` machinery (Q4b/c, `planning/q4_const_eval.md`).
+//! `const_eval` machinery.
 
 use std::collections::HashMap;
 
@@ -48,15 +48,15 @@ pub struct InferDiagnostic {
 pub enum InferDiagnosticKind {
     /// A `const if` whose condition carries a clock domain — i.e. depends on
     /// runtime data. The condition is resolved at elaboration, so it must be a
-    /// constant (planning/comptime_if.md).
+    /// constant.
     ConstIfRuntimeCond,
     /// A slice expression (`x[lo..hi]` / `x[off..+w]`) — parsed and lowered, but
-    /// the semantics (planning/slicing.md) are not yet implemented. Rejected
+    /// the semantics are not yet implemented. Rejected
     /// cleanly here so a slice never silently lowers to its base.
     SliceNotImplemented,
     /// A slice whose constant high endpoint (or `offset + width`) exceeds the
     /// base length `N` — out of range. (Symbolic-but-grounding bounds defer to
-    /// `mono_check`; this is the eager const check, planning/slicing.md.)
+    /// `mono_check`; this is the eager const check.)
     SliceOutOfBounds {
         high: i128,
         len: i128,
@@ -191,7 +191,7 @@ impl InferDiagnostic {
             InferDiagnosticKind::SliceNotImplemented => {
                 "unsupported slice: the width must be a positive compile-time constant \
                  (a literal, const generic, or const-folding expression) over a `bits`/`Vec` \
-                 base — for a runtime offset use `x[off +: width]` (planning/slicing.md)"
+                 base — for a runtime offset use `x[off +: width]`"
                     .to_owned()
             }
             InferDiagnosticKind::SliceOutOfBounds { high, len } => {
@@ -338,7 +338,7 @@ pub struct FitResidual<'db> {
 /// or the base length is still symbolic (a const generic): the high endpoint (or
 /// `offset + width`) must be `<= len`. `infer`'s eager check decides the
 /// all-literal case; this defers the symbolic-but-grounding case to `mono_check`,
-/// which grounds both against the instantiation's subst (planning/slice_guards.md).
+/// which grounds both against the instantiation's subst.
 #[derive(Clone, PartialEq, Eq, salsa::Update)]
 pub struct SliceBoundsResidual<'db> {
     pub high: ConstArg<'db>,
@@ -435,7 +435,7 @@ pub fn infer<'db>(
     }
     // A result place (`return`, a named result, or a tuple part) carries its
     // type as `declared_ty`, so the normal declared-type seeding below freshens
-    // and unifies it like any `var` — no special case (planning/return_variable.md).
+    // and unifies it like any `var` — no special case.
     let ret = sig.return_type.as_ref().map(|t| cx.freshen_domains(t));
     for (i, local) in body.locals().iter().enumerate() {
         let id = LocalId(i as u32);
@@ -659,14 +659,13 @@ enum ObligationKind<'db> {
     /// to `@const` (an unbound domain defaults const, so unbound passes).
     ConstDomain(LocalId),
     /// `self_ty: trait_def` — instantiated from a callee's predicates; solved
-    /// against the param env and the trait's impls (planning/traits.md).
+    /// against the param env and the trait's impls.
     Trait {
         trait_def: DefId<'db>,
         self_ty: Type<'db>,
         depth: u32,
     },
-    /// A literal's value must fit the type its variable resolves to
-    /// (planning/numeric_literals.md L2).
+    /// A literal's value must fit the type its variable resolves to.
     LiteralFits { ty: Type<'db>, value: i128 },
 }
 
@@ -823,9 +822,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
         }
         self.check_const_ifs();
-        // A Mirin-bodied `#[inline]` fn now splices at the call site
-        // (planning/inline_bodies.md); the v1 shape restrictions (clocked / `var`
-        // / out-param / `const if` / integer params) live in `inline_check`.
+        // A Mirin-bodied `#[inline]` fn now splices at the call site; the v1
+        // shape restrictions (clocked / `var` / out-param / `const if` / integer
+        // params) live in `inline_check`.
         self.check_widths();
         let substs: Vec<(ExprId, Vec<Term<'db>>)> = self
             .call_substs
@@ -863,7 +862,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     /// (needs the `generate if` lowering, not yet built) or a runtime value —
     /// both rejected here rather than panicking the backend. Inside an
     /// `#[inline]` fn a symbolic-const condition is fine: it grounds when the
-    /// body is spliced at a call with concrete const generics (planning/inline_bodies.md).
+    /// body is spliced at a call with concrete const generics.
     fn check_const_ifs(&mut self) {
         for (cond, span) in std::mem::take(&mut self.const_if_checks) {
             self.current_span = span;
@@ -874,8 +873,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             // A runtime (clocked / domain-param) condition is still rejected — a
             // `const if` must be compile-time. A *symbolic const generic* cond
             // (`W == 8` with `W` a `#()` param) is now fine: it grounds when an
-            // inline body is spliced, or lowers to an SV `generate if` otherwise
-            // (planning/slice_guards.md Phase 4).
+            // inline body is spliced, or lowers to an SV `generate if` otherwise.
             if matches!(dom, Domain::Clock(_) | Domain::Param(_)) {
                 self.diag(InferDiagnosticKind::ConstIfRuntimeCond);
             }
@@ -906,7 +904,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 // type — `uint(f(n))` — lowers to `ConstArg::Deferred`, which the
                 // backend cannot render. Reject it cleanly (a hard error, not a
                 // backend panic) pointing at the `let w = f(n); uint(w)` form,
-                // which IS supported (const_net_duality.md).
+                // which IS supported (proposals/const_net_duality.md).
                 if width_is_deferred(&w) {
                     bad.push((span, InferDiagnosticKind::DeferredWidth));
                     continue;
@@ -1307,7 +1305,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
     }
 
     /// `v[3]` against `Vec(3, _)`: a ground-literal index out of a ground
-    /// length errors now; anything symbolic waits (planning/vectors.md).
+    /// length errors now; anything symbolic waits.
     fn check_index_bounds(&mut self, body: &Body<'db>, index: ExprId, len: &ConstArg<'db>) {
         let ExprKind::Number(i, _) = body.expr(index).kind else {
             return;
@@ -1359,10 +1357,9 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 kind: kind.clone(),
                 domain: self.freshen_domain(*domain),
             },
-            // An aggregate has no domain of its own — freshen its elements'
-            // (planning/domain_checking.md): an un-annotated element domain
-            // is a genuine inference variable now, not stamped from an
-            // aggregate domain that no longer exists.
+            // An aggregate has no domain of its own — freshen its elements'.
+            // An un-annotated element domain is a genuine inference variable
+            // now, not stamped from an aggregate domain that no longer exists.
             Type::Vec { len, elem } => Type::Vec {
                 len: len.clone(),
                 elem: Box::new(self.freshen_domains(elem)),
@@ -1452,8 +1449,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 }
                 self.unify_domain(*dda, *ddb);
             }
-            // Aggregates have no domain of their own — unify element-wise
-            // (planning/domain_checking.md).
+            // Aggregates have no domain of their own — unify element-wise.
             (Type::Vec { len: la, elem: ea }, Type::Vec { len: lb, elem: eb }) => {
                 self.unify_width(la.clone(), lb.clone());
                 let (ea, eb) = ((**ea).clone(), (**eb).clone());
@@ -1582,7 +1578,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             // Aggregates subsume ELEMENT-WISE (covariant along the const
             // edge): each element at a coercion site is itself at a coercion
             // site, so `(x, 5)` fits `(uint(8) @a, uint(4) @b)` and a const
-            // vec fits a clocked one (planning/domain_checking.md).
+            // vec fits a clocked one.
             (Type::Tuple(ea), Type::Tuple(eb)) if ea.len() == eb.len() => {
                 let (ea, eb) = (ea.clone(), eb.clone());
                 for (x, y) in ea.iter().zip(&eb) {
@@ -1728,7 +1724,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     let it = self.resolve_ty(&it);
                     let elem_ty = match &it {
                         // The element carries its own domain (an aggregate has
-                        // none — planning/domain_checking.md).
+                        // none).
                         Type::Vec { elem, .. } => (**elem).clone(),
                         Type::Value {
                             kind: ValueKind::Bits { .. },
@@ -1834,7 +1830,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }),
             // Width arithmetic (`v[lo + 4 .. lo]`): operators desugar to method
             // calls, folded to a `ConstArg::Op`. A *plain* call stays unrepresentable
-            // (`Deferred`) — bind it with a `let` first (planning/const_eval.md).
+            // (`Deferred`) — bind it with a `let` first.
             ExprKind::MethodCall {
                 receiver,
                 method,
@@ -1969,7 +1965,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     return SliceTy::NotImpl; // descending (wrong order)
                 }
                 // `h == l` is a zero-width slice — allowed: the prelude guard's
-                // `const if w == 0` emits the effective-0-bit (planning/slice_guards.md).
+                // `const if w == 0` emits the effective-0-bit.
                 ConstArg::Lit(h - l)
             }
             _ => ConstArg::Op(ConstOp::Sub, Box::new(high), Box::new(low)),
@@ -2007,10 +2003,10 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         match &body.expr(expr).kind {
             ExprKind::Missing => Type::Error,
             // A literal is a fresh LITERAL-flavored inference variable plus a
-            // fit obligation (rustc's `{integer}` var, planning/numeric_literals.md
-            // L2): it unifies with `uint(n)` or `integer` as context demands,
-            // the fit check fires on resolution, and an unconstrained literal
-            // falls back to `integer` when the fixpoint stalls.
+            // fit obligation (rustc's `{integer}` var): it unifies with
+            // `uint(n)` or `integer` as context demands, the fit check fires on
+            // resolution, and an unconstrained literal falls back to `integer`
+            // when the fixpoint stalls.
             ExprKind::Number(v, _) => {
                 let t = self.fresh_type();
                 if let Type::Infer(var) = t {
@@ -2076,7 +2072,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 }
             }
             // `(a, b)`: elements type independently — each keeps its own
-            // domain (planning/tuples.md).
+            // domain.
             ExprKind::TupleLit(elems) => {
                 let elems = elems.clone();
                 let tys = elems.iter().map(|e| self.infer_expr(body, *e)).collect();
@@ -2094,7 +2090,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             // `v[i]`: Vec(N, A) → A; bits(N) → bool. The index is a literal,
             // an integer, or a uint (a hardware select); its domain joins the
             // base's via the result.
-            // Slicing (planning/slicing.md): low-first/ascending for both `bits`
+            // Slicing: low-first/ascending for both `bits`
             // and `Vec` (`x[low..high]` → `bits(high-low)` / `Vec(high-low, A)`).
             // Endpoints must be elaboration-constant (offset form allows a runtime
             // base); a const out-of-bounds is rejected; unhandled shapes reject
@@ -2130,7 +2126,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                     {
                         // Resolve the prelude `Slice` method for the desugar — `mir_of`
                         // builds the call from this (the `[..]` → `slice`/`slice_from`
-                        // lowering; planning/slice_guards.md). Recorded only; the
+                        // lowering). Recorded only; the
                         // typing above is unchanged.
                         let method = if width.is_some() {
                             "slice_from"
@@ -2155,7 +2151,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                         // routes through the prelude `const if` guard; a `Vec` slice
                         // (and an elided `bits` form) flattens to the empty/effective-
                         // 0-bit value in the backend (`undefined_vec_leaves`, the
-                        // read-side dual of the slice-set guard — slice_guards.md).
+                        // read-side dual of the slice-set guard).
                         ty
                     }
                     SliceTy::Oob { high, len } => {
@@ -2195,7 +2191,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 let bt_r = self.resolve_ty(&bt);
                 match &bt_r {
                     // `v[i]` is the element type directly — it carries its own
-                    // domain (the Vec has none — planning/domain_checking.md).
+                    // domain (the Vec has none).
                     Type::Vec { len, elem } => {
                         self.check_index_bounds(body, index, len);
                         (**elem).clone()
@@ -2255,7 +2251,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             // arms unify with the result (so the value type is well-defined
             // regardless of which arm a given instantiation selects). The
             // difference is purely at lowering: the condition must be a constant
-            // and only the selected arm is elaborated (planning/comptime_if.md).
+            // and only the selected arm is elaborated.
             ExprKind::ConstIf {
                 cond,
                 then_branch,
@@ -2266,7 +2262,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 // the check to `finish` (recorded here): the condition's domain
                 // can be pinned by a *later* equation (`var flag; const if flag;
                 // flag = clocked`), so an eager check here races the constraint
-                // system and would false-accept (planning/comptime_if.md).
+                // system and would false-accept.
                 self.const_if_checks.push((*cond, self.current_span));
                 let then_branch = then_branch.clone();
                 let else_branch = else_branch.clone();
@@ -2329,7 +2325,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             return Type::Error;
         };
         // The builtin `range(k) -> Vec(k, integer)`: the length IS the
-        // argument, lifted into const position (planning/for_loops.md).
+        // argument, lifted into const position.
         // In a `for`, the backend never materialises it — the genvar is
         // the element.
         if self
@@ -2473,9 +2469,8 @@ impl<'a, 'db> InferCtx<'a, 'db> {
 
     fn infer_field(&mut self, body: &Body<'db>, receiver: ExprId, field: &str) -> Type<'db> {
         let recv = self.infer_expr(body, receiver);
-        // Tuple projection `p.0` (planning/tuples.md): the numeric field
-        // indexes the element list. The element carries its own domain — a
-        // tuple has none of its own (planning/domain_checking.md).
+        // Tuple projection `p.0`: the numeric field indexes the element list.
+        // The element carries its own domain — a tuple has none of its own.
         if let Type::Tuple(elems) = self.resolve_ty(&recv) {
             let Ok(i) = field.parse::<usize>() else {
                 self.diag(InferDiagnosticKind::UnknownField {
@@ -2528,8 +2523,8 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         }
     }
 
-    /// `uint(8)::unpack(b)` — an associated function on an explicit Self type
-    /// (planning/pack_resize.md). Resolves the method from the written type
+    /// `uint(8)::unpack(b)` — an associated function on an explicit Self type.
+    /// Resolves the method from the written type
     /// (inherent first, then trait — like `infer_method`), then pins the impl's
     /// generics from the Self type. Unlike a method call there is no receiver
     /// value, so a fn with no `self` (return-type dispatch, e.g. `unpack`) is
@@ -2709,8 +2704,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         args: &[ConnArg],
     ) -> Type<'db> {
         let recv = self.infer_expr(body, receiver);
-        // The L3 rule (planning/numeric_literals.md): a LITERAL receiver
-        // takes its type from the first concrete numeric argument
+        // A LITERAL receiver takes its type from the first concrete numeric argument
         // (`1 + x` adds at x's type), else `integer` (`-8`, `1 + 2`).
         // Literal-var-only — not general bidirectional inference.
         if self.is_literal_ty(&recv) {
@@ -2810,7 +2804,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             }
         }
         // Builtin `Vec(N, A).replace(i, x) -> Vec(N, A)` — the FUNCTIONAL
-        // single-element update (planning/when_ram.md): a copy with element
+        // single-element update: a copy with element
         // i swapped. RAM feedback composes it with the value-form `when`.
         {
             let recv_r = self.resolve_ty(&recv);
@@ -2843,7 +2837,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 };
             }
             // Builtin `Vec(N, A).enumerate() -> Vec(N, (integer @const, A))` —
-            // a REAL method (planning/tuples.md). Inside a `for` it is also
+            // a REAL method. Inside a `for` it is also
             // recognised syntactically so the index reuses the genvar.
             if let Type::Vec { len, elem } = &recv_r
                 && method == "enumerate"
@@ -2993,7 +2987,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
         }
         match owner {
             // A struct ctor and a port ctor yield the same record type; the
-            // def's `DefKind` records which (structs_as_ports.md).
+            // def's `DefKind` records which.
             Some(def) => Type::Port {
                 def,
                 args: GenericArgs(args),
@@ -3029,12 +3023,11 @@ impl<'a, 'db> InferCtx<'a, 'db> {
             } => self.prelude_def("integer"),
             Type::Port { def, .. } => Some(def),
             // `Vec(N, A)` dispatches through the `Vec` builtin owner, so
-            // `v.pack()` / `Vec(..)::unpack(b)` find `impl BitPack for Vec(N, A)`
-            // (planning/pack_resize.md).
+            // `v.pack()` / `Vec(..)::unpack(b)` find `impl BitPack for Vec(N, A)`.
             Type::Vec { .. } => self.prelude_def("Vec"),
             // Tuples dispatch through the synthetic `Tuple` owner, so
             // `t.pack()` / `(A, B)::unpack(b)` find the per-arity tuple impls
-            // (planning/pack_resize.md). Arity is disambiguated by header match.
+            // Arity is disambiguated by header match.
             Type::Tuple(_) => self.prelude_def("Tuple"),
             Type::Clock => self.prelude_def("Clock"),
             _ => None,
@@ -3109,7 +3102,7 @@ impl<'a, 'db> InferCtx<'a, 'db> {
                 domain: d,
             },
             // An aggregate is "on domain d" when every element is — it has no
-            // domain of its own (planning/domain_checking.md).
+            // domain of its own.
             Type::Vec { len, elem } => Type::Vec {
                 len,
                 elem: Box::new(self.with_domain(&elem, d)),
@@ -3430,8 +3423,7 @@ mod tests {
         let mut db = RootDatabase::default();
         let mut vfs = Vfs::new();
         // `uint(8 / 0)` is closed but has no value → UnevaluableWidth. The
-        // parametric `uint(n / 2)` is symbolic → defers, no error
-        // (planning/operators.md, planning/const_eval.md).
+        // parametric `uint(n / 2)` is symbolic → defers, no error.
         let krate = load(
             &mut db,
             &mut vfs,
@@ -3491,9 +3483,9 @@ mod tests {
         assert!(
             inf.diagnostics().iter().any(|d| matches!(
                 &d.kind,
-                // The L7 wrap guard rejects the hardware-typed width before
+                // The wrap guard rejects the hardware-typed width before
                 // the domain check even looks: uint values can't be widths
-                // at all (planning/numeric_literals.md).
+                // at all.
                 InferDiagnosticKind::WidthNotInteger { .. }
             )),
             "a clocked uint width must be rejected, got {:?}",
