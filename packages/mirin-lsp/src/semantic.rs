@@ -1,5 +1,5 @@
-//! Semantic diagnostics routed through the `mirin-compiler` query engine
-//! (`planning/lsp.md` M2). The server holds one in-memory [`RootDatabase`] +
+//! Semantic diagnostics routed through the `mirin-compiler` query
+//! engine. The server holds one in-memory [`RootDatabase`] +
 //! [`Vfs`] (the incremental engine the doc's "sharing work" section calls for);
 //! editor buffers are overlaid into the VFS and the per-def diagnostic queries
 //! are run.
@@ -177,6 +177,39 @@ mod tests {
         let mut a = Analysis::new();
         let doc = Document::open(src);
         diagnostics(&mut a, Path::new("/t.mrn"), &doc.rope, Encoding::Utf8)
+    }
+
+    #[test]
+    fn editing_the_prelude_does_not_duplicate_it() {
+        // Opening the compiler's own `prelude.mrn` must not inject the bundled
+        // prelude on top of it — that would define each operator trait twice
+        // and make `a * b` ambiguous (the "traits Mul, Mul" report).
+        let src = include_str!("../../mirin-compiler/src/prelude.mrn");
+        let mut a = Analysis::new();
+        // Prime the VFS with another file first, so the synthetic `$prelude.mrn`
+        // is already present when the prelude itself is opened (the real LSP
+        // session order). The fix must drop it, not merely skip injection.
+        let warmup = Document::open("fn f ( a: uint(8) ) -> uint(8) { a + a }\n");
+        diagnostics(
+            &mut a,
+            Path::new("/warmup.mrn"),
+            &warmup.rope,
+            Encoding::Utf8,
+        );
+        let doc = Document::open(src);
+        let diags = diagnostics(
+            &mut a,
+            Path::new("/p/prelude.mrn"),
+            &doc.rope,
+            Encoding::Utf8,
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains("multiple applicable methods")
+                    || d.message.contains("overlapping")),
+            "prelude flagged as duplicated: {diags:?}"
+        );
     }
 
     #[test]

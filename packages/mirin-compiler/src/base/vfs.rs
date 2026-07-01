@@ -4,7 +4,6 @@
 //! one place, never via direct `fs` reads. The batch CLI fills it from disk
 //! once; the LSP overlays unsaved editor buffers. Setting a file's text is the
 //! sole input mutation; salsa owns the revision counter underneath.
-//! See `planning/query_engine.md` §5, `planning/lsp.md`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -70,10 +69,20 @@ impl Vfs {
         db: &mut RootDatabase,
         root_path: impl AsRef<Path>,
     ) -> SourceRoot {
-        // Every crate carries the prelude source (planning/traits.md T5 —
-        // rustc's `core` move): operator traits + builtin impls as real,
+        // When the root file under analysis is itself a `prelude.mrn` (e.g.
+        // editing the compiler's own prelude in the LSP), it already provides
+        // every prelude def. Injecting the bundled copy as well would define
+        // each operator trait twice — making `a * b` and friends ambiguous
+        // ("multiple applicable methods `mul`: implemented by traits Mul, Mul").
+        // Treat the open file AS the prelude: skip injection and drop any
+        // synthetic copy left in the VFS by a prior analysis.
+        let root_is_prelude = root_path.as_ref().file_name()
+            == Some(std::ffi::OsStr::new("prelude.mrn"))
+            && root_path.as_ref() != Path::new(Self::PRELUDE_PATH);
+        // Every crate carries the prelude source (rustc's `core` move):
+        // operator traits + builtin impls as real,
         // checked code, collected into the `$prelude` module by the def map.
-        if self.file(Self::PRELUDE_PATH).is_none() {
+        if !root_is_prelude && self.file(Self::PRELUDE_PATH).is_none() {
             self.set_file_text(
                 db,
                 Self::PRELUDE_PATH,
@@ -84,7 +93,12 @@ impl Vfs {
             .file(&root_path)
             .expect("root file must be loaded before building its SourceRoot");
         // Deterministic order so the input's value is stable across rebuilds.
-        let mut files: Vec<SourceFile> = self.by_path.values().copied().collect();
+        let mut files: Vec<SourceFile> = self
+            .by_path
+            .values()
+            .copied()
+            .filter(|f| !(root_is_prelude && f.path(db) == Path::new(Self::PRELUDE_PATH)))
+            .collect();
         files.sort_by(|a, b| a.path(db).cmp(b.path(db)));
         match self.root {
             Some(root) => {
