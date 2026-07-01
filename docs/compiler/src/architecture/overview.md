@@ -11,7 +11,7 @@ ways worth flagging up front. It tracks the **clock domain** of every value as
 part of that value's type and rejects unsynchronised crossings — a safety check
 most HDLs leave to external tools. And it checks generic code **optimistically**:
 inference assumes a body's width and const constraints hold, and a later pass,
-`mono_check`, settles them once a concrete call site grounds the generics. Those
+`mono_check`, decides them once a concrete call site grounds the generics. Those
 traits — the query architecture, domain checking, and optimistic checking — shape
 the rest of this guide. We take them after the pipeline itself: first the path
 your code travels from text to Verilog, then the engine that moves it along.
@@ -51,9 +51,8 @@ part covers the syntactic front, and the typed-HIR part covers inference.
 Inference is deliberately optimistic about widths. A generic body works with
 widths it cannot pin down — a `uint(n)` whose `n` is a parameter — so instead of
 demanding that every width be decidable at the definition, inference accepts the
-body and records the constraints it cannot yet settle: that two widths are equal,
-that a literal fits, that a width is at least one. The `mono_check` pass settles
-them afterwards. It walks each call site and, where the call's concrete arguments
+body and records the constraints it cannot yet settle: that two widths are equal, or that
+a literal fits. The `mono_check` pass decides the ground ones afterwards. It walks each call site and, where the call's concrete arguments
 make a deferred constraint ground, decides it and reports the failures.
 
 This is a deliberate divergence from rustc, which checks a generic body in full at

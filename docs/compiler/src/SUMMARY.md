@@ -13,14 +13,21 @@
 - [The item tree](source-representation/item-tree.md)
 - [Name resolution and the def map](source-representation/name-resolution.md)
 
-<!--
-Later parts, added as their chapters are written:
-
 # Typed HIR and analysis
-- Signatures, bodies, the type system, inference, traits, const-eval, checks
+
+- [The HIR](typed-hir/hir.md)
+- [The type system](typed-hir/type-system.md)
+- [Inference](typed-hir/inference.md)
+- [Traits and dispatch](typed-hir/traits.md)
+- [Constant evaluation](typed-hir/const-eval.md)
+- [Well-formedness checks](typed-hir/checks.md)
 
 # The MIR
 
+- [The MIR](mir/mir.md)
+
 # The backend
-- ... including zero-width handling (migrated from docs/compiler/zero-width-handling.md)
--->
+
+- [Lowering to SystemVerilog](backend/lowering.md)
+- [Monomorphisation and checking](backend/monomorphisation.md)
+- [Zero-width handling](backend/zero-width.md)
