@@ -163,6 +163,13 @@ over signature types.
 - **Dependency-aware lifting**: an output independent of every clocked input
   could keep `@const` instead of joining `__Dom` (lets a pure function return
   `enumerate`'s `(integer @const, A)` result directly).
+- **Higher-order functions** (`planning/higher_order.md`): a function argument's
+  pure-vs-clocked discipline is whether its domain quantifier is higher-ranked
+  (`for<dom D>`, a pure fn — accepted anywhere, like an HRTB closure) or pinned
+  to a clock in scope. Reuses the lift rule (= the function's domain quantifier),
+  the `Clock ⊑ Domain` sorts (= combinational vs registered), and the `@const`
+  lattice; the one new mechanism is placeholder/leak-check satisfaction of a
+  higher-ranked domain bound.
 - **The `@_` "clocked, inferred" form + a lint** that a binding whose inferred
   domain is a real clock must carry at least `@_`, severity scaling with the
   number of domains in scope.

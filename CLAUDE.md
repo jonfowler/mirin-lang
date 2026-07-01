@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-This repository is in a restart/planning state. Treat `planning/top.md` as the source of truth for language goals and `planning/syntax.md` as the source of truth for the first-pass concrete syntax subset used by examples and tooling. Until more implementation files land, treat code changes as greenfield work rather than assuming a stable compiler, parser, or runtime architecture.
+The compiler's architecture is documented in `docs/compiler/` (an mdbook, organised by IR phase); the code is the source of truth and the book orients. The from-scratch design notes have been archived to `archive/planning/` — they predate the current implementation and often disagree with it, so treat them as historical context, not authoritative. `planning/todo-list.md` is the live task list.
 
 ## Commands
 
@@ -32,11 +32,12 @@ The VS Code syntax extension lives in `editors/vscode/`.
 
 **Mirin** is an HDL focused on RTL correctness, readability, and high-quality generated Verilog. The repo is a small monorepo:
 
-- `packages/mirin-compiler/` — the compiler: a query-based, demand-driven front-to-back implementation on salsa (`planning/query_engine.md`), structured by layer (`base` → `syntax` → `nameres` → `hir` → `backend`). Emits SystemVerilog; `build.rs` compiles the tree-sitter grammar (C sources) and links it in. This is the primary `mirin-compiler`.
+- `packages/mirin-compiler/` — the compiler: a query-based, demand-driven front-to-back implementation on salsa (see `docs/compiler/`), structured by layer (`base` → `syntax` → `nameres` → `hir` → `backend`). Emits SystemVerilog; `build.rs` compiles the tree-sitter grammar (C sources) and links it in. This is the primary `mirin-compiler`.
 - `packages/mirin-compiler-old/` — the original whole-crate-pass compiler, kept as a **parity oracle** (the query-based one reached corpus parity at Q5-mono). Off the build path of everything else; retained for reference/diffing.
 - `packages/mirin-lsp/` — the language server, built on `mirin-compiler`'s query stack.
 - `packages/tree-sitter-mirin/` — Tree-sitter grammar (JavaScript): concrete syntax, highlighting, editor integration.
-- `planning/` — Design docs that are the source of truth for language decisions.
+- `docs/compiler/` — the compiler-internals book (mdbook): the architecture and each IR phase.
+- `archive/planning/` — archived from-scratch design notes (historical; the code and `docs/compiler/` supersede them).
 - `examples/` / `fail-examples/` — `.mrn` source files used in tests.
 
 Data flow: `.mrn` source → tree-sitter CST → per-file `item_tree` → `crate_def_map` (name resolution) → `sig_of`/`body`/`infer` (typed HIR) → `verilog` (flatten + monomorphise + emit). Each is a salsa query.
@@ -50,7 +51,7 @@ Tree-sitter owns concrete syntax; Rust owns CST-to-AST lowering, elaboration, an
 - **Arrays** are fixed-size and strictly positive; **vecs** are fixed-size but may contain ports. These are intentionally different.
 - **Domains/clocks**: only clock domains are in scope for the current pass. Clocked values are written `T @clk`; resets as `Reset @clk`. `param`/`dom` arguments (consts and clocks) are inferable by default — usually solved from context rather than passed explicitly.
 - **`fn`** introduces a component; named argument sections use braces `{ }`, positional sections use parens `( )`.
-- **`let` vs `var`**: `let x = expr` is a sequential lexical binding (forward-only scope, supports shadowing for pipeline style). `var x: T` declares a block-scoped signal node that can participate in cyclic equations — used for register feedback and mutual structural wiring. See `planning/cycles_and_scoping.md`.
+- **`let` vs `var`**: `let x = expr` is a sequential lexical binding (forward-only scope, supports shadowing for pipeline style). `var x: T` declares a block-scoped signal node that can participate in cyclic equations — used for register feedback and mutual structural wiring.
 - Testing is expected to be integrated into the language itself, not only external tooling.
 
 ## Conventions
@@ -58,8 +59,8 @@ Tree-sitter owns concrete syntax; Rust owns CST-to-AST lowering, elaboration, an
 - Priority order: **readability first**, then strong RTL semantics, then high-quality Verilog generation.
 - Keep generated naming deterministic; leave room for users to force explicit names.
 - Treat clock/reset/domain information as core semantics, not optional decoration.
-- Before making design decisions, read the relevant file in `planning/`. `planning/ir_pipeline.md` is the source of truth for compiler stages.
-- Keep `planning/ir_pipeline.md` in sync when you edit the compiler — adding/removing a pass, introducing a new IR type, or otherwise changing stage shape. Keep the doc concise: one paragraph per IR, one row per pass, no implementation details that live in the code.
+- Before changing the compiler, read the relevant chapter of `docs/compiler/` — the internals book, organised by IR phase. The code is the source of truth; the book orients.
+- Keep `docs/compiler/` in sync when you change a stage — adding/removing a pass, introducing an IR, or otherwise changing stage shape. Match its register (see `docs/AGENTS.md`): concise, phase-by-phase, with no implementation detail that belongs in the code.
 
 ## Negative-space programming
 

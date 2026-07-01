@@ -75,13 +75,13 @@ is what pins the second one).
 
 ### Primitive impls
 
-| Type | `bit_size` | `pack` | `unpack` |
-|---|---|---|---|
-| `uint(n)` | `n` | reinterpret bits | reinterpret bits |
-| `sint(n)` | `n` | reinterpret bits | reinterpret bits |
-| `bits(n)` | `n` | identity | identity |
-| `bool`    | `1` | the one bit | the one bit |
-| `integer` | — (no impl) | — | — |
+| Type      | `bit_size`  | `pack`           | `unpack`         |
+| --------- | ----------- | ---------------- | ---------------- |
+| `uint(n)` | `n`         | reinterpret bits | reinterpret bits |
+| `sint(n)` | `n`         | reinterpret bits | reinterpret bits |
+| `bits(n)` | `n`         | identity         | identity         |
+| `bool`    | `1`         | the one bit      | the one bit      |
+| `integer` | — (no impl) | —                | —                |
 
 `integer` is widthless and compile-time only, so it has **no representation** —
 no `BitPack` impl. Pack it by first constructing a concrete-width value
@@ -196,14 +196,14 @@ Six width-changing methods on the width-carrying primitives. They change the
 **width** of a value, keeping it the same *kind* — `uint(8).extend{by=4}` is a
 `uint(12)`, still a number, not `bits`.
 
-| Method | Side | Direction | Strict? | uint | sint | bits |
-|---|---|---|:---:|---|---|---|
-| `extend`       | MSB | grow  | ✓ | zero-extend | **sign**-extend | zero-extend |
-| `truncate`     | MSB | shrink| ✓ | drop high bits | drop high bits | drop high bits |
-| `extend_lsb`   | LSB | grow  | ✓ | append low zeros | append low zeros | append low zeros |
-| `truncate_lsb` | LSB | shrink| ✓ | drop low bits | drop low bits | drop low bits |
-| `resize`       | MSB | either| — | extend **or** truncate | sign-extend or truncate | zero-ext or truncate |
-| `resize_lsb`   | LSB | either| — | extend_lsb or truncate_lsb (same, all types) |
+| Method         | Side | Direction | Strict? | uint                                         | sint                    | bits                 |
+| -------------- | ---- | --------- | :-----: | -------------------------------------------- | ----------------------- | -------------------- |
+| `extend`       | MSB  | grow      |    ✓    | zero-extend                                  | **sign**-extend         | zero-extend          |
+| `truncate`     | MSB  | shrink    |    ✓    | drop high bits                               | drop high bits          | drop high bits       |
+| `extend_lsb`   | LSB  | grow      |    ✓    | append low zeros                             | append low zeros        | append low zeros     |
+| `truncate_lsb` | LSB  | shrink    |    ✓    | drop low bits                                | drop low bits           | drop low bits        |
+| `resize`       | MSB  | either    |    —    | extend **or** truncate                       | sign-extend or truncate | zero-ext or truncate |
+| `resize_lsb`   | LSB  | either    |    —    | extend_lsb or truncate_lsb (same, all types) |
 
 - **MSB-side ops change the high end.** `extend` is the value-preserving grow
   (zero-extend a uint, sign-extend a sint, zero-pad a bits — `>>` of operators
@@ -442,3 +442,19 @@ T4/T5 foundation:
   / CDC over `T: BitPack`; a unifying `Resize` trait with a const-indexed `Output`
   once associated types land; bits-slicing (`x[7:4]`) sharing the `Slice` node;
   a `Nat` const kind (or const `where` predicates) for type-level strictness.
+
+## pack for Vec
+
+```mirin
+fn pack(v: Vec(N, A)) -> bits(N * A::bit_size) {
+    let a : integer = A::bit_size;
+    let b : bits(N * A::bit_size);
+    for i in range(N) {
+      let pelem = v[i].pack();
+      for j in range(a) {
+        b[i*a + j] = pelem[j];  // little-endian: index 0 at the right
+      }
+    }
+    return b;
+}
+```
